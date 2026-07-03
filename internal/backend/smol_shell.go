@@ -12,12 +12,21 @@ import (
 // tmuxSocket is the guest-side socket for the persistent dev session.
 const tmuxSocket = "/home/" + DefaultUser + "/.devvm/tmux.sock"
 
-// Shell attaches to the dev tmux session, starting a persistent keeper first if
+// Shell opens a raw interactive login shell (no tmux). transport is ignored:
+// smol is reached via smolvm exec, never ssh/mosh.
+func (b *smolBackend) Shell(string) error {
+	if err := needSmolvm(); err != nil {
+		return err
+	}
+	return b.Run(context.Background(), ExecOpts{TTY: true}, "bash", "-l")
+}
+
+// Attach joins the dev tmux session, starting a persistent keeper first if
 // needed. smolvm tears down an interactive exec context (and its daemonized
 // children) after tmux detaches, so the tmux server must live in its own
-// detached exec context — otherwise successive `devvm shell` calls can't
-// re-attach. Ports smol_ensure_tmux / smol_shell.
-func (b *smolBackend) Shell() error {
+// detached exec context — otherwise successive `devvm attach` calls can't
+// re-attach. transport is ignored (see Shell). Ports smol_ensure_tmux / smol_shell.
+func (b *smolBackend) Attach(string) error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}

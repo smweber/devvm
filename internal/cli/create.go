@@ -50,7 +50,7 @@ Machine '%s' is ready.
 Next:
   devvm auth %s        # log in to github, codex, and claude
   devvm repos %s       # after adding repos to the machine conf
-  devvm shell %s
+  devvm attach %s      # join the persistent dev tmux session
 `, name, name, name, name)
 	return nil
 }

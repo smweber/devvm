@@ -74,16 +74,19 @@ func For(m *config.Machine, configDir string) (Backend, error) {
 	}
 }
 
-// Extras is the ssh-only surface (mosh/vnc) callers reach via type assertion.
-type Extras interface {
-	Mosh() error
-	VNC(tunnelUp func() error) error
+// Interactive is the connect surface every backend implements. Shell opens a raw
+// login shell; Attach joins the persistent dev tmux session (named "dev").
+// transport selects "ssh" | "mosh" for remote backends and is ignored by smol
+// (reached via smolvm exec). It steers only the interactive session — forwards
+// (native ssh -L) and exec always use ssh.
+type Interactive interface {
+	Shell(transport string) error
+	Attach(transport string) error
 }
 
-// Sheller attaches to the persistent dev tmux session. smol implements a
-// detached tmux keeper; ssh callers use Run with `tmux new-session -A` instead.
-type Sheller interface {
-	Shell() error
+// VNCer is the ssh-only viewer surface callers reach via type assertion.
+type VNCer interface {
+	VNC(tunnelUp func() error) error
 }
 
 // SSHConn carries what the session daemon needs to run a dedicated ControlMaster

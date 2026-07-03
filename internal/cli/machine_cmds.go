@@ -17,34 +17,56 @@ func (a *App) runExec(name string, argv []string) error {
 	return b.Run(context.Background(), backend.ExecOpts{Login: true}, argv...)
 }
 
-func (a *App) runShell(name string) error {
-	m, b, err := a.resolve(name)
+// runShell opens a raw login shell (no tmux); runAttach joins the dev tmux
+// session. Both dispatch to the backend's Interactive surface, with the
+// transport (ssh|mosh) resolved from the flag or conf for remote machines.
+func (a *App) runShell(name, transport string) error {
+	it, tr, err := a.interactive(name, transport)
 	if err != nil {
 		return err
 	}
-	if m.Backend != config.BackendSmol {
-		return fmt.Errorf("'%s' is a '%s' machine; use 'devvm ssh %s'", name, m.Backend, name)
-	}
-	sh, ok := b.(backend.Sheller)
-	if !ok {
-		return fmt.Errorf("backend %q has no shell", m.Backend)
-	}
-	return sh.Shell()
+	return it.Shell(tr)
 }
 
-func (a *App) runSSH(name string) error {
-	m, b, err := a.resolve(name)
+func (a *App) runAttach(name, transport string) error {
+	it, tr, err := a.interactive(name, transport)
 	if err != nil {
 		return err
 	}
+	return it.Attach(tr)
+}
+
+func (a *App) interactive(name, transport string) (backend.Interactive, string, error) {
+	m, b, err := a.resolve(name)
+	if err != nil {
+		return nil, "", err
+	}
+	it, ok := b.(backend.Interactive)
+	if !ok {
+		return nil, "", fmt.Errorf("backend %q is not interactive", m.Backend)
+	}
+	tr, err := resolveTransport(m, transport)
+	if err != nil {
+		return nil, "", err
+	}
+	return it, tr, nil
+}
+
+// resolveTransport picks the interactive transport: an explicit --transport flag
+// (remote-only), else the machine's configured default. smol ignores it.
+func resolveTransport(m *config.Machine, flag string) (string, error) {
+	if flag == "" {
+		return m.TransportName(), nil
+	}
 	if !m.IsRemote() {
-		return fmt.Errorf("'%s' is a '%s' machine; use 'devvm shell %s'", name, m.Backend, name)
+		return "", fmt.Errorf("--transport only applies to remote machines ('%s' is %s)", m.Name, m.Backend)
 	}
-	if err := backend.RequireGuestTmux(b, m); err != nil {
-		return err
+	switch flag {
+	case config.TransportSSH, config.TransportMosh:
+		return flag, nil
+	default:
+		return "", fmt.Errorf("invalid transport %q (want %q or %q)", flag, config.TransportSSH, config.TransportMosh)
 	}
-	return b.Run(context.Background(), backend.ExecOpts{TTY: true, Login: true},
-		"tmux", "new-session", "-A", "-s", "dev")
 }
 
 func (a *App) runStart(name string) error {
@@ -126,16 +148,4 @@ func (a *App) runStatus(name string) error {
 	fmt.Printf("Machine '%s' (%s): %s\n", st.Name, st.Backend, st.Raw)
 	a.forwardReport(name)
 	return nil
-}
-
-func (a *App) runMosh(name string) error {
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	ex, ok := b.(backend.Extras)
-	if !ok {
-		return fmt.Errorf("'mosh' only applies to remote machines ('%s' is %s)", name, m.Backend)
-	}
-	return ex.Mosh()
 }

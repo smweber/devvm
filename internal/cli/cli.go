@@ -43,8 +43,9 @@ func (a *App) rootCmd() *cobra.Command {
 		Use:   "devvm",
 		Short: "One frontend for persistent dev boxes, whatever the transport",
 		Long: "devvm manages persistent dev boxes across backends:\n" +
-			"  smol  local, isolated smolvm microVMs\n" +
-			"  ssh   an existing SSH host\n\n" +
+			"  smol              local, isolated smolvm microVMs\n" +
+			"  remote-managed    a remote host devvm shapes (over ssh)\n" +
+			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n\n" +
 			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -55,8 +56,8 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(
 		a.createCmd(),
 		a.bootstrapCmd(),
+		a.attachCmd(),
 		a.shellCmd(),
-		a.sshCmd(),
 		a.execCmd(),
 		a.authCmd(),
 		a.reposCmd(),
@@ -67,7 +68,6 @@ func (a *App) rootCmd() *cobra.Command {
 		a.stopCmd(),
 		a.deleteCmd(),
 		a.statusCmd(),
-		a.moshCmd(),
 		a.vncCmd(),
 		a.authorizeKeyCmd(),
 		a.keysCmd(),

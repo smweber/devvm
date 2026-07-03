@@ -36,21 +36,25 @@ func (a *App) bootstrapCmd() *cobra.Command {
 }
 
 func (a *App) shellCmd() *cobra.Command {
+	var transport string
 	c := &cobra.Command{
 		Use:   "shell NAME",
-		Short: "Attach to the dev tmux session (local VMs)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runShell(args[0]) },
+		Short: "Open a raw login shell (no tmux)",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runShell(args[0], transport) },
 	}
+	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default from conf)")
 	a.machineArg(c)
 	return c
 }
 
-func (a *App) sshCmd() *cobra.Command {
+func (a *App) attachCmd() *cobra.Command {
+	var transport string
 	c := &cobra.Command{
-		Use:   "ssh NAME",
-		Short: "Attach to the dev tmux session over ssh",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runSSH(args[0]) },
+		Use:   "attach NAME",
+		Short: "Attach to the persistent dev tmux session",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runAttach(args[0], transport) },
 	}
+	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default from conf)")
 	a.machineArg(c)
 	return c
 }
@@ -187,20 +191,10 @@ func (a *App) statusCmd() *cobra.Command {
 	return c
 }
 
-func (a *App) moshCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "mosh NAME",
-		Short: "Connect via mosh (ssh machines)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runMosh(args[0]) },
-	}
-	a.machineArg(c)
-	return c
-}
-
 func (a *App) vncCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "vnc NAME",
-		Short: "Tunnel (if needed) + open VNC (ssh machines)",
+		Short: "Tunnel (if needed) + open VNC (remote machines)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runVNC(args[0]) },
 	}
 	a.machineArg(c)
@@ -210,7 +204,7 @@ func (a *App) vncCmd() *cobra.Command {
 func (a *App) authorizeKeyCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:                "authorize-key NAME [KEY|--from-github USER]",
-		Short:              "Add a client pubkey (ssh machines)",
+		Short:              "Add a client pubkey (remote machines)",
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -223,7 +217,7 @@ func (a *App) authorizeKeyCmd() *cobra.Command {
 func (a *App) keysCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "keys NAME",
-		Short: "List authorized keys (ssh machines)",
+		Short: "List authorized keys (remote machines)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runKeys(args[0]) },
 	}
 	a.machineArg(c)
@@ -243,7 +237,7 @@ func (a *App) revokeKeyCmd() *cobra.Command {
 func (a *App) cleanupKeysCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "cleanup-keys NAME",
-		Short: "Remove duplicate authorized keys (ssh machines)",
+		Short: "Remove duplicate authorized keys (remote machines)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runCleanupKeys(args[0]) },
 	}
 	a.machineArg(c)
@@ -253,7 +247,7 @@ func (a *App) cleanupKeysCmd() *cobra.Command {
 func (a *App) lockdownCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "lockdown NAME",
-		Short: "Firewall + sshd hardening + auto-updates (ssh machines)",
+		Short: "Firewall + sshd hardening + auto-updates (remote machines)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runLockdown(args[0]) },
 	}
 	a.machineArg(c)

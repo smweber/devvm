@@ -140,13 +140,43 @@ func (b *sshBackend) Status() (State, error) {
 	}, nil
 }
 
-// Mosh connects via mosh, threading devvm's port/identity/known_hosts through
-// mosh's --ssh so a non-default port or managed known_hosts still apply.
-func (b *sshBackend) Mosh() error {
-	if err := needCmd("mosh"); err != nil {
+// Shell opens a raw interactive login shell over the chosen transport.
+func (b *sshBackend) Shell(transport string) error { return b.connect(transport, nil) }
+
+// Attach joins the persistent dev tmux session over the chosen transport.
+func (b *sshBackend) Attach(transport string) error {
+	if err := RequireGuestTmux(b, b.m); err != nil {
 		return err
 	}
-	if err := RequireGuestTmux(b, b.m); err != nil {
+	return b.connect(transport, []string{"tmux", "new-session", "-A", "-s", "dev"})
+}
+
+// connect runs remoteArgv interactively over the chosen transport (nil = the
+// login shell). ssh -L forwards and exec always use ssh regardless; transport
+// steers only this interactive session.
+func (b *sshBackend) connect(transport string, remoteArgv []string) error {
+	if transport == config.TransportMosh {
+		return b.moshConnect(remoteArgv)
+	}
+	return b.sshConnect(remoteArgv)
+}
+
+func (b *sshBackend) sshConnect(remoteArgv []string) error {
+	if err := needCmd("ssh"); err != nil {
+		return err
+	}
+	host := append(b.base(), "-t", b.m.SSHHost)
+	// No command -> ssh opens the login shell itself (honours fish/etc.).
+	if len(remoteArgv) > 0 {
+		host = append(host, remoteCommand(ExecOpts{Login: true}, remoteArgv))
+	}
+	return runHost(context.Background(), ExecOpts{TTY: true}, host)
+}
+
+// moshConnect connects via mosh, threading devvm's port/identity/known_hosts
+// through mosh's --ssh so a non-default port or managed known_hosts still apply.
+func (b *sshBackend) moshConnect(remoteArgv []string) error {
+	if err := needCmd("mosh"); err != nil {
 		return err
 	}
 	server, err := b.findMoshServer()
@@ -157,14 +187,16 @@ func (b *sshBackend) Mosh() error {
 	if flags := b.sshFlags(); len(flags) > 0 {
 		sshCmd = shellJoin(append([]string{"ssh"}, flags...))
 	}
-	fmt.Fprintf(os.Stderr, "devvm: using %s; attaching tmux session 'dev'\n", server)
-	// mosh-server runs without a login shell, so keep Homebrew's tmux/fish on
-	// PATH or tmux's fish default-command exits at once.
-	serverDir := filepath.Dir(server)
-	remotePath := serverDir + ":/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-	args := []string{
-		"--ssh=" + sshCmd, "--server=" + server, "--", b.m.SSHHost,
-		"env", "PATH=" + remotePath, "tmux", "new-session", "-A", "-s", "dev",
+	fmt.Fprintf(os.Stderr, "devvm: using %s\n", server)
+	args := []string{"--ssh=" + sshCmd, "--server=" + server, "--", b.m.SSHHost}
+	if len(remoteArgv) > 0 {
+		// mosh-server runs without a login shell, so keep Homebrew's tmux/fish on
+		// PATH or tmux's fish default-command exits at once. (A bare login shell —
+		// remoteArgv nil — needs none of this: mosh runs the user's login shell.)
+		serverDir := filepath.Dir(server)
+		remotePath := serverDir + ":/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+		args = append(args, "env", "PATH="+remotePath)
+		args = append(args, remoteArgv...)
 	}
 	cmd := exec.Command("mosh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
