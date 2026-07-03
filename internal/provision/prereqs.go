@@ -37,9 +37,9 @@ grep -qs '^precedence ::ffff:0:0/96  100' /etc/gai.conf || \
     printf 'precedence ::ffff:0:0/96  100\n' >>/etc/gai.conf
 `
 
-// sshPrereqs is the lighter path for ssh hosts (the user + sudo already exist).
-// Ports ssh_prepare_guest.
-const sshPrereqs = `
+// managedRemotePrereqs is the lighter install path for remote-managed hosts (the
+// user + sudo already exist). Ports ssh_prepare_guest.
+const managedRemotePrereqs = `
 set -e
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -47,9 +47,31 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 touch /etc/devvm-agent
 `
 
-// Prereqs installs the minimal guest prerequisites as root, streaming progress.
+// checkPrereqs verifies (never installs) that an adopted remote-unmanaged host
+// has what devvm needs. Read-only and non-root: we don't shape a host we don't
+// own. Missing tools only warn — everything but `attach` works without tmux, and
+// the user may have equivalents installed elsewhere.
+const checkPrereqs = `
+missing=
+for c in bash git rsync tmux; do
+    command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+done
+if [ -n "$missing" ]; then
+    printf 'devvm: %s: recommended tools not found:%s (install them if you hit trouble)\n' \
+        "$1" "$missing" >&2
+fi
+`
+
+// Prereqs prepares the guest: managed backends (smol, remote-managed) install the
+// minimal packages as root; adopted remote-unmanaged hosts are only checked.
 func Prereqs(ctx context.Context, b backend.Backend, m *config.Machine) error {
-	script := sshPrereqs
+	if !m.Managed() {
+		// `bash -lc` (a login shell) so brew-installed tools on PATH count as
+		// present; the argv is the shell itself, so no ExecOpts.Login wrap.
+		return b.Run(ctx, backend.ExecOpts{Stream: true},
+			"bash", "-lc", checkPrereqs, "_", m.Name)
+	}
+	script := managedRemotePrereqs
 	if m.Backend == config.BackendSmol {
 		script = smolPrereqs
 	}

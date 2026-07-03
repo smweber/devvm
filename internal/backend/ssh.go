@@ -18,7 +18,7 @@ type sshBackend struct {
 	configDir string
 }
 
-func (b *sshBackend) Kind() string { return config.BackendSSH }
+func (b *sshBackend) Kind() string { return b.m.Backend }
 
 // sshFlags builds the shared port/identity/known_hosts options used by ssh,
 // scp, and mosh (build_ssh_flags). ControlMaster options are added separately
@@ -32,7 +32,7 @@ func (b *sshBackend) sshFlags() []string {
 		f = append(f, "-i", expandHome(b.m.Identity))
 	}
 	// Managed hosts get an isolated, TOFU-pinned known_hosts.
-	if b.m.ManagedSSH() {
+	if b.m.Managed() {
 		f = append(f,
 			"-o", "UserKnownHostsFile="+config.KnownHostsPath(b.configDir),
 			"-o", "StrictHostKeyChecking=accept-new")
@@ -125,7 +125,7 @@ func (b *sshBackend) PowerDelete() error { return nil }
 
 func (b *sshBackend) lifecycleNoop(action string) error {
 	fmt.Fprintf(os.Stderr,
-		"devvm: '%s' is an ssh host; devvm does not manage its power ('%s' is a no-op).\n",
+		"devvm: '%s' is a remote host; devvm does not manage its power ('%s' is a no-op).\n",
 		b.m.Name, action)
 	return nil
 }
@@ -133,7 +133,7 @@ func (b *sshBackend) lifecycleNoop(action string) error {
 func (b *sshBackend) Status() (State, error) {
 	return State{
 		Name:    b.m.Name,
-		Backend: config.BackendSSH,
+		Backend: b.m.Backend,
 		Exists:  true,
 		Running: true,
 		Raw:     "ssh -> " + b.m.SSHHost,

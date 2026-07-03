@@ -152,7 +152,7 @@ func (a *App) runVNC(name string) error {
 		VNC(func() error) error
 	})
 	if !ok {
-		return fmt.Errorf("'vnc' only applies to ssh machines ('%s' is %s)", name, m.Backend)
+		return fmt.Errorf("'vnc' only applies to remote machines ('%s' is %s)", name, m.Backend)
 	}
 	return ex.VNC(func() error { return a.tunnelUp(name) })
 }

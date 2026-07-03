@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -26,10 +28,14 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"smol ok", Machine{Name: "x", Backend: BackendSmol}, false},
-		{"ssh ok", Machine{Name: "x", Backend: BackendSSH, SSHHost: "h"}, false},
-		{"ssh no host", Machine{Name: "x", Backend: BackendSSH}, true},
+		{"remote-managed ok", Machine{Name: "x", Backend: BackendRemoteManaged, SSHHost: "h"}, false},
+		{"remote-unmanaged ok", Machine{Name: "x", Backend: BackendRemoteUnmanaged, SSHHost: "h"}, false},
+		{"remote no host", Machine{Name: "x", Backend: BackendRemoteManaged}, true},
 		{"no backend", Machine{Name: "x"}, true},
 		{"bad backend", Machine{Name: "x", Backend: "hetzner"}, true},
+		{"mosh transport ok", Machine{Name: "x", Backend: BackendRemoteManaged, SSHHost: "h", Transport: TransportMosh}, false},
+		{"transport on smol", Machine{Name: "x", Backend: BackendSmol, Transport: TransportMosh}, true},
+		{"bad transport", Machine{Name: "x", Backend: BackendRemoteManaged, SSHHost: "h", Transport: "telnet"}, true},
 	}
 	for _, tt := range tests {
 		if err := tt.m.Validate(); (err != nil) != tt.wantErr {
@@ -38,15 +44,58 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestManagedSSH(t *testing.T) {
-	if !(&Machine{Backend: BackendSSH}).ManagedSSH() {
-		t.Error("managed ssh host should be managed")
+func TestManagedAndRemote(t *testing.T) {
+	tests := []struct {
+		backend           string
+		managed, isRemote bool
+	}{
+		{BackendSmol, true, false},
+		{BackendRemoteManaged, true, true},
+		{BackendRemoteUnmanaged, false, true},
 	}
-	if (&Machine{Backend: BackendSSH, Unmanaged: true}).ManagedSSH() {
-		t.Error("unmanaged ssh host should not be managed")
+	for _, tt := range tests {
+		m := &Machine{Backend: tt.backend}
+		if m.Managed() != tt.managed {
+			t.Errorf("%s: Managed()=%v want %v", tt.backend, m.Managed(), tt.managed)
+		}
+		if m.IsRemote() != tt.isRemote {
+			t.Errorf("%s: IsRemote()=%v want %v", tt.backend, m.IsRemote(), tt.isRemote)
+		}
 	}
-	if (&Machine{Backend: BackendSmol}).ManagedSSH() {
-		t.Error("smol should not be managed-ssh")
+}
+
+// TestMigrateLegacySSH covers loading pre-rename confs: `backend = "ssh"` maps to
+// remote-unmanaged when unmanaged=true, else remote-managed, and the deprecated
+// key is dropped.
+func TestMigrateLegacySSH(t *testing.T) {
+	tests := []struct {
+		name, raw   string
+		wantBackend string
+	}{
+		{"legacy-unmanaged", "backend = \"ssh\"\nunmanaged = true\nssh_host = \"h\"\n", BackendRemoteUnmanaged},
+		{"legacy-managed", "backend = \"ssh\"\nssh_host = \"h\"\n", BackendRemoteManaged},
+	}
+	for _, tt := range tests {
+		dir := t.TempDir()
+		if err := os.MkdirAll(MachinesDir(dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(MachinesDir(dir), tt.name+".toml"), []byte(tt.raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(dir, tt.name)
+		if err != nil {
+			t.Fatalf("%s: Load: %v", tt.name, err)
+		}
+		if got.Backend != tt.wantBackend {
+			t.Errorf("%s: Backend=%q want %q", tt.name, got.Backend, tt.wantBackend)
+		}
+		if got.Unmanaged {
+			t.Errorf("%s: Unmanaged should be cleared after migration", tt.name)
+		}
+		if got.TransportName() != TransportSSH {
+			t.Errorf("%s: TransportName()=%q want ssh", tt.name, got.TransportName())
+		}
 	}
 }
 
@@ -54,9 +103,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	orig := &Machine{
 		Name:                 "scottdev3",
-		Backend:              BackendSSH,
-		Unmanaged:            true,
+		Backend:              BackendRemoteUnmanaged,
 		SSHHost:              "scottdev3",
+		Transport:            TransportMosh,
 		Ports:                []string{"3000", "5901", "8080:80"},
 		VNCPort:              5901,
 		MoshServer:           "/home/linuxbrew/.linuxbrew/bin/mosh-server",
@@ -69,8 +118,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Backend != BackendSSH || !got.Unmanaged || got.SSHHost != "scottdev3" {
+	if got.Backend != BackendRemoteUnmanaged || got.SSHHost != "scottdev3" {
 		t.Errorf("core fields lost: %+v", got)
+	}
+	if got.Transport != TransportMosh {
+		t.Errorf("Transport lost: %q", got.Transport)
 	}
 	if got.SSHPort != 22 {
 		t.Errorf("SSHPort default = %d, want 22", got.SSHPort)

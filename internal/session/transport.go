@@ -31,10 +31,10 @@ func newTransport(ctx context.Context, m *config.Machine, b backend.Backend) (tr
 	switch m.Backend {
 	case config.BackendSmol:
 		return newSmolTransport(ctx, b)
-	case config.BackendSSH:
+	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		conn, ok := b.(backend.SSHConnector)
 		if !ok {
-			return nil, fmt.Errorf("ssh backend does not expose a connector")
+			return nil, fmt.Errorf("remote backend does not expose a connector")
 		}
 		return newSSHTransport(conn.SSHConn())
 	default:

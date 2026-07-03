@@ -16,10 +16,29 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Backend identifies which transport a machine uses.
+// Backend identifies who owns a machine and how it's reached.
+//
+//	smol             local microVM devvm creates and shapes (smolvm-exec)
+//	remote-managed   a remote host devvm shapes (installs prereqs, may harden),
+//	                 reached over the ssh transport — you provision the box, devvm
+//	                 manages the OS. (Future: hetzner adds API-backed lifecycle.)
+//	remote-unmanaged an existing host devvm adopts hands-off (checks prereqs, never
+//	                 modifies the OS), reached over the ssh transport.
 const (
-	BackendSmol = "smol"
-	BackendSSH  = "ssh"
+	BackendSmol            = "smol"
+	BackendRemoteManaged   = "remote-managed"
+	BackendRemoteUnmanaged = "remote-unmanaged"
+
+	// legacyBackendSSH is the pre-rename backend value; migrated on load onto the
+	// remote-managed / remote-unmanaged split (see migrateLegacy).
+	legacyBackendSSH = "ssh"
+)
+
+// Transport selects how an interactive connection (shell/attach) is made to a
+// remote backend; it does not affect forwards (always native ssh -L) or exec.
+const (
+	TransportSSH  = "ssh"
+	TransportMosh = "mosh"
 )
 
 // Default provisioner: reproduce the old bootstrap path (bootstrap_machine),
@@ -48,13 +67,18 @@ type Machine struct {
 	// Name is derived from the filename, not stored in the file.
 	Name string `toml:"-"`
 
-	Backend   string `toml:"backend"`
-	Unmanaged bool   `toml:"unmanaged,omitempty"`
+	Backend string `toml:"backend"`
 
-	// ssh backend
+	// Unmanaged is the deprecated pre-rename flag; still read so old confs migrate
+	// (see migrateLegacy) but never written back — the backend value carries this
+	// now (remote-unmanaged vs remote-managed).
+	Unmanaged bool `toml:"unmanaged,omitempty"`
+
+	// remote backends (ssh transport)
 	SSHHost    string `toml:"ssh_host,omitempty"`
 	SSHPort    int    `toml:"ssh_port,omitempty"`
 	Identity   string `toml:"identity,omitempty"`
+	Transport  string `toml:"transport,omitempty"` // ssh (default) | mosh
 	MoshServer string `toml:"mosh_server,omitempty"`
 	VNCPort    int    `toml:"vnc_port,omitempty"`
 
@@ -81,6 +105,21 @@ func NewSmol(name string) *Machine {
 	return m
 }
 
+// migrateLegacy rewrites the pre-rename `backend = "ssh"` (+ optional
+// `unmanaged`) form onto the remote-managed / remote-unmanaged split, so old
+// hand-written confs (and shared dotfiles) keep loading unchanged. The next Save
+// drops the `unmanaged` key.
+func (m *Machine) migrateLegacy() {
+	if m.Backend == legacyBackendSSH {
+		if m.Unmanaged {
+			m.Backend = BackendRemoteUnmanaged
+		} else {
+			m.Backend = BackendRemoteManaged
+		}
+	}
+	m.Unmanaged = false
+}
+
 // applyDefaults fills unset fields, matching load_machine's defaulting.
 func (m *Machine) applyDefaults() {
 	if m.SSHPort == 0 {
@@ -92,34 +131,54 @@ func (m *Machine) applyDefaults() {
 	if m.Provision == "" {
 		m.Provision = DefaultProvision
 	}
+	if m.IsRemote() && m.Transport == "" {
+		m.Transport = TransportSSH
+	}
 }
 
 // Validate enforces the invariants load_machine checked at source time.
 func (m *Machine) Validate() error {
 	switch m.Backend {
-	case BackendSmol, BackendSSH:
+	case BackendSmol, BackendRemoteManaged, BackendRemoteUnmanaged:
 	case "":
 		return fmt.Errorf("machine %q has no backend set", m.Name)
 	default:
 		return fmt.Errorf("machine %q has unsupported backend %q", m.Name, m.Backend)
 	}
-	if m.Backend == BackendSSH && m.SSHHost == "" {
-		return fmt.Errorf("ssh machine %q needs ssh_host", m.Name)
+	if m.IsRemote() && m.SSHHost == "" {
+		return fmt.Errorf("remote machine %q needs ssh_host", m.Name)
+	}
+	if !m.IsRemote() && m.Transport != "" {
+		return fmt.Errorf("machine %q: transport only applies to remote backends", m.Name)
+	}
+	switch m.Transport {
+	case "", TransportSSH, TransportMosh:
+	default:
+		return fmt.Errorf("machine %q: invalid transport %q (want %q or %q)",
+			m.Name, m.Transport, TransportSSH, TransportMosh)
 	}
 	return nil
 }
 
-// ManagedSSH reports whether devvm manages this ssh host's lifecycle/hardening.
-// Unmanaged ssh hosts (UNMANAGED=1) get no-op lifecycle and no known_hosts
-// pinning, exactly as the old MANAGED_SSH derivation did.
-func (m *Machine) ManagedSSH() bool {
-	return m.Backend == BackendSSH && !m.Unmanaged
+// Managed reports whether devvm owns this box's OS and lifecycle — it installs
+// prereqs, may harden, and pins known_hosts. smol and remote-managed are managed;
+// adopted remote-unmanaged hosts are not (devvm only checks them, never modifies).
+func (m *Machine) Managed() bool {
+	return m.Backend == BackendSmol || m.Backend == BackendRemoteManaged
 }
 
-// IsExposed reports whether the backend is reachable off-host (drives key
-// seeding + hardening). Local smol VMs are not; ssh (and future cloud) are.
-func (m *Machine) IsExposed() bool {
-	return m.Backend == BackendSSH
+// IsRemote reports whether the box is reached over the ssh transport (both
+// remote-* backends). Drives ssh flags, key management, mosh/vnc, and forwards.
+func (m *Machine) IsRemote() bool {
+	return m.Backend == BackendRemoteManaged || m.Backend == BackendRemoteUnmanaged
+}
+
+// TransportName is the effective interactive transport (defaulted to ssh).
+func (m *Machine) TransportName() string {
+	if m.Transport == "" {
+		return TransportSSH
+	}
+	return m.Transport
 }
 
 // Dir returns the machines directory under the given config dir.
@@ -148,6 +207,7 @@ func Load(configDir, name string) (*Machine, error) {
 		return nil, fmt.Errorf("parse %s: %w", p, err)
 	}
 	m.Name = name
+	m.migrateLegacy()
 	m.applyDefaults()
 	if err := m.Validate(); err != nil {
 		return nil, err

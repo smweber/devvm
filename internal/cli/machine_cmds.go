@@ -37,7 +37,7 @@ func (a *App) runSSH(name string) error {
 	if err != nil {
 		return err
 	}
-	if m.Backend != config.BackendSSH {
+	if !m.IsRemote() {
 		return fmt.Errorf("'%s' is a '%s' machine; use 'devvm shell %s'", name, m.Backend, name)
 	}
 	if err := backend.RequireGuestTmux(b, m); err != nil {
@@ -80,8 +80,8 @@ func (a *App) runDelete(name string) error {
 	if err != nil {
 		return err
 	}
-	switch m.Backend {
-	case config.BackendSmol:
+	switch {
+	case m.Backend == config.BackendSmol:
 		ok, err := confirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
 		if err != nil {
 			return err
@@ -92,10 +92,12 @@ func (a *App) runDelete(name string) error {
 		if err := b.PowerDelete(); err != nil {
 			return err
 		}
-	case config.BackendSSH:
-		if m.Unmanaged {
+	case m.IsRemote():
+		// Adopted (unmanaged) hosts only lose their registry entry; the box is
+		// left untouched, so confirm we're not expected to tear anything down.
+		if !m.Managed() {
 			ok, err := confirm(fmt.Sprintf(
-				"Remove registry entry for unmanaged host '%s' (leaves the host untouched)?", name))
+				"Remove registry entry for '%s' (leaves the host untouched)?", name))
 			if err != nil {
 				return err
 			}
@@ -133,7 +135,7 @@ func (a *App) runMosh(name string) error {
 	}
 	ex, ok := b.(backend.Extras)
 	if !ok {
-		return fmt.Errorf("'mosh' only applies to ssh machines ('%s' is %s)", name, m.Backend)
+		return fmt.Errorf("'mosh' only applies to remote machines ('%s' is %s)", name, m.Backend)
 	}
 	return ex.Mosh()
 }

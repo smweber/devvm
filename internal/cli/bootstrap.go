@@ -14,22 +14,26 @@ func (a *App) runBootstrap(name string) error {
 	if err != nil {
 		return err
 	}
-	if m.Unmanaged {
-		return fmt.Errorf("'%s' is unmanaged; refusing to bootstrap it", name)
-	}
 	ctx := context.Background()
+	// Prereqs installs on managed boxes (smol, remote-managed) and only checks on
+	// adopted remote-unmanaged hosts.
 	if err := provision.Prereqs(ctx, b, m); err != nil {
 		return err
 	}
-	if err := provision.Run(ctx, b, m); err != nil {
-		return err
+	// The provisioner shapes the OS, so it runs only on boxes devvm owns; adopted
+	// hosts are left untouched.
+	if m.Managed() {
+		if err := provision.Run(ctx, b, m); err != nil {
+			return err
+		}
 	}
-	// Exposed backends (ssh/cloud) get key seeding and optional hardening.
-	if m.IsExposed() {
+	// Remote backends get key seeding (opt-in via conf; harmless when empty).
+	// Hardening modifies the system, so it's managed-only.
+	if m.IsRemote() {
 		if err := a.seedAuthorizedKeys(b, m.AuthorizedKeysGithub, m.AuthorizedKeys); err != nil {
 			return err
 		}
-		if m.Harden {
+		if m.Managed() && m.Harden {
 			if err := provision.Harden(ctx, b, m); err != nil {
 				return err
 			}
@@ -43,10 +47,10 @@ func (a *App) runLockdown(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireSSH(m, "lockdown"); err != nil {
+	if err := requireRemote(m, "lockdown"); err != nil {
 		return err
 	}
-	if m.Unmanaged {
+	if !m.Managed() {
 		ok, err := confirm(fmt.Sprintf("'%s' is an unmanaged host — really run lockdown on it?", name))
 		if err != nil {
 			return err

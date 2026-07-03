@@ -16,9 +16,13 @@ import (
 	"github.com/smweber/devvm/internal/keys"
 )
 
-func requireSSH(m *config.Machine, cmd string) error {
-	if m.Backend != config.BackendSSH {
-		return fmt.Errorf("'%s' only applies to ssh machines ('%s' is %s)", cmd, m.Name, m.Backend)
+// requireRemote gates commands that act on a guest's authorized_keys — allowed
+// on both remote backends (managed and adopted), since key management is an
+// explicit, user-scoped, non-root action, not OS shaping. smol has no ssh
+// authorized_keys surface (it's reached via smolvm exec).
+func requireRemote(m *config.Machine, cmd string) error {
+	if !m.IsRemote() {
+		return fmt.Errorf("'%s' only applies to remote machines ('%s' is %s)", cmd, m.Name, m.Backend)
 	}
 	return nil
 }
@@ -28,7 +32,7 @@ func (a *App) runKeys(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireSSH(m, "keys"); err != nil {
+	if err := requireRemote(m, "keys"); err != nil {
 		return err
 	}
 	return a.agentRun(b, nil, os.Stdout, "keys", "list")
@@ -39,7 +43,7 @@ func (a *App) runCleanupKeys(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireSSH(m, "cleanup-keys"); err != nil {
+	if err := requireRemote(m, "cleanup-keys"); err != nil {
 		return err
 	}
 	return a.agentRun(b, nil, os.Stdout, "keys", "cleanup")
@@ -50,7 +54,7 @@ func (a *App) runRevokeKey(name, pattern string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireSSH(m, "revoke-key"); err != nil {
+	if err := requireRemote(m, "revoke-key"); err != nil {
 		return err
 	}
 	// The host's own keys (id_*.pub + configured IDENTITY) are protected so you
@@ -64,7 +68,7 @@ func (a *App) runAuthorizeKey(name string, spec []string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireSSH(m, "authorize-key"); err != nil {
+	if err := requireRemote(m, "authorize-key"); err != nil {
 		return err
 	}
 	if len(spec) == 0 {

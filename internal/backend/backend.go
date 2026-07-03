@@ -50,7 +50,7 @@ func (o ExecOpts) user() string {
 // two exec styles: Run waits with stdio wired through; Spawn returns a Session
 // whose stdin/stdout pipes the caller drives (the persistent agent exec).
 type Backend interface {
-	Kind() string // config.BackendSmol | config.BackendSSH
+	Kind() string // config.BackendSmol | config.BackendRemote{Managed,Unmanaged}
 	Exists() (bool, error)
 	PowerStart() error
 	PowerStop() error
@@ -67,7 +67,7 @@ func For(m *config.Machine, configDir string) (Backend, error) {
 	switch m.Backend {
 	case config.BackendSmol:
 		return &smolBackend{m: m}, nil
-	case config.BackendSSH:
+	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		return &sshBackend{m: m, configDir: configDir}, nil
 	default:
 		return nil, fmt.Errorf("machine %q has unsupported backend %q", m.Name, m.Backend)
