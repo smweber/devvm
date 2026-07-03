@@ -21,6 +21,9 @@ func (b *smolBackend) Shell() error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
+	if err := RequireGuestTmux(b, b.m); err != nil {
+		return err
+	}
 	if err := b.ensureTmux(); err != nil {
 		return err
 	}
@@ -29,7 +32,11 @@ func (b *smolBackend) Shell() error {
 }
 
 func (b *smolBackend) hasSession() bool {
-	return b.Run(context.Background(), ExecOpts{Stdout: io.Discard, Stderr: io.Discard},
+	// Login: true so tmux is found via the guest's login PATH. On brew-based
+	// boxes tmux lives in /home/linuxbrew/.linuxbrew/bin, which is absent from
+	// the bare non-login PATH — without a login shell the probe fails with
+	// rc=127 and every session looks dead, so ensureTmux never converges.
+	return b.Run(context.Background(), ExecOpts{Login: true, Stdout: io.Discard, Stderr: io.Discard},
 		"tmux", "-S", tmuxSocket, "has-session", "-t", "dev") == nil
 }
 

@@ -146,6 +146,9 @@ func (b *sshBackend) Mosh() error {
 	if err := needCmd("mosh"); err != nil {
 		return err
 	}
+	if err := RequireGuestTmux(b, b.m); err != nil {
+		return err
+	}
 	server, err := b.findMoshServer()
 	if err != nil {
 		return err

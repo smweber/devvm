@@ -40,6 +40,9 @@ func (a *App) runSSH(name string) error {
 	if m.Backend != config.BackendSSH {
 		return fmt.Errorf("'%s' is a '%s' machine; use 'devvm shell %s'", name, m.Backend, name)
 	}
+	if err := backend.RequireGuestTmux(b, m); err != nil {
+		return err
+	}
 	return b.Run(context.Background(), backend.ExecOpts{TTY: true, Login: true},
 		"tmux", "new-session", "-A", "-s", "dev")
 }
