@@ -1,0 +1,40 @@
+name: release
+
+# Build and publish host binaries on every version tag, so `bootstrap.sh` can
+# install devvm without a Go toolchain. Cut a release with:
+#   git tag vX.Y.Z && git push --tags
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required to create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # release.sh re-embeds the linux guest agents (build.sh) and cross-compiles
+      # the host binary for darwin/linux × arm64/amd64 into dist/, plus SHA256SUMS.
+      - name: Build release binaries
+        run: ./release.sh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/devvm-darwin-arm64 \
+            dist/devvm-darwin-amd64 \
+            dist/devvm-linux-arm64 \
+            dist/devvm-linux-amd64 \
+            dist/SHA256SUMS \
+            --title "devvm ${GITHUB_REF_NAME}" \
+            --generate-notes
