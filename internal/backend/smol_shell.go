@@ -1,0 +1,63 @@
+package backend
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"time"
+)
+
+// tmuxSocket is the guest-side socket for the persistent dev session.
+const tmuxSocket = "/home/" + DefaultUser + "/.devvm/tmux.sock"
+
+// Shell attaches to the dev tmux session, starting a persistent keeper first if
+// needed. smolvm tears down an interactive exec context (and its daemonized
+// children) after tmux detaches, so the tmux server must live in its own
+// detached exec context — otherwise successive `devvm shell` calls can't
+// re-attach. Ports smol_ensure_tmux / smol_shell.
+func (b *smolBackend) Shell() error {
+	if err := needSmolvm(); err != nil {
+		return err
+	}
+	if err := b.ensureTmux(); err != nil {
+		return err
+	}
+	return b.Run(context.Background(), ExecOpts{TTY: true, Login: true},
+		"tmux", "-S", tmuxSocket, "attach-session", "-t", "dev")
+}
+
+func (b *smolBackend) hasSession() bool {
+	return b.Run(context.Background(), ExecOpts{Stdout: io.Discard, Stderr: io.Discard},
+		"tmux", "-S", tmuxSocket, "has-session", "-t", "dev") == nil
+}
+
+func (b *smolBackend) ensureTmux() error {
+	if b.hasSession() {
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "devvm: starting persistent tmux session 'dev'...")
+	keeper := `
+		socket="$1"
+		install -d -m 700 "$(dirname "$socket")"
+		rm -f "$socket"
+		tmux -S "$socket" new-session -d -s dev
+		exec tmux -S "$socket" wait-for devvm-keeper-stop`
+	// Detached exec (-d) in its own context, running as the dev user.
+	args := []string{
+		"machine", "exec", "-d", "--name", b.m.Name, "-e", "TERM=xterm-256color", "--",
+		"sudo", "-u", DefaultUser, "-H", "env", "SMOLVM_GUEST=1",
+		"bash", "-lc", keeper, "_", tmuxSocket,
+	}
+	if err := exec.Command("smolvm", args...).Run(); err != nil {
+		return err
+	}
+	for i := 0; i < 10; i++ {
+		if b.hasSession() {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("persistent tmux session failed to start in '%s'", b.m.Name)
+}

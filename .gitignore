@@ -1,0 +1,4 @@
+# Locally-built host binaries (the guest binaries under internal/agentbin/bin/
+# are committed on purpose for go:embed).
+/devvm
+/devvm-agent
