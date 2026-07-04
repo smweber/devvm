@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +16,57 @@ import (
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/keys"
 )
+
+// Host-side authorized_keys management. The heavy logic (dedup/revoke/fingerprint)
+// lives in internal/keys and runs on the host; the guest is touched only to read
+// and atomically rewrite the file — so no guest agent is needed for keys, and an
+// adopted host gets nothing installed. authorized_keys holds public keys only,
+// so nothing secret crosses the wire.
+
+// guestAuthKeys reads the connecting user's ~/.ssh/authorized_keys (empty if
+// absent). The path is fixed (not user data), so there's no injection surface.
+func (a *App) guestAuthKeys(b backend.Backend) ([]string, error) {
+	var buf bytes.Buffer
+	if err := b.Run(context.Background(), backend.ExecOpts{Stdout: &buf},
+		"sh", "-c", "cat ~/.ssh/authorized_keys 2>/dev/null"); err != nil {
+		return nil, fmt.Errorf("read authorized_keys: %w", err)
+	}
+	return keys.Split(buf.String()), nil
+}
+
+// guestOwnIDs returns the identities of the guest's own keys (~/.ssh/id_*.pub),
+// which dedup strips and revoke protects. A missing glob is simply "none".
+func (a *App) guestOwnIDs(b backend.Backend) map[string]bool {
+	var buf bytes.Buffer
+	_ = b.Run(context.Background(), backend.ExecOpts{Stdout: &buf},
+		"sh", "-c", "cat ~/.ssh/id_*.pub 2>/dev/null")
+	return keys.IDs(keys.Split(buf.String()))
+}
+
+// writeGuestAuthKeys atomically replaces ~/.ssh/authorized_keys. The content
+// rides stdin (never the command line — comments/options can be attacker-shaped,
+// e.g. --from-github), umask 077 fixes perms, and mv is an atomic same-dir swap
+// so a dropped connection can't leave a half-written file (or lock you out).
+func (a *App) writeGuestAuthKeys(b backend.Backend, lines []string) error {
+	const script = "umask 077; mkdir -p ~/.ssh && cat > ~/.ssh/.authorized_keys.devvm && " +
+		"mv ~/.ssh/.authorized_keys.devvm ~/.ssh/authorized_keys"
+	return b.Run(context.Background(), backend.ExecOpts{Stdin: strings.NewReader(keys.Join(lines))},
+		"sh", "-c", script)
+}
+
+// addGuestKeys merges incoming key lines into authorized_keys (dedup by material,
+// dropping the guest's own keys). Shared by authorize-key and bootstrap seeding.
+func (a *App) addGuestKeys(b backend.Backend, incoming []string) error {
+	if len(incoming) == 0 {
+		return nil
+	}
+	existing, err := a.guestAuthKeys(b)
+	if err != nil {
+		return err
+	}
+	kept, _, _ := keys.Dedup(append(existing, incoming...), a.guestOwnIDs(b))
+	return a.writeGuestAuthKeys(b, kept)
+}
 
 // requireRemote gates commands that act on a guest's authorized_keys — allowed
 // on both remote backends (managed and adopted), since key management is an
@@ -35,7 +87,19 @@ func (a *App) runKeys(name string) error {
 	if err := requireRemote(m, "keys"); err != nil {
 		return err
 	}
-	return a.agentRun(b, nil, os.Stdout, "keys", "list")
+	lines, err := a.guestAuthKeys(b)
+	if err != nil {
+		return err
+	}
+	summaries := keys.List(lines)
+	if len(summaries) == 0 {
+		fmt.Fprintln(os.Stdout, "(no authorized_keys)")
+		return nil
+	}
+	for _, s := range summaries {
+		fmt.Fprintln(os.Stdout, s)
+	}
+	return nil
 }
 
 func (a *App) runCleanupKeys(name string) error {
@@ -46,7 +110,20 @@ func (a *App) runCleanupKeys(name string) error {
 	if err := requireRemote(m, "cleanup-keys"); err != nil {
 		return err
 	}
-	return a.agentRun(b, nil, os.Stdout, "keys", "cleanup")
+	lines, err := a.guestAuthKeys(b)
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		fmt.Fprintln(os.Stdout, "devvm: no authorized_keys")
+		return nil
+	}
+	kept, dup, own := keys.Dedup(lines, a.guestOwnIDs(b))
+	if err := a.writeGuestAuthKeys(b, kept); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "devvm: removed %d duplicate and %d machine-owned key line(s)\n", dup, own)
+	return nil
 }
 
 func (a *App) runRevokeKey(name, pattern string) error {
@@ -57,10 +134,26 @@ func (a *App) runRevokeKey(name, pattern string) error {
 	if err := requireRemote(m, "revoke-key"); err != nil {
 		return err
 	}
+	lines, err := a.guestAuthKeys(b)
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		fmt.Fprintln(os.Stdout, "devvm: no authorized_keys")
+		return nil
+	}
 	// The host's own keys (id_*.pub + configured IDENTITY) are protected so you
 	// can't cut the key you're connecting with.
-	protected := strings.Join(hostProtectedPubs(m), "\n") + "\n"
-	return a.agentRun(b, strings.NewReader(protected), os.Stdout, "keys", "revoke", pattern)
+	idx, summary, err := keys.Revoke(lines, pattern, keys.IDs(hostProtectedPubs(m)))
+	if err != nil {
+		return err
+	}
+	kept := append(lines[:idx:idx], lines[idx+1:]...)
+	if err := a.writeGuestAuthKeys(b, kept); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "devvm: removed %s\n", summary)
+	return nil
 }
 
 func (a *App) runAuthorizeKey(name string, spec []string) error {
@@ -89,8 +182,11 @@ func (a *App) runAuthorizeKey(name string, spec []string) error {
 	if err != nil {
 		return err
 	}
-	stdin := strings.Join(labeled, "\n") + "\n"
-	return a.agentRun(b, strings.NewReader(stdin), os.Stdout, "keys", "add")
+	if err := a.addGuestKeys(b, labeled); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "devvm: added %d key(s) to '%s'\n", len(labeled), name)
+	return nil
 }
 
 func (a *App) runRepos(name string) error {

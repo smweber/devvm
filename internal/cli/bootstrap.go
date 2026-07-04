@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/provision"
@@ -67,11 +66,7 @@ func (a *App) runLockdown(name string) error {
 // than aborting the whole bootstrap.
 func (a *App) seedAuthorizedKeys(b backend.Backend, githubUsers, files []string) error {
 	push := func(lines []string) error {
-		if len(lines) == 0 {
-			return nil
-		}
-		stdin := strings.Join(lines, "\n") + "\n"
-		return a.agentRun(b, strings.NewReader(stdin), a.Stdout, "keys", "add")
+		return a.addGuestKeys(b, lines)
 	}
 	for _, u := range githubUsers {
 		keys, err := githubKeys(u)
