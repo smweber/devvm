@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
+
+	"github.com/smweber/devvm/internal/auth"
 )
 
 // machineArg builds the standard "one machine name" positional spec with
@@ -88,11 +92,15 @@ func (a *App) execCmd() *cobra.Command {
 
 func (a *App) authCmd() *cobra.Command {
 	var installAgent bool
+	// Selectors derive from auth.Choices() so adding a service updates the CLI
+	// surface (usage, completion, uninstalled-skipping) in one place.
+	choices := auth.Choices()
+	argChoices := append(append([]string{}, choices...), "all")
 	c := &cobra.Command{
-		Use:       "auth NAME [github|codex|claude|all]",
-		Short:     "Log in to github/codex/claude (all if omitted)",
+		Use:       "auth NAME [" + strings.Join(argChoices, "|") + "]",
+		Short:     "Log in to " + strings.Join(choices, "/") + " (all if omitted)",
 		Args:      cobra.RangeArgs(1, 2),
-		ValidArgs: []string{"github", "codex", "claude", "all"},
+		ValidArgs: argChoices,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tool := "all"
 			if len(args) == 2 {
@@ -108,7 +116,7 @@ func (a *App) authCmd() *cobra.Command {
 		case 0:
 			return a.completeMachines(cmd, args, toComplete)
 		case 1:
-			return []string{"github", "codex", "claude", "all"}, cobra.ShellCompDirectiveNoFileComp
+			return argChoices, cobra.ShellCompDirectiveNoFileComp
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

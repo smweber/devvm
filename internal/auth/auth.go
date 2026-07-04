@@ -62,16 +62,22 @@ func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, too
 	go s.eventLoop()
 
 	for _, tool := range tools {
-		err := s.login(tool)
+		// Skip tools whose CLI isn't installed — a user is unlikely to have
+		// every service, so a missing one is graceful, not fatal.
+		ok, err := s.installed(tool)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintf(os.Stderr, "devvm: %s not installed on the guest (no %q on PATH); skipping\n", tool, toolBinary(tool))
+			continue
+		}
+		err = s.login(tool)
 		if err == nil {
 			continue
 		}
 		// Ctrl-C / signal exits abort the whole flow.
 		if isSignalExit(err) {
-			return err
-		}
-		if tool == "codex" {
-			fmt.Fprintln(os.Stderr, "devvm: codex login exited non-zero; stopping")
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "devvm: %s login exited non-zero; continuing\n", tool)
@@ -189,7 +195,7 @@ func (s *session) login(tool string) error {
 		fmt.Fprintln(os.Stderr, "Claude Code logs in on first launch; use /login if prompted.")
 		return s.interactive(`exec claude`)
 	default:
-		return fmt.Errorf("tool must be github, codex, claude, or all")
+		return fmt.Errorf("tool must be %s, or all", strings.Join(Choices(), ", "))
 	}
 }
 
@@ -200,6 +206,22 @@ func (s *session) interactive(script string) error {
 		Login: true,
 		Env:   map[string]string{"BROWSER": s.shim},
 	}, "bash", "-lc", script)
+}
+
+// installed reports whether tool's guest CLI is on PATH in a login shell (so it
+// sees the user's PATH additions — nvm, ~/.local/bin, etc.). A non-zero probe
+// exit means "not found"; a cancelled context (Ctrl-C) aborts the whole flow.
+func (s *session) installed(tool string) (bool, error) {
+	bin := toolBinary(tool)
+	err := s.b.Run(s.ctx, backend.ExecOpts{Login: true},
+		"bash", "-lc", "command -v "+bin+" >/dev/null 2>&1")
+	if err == nil {
+		return true, nil
+	}
+	if s.ctx.Err() != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (s *session) codexSupportsDeviceAuth() bool {
@@ -228,14 +250,43 @@ func installBrowserShim(ctx context.Context, b backend.Backend, m *config.Machin
 	return shimPath, b.Run(ctx, backend.ExecOpts{User: user}, "sh", "-c", script)
 }
 
+// loginTools lists the supported login selectors in the order `all` runs them,
+// each paired with the guest CLI it drives. Adding a service is one entry here
+// (plus its case in login).
+var loginTools = []struct{ name, bin string }{
+	{"github", "gh"},
+	{"codex", "codex"},
+	{"claude", "claude"},
+}
+
+// toolBinary returns the guest CLI backing a login selector, or "" if unknown.
+func toolBinary(tool string) string {
+	for _, t := range loginTools {
+		if t.name == tool {
+			return t.bin
+		}
+	}
+	return ""
+}
+
+// Choices lists the valid tool selectors ("github", "codex", …), excluding the
+// "all" meta-selector. Used for help text, completion, and error messages so the
+// CLI stays in sync with loginTools.
+func Choices() []string {
+	names := make([]string, len(loginTools))
+	for i, t := range loginTools {
+		names[i] = t.name
+	}
+	return names
+}
+
 // Tools expands a tool selector into the ordered login list.
 func Tools(sel string) ([]string, error) {
-	switch sel {
-	case "all":
-		return []string{"github", "codex", "claude"}, nil
-	case "github", "codex", "claude":
-		return []string{sel}, nil
-	default:
-		return nil, fmt.Errorf("tool must be github, codex, claude, or all")
+	if sel == "all" {
+		return Choices(), nil
 	}
+	if toolBinary(sel) != "" {
+		return []string{sel}, nil
+	}
+	return nil, fmt.Errorf("tool must be %s, or all", strings.Join(Choices(), ", "))
 }
