@@ -12,13 +12,19 @@ cd "$(dirname "$0")"
 # Refresh the embedded guest agents so releases never ship a stale one.
 ./build.sh
 
+# Stamp --version from the tag (CI checks out the tag; local builds may be
+# between tags, hence --always/--dirty).
+version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 rm -rf dist && mkdir -p dist
 for p in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
     os=${p%/*} arch=${p#*/}
     out="dist/devvm-$os-$arch"
     echo "building $out"
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-        go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/devvm
+        go build -trimpath \
+        -ldflags="-s -w -X github.com/smweber/devvm/internal/cli.Version=$version" \
+        -o "$out" ./cmd/devvm
 done
 
 (cd dist && sha256sum devvm-* >SHA256SUMS)

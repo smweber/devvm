@@ -12,6 +12,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is stamped by release builds (-ldflags -X); "dev" for plain go build.
+var Version = "dev"
+
 // App carries process-wide context to command handlers.
 type App struct {
 	ConfigDir string
@@ -48,6 +51,7 @@ func (a *App) rootCmd() *cobra.Command {
 			"  remote-managed    a remote host devvm shapes (over ssh)\n" +
 			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n\n" +
 			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml.",
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
