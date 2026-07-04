@@ -44,8 +44,10 @@ func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, too
 	if err != nil {
 		return err
 	}
+	// --auth: listen on the auth session's own guest socket, so this agent and
+	// a forward daemon's agent never steal each other's URL socket.
 	agent, err := b.Spawn(ctx, backend.ExecOpts{User: backend.DefaultUser},
-		agentPath, "serve")
+		agentPath, "serve", "--auth")
 	if err != nil {
 		return err
 	}

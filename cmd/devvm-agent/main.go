@@ -24,7 +24,7 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "serve":
-		runServe()
+		runServe(os.Args[2:])
 	case "open-url":
 		runOpenURL(os.Args[2:])
 	default:

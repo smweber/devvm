@@ -1,16 +1,20 @@
 package session
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"os"
 
 	"github.com/hashicorp/yamux"
 	"github.com/smweber/devvm/internal/agentbin"
 	"github.com/smweber/devvm/internal/agentrpc"
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/hostbrowser"
 )
 
 // smolTransport carries every forward for a smol machine over one persistent
@@ -40,7 +44,36 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 		agent.Close()
 		return nil, err
 	}
-	return &smolTransport{agent: agent, mux: mux}, nil
+	t := &smolTransport{agent: agent, mux: mux}
+	go t.drainEvents()
+	return t, nil
+}
+
+// drainEvents consumes guest-initiated streams for the transport's lifetime.
+// The agent pushes open-url events (a login tool run outside `devvm auth`, or
+// after an auth session ended); with no auth session to bridge callbacks, the
+// best we can do is open the URL on the host. Not accepting these at all would
+// queue the streams in yamux forever.
+func (t *smolTransport) drainEvents() {
+	for {
+		stream, err := t.mux.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			br := bufio.NewReader(c)
+			header, err := agentrpc.ReadHeader(br)
+			if err != nil || header != agentrpc.TypeEvent {
+				return
+			}
+			var ev agentrpc.Event
+			if json.NewDecoder(br).Decode(&ev) == nil && ev.Type == agentrpc.EventOpenURL {
+				fmt.Fprintf(os.Stderr, "devvm: opening on host -> %s\n", ev.URL)
+				hostbrowser.Open(ev.URL)
+			}
+		}(stream)
+	}
 }
 
 func (t *smolTransport) forward(hostPort, guestPort int) (io.Closer, error) {
