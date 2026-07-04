@@ -1,2 +1,6 @@
-[tools]
-go = "latest"
+# The exact Go toolchain to build with lives in .go-version (a single source
+# read by both mise here and actions/setup-go in CI), so local builds and CI
+# produce byte-identical guest agents (internal/agentbin). go.mod's `go`
+# directive is only the *minimum* (floor), deliberately lower than this.
+[settings]
+idiomatic_version_file_enable_tools = ["go"]

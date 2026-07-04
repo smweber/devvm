@@ -32,8 +32,23 @@ gofmt -l .
 ./release.sh      # cross-compile host release binaries into dist/
 ```
 
-Go 1.23+ (`go.mod` pins the version). In some environments the toolchain is at
-`/usr/local/go/bin` and not on `PATH`.
+Two Go versions, two meanings — don't conflate them:
+
+- **`go.mod`'s `go` directive** is the **floor** — the *minimum* Go the module
+  compiles with (currently `1.23.0`). It ships to consumers (`go install …@latest`
+  needs at least this), so keep it low and bump it only when the code actually
+  needs a newer language/stdlib feature.
+- **`.go-version`** is the **exact build toolchain** (currently `1.26.4`) — the
+  single source read by *both* `mise` locally (via `idiomatic_version_file_enable_tools`
+  in `mise.toml`; mise can't parse `go.mod`) and CI's `setup-go` (`go-version-file:
+  .go-version`). Because both compile with this identical version, the committed
+  guest agents (`internal/agentbin`) are byte-reproducible. Bump the build
+  toolchain by editing `.go-version` alone.
+
+The release workflow re-runs `build.sh` and fails if a fresh build differs from
+the committed `internal/agentbin/bin/*`, catching any toolchain drift before a
+release ships. `mise.toml` needs `mise trust` once per clone. In some
+environments the toolchain is at `/usr/local/go/bin` and not on `PATH`.
 
 ## The one-exec rule — the load-bearing constraint
 
