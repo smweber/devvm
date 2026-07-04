@@ -1,8 +1,9 @@
 package cli
 
 import (
-	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -13,74 +14,120 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-func (a *App) runCreate(name string, memory int) error {
-	if err := config.ValidName(name); err != nil {
+// createSpec is the flag- and prompt-collected input for `create`. Every field
+// has a flag so create runs fully non-interactively; a terminal prompts for
+// whatever's left unset.
+type createSpec struct {
+	Name      string
+	Backend   string
+	Memory    int
+	SSHHost   string
+	SSHPort   int
+	Identity  string
+	Transport string
+	Provision string
+}
+
+func (a *App) runCreate(s createSpec) error {
+	if err := config.ValidName(s.Name); err != nil {
 		return err
 	}
-	if !backend.SmolAvailable() {
-		return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
+	if config.Exists(a.ConfigDir, s.Name) || backend.SmolExists(s.Name) {
+		return fmt.Errorf("machine '%s' already exists", s.Name)
 	}
-	if config.Exists(a.ConfigDir, name) || backend.SmolExists(name) {
-		return fmt.Errorf("machine '%s' already exists", name)
+	if err := a.gatherCreateSpec(&s); err != nil {
+		return err
 	}
-
-	mem, err := chooseMemoryMiB(memory)
+	m, err := s.machine()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Using %d MiB RAM.\n", mem)
-	if err := backend.SmolCreate(name, mem); err != nil {
-		return err
+
+	// Managed backends provision a resource; adopt backends just validate we can
+	// reach the host before committing the config.
+	switch m.Backend {
+	case config.BackendSmol:
+		if !backend.SmolAvailable() {
+			return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
+		}
+		fmt.Printf("Using %d MiB RAM.\n", m.Memory)
+		if err := backend.SmolCreate(s.Name, m.Memory); err != nil {
+			return err
+		}
+	default:
+		if err := a.probeRemote(m); err != nil {
+			return err
+		}
 	}
 
-	// Register before provisioning so resolve() sees it.
-	m := config.NewSmol(name)
-	m.Memory = mem
+	// Register before bootstrap so resolve() sees it (and a mid-flight failure is
+	// resumable via `devvm bootstrap`).
 	if err := m.Save(a.ConfigDir); err != nil {
 		return err
 	}
-
-	if err := a.runBootstrap(name); err != nil {
+	if err := a.runBootstrap(s.Name); err != nil {
 		return err
 	}
-
-	fmt.Printf(`
-Machine '%s' is ready.
-
-Next:
-  devvm auth %s        # log in to github, codex, and claude
-  devvm repos %s       # after adding repos to the machine conf
-  devvm attach %s      # join the persistent dev tmux session
-`, name, name, name, name)
+	a.printCreateNext(m)
 	return nil
 }
 
-// chooseMemoryMiB resolves the requested MiB or prompts with a suggestion.
-func chooseMemoryMiB(requested int) (int, error) {
-	if requested == 0 {
-		suggested := suggestedMemoryMiB()
-		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		if err != nil {
-			return 0, fmt.Errorf("no terminal available; pass --memory MiB")
+// machine builds and validates the registry entry from the gathered spec.
+func (s createSpec) machine() (*config.Machine, error) {
+	var m *config.Machine
+	switch s.Backend {
+	case config.BackendSmol:
+		if s.Memory < 512 {
+			return nil, fmt.Errorf("smol needs --memory >= 512 (MiB)")
 		}
-		defer tty.Close()
-		fmt.Fprintf(tty, "VM memory in MiB [%d]: ", suggested)
-		line, _ := bufio.NewReader(tty).ReadString('\n')
-		line = strings.TrimSpace(line)
-		if line == "" {
-			requested = suggested
-		} else {
-			n, err := strconv.Atoi(line)
-			if err != nil {
-				return 0, fmt.Errorf("memory must be an integer number of MiB")
-			}
-			requested = n
+		m = config.NewSmol(s.Name)
+		m.Memory = s.Memory
+	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
+		if s.SSHHost == "" {
+			return nil, fmt.Errorf("remote backend needs --ssh-host")
 		}
+		m = config.NewRemote(s.Name, s.Backend, s.SSHHost)
+		if s.SSHPort != 0 {
+			m.SSHPort = s.SSHPort
+		}
+		m.Identity = s.Identity
+		if s.Transport != "" {
+			m.Transport = s.Transport
+		}
+	default:
+		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged)", s.Backend)
 	}
-	if requested < 512 {
-		return 0, fmt.Errorf("memory must be at least 512 MiB")
+	if s.Provision != "" {
+		m.Provision = s.Provision
 	}
-	return requested, nil
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// probeRemote confirms the host answers over ssh before we save its config, so
+// adopting a typo'd or unreachable host fails loudly up front. Read-only.
+func (a *App) probeRemote(m *config.Machine) error {
+	b, err := backend.For(m, a.ConfigDir)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Stderr, "devvm: checking ssh to %s...\n", m.SSHHost)
+	if err := b.Run(context.Background(), backend.ExecOpts{Stdout: io.Discard, Stderr: io.Discard}, "true"); err != nil {
+		return fmt.Errorf("cannot reach %q over ssh: %w", m.SSHHost, err)
+	}
+	return nil
+}
+
+func (a *App) printCreateNext(m *config.Machine) {
+	fmt.Printf("\nMachine '%s' (%s) is ready.\n\nNext:\n", m.Name, m.Backend)
+	if m.IsRemote() {
+		fmt.Printf("  devvm authorize-key %s   # add a client key if needed\n", m.Name)
+	}
+	fmt.Printf("  devvm auth %s            # log in to github, codex, and claude\n", m.Name)
+	fmt.Printf("  devvm repos %s           # after adding repos to the machine conf\n", m.Name)
+	fmt.Printf("  devvm attach %s          # join the persistent dev tmux session\n", m.Name)
 }
 
 // suggestedMemoryMiB is half of host RAM, clamped to [1024, 2048].

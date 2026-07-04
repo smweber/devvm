@@ -12,16 +12,29 @@ func (a *App) machineArg(cmd *cobra.Command) {
 }
 
 func (a *App) createCmd() *cobra.Command {
-	var memory int
+	var s createSpec
 	c := &cobra.Command{
 		Use:   "create NAME",
-		Short: "Create + bootstrap a local smol VM",
-		Args:  cobra.ExactArgs(1),
+		Short: "Create/adopt + bootstrap a machine (any backend)",
+		Long: "Create a machine of any backend. Unset fields are prompted for on a\n" +
+			"terminal; pass them as flags to run non-interactively.\n\n" +
+			"  smol              a new local smolvm microVM\n" +
+			"  remote-managed    a remote host devvm shapes (installs prereqs, may harden)\n" +
+			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runCreate(args[0], memory)
+			s.Name = args[0]
+			return a.runCreate(s)
 		},
 	}
-	c.Flags().IntVarP(&memory, "memory", "m", 0, "VM memory in MiB")
+	f := c.Flags()
+	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged")
+	f.IntVarP(&s.Memory, "memory", "m", 0, "smol: VM memory in MiB")
+	f.StringVar(&s.SSHHost, "ssh-host", "", "remote: ssh destination (host or user@host)")
+	f.IntVar(&s.SSHPort, "ssh-port", 0, "remote: ssh port (default 22)")
+	f.StringVar(&s.Identity, "identity", "", "remote: ssh identity file")
+	f.StringVar(&s.Transport, "transport", "", "remote: ssh|mosh (default ssh)")
+	f.StringVar(&s.Provision, "provision", "", "provisioner: url:/cmd:/none (default from backend)")
 	return c
 }
 

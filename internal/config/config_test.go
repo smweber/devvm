@@ -3,8 +3,40 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestSaveDropsNoise verifies confs stay clean: smol carries no ssh transport
+// fields, and no backend carries a spurious zero-valued int (BurntSushi keeps
+// those despite omitempty).
+func TestSaveDropsNoise(t *testing.T) {
+	dir := t.TempDir()
+
+	sm := NewSmol("s")
+	sm.Memory = 1024
+	if err := sm.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	smData, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "s.toml"))
+	for _, bad := range []string{"ssh_port", "vnc_port", "transport", "memory = 0"} {
+		if strings.Contains(string(smData), bad) {
+			t.Errorf("smol conf should not contain %q:\n%s", bad, smData)
+		}
+	}
+	if !strings.Contains(string(smData), "memory = 1024") {
+		t.Errorf("smol conf lost memory:\n%s", smData)
+	}
+
+	rm := NewRemote("r", BackendRemoteUnmanaged, "h")
+	if err := rm.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	rmData, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "r.toml"))
+	if strings.Contains(string(rmData), "memory") {
+		t.Errorf("remote conf should not contain memory:\n%s", rmData)
+	}
+}
 
 func TestValidName(t *testing.T) {
 	ok := []string{"dev", "scottdev3", "a.b_c-d", "A1"}

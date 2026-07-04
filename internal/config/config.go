@@ -105,6 +105,14 @@ func NewSmol(name string) *Machine {
 	return m
 }
 
+// NewRemote returns a defaulted remote machine (managed or unmanaged) for the
+// given ssh host. Callers set optional fields (identity, transport, ...) after.
+func NewRemote(name, backend, sshHost string) *Machine {
+	m := &Machine{Name: name, Backend: backend, SSHHost: sshHost}
+	m.applyDefaults()
+	return m
+}
+
 // migrateLegacy rewrites the pre-rename `backend = "ssh"` (+ optional
 // `unmanaged`) form onto the remote-managed / remote-unmanaged split, so old
 // hand-written confs (and shared dotfiles) keep loading unchanged. The next Save
@@ -120,19 +128,23 @@ func (m *Machine) migrateLegacy() {
 	m.Unmanaged = false
 }
 
-// applyDefaults fills unset fields, matching load_machine's defaulting.
+// applyDefaults fills unset fields, matching load_machine's defaulting. The ssh
+// transport defaults apply only to remote backends, so a smol conf doesn't carry
+// meaningless ssh_port/vnc_port/transport.
 func (m *Machine) applyDefaults() {
-	if m.SSHPort == 0 {
-		m.SSHPort = 22
-	}
-	if m.VNCPort == 0 {
-		m.VNCPort = 5901
-	}
 	if m.Provision == "" {
 		m.Provision = DefaultProvision
 	}
-	if m.IsRemote() && m.Transport == "" {
-		m.Transport = TransportSSH
+	if m.IsRemote() {
+		if m.SSHPort == 0 {
+			m.SSHPort = 22
+		}
+		if m.VNCPort == 0 {
+			m.VNCPort = 5901
+		}
+		if m.Transport == "" {
+			m.Transport = TransportSSH
+		}
 	}
 }
 
@@ -225,13 +237,20 @@ func (m *Machine) Save(configDir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "# devvm machine config for %q (tool-managed; edit freely)\n\n", m.Name)
-	if err := toml.NewEncoder(&b).Encode(m); err != nil {
+	var body strings.Builder
+	if err := toml.NewEncoder(&body).Encode(m); err != nil {
 		return err
 	}
-	return os.WriteFile(confPath(configDir, m.Name), []byte(b.String()), 0o644)
+	// BurntSushi keeps zero-valued ints even with omitempty, which would litter a
+	// conf with `memory = 0` (remote) or `ssh_port = 0` (smol). None of our int
+	// fields mean anything at 0 (Load re-defaults them), so drop those lines.
+	clean := zeroIntLine.ReplaceAllString(body.String(), "")
+	content := fmt.Sprintf("# devvm machine config for %q (tool-managed; edit freely)\n\n%s", m.Name, clean)
+	return os.WriteFile(confPath(configDir, m.Name), []byte(content), 0o644)
 }
+
+// zeroIntLine matches a TOML scalar line whose int value is 0 (see Save).
+var zeroIntLine = regexp.MustCompile(`(?m)^[a-z0-9_]+ = 0\n`)
 
 // Exists reports whether a conf file is present for name.
 func Exists(configDir, name string) bool {
