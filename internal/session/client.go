@@ -63,7 +63,7 @@ func (c *Client) spawnDaemon() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(config.RuntimeDir(c.configDir), 0o755); err != nil {
+	if err := config.EnsureRuntimeDir(c.configDir); err != nil {
 		return err
 	}
 	logf, err := os.OpenFile(logPath(c.configDir, c.name),
@@ -130,6 +130,9 @@ func (c *Client) List() ([]Forward, error) {
 	resp, err := c.request(Request{Op: OpList})
 	if err != nil {
 		return nil, err
+	}
+	if !resp.OK {
+		return nil, errors.New(resp.Err)
 	}
 	return resp.Forwards, nil
 }

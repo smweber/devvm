@@ -44,7 +44,7 @@ type daemon struct {
 // requests until idle, stopped, or the transport dies.
 func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backend.Backend) error {
 	sock := socketPath(configDir, m.Name)
-	if err := os.MkdirAll(config.RuntimeDir(configDir), 0o755); err != nil {
+	if err := config.EnsureRuntimeDir(configDir); err != nil {
 		return err
 	}
 	// Serialize startup: two racing daemons could otherwise both pass the dial
@@ -183,6 +183,8 @@ func (d *daemon) serveControl() {
 
 func (d *daemon) handleConn(conn net.Conn) {
 	defer conn.Close()
+	// A connected-but-silent client must not pin a goroutine forever.
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
 		return

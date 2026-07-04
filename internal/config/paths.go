@@ -28,3 +28,14 @@ func KnownHostsPath(configDir string) string {
 func RuntimeDir(configDir string) string {
 	return filepath.Join(configDir, "run")
 }
+
+// EnsureRuntimeDir creates the runtime dir owner-only. The control sockets in
+// it drive forwards into guests, so don't rely on the umask to keep other
+// local users out; Chmod also tightens a dir created 0755 by older builds.
+func EnsureRuntimeDir(configDir string) error {
+	dir := RuntimeDir(configDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
+}

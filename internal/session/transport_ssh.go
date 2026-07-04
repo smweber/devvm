@@ -32,7 +32,7 @@ func newSSHTransport(conn backend.SSHConn) (*sshTransport, error) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return nil, fmt.Errorf("ssh is not installed on this host")
 	}
-	if err := os.MkdirAll(filepath.Dir(conn.ControlPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(conn.ControlPath), 0o700); err != nil {
 		return nil, err
 	}
 	t := &sshTransport{conn: conn, deadCh: make(chan struct{}), stopCh: make(chan struct{})}
