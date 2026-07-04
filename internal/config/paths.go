@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DefaultConfigDir resolves $XDG_CONFIG_HOME/devvm (or ~/.config/devvm),
@@ -27,6 +28,16 @@ func KnownHostsPath(configDir string) string {
 // RuntimeDir holds per-machine daemon state (control sockets, forward records).
 func RuntimeDir(configDir string) string {
 	return filepath.Join(configDir, "run")
+}
+
+// ExpandHome expands a leading ~/ to the user's home directory.
+func ExpandHome(p string) string {
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, rest)
+		}
+	}
+	return p
 }
 
 // EnsureRuntimeDir creates the runtime dir owner-only. The control sockets in

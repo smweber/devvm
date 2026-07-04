@@ -57,6 +57,9 @@ func (a *App) writeGuestAuthKeys(b backend.Backend, lines []string) error {
 
 // addGuestKeys merges incoming key lines into authorized_keys (dedup by material,
 // dropping the guest's own keys). Shared by authorize-key and bootstrap seeding.
+// The read-modify-write isn't locked: two concurrent invocations (from different
+// hosts, say) can lose one side's update — the atomic mv prevents corruption,
+// not lost writes. Re-running is always safe.
 func (a *App) addGuestKeys(b backend.Backend, incoming []string) error {
 	if len(incoming) == 0 {
 		return nil
@@ -94,11 +97,11 @@ func (a *App) runKeys(name string) error {
 	}
 	summaries := keys.List(lines)
 	if len(summaries) == 0 {
-		fmt.Fprintln(os.Stdout, "(no authorized_keys)")
+		fmt.Fprintln(a.Stdout, "(no authorized_keys)")
 		return nil
 	}
 	for _, s := range summaries {
-		fmt.Fprintln(os.Stdout, s)
+		fmt.Fprintln(a.Stdout, s)
 	}
 	return nil
 }
@@ -116,14 +119,14 @@ func (a *App) runCleanupKeys(name string) error {
 		return err
 	}
 	if len(lines) == 0 {
-		fmt.Fprintln(os.Stdout, "devvm: no authorized_keys")
+		fmt.Fprintln(a.Stdout, "devvm: no authorized_keys")
 		return nil
 	}
 	kept, dup, own := keys.Dedup(lines, a.guestOwnIDs(b))
 	if err := a.writeGuestAuthKeys(b, kept); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "devvm: removed %d duplicate and %d machine-owned key line(s)\n", dup, own)
+	fmt.Fprintf(a.Stdout, "devvm: removed %d duplicate and %d machine-owned key line(s)\n", dup, own)
 	return nil
 }
 
@@ -140,7 +143,7 @@ func (a *App) runRevokeKey(name, pattern string) error {
 		return err
 	}
 	if len(lines) == 0 {
-		fmt.Fprintln(os.Stdout, "devvm: no authorized_keys")
+		fmt.Fprintln(a.Stdout, "devvm: no authorized_keys")
 		return nil
 	}
 	// The host's own keys (id_*.pub + configured IDENTITY) are protected so you
@@ -153,7 +156,7 @@ func (a *App) runRevokeKey(name, pattern string) error {
 	if err := a.writeGuestAuthKeys(b, kept); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "devvm: removed %s\n", summary)
+	fmt.Fprintf(a.Stdout, "devvm: removed %s\n", summary)
 	return nil
 }
 
@@ -186,7 +189,7 @@ func (a *App) runAuthorizeKey(name string, spec []string) error {
 	if err := a.addGuestKeys(b, labeled); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "devvm: added %d key(s) to '%s'\n", len(labeled), name)
+	fmt.Fprintf(a.Stdout, "devvm: added %d key(s) to '%s'\n", len(labeled), name)
 	return nil
 }
 
@@ -280,22 +283,12 @@ func githubKeys(user string) ([]string, error) {
 	return out, nil
 }
 
-// expandHome expands a leading ~/ to the user's home directory.
-func expandHome(p string) string {
-	if rest, ok := strings.CutPrefix(p, "~/"); ok {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, rest)
-		}
-	}
-	return p
-}
-
 // hostProtectedPubs returns the host's own public keys (id_*.pub + IDENTITY.pub),
 // whose identities the guest must never revoke.
 func hostProtectedPubs(m *config.Machine) []string {
 	pubs := localPubkeys()
 	if m.Identity != "" {
-		p := expandHome(m.Identity) + ".pub"
+		p := config.ExpandHome(m.Identity) + ".pub"
 		if data, err := os.ReadFile(p); err == nil {
 			pubs = append(pubs, strings.TrimSpace(string(data)))
 		}

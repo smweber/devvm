@@ -5,6 +5,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/smweber/devvm/internal/config"
@@ -14,8 +15,8 @@ import (
 // App carries process-wide context to command handlers.
 type App struct {
 	ConfigDir string
-	Stdout    *os.File
-	Stderr    *os.File
+	Stdout    io.Writer
+	Stderr    io.Writer
 }
 
 func newApp() *App {

@@ -50,7 +50,7 @@ func (a *App) runCreate(s createSpec) error {
 		if !backend.SmolAvailable() {
 			return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
 		}
-		fmt.Printf("Using %d MiB RAM.\n", m.Memory)
+		fmt.Fprintf(a.Stdout, "Using %d MiB RAM.\n", m.Memory)
 		if err := backend.SmolCreate(s.Name, m.Memory); err != nil {
 			return err
 		}
@@ -121,13 +121,13 @@ func (a *App) probeRemote(m *config.Machine) error {
 }
 
 func (a *App) printCreateNext(m *config.Machine) {
-	fmt.Printf("\nMachine '%s' (%s) is ready.\n\nNext:\n", m.Name, m.Backend)
+	fmt.Fprintf(a.Stdout, "\nMachine '%s' (%s) is ready.\n\nNext:\n", m.Name, m.Backend)
 	if m.IsRemote() {
-		fmt.Printf("  devvm keys add %s        # add a client key if needed\n", m.Name)
+		fmt.Fprintf(a.Stdout, "  devvm keys add %s        # add a client key if needed\n", m.Name)
 	}
-	fmt.Printf("  devvm auth %s            # log in to github, codex, and claude\n", m.Name)
-	fmt.Printf("  devvm repos add %s owner/repo  # add + clone a repo\n", m.Name)
-	fmt.Printf("  devvm attach %s          # join the persistent dev tmux session\n", m.Name)
+	fmt.Fprintf(a.Stdout, "  devvm auth %s            # log in to github, codex, and claude\n", m.Name)
+	fmt.Fprintf(a.Stdout, "  devvm repos add %s owner/repo  # add + clone a repo\n", m.Name)
+	fmt.Fprintf(a.Stdout, "  devvm attach %s          # join the persistent dev tmux session\n", m.Name)
 }
 
 // suggestedMemoryMiB is half of host RAM, clamped to [1024, 2048].

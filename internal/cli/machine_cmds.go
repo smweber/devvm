@@ -139,7 +139,7 @@ func (a *App) runDelete(name string) error {
 	if err := config.Remove(a.ConfigDir, name); err != nil {
 		return err
 	}
-	fmt.Printf("devvm: removed '%s'\n", name)
+	fmt.Fprintf(a.Stdout, "devvm: removed '%s'\n", name)
 	return nil
 }
 
@@ -152,7 +152,7 @@ func (a *App) runStatus(name string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Machine '%s' (%s): %s\n", st.Name, st.Backend, st.Raw)
+	fmt.Fprintf(a.Stdout, "Machine '%s' (%s): %s\n", st.Name, st.Backend, st.Raw)
 	a.forwardReport(name)
 	return nil
 }

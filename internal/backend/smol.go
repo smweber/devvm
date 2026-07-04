@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/smweber/devvm/internal/config"
@@ -38,6 +39,15 @@ func SmolExists(name string) bool {
 		return false
 	}
 	return exec.Command("smolvm", "machine", "status", "--name", name).Run() == nil
+}
+
+// smolCmd runs a state-changing smolvm command with stderr passed through, so
+// a failure surfaces smolvm's message instead of a bare "exit status 1".
+// (Probes like SmolExists stay quiet on purpose.)
+func smolCmd(args ...string) error {
+	cmd := exec.Command("smolvm", args...)
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // SmolMachine is one entry from `smolvm machine ls --json`.
@@ -83,21 +93,21 @@ func (b *smolBackend) PowerStart() error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return exec.Command("smolvm", "machine", "start", "--name", b.m.Name).Run()
+	return smolCmd("machine", "start", "--name", b.m.Name)
 }
 
 func (b *smolBackend) PowerStop() error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return exec.Command("smolvm", "machine", "stop", "--name", b.m.Name).Run()
+	return smolCmd("machine", "stop", "--name", b.m.Name)
 }
 
 func (b *smolBackend) PowerDelete() error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return exec.Command("smolvm", "machine", "delete", "--name", b.m.Name).Run()
+	return smolCmd("machine", "delete", "--name", b.m.Name)
 }
 
 func (b *smolBackend) Status() (State, error) {
@@ -118,7 +128,7 @@ func (b *smolBackend) Copy(hostSrc, guestDst string) error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return exec.Command("smolvm", "machine", "cp", hostSrc, b.m.Name+":"+guestDst).Run()
+	return smolCmd("machine", "cp", hostSrc, b.m.Name+":"+guestDst)
 }
 
 func (b *smolBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error {
@@ -185,8 +195,8 @@ func SmolCreate(name string, memoryMiB int) error {
 		"--env", "SMOLVM_GUEST=1",
 	}
 	fmt.Printf("+ smolvm %v\n", args)
-	if err := exec.Command("smolvm", args...).Run(); err != nil {
+	if err := smolCmd(args...); err != nil {
 		return err
 	}
-	return exec.Command("smolvm", "machine", "start", "--name", name).Run()
+	return smolCmd("machine", "start", "--name", name)
 }

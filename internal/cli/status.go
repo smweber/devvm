@@ -12,8 +12,8 @@ import (
 // runStatusAll lists every machine (registry ∪ live smol), mirroring status_all.
 // The running-forwards section is added with the session daemon (Phase 3).
 func (a *App) runStatusAll() error {
-	fmt.Printf("%-20s %-17s %s\n", "NAME", "BACKEND", "STATE")
-	fmt.Println("----------------------------------------------------")
+	fmt.Fprintf(a.Stdout, "%-20s %-17s %s\n", "NAME", "BACKEND", "STATE")
+	fmt.Fprintln(a.Stdout, "----------------------------------------------------")
 
 	seen := map[string]bool{}
 	names, _ := config.List(a.ConfigDir)
@@ -21,11 +21,11 @@ func (a *App) runStatusAll() error {
 		seen[name] = true
 		m, err := config.Load(a.ConfigDir, name)
 		if err != nil {
-			fmt.Printf("%-20s %-17s %s\n", name, "?", "broken conf")
+			fmt.Fprintf(a.Stdout, "%-20s %-17s %s\n", name, "?", "broken conf")
 			continue
 		}
 		state := a.machineState(m)
-		fmt.Printf("%-20s %-17s %s\n", name, m.Backend, state)
+		fmt.Fprintf(a.Stdout, "%-20s %-17s %s\n", name, m.Backend, state)
 	}
 
 	// Live smol machines not in the registry.
@@ -35,7 +35,7 @@ func (a *App) runStatusAll() error {
 			continue
 		}
 		seen[sm.Name] = true
-		fmt.Printf("%-20s %-17s %s\n", sm.Name, "smol", sm.State+" (unregistered)")
+		fmt.Fprintf(a.Stdout, "%-20s %-17s %s\n", sm.Name, "smol", sm.State+" (unregistered)")
 	}
 
 	// Every forward currently up, across all machines, with the actual host port.
@@ -49,11 +49,11 @@ func (a *App) runStatusAll() error {
 		}
 	}
 	if len(lines) > 0 {
-		fmt.Println()
-		fmt.Println("Running forwards:")
+		fmt.Fprintln(a.Stdout)
+		fmt.Fprintln(a.Stdout, "Running forwards:")
 		sort.Strings(lines)
 		for _, l := range lines {
-			fmt.Println(l)
+			fmt.Fprintln(a.Stdout, l)
 		}
 	}
 	return nil

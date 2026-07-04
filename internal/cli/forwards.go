@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -36,11 +37,11 @@ func findMapping(m *config.Machine, pref, guest int) (string, bool) {
 	return "", false
 }
 
-func reportForward(name string, host, guest, pref int, bumped bool) {
+func (a *App) reportForward(name string, host, guest, pref int, bumped bool) {
 	if bumped {
-		fmt.Printf("devvm: forwarding localhost:%d -> %s:%d (preferred %d taken)\n", host, name, guest, pref)
+		fmt.Fprintf(a.Stdout, "devvm: forwarding localhost:%d -> %s:%d (preferred %d taken)\n", host, name, guest, pref)
 	} else {
-		fmt.Printf("devvm: forwarding localhost:%d -> %s:%d\n", host, name, guest)
+		fmt.Fprintf(a.Stdout, "devvm: forwarding localhost:%d -> %s:%d\n", host, name, guest)
 	}
 }
 
@@ -67,7 +68,7 @@ func (a *App) runPort(name, mapping string) error {
 			return err
 		}
 	}
-	reportForward(name, host, guest, pref, bumped)
+	a.reportForward(name, host, guest, pref, bumped)
 	return nil
 }
 
@@ -105,7 +106,7 @@ func (a *App) runUnport(name, mapping string) error {
 			_ = cl.Remove(guest)
 		}
 	}
-	fmt.Printf("devvm: removed forward %s from '%s'\n", configured, name)
+	fmt.Fprintf(a.Stdout, "devvm: removed forward %s from '%s'\n", configured, name)
 	return nil
 }
 
@@ -155,7 +156,7 @@ func (a *App) tunnelUp(name string) error {
 		return err
 	}
 	if len(m.Ports) == 0 {
-		fmt.Printf("devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
+		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 		return nil
 	}
 	cl, err := session.Dial(a.ConfigDir, name)
@@ -173,7 +174,7 @@ func (a *App) tunnelUp(name string) error {
 			fmt.Fprintf(a.Stderr, "devvm: %v\n", aerr)
 			continue
 		}
-		reportForward(name, host, guest, pref, bumped)
+		a.reportForward(name, host, guest, pref, bumped)
 	}
 	return nil
 }
@@ -183,9 +184,7 @@ func (a *App) runVNC(name string) error {
 	if err != nil {
 		return err
 	}
-	ex, ok := b.(interface {
-		VNC(func() error) error
-	})
+	ex, ok := b.(backend.VNCer)
 	if !ok {
 		return fmt.Errorf("'vnc' only applies to remote machines ('%s' is %s)", name, m.Backend)
 	}
@@ -203,8 +202,8 @@ func (a *App) forwardReport(name string) {
 	if err != nil || len(fwds) == 0 {
 		return
 	}
-	fmt.Println("  forwards:")
+	fmt.Fprintln(a.Stdout, "  forwards:")
 	for _, f := range fwds {
-		fmt.Printf("    guest %-5d -> localhost:%d\n", f.Guest, f.Host)
+		fmt.Fprintf(a.Stdout, "    guest %-5d -> localhost:%d\n", f.Guest, f.Host)
 	}
 }

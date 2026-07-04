@@ -61,7 +61,7 @@ func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, too
 
 	go s.eventLoop()
 
-	for i, tool := range tools {
+	for _, tool := range tools {
 		err := s.login(tool)
 		if err == nil {
 			continue
@@ -75,7 +75,6 @@ func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, too
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "devvm: %s login exited non-zero; continuing\n", tool)
-		_ = i
 	}
 	return nil
 }

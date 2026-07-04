@@ -29,7 +29,7 @@ func (b *sshBackend) sshFlags() []string {
 		f = append(f, "-o", fmt.Sprintf("Port=%d", b.m.SSHPort))
 	}
 	if b.m.Identity != "" {
-		f = append(f, "-i", expandHome(b.m.Identity))
+		f = append(f, "-i", config.ExpandHome(b.m.Identity))
 	}
 	// Managed hosts get an isolated, TOFU-pinned known_hosts.
 	if b.m.Managed() {
@@ -111,7 +111,9 @@ func (b *sshBackend) Copy(hostSrc, guestDst string) error {
 	}
 	args := append([]string{"scp"}, b.sshFlags()...)
 	args = append(args, hostSrc, b.m.SSHHost+":"+guestDst)
-	return exec.Command(args[0], args[1:]...).Run()
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stderr = os.Stderr // surface scp's message, not a bare exit status
+	return cmd.Run()
 }
 
 func (b *sshBackend) Exists() (bool, error) { return true, nil } // devvm doesn't create ssh hosts
@@ -252,13 +254,4 @@ func (b *sshBackend) SSHConn() SSHConn {
 		Flags:       b.sshFlags(),
 		ControlPath: filepath.Join(config.RuntimeDir(b.configDir), b.m.Name+".master"),
 	}
-}
-
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, p[2:])
-		}
-	}
-	return p
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/smweber/devvm/internal/backend"
+	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provision"
 )
 
@@ -79,7 +80,7 @@ func (a *App) seedAuthorizedKeys(b backend.Backend, githubUsers, files []string)
 		}
 	}
 	for _, f := range files {
-		keys, err := resolvePubkeys([]string{expandHome(f)})
+		keys, err := resolvePubkeys([]string{config.ExpandHome(f)})
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "devvm: %v\n", err)
 			continue

@@ -68,6 +68,12 @@ func ReadHeader(r *bufio.Reader) (string, error) {
 // Splice copies both directions between two connections, returning once either
 // side closes, then closes both so the other copy unblocks. Ports splice() from
 // devvm-mux.
+//
+// Half-close (shutdown(WR)) is NOT propagated: yamux streams (this version)
+// have no CloseWrite, so when one direction hits EOF the whole splice tears
+// down. Protocols that send EOF and then expect to keep reading the response
+// will see it truncated; everything devvm forwards today (HTTP, VNC, OAuth
+// callbacks) closes bidirectionally.
 func Splice(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(a, b); done <- struct{}{} }()
