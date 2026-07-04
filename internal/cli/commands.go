@@ -34,7 +34,8 @@ func (a *App) createCmd() *cobra.Command {
 	f.IntVar(&s.SSHPort, "ssh-port", 0, "remote: ssh port (default 22)")
 	f.StringVar(&s.Identity, "identity", "", "remote: ssh identity file")
 	f.StringVar(&s.Transport, "transport", "", "remote: ssh|mosh (default ssh)")
-	f.StringVar(&s.Provision, "provision", "", "provisioner: url:/cmd:/none (default from backend)")
+	f.StringVar(&s.Provision, "provision", "", "provisioner: url:/cmd:/none (default: none, or config.toml)")
+	f.BoolVarP(&s.Yes, "yes", "y", false, "don't prompt; resolve unset fields from flags, config.toml, then built-in defaults")
 	return c
 }
 

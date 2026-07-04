@@ -26,6 +26,7 @@ type createSpec struct {
 	Identity  string
 	Transport string
 	Provision string
+	Yes       bool // skip prompts; resolve every unset field from flag > config.toml > compiled
 }
 
 func (a *App) runCreate(s createSpec) error {

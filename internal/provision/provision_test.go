@@ -1,7 +1,6 @@
 package provision
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/smweber/devvm/internal/config"
@@ -38,15 +37,16 @@ func TestParseSpec(t *testing.T) {
 }
 
 func TestParseSpecDefault(t *testing.T) {
-	// Empty spec falls back to the default bootstrap.sh url provisioner.
+	// Empty spec falls back to the compiled default, which is now "none" (do
+	// nothing) — no personal bootstrap URL is baked into the binary.
 	s, err := ParseSpec("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Kind != KindURL || !strings.Contains(s.Target, "bootstrap.sh") {
-		t.Errorf("default spec = %+v", s)
+	if s.Kind != KindNone {
+		t.Errorf("default spec = %+v, want kind %q", s, KindNone)
 	}
-	if !strings.Contains(config.DefaultProvision, "agent-vm") {
-		t.Errorf("default provision lost agent-vm profile: %q", config.DefaultProvision)
+	if config.DefaultProvision != KindNone {
+		t.Errorf("compiled default provision = %q, want %q", config.DefaultProvision, KindNone)
 	}
 }

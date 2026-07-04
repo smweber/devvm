@@ -73,6 +73,7 @@ func (a *App) rootCmd() *cobra.Command {
 		a.statusCmd(),
 		a.vncCmd(),
 		a.keysCmd(),
+		a.defaultsCmd(),
 		a.lockdownCmd(),
 		a.daemonCmd(),
 	)

@@ -41,9 +41,12 @@ const (
 	TransportMosh = "mosh"
 )
 
-// Default provisioner: reproduce the old bootstrap path (bootstrap_machine),
-// cloning smweber/dotfiles and running its agent-vm profile non-interactively.
-const DefaultProvision = "url:https://raw.githubusercontent.com/smweber/dotfiles/master/bootstrap.sh --profile agent-vm --yes"
+// DefaultProvision is the built-in fallback provisioner: do nothing. A box's own
+// provisioner is chosen at create time (flag > global config.toml > this) and
+// written concretely into its conf, so nothing personal is baked into the binary.
+// Users who want a default (e.g. their dotfiles bootstrap) set `provision` in
+// config.toml — see Defaults.
+const DefaultProvision = "none"
 
 // ErrNotFound is returned by Load when no conf file exists for a name. Callers
 // that also know about live-but-unregistered smol VMs handle that fallback.

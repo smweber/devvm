@@ -8,19 +8,30 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provision"
 )
 
-// gatherCreateSpec fills any fields left unset by flags. On a terminal it prompts
-// (via huh, bound to /dev/tty so it works even with redirected stdin); without a
-// terminal it errors, naming the flag to pass — so create stays fully scriptable.
+// gatherCreateSpec fills any field left unset by a flag, resolving each with the
+// precedence flag > config.toml global default > compiled built-in. On a terminal
+// (and without --yes) it prompts, pre-selecting that resolved default; otherwise
+// it resolves silently and errors — naming the flag — on a required field that
+// has no default. So create is fully scriptable and predictable either way.
 func (a *App) gatherCreateSpec(s *createSpec) error {
+	defaults, err := config.LoadDefaults(a.ConfigDir)
+	if err != nil {
+		return err
+	}
+
 	tty := openTTY()
 	if tty != nil {
 		defer tty.Close()
 	}
+	// --yes forces the non-interactive path even on a terminal.
+	interactive := tty != nil && !s.Yes
 
+	// Backend is required and has no global default.
 	if s.Backend == "" {
-		if tty == nil {
+		if !interactive {
 			return fmt.Errorf("--backend is required (smol|remote-managed|remote-unmanaged)")
 		}
 		if err := form(tty, huh.NewSelect[string]().
@@ -36,27 +47,49 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 
 	switch s.Backend {
 	case config.BackendSmol:
-		if s.Memory == 0 {
-			if tty == nil {
-				return fmt.Errorf("smol needs --memory MiB")
-			}
-			return askMemory(tty, s)
+		if err := resolveMemory(tty, interactive, s, defaults); err != nil {
+			return err
 		}
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
-		if s.SSHHost == "" {
-			if tty == nil {
-				return fmt.Errorf("remote backend needs --ssh-host")
-			}
-			return askRemote(tty, s)
+		if err := resolveRemote(tty, interactive, s, defaults); err != nil {
+			return err
 		}
 	default:
 		// machine() reports an invalid backend value.
 	}
+
+	// Provisioner runs only on managed boxes (adopt hosts are never provisioned),
+	// so only offer it there.
+	if s.Backend == config.BackendSmol || s.Backend == config.BackendRemoteManaged {
+		if err := resolveProvision(tty, interactive, s, defaults); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func askMemory(tty *os.File, s *createSpec) error {
-	val := strconv.Itoa(suggestedMemoryMiB())
+// resolveMemory settles smol's required memory: flag, else global default, else
+// prompt (interactive) or error (non-interactive) — smol has no universal default.
+func resolveMemory(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+	if s.Memory != 0 { // flag wins
+		return nil
+	}
+	if interactive {
+		return askMemory(tty, s, d)
+	}
+	if d.Memory != 0 {
+		s.Memory = d.Memory
+		return nil
+	}
+	return fmt.Errorf("smol needs --memory MiB (or set memory in config.toml)")
+}
+
+func askMemory(tty *os.File, s *createSpec, d *config.Defaults) error {
+	pref := suggestedMemoryMiB()
+	if d.Memory != 0 {
+		pref = d.Memory
+	}
+	val := strconv.Itoa(pref)
 	if err := form(tty, huh.NewInput().
 		Title("VM memory (MiB)").
 		Value(&val).
@@ -74,6 +107,22 @@ func askMemory(tty *os.File, s *createSpec) error {
 	}
 	s.Memory, _ = strconv.Atoi(strings.TrimSpace(val))
 	return nil
+}
+
+// resolveRemote settles the remote fields. Transport is seeded from the global
+// default (both paths); ssh-host is required with no default, so it prompts
+// interactively or errors otherwise.
+func resolveRemote(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+	if s.Transport == "" {
+		s.Transport = d.Transport // may stay "" → applyDefaults fills ssh
+	}
+	if s.SSHHost != "" { // flag given: keep the rest at their defaults
+		return nil
+	}
+	if !interactive {
+		return fmt.Errorf("remote backend needs --ssh-host")
+	}
+	return askRemote(tty, s)
 }
 
 func askRemote(tty *os.File, s *createSpec) error {
@@ -106,6 +155,63 @@ func askRemote(tty *os.File, s *createSpec) error {
 			return fmt.Errorf("ssh port must be an integer")
 		}
 		s.SSHPort = n
+	}
+	return nil
+}
+
+// resolveProvision settles the provisioner: flag wins; otherwise prompt
+// (interactive, pre-selecting the global-or-none default) or take the global
+// default silently. An empty result means "none" via applyDefaults.
+func resolveProvision(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+	if s.Provision != "" { // flag wins
+		return nil
+	}
+	if !interactive {
+		s.Provision = d.Provision // "" → applyDefaults fills "none"
+		return nil
+	}
+	return askProvision(tty, s, d)
+}
+
+func askProvision(tty *os.File, s *createSpec, d *config.Defaults) error {
+	const (
+		optDefault = "default"
+		optNone    = "none"
+		optCustom  = "custom"
+	)
+	choice := optNone
+	var opts []huh.Option[string]
+	// Offer the config.toml default (pre-selected) only when it's set to something
+	// other than "none" — otherwise it's identical to the plain "none" option.
+	if d.Provision != "" && d.Provision != provision.KindNone {
+		opts = append(opts, huh.NewOption("default (config.toml): "+d.Provision, optDefault))
+		choice = optDefault
+	}
+	opts = append(opts,
+		huh.NewOption("none — skip provisioning", optNone),
+		huh.NewOption("custom — enter a url:/cmd: spec", optCustom),
+	)
+	if err := form(tty, huh.NewSelect[string]().Title("Provisioner").Options(opts...).Value(&choice)); err != nil {
+		return err
+	}
+	switch choice {
+	case optDefault:
+		s.Provision = d.Provision
+	case optNone:
+		s.Provision = provision.KindNone
+	case optCustom:
+		custom := ""
+		if err := form(tty, huh.NewInput().
+			Title("Provision spec").
+			Placeholder("url:<URL> [args] | cmd:<path> [args] | none").
+			Value(&custom).
+			Validate(func(v string) error {
+				_, err := provision.ParseSpec(strings.TrimSpace(v))
+				return err
+			})); err != nil {
+			return err
+		}
+		s.Provision = strings.TrimSpace(custom)
 	}
 	return nil
 }

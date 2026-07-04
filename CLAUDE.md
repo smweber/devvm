@@ -94,9 +94,12 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   shell), both backend-dispatched via the `Interactive` interface and taking
   `--transport ssh|mosh`. There is no `ssh`/`mosh` command. `create` is
   backend-agnostic (flags-first, huh prompts on a TTY); it adopts remote hosts by
-  test-connecting before saving the conf. Multi-op nouns are grouped:
-  `repos {add,rm,list,clone}`, `ports {add,rm,list,up,down}`, and
-  `keys {add,rm,list,dedupe}`. NAME is always the **first positional of the leaf**
+  test-connecting before saving the conf. `--yes` skips prompts and resolves every
+  unset field from flag > `config.toml` > built-in (erroring on a required field
+  with no default). Multi-op nouns are grouped:
+  `repos {add,rm,list,clone}`, `ports {add,rm,list,up,down}`,
+  `keys {add,rm,list,dedupe}`, and `defaults {list,set,unset,path}` (global, so its
+  leaves take a KEY not a NAME). NAME is always the **first positional of the leaf**
   (`devvm repos add NAME REPO`) so completion and "first arg = machine" hold at any
   depth. Single-action verbs (start/stop/attach/…) stay flat. `repos add` records
   in the conf and clones immediately (`--no-clone` to skip); `owner/repo` shorthand
@@ -114,8 +117,16 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
   install, gated behind explicit consent (`auth --install-agent` or a prompt) so
   devvm never writes to an adopted box unasked. `Install` returns the path to use.
-- **Provisioner**: `bootstrap.sh` is just the default `url:` provisioner, not a
-  hard dependency — `provision` may be `url:`, `cmd:`, or `none`.
+- **Provisioner**: `provision` may be `url:`, `cmd:`, or `none`; the built-in
+  default is **`none`** (nothing personal baked into the binary). Each box's
+  provisioner is resolved once at create time (flag > `config.toml` `provision` >
+  built-in) and written concretely into its conf, so editing global defaults never
+  changes what an existing box re-runs on `bootstrap`. A `url:` provisioner (e.g. a
+  dotfiles `bootstrap.sh`) is a per-user choice set via `defaults set provision …`.
+- **Global defaults** (`internal/config/defaults.go`): create-time defaults in
+  `$XDG_CONFIG_HOME/devvm/config.toml` (`provision`, `memory`, `transport`),
+  sibling to `machines/`. Consulted **only** at create (to seed prompts and the
+  non-interactive path), never at runtime. Managed via `devvm defaults`.
 
 ## Testing gotchas (all real, learned the hard way)
 
