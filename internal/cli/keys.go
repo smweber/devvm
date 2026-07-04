@@ -285,8 +285,11 @@ func hostProtectedPubs(m *config.Machine) []string {
 
 var bareEmailRe = regexp.MustCompile(`^[^\s@]+@[^\s@]+$`)
 
-// labelKeys prompts for a comment on each key (defaulting to the local
-// hostname), rejecting a bare email, since GitHub's .keys endpoint drops titles.
+// labelKeys ensures every key carries a comment: already-commented keys pass
+// through verbatim (options and all), and uncommented ones prompt (defaulting
+// to the local hostname), rejecting a bare email, since GitHub's .keys endpoint
+// drops titles. The TTY is only opened if a prompt is actually needed, so a
+// commented key works non-interactively.
 func labelKeys(lines []string) ([]string, error) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
@@ -295,17 +298,25 @@ func labelKeys(lines []string) ([]string, error) {
 	if i := strings.IndexByte(host, '.'); i > 0 {
 		host = host[:i]
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return nil, fmt.Errorf("no terminal for key comments; pass an explicitly commented key")
-	}
-	defer tty.Close()
-	r := bufio.NewReader(tty)
+	var tty *os.File
+	var r *bufio.Reader
 	var out []string
 	for _, line := range lines {
 		k, ok := keys.Parse(line)
 		if !ok {
 			return nil, fmt.Errorf("invalid public key: %s", line)
+		}
+		if k.Comment != "" {
+			out = append(out, k.Line)
+			continue
+		}
+		if tty == nil {
+			tty, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
+			if err != nil {
+				return nil, fmt.Errorf("no terminal for key comments; pass an explicitly commented key")
+			}
+			defer tty.Close()
+			r = bufio.NewReader(tty)
 		}
 		var comment string
 		for {
@@ -321,7 +332,8 @@ func labelKeys(lines []string) ([]string, error) {
 			}
 			break
 		}
-		out = append(out, k.Type+" "+k.Blob+" "+comment)
+		// Prefix keeps any options on the line, not just type+blob.
+		out = append(out, k.Prefix+" "+comment)
 	}
 	return out, nil
 }
