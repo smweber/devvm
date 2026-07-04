@@ -18,8 +18,8 @@ func newTestApp(t *testing.T) *App {
 func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {
 	a := newTestApp(t)
 	if err := config.SaveDefaults(a.ConfigDir, &config.Defaults{
-		Provision: "cmd:/opt/setup.sh",
-		Memory:    4096,
+		BootstrapHook: "cmd:/opt/setup.sh",
+		Memory:        4096,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -30,25 +30,25 @@ func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {
 	if s.Memory != 4096 {
 		t.Errorf("memory = %d, want 4096 from config.toml", s.Memory)
 	}
-	if s.Provision != "cmd:/opt/setup.sh" {
-		t.Errorf("provision = %q, want config.toml value", s.Provision)
+	if s.BootstrapHook != "cmd:/opt/setup.sh" {
+		t.Errorf("bootstrap-hook = %q, want config.toml value", s.BootstrapHook)
 	}
 }
 
 func TestResolveFlagBeatsGlobalDefault(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.ConfigDir, &config.Defaults{Memory: 4096, Provision: "cmd:/opt/setup.sh"}); err != nil {
+	if err := config.SaveDefaults(a.ConfigDir, &config.Defaults{Memory: 4096, BootstrapHook: "cmd:/opt/setup.sh"}); err != nil {
 		t.Fatal(err)
 	}
-	s := createSpec{Name: "box", Backend: config.BackendSmol, Memory: 1024, Provision: "none", Yes: true}
+	s := createSpec{Name: "box", Backend: config.BackendSmol, Memory: 1024, BootstrapHook: "none", Yes: true}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
 	if s.Memory != 1024 {
 		t.Errorf("memory = %d, want 1024 (flag wins)", s.Memory)
 	}
-	if s.Provision != "none" {
-		t.Errorf("provision = %q, want none (flag wins)", s.Provision)
+	if s.BootstrapHook != "none" {
+		t.Errorf("bootstrap-hook = %q, want none (flag wins)", s.BootstrapHook)
 	}
 }
 
@@ -58,16 +58,16 @@ func TestResolveCompiledDefaultWhenUnset(t *testing.T) {
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	// gatherCreateSpec leaves provision empty; machine() applies the compiled "none".
-	if s.Provision != "" {
-		t.Errorf("provision = %q, want empty before defaulting", s.Provision)
+	// gatherCreateSpec leaves bootstrap-hook empty; machine() applies the compiled "none".
+	if s.BootstrapHook != "" {
+		t.Errorf("bootstrap-hook = %q, want empty before defaulting", s.BootstrapHook)
 	}
 	m, err := s.machine()
 	if err != nil {
 		t.Fatalf("machine: %v", err)
 	}
-	if m.Provision != "none" {
-		t.Errorf("machine provision = %q, want compiled none", m.Provision)
+	if m.BootstrapHook != "none" {
+		t.Errorf("machine bootstrap-hook = %q, want compiled none", m.BootstrapHook)
 	}
 }
 

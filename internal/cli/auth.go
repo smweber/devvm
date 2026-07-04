@@ -9,7 +9,7 @@ import (
 )
 
 func (a *App) runAuth(name, tool string, installAgent bool) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}

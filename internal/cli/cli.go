@@ -42,7 +42,20 @@ func Execute() int {
 	return 0
 }
 
+// Command groups, so `--help` clusters the surface by concern instead of one flat
+// alphabetical list. Ordered lifecycle: setup → run → teardown, with the symmetric
+// pairs bracketing (create/delete outer, provision/deprovision inner, start/stop).
+const (
+	groupLifecycle = "lifecycle"
+	groupConnect   = "connect"
+	groupConfigure = "configure"
+)
+
 func (a *App) rootCmd() *cobra.Command {
+	// Render commands in AddCommand order (grouped, lifecycle-ordered) rather than
+	// alphabetically.
+	cobra.EnableCommandSorting = false
+
 	root := &cobra.Command{
 		Use:   "devvm",
 		Short: "One frontend for persistent dev boxes, whatever the transport",
@@ -58,25 +71,46 @@ func (a *App) rootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&a.ConfigDir, "config-dir", a.ConfigDir,
 		"devvm config directory")
 
-	root.AddCommand(
+	root.AddGroup(
+		&cobra.Group{ID: groupLifecycle, Title: "Lifecycle:"},
+		&cobra.Group{ID: groupConnect, Title: "Connect:"},
+		&cobra.Group{ID: groupConfigure, Title: "Configure:"},
+	)
+
+	// checkCommandGroups panics on a GroupID with no registered group, so GroupID is
+	// set only on these root-level commands (subcommand leaves stay ungrouped).
+	group := func(id string, cmds ...*cobra.Command) []*cobra.Command {
+		for _, c := range cmds {
+			c.GroupID = id
+		}
+		return cmds
+	}
+
+	root.AddCommand(group(groupLifecycle,
 		a.createCmd(),
+		a.provisionCmd(),
 		a.bootstrapCmd(),
+		a.lockdownCmd(),
+		a.startCmd(),
+		a.stopCmd(),
+		a.deprovisionCmd(),
+		a.deleteCmd(),
+	)...)
+	root.AddCommand(group(groupConnect,
 		a.attachCmd(),
 		a.shellCmd(),
 		a.execCmd(),
+		a.vncCmd(),
 		a.authCmd(),
+	)...)
+	root.AddCommand(group(groupConfigure,
 		a.reposCmd(),
 		a.portsCmd(),
-		a.startCmd(),
-		a.stopCmd(),
-		a.deleteCmd(),
-		a.statusCmd(),
-		a.vncCmd(),
 		a.keysCmd(),
 		a.defaultsCmd(),
-		a.lockdownCmd(),
-		a.daemonCmd(),
-	)
+		a.statusCmd(),
+	)...)
+	root.AddCommand(a.daemonCmd()) // hidden; falls under "Additional Commands"
 	return root
 }
 

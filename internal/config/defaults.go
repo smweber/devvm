@@ -20,20 +20,20 @@ import (
 // Only fields worth pinning globally live here; grow it key-by-key. Keep the
 // key list in sync with DefaultKeys / the Get/Set switches below.
 type Defaults struct {
-	Provision string `toml:"provision,omitempty"`
-	Memory    int    `toml:"memory,omitempty"` // MiB
-	Transport string `toml:"transport,omitempty"`
+	BootstrapHook string `toml:"bootstrap_hook,omitempty"`
+	Memory        int    `toml:"memory,omitempty"` // MiB
+	Transport     string `toml:"transport,omitempty"`
 }
 
 // DefaultKeys are the settable keys, in display order. Drives `defaults list`
 // and shell completion, so it is the single source of truth for what exists.
-var DefaultKeys = []string{"provision", "memory", "transport"}
+var DefaultKeys = []string{"bootstrap-hook", "memory", "transport"}
 
 // DefaultKeyHelp is a one-line description of a key for completion and help.
 func DefaultKeyHelp(key string) string {
 	switch key {
-	case "provision":
-		return "provisioner spec: url:<URL> [args] | cmd:<path> [args] | none"
+	case "bootstrap-hook":
+		return "bootstrap-hook spec: url:<URL> [args] | cmd:<path> [args] | none"
 	case "memory":
 		return "smol VM memory in MiB (>= 512)"
 	case "transport":
@@ -92,8 +92,8 @@ func SaveDefaults(configDir string, d *Defaults) error {
 }
 
 // Validate enforces the same field invariants create would, so a bad config.toml
-// (or `defaults set`) fails loudly instead of surfacing at bootstrap. Provision
-// specs are validated by the caller (internal/provision, to avoid an import
+// (or `defaults set`) fails loudly instead of surfacing at bootstrap. Bootstrap-hook
+// specs are validated by the caller (internal/bootstrap, to avoid an import
 // cycle) — see the defaults command.
 func (d *Defaults) Validate() error {
 	switch d.Transport {
@@ -110,8 +110,8 @@ func (d *Defaults) Validate() error {
 // Get returns the override for key as a display string, and whether it's set.
 func (d *Defaults) Get(key string) (val string, set bool, err error) {
 	switch key {
-	case "provision":
-		return d.Provision, d.Provision != "", nil
+	case "bootstrap-hook":
+		return d.BootstrapHook, d.BootstrapHook != "", nil
 	case "memory":
 		if d.Memory == 0 {
 			return "", false, nil
@@ -124,14 +124,14 @@ func (d *Defaults) Get(key string) (val string, set bool, err error) {
 	}
 }
 
-// Set applies value to key. Provision is stored verbatim — the caller validates
-// the spec. A rejected value leaves d unchanged (it's applied to a trial copy
-// that must pass Validate before it's committed).
+// Set applies value to key. BootstrapHook is stored verbatim — the caller
+// validates the spec. A rejected value leaves d unchanged (it's applied to a trial
+// copy that must pass Validate before it's committed).
 func (d *Defaults) Set(key, value string) error {
 	trial := *d
 	switch key {
-	case "provision":
-		trial.Provision = value
+	case "bootstrap-hook":
+		trial.BootstrapHook = value
 	case "memory":
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
@@ -153,8 +153,8 @@ func (d *Defaults) Set(key, value string) error {
 // Unset clears key back to its compiled default.
 func (d *Defaults) Unset(key string) error {
 	switch key {
-	case "provision":
-		d.Provision = ""
+	case "bootstrap-hook":
+		d.BootstrapHook = ""
 	case "memory":
 		d.Memory = 0
 	case "transport":

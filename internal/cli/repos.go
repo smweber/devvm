@@ -78,6 +78,10 @@ func (a *App) runReposAdd(name string, repos []string, clone bool) error {
 	if !clone {
 		return nil
 	}
+	// The conf edit above is fine on a dormant box; cloning needs a live one.
+	if err := requireProvisioned(m, b); err != nil {
+		return err
+	}
 	return a.cloneRepos(b, added)
 }
 
@@ -107,7 +111,7 @@ func (a *App) runReposRm(name, repo string) error {
 }
 
 func (a *App) runReposClone(name string) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}

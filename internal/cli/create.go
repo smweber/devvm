@@ -18,15 +18,15 @@ import (
 // has a flag so create runs fully non-interactively; a terminal prompts for
 // whatever's left unset.
 type createSpec struct {
-	Name      string
-	Backend   string
-	Memory    int
-	SSHHost   string
-	SSHPort   int
-	Identity  string
-	Transport string
-	Provision string
-	Yes       bool // skip prompts; resolve every unset field from flag > config.toml > compiled
+	Name          string
+	Backend       string
+	Memory        int
+	SSHHost       string
+	SSHPort       int
+	Identity      string
+	Transport     string
+	BootstrapHook string
+	Yes           bool // skip prompts; resolve every unset field from flag > config.toml > compiled
 }
 
 func (a *App) runCreate(s createSpec) error {
@@ -34,6 +34,13 @@ func (a *App) runCreate(s createSpec) error {
 		return err
 	}
 	if config.Exists(a.ConfigDir, s.Name) || backend.SmolExists(s.Name) {
+		// A registered smol with no live VM is dormant — point at provision, since
+		// create won't overwrite the existing conf.
+		if config.Exists(a.ConfigDir, s.Name) && !backend.SmolExists(s.Name) {
+			if ex, _ := config.Load(a.ConfigDir, s.Name); ex != nil && ex.Backend == config.BackendSmol {
+				return fmt.Errorf("machine '%s' already exists (dormant; run 'devvm provision %s')", s.Name, s.Name)
+			}
+		}
 		return fmt.Errorf("machine '%s' already exists", s.Name)
 	}
 	if err := a.gatherCreateSpec(&s); err != nil {
@@ -44,25 +51,12 @@ func (a *App) runCreate(s createSpec) error {
 		return err
 	}
 
-	// Managed backends provision a resource; adopt backends just validate we can
-	// reach the host before committing the config.
-	switch m.Backend {
-	case config.BackendSmol:
-		if !backend.SmolAvailable() {
-			return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
-		}
-		fmt.Fprintf(a.Stdout, "Using %d MiB RAM.\n", m.Memory)
-		if err := backend.SmolCreate(s.Name, m.Memory); err != nil {
-			return err
-		}
-	default:
-		if err := a.probeRemote(m); err != nil {
-			return err
-		}
+	// Allocate the resource (adopt backends just probe), then register before
+	// bootstrap so resolve() sees it (and a mid-flight failure is resumable via
+	// `devvm bootstrap`).
+	if err := a.provisionResource(m); err != nil {
+		return err
 	}
-
-	// Register before bootstrap so resolve() sees it (and a mid-flight failure is
-	// resumable via `devvm bootstrap`).
 	if err := m.Save(a.ConfigDir); err != nil {
 		return err
 	}
@@ -71,6 +65,23 @@ func (a *App) runCreate(s createSpec) error {
 	}
 	a.printCreateNext(m)
 	return nil
+}
+
+// provisionResource allocates the backend resource, leaving it running. It is the
+// shared allocation step for both `create` (new entry) and `provision` (dormant
+// entry). smol calls SmolCreate (create + start); adopt/remote backends just
+// probe reachability — the future hetzner backend adds API-backed create here.
+func (a *App) provisionResource(m *config.Machine) error {
+	switch m.Backend {
+	case config.BackendSmol:
+		if !backend.SmolAvailable() {
+			return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
+		}
+		fmt.Fprintf(a.Stdout, "Using %d MiB RAM.\n", m.Memory)
+		return backend.SmolCreate(m.Name, m.Memory)
+	default:
+		return a.probeRemote(m)
+	}
 }
 
 // machine builds and validates the registry entry from the gathered spec.
@@ -98,8 +109,8 @@ func (s createSpec) machine() (*config.Machine, error) {
 	default:
 		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged)", s.Backend)
 	}
-	if s.Provision != "" {
-		m.Provision = s.Provision
+	if s.BootstrapHook != "" {
+		m.BootstrapHook = s.BootstrapHook
 	}
 	if err := m.Validate(); err != nil {
 		return nil, err

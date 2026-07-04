@@ -1,4 +1,4 @@
-package provision
+package bootstrap
 
 import (
 	"testing"
@@ -46,7 +46,7 @@ func TestParseSpecDefault(t *testing.T) {
 	if s.Kind != KindNone {
 		t.Errorf("default spec = %+v, want kind %q", s, KindNone)
 	}
-	if config.DefaultProvision != KindNone {
-		t.Errorf("compiled default provision = %q, want %q", config.DefaultProvision, KindNone)
+	if config.DefaultBootstrapHook != KindNone {
+		t.Errorf("compiled default provision = %q, want %q", config.DefaultBootstrapHook, KindNone)
 	}
 }

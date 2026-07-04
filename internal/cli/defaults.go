@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"text/tabwriter"
 
+	"github.com/smweber/devvm/internal/bootstrap"
 	"github.com/smweber/devvm/internal/config"
-	"github.com/smweber/devvm/internal/provision"
 	"github.com/spf13/cobra"
 )
 
@@ -80,9 +80,9 @@ func (a *App) runDefaultsList() error {
 }
 
 func (a *App) runDefaultsSet(key, value string) error {
-	if key == "provision" {
-		// Validate the spec here — internal/config can't import internal/provision.
-		if _, err := provision.ParseSpec(value); err != nil {
+	if key == "bootstrap-hook" {
+		// Validate the spec here — internal/config can't import internal/bootstrap.
+		if _, err := bootstrap.ParseSpec(value); err != nil {
 			return err
 		}
 	}
@@ -120,8 +120,8 @@ func (a *App) runDefaultsUnset(key string) error {
 // default is host-derived and lives in the cli layer.
 func compiledDefaultDisplay(key string) string {
 	switch key {
-	case "provision":
-		return provision.KindNone
+	case "bootstrap-hook":
+		return bootstrap.KindNone
 	case "memory":
 		return fmt.Sprintf("%d (≈half of host RAM)", suggestedMemoryMiB())
 	case "transport":

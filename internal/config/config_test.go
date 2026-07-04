@@ -159,8 +159,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if got.SSHPort != 22 {
 		t.Errorf("SSHPort default = %d, want 22", got.SSHPort)
 	}
-	if got.Provision != DefaultProvision {
-		t.Errorf("Provision default = %q, want default", got.Provision)
+	if got.BootstrapHook != DefaultBootstrapHook {
+		t.Errorf("BootstrapHook default = %q, want default", got.BootstrapHook)
 	}
 	if len(got.Ports) != 3 || got.Ports[2] != "8080:80" {
 		t.Errorf("Ports lost: %v", got.Ports)

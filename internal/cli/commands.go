@@ -38,7 +38,7 @@ func (a *App) createCmd() *cobra.Command {
 	f.IntVar(&s.SSHPort, "ssh-port", 0, "remote: ssh port (default 22)")
 	f.StringVar(&s.Identity, "identity", "", "remote: ssh identity file")
 	f.StringVar(&s.Transport, "transport", "", "remote: ssh|mosh (default ssh)")
-	f.StringVar(&s.Provision, "provision", "", "provisioner: url:/cmd:/none (default: none, or config.toml)")
+	f.StringVar(&s.BootstrapHook, "bootstrap-hook", "", "bootstrap-hook: url:/cmd:/none (default: none, or config.toml)")
 	f.BoolVarP(&s.Yes, "yes", "y", false, "don't prompt; resolve unset fields from flags, config.toml, then built-in defaults")
 	return c
 }
@@ -46,7 +46,7 @@ func (a *App) createCmd() *cobra.Command {
 func (a *App) bootstrapCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "bootstrap NAME",
-		Short: "Resume/rerun guest provisioning",
+		Short: "Resume/rerun guest software setup",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runBootstrap(args[0]) },
 	}
 	a.machineArg(c)
@@ -225,6 +225,28 @@ func (a *App) stopCmd() *cobra.Command {
 		Short: "Stop the machine (backend-aware)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) },
 	}
+	a.machineArg(c)
+	return c
+}
+
+func (a *App) provisionCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "provision NAME",
+		Short: "Allocate a dormant machine's resource + bootstrap it",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runProvision(args[0]) },
+	}
+	a.machineArg(c)
+	return c
+}
+
+func (a *App) deprovisionCmd() *cobra.Command {
+	var yes bool
+	c := &cobra.Command{
+		Use:   "deprovision NAME",
+		Short: "Destroy the resource but keep the registry entry (rebuild with 'provision')",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDeprovision(args[0], yes) },
+	}
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	a.machineArg(c)
 	return c
 }

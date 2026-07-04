@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/smweber/devvm/internal/bootstrap"
 	"github.com/smweber/devvm/internal/config"
-	"github.com/smweber/devvm/internal/provision"
 )
 
 // gatherCreateSpec fills any field left unset by a flag, resolving each with the
@@ -58,10 +58,10 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 		// machine() reports an invalid backend value.
 	}
 
-	// Provisioner runs only on managed boxes (adopt hosts are never provisioned),
+	// The bootstrap-hook runs only on managed boxes (adopt hosts are never shaped),
 	// so only offer it there.
 	if s.Backend == config.BackendSmol || s.Backend == config.BackendRemoteManaged {
-		if err := resolveProvision(tty, interactive, s, defaults); err != nil {
+		if err := resolveBootstrapHook(tty, interactive, s, defaults); err != nil {
 			return err
 		}
 	}
@@ -159,21 +159,21 @@ func askRemote(tty *os.File, s *createSpec) error {
 	return nil
 }
 
-// resolveProvision settles the provisioner: flag wins; otherwise prompt
+// resolveBootstrapHook settles the bootstrap-hook: flag wins; otherwise prompt
 // (interactive, pre-selecting the global-or-none default) or take the global
 // default silently. An empty result means "none" via applyDefaults.
-func resolveProvision(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
-	if s.Provision != "" { // flag wins
+func resolveBootstrapHook(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+	if s.BootstrapHook != "" { // flag wins
 		return nil
 	}
 	if !interactive {
-		s.Provision = d.Provision // "" → applyDefaults fills "none"
+		s.BootstrapHook = d.BootstrapHook // "" → applyDefaults fills "none"
 		return nil
 	}
-	return askProvision(tty, s, d)
+	return askBootstrapHook(tty, s, d)
 }
 
-func askProvision(tty *os.File, s *createSpec, d *config.Defaults) error {
+func askBootstrapHook(tty *os.File, s *createSpec, d *config.Defaults) error {
 	const (
 		optDefault = "default"
 		optNone    = "none"
@@ -183,35 +183,35 @@ func askProvision(tty *os.File, s *createSpec, d *config.Defaults) error {
 	var opts []huh.Option[string]
 	// Offer the config.toml default (pre-selected) only when it's set to something
 	// other than "none" — otherwise it's identical to the plain "none" option.
-	if d.Provision != "" && d.Provision != provision.KindNone {
-		opts = append(opts, huh.NewOption("default (config.toml): "+d.Provision, optDefault))
+	if d.BootstrapHook != "" && d.BootstrapHook != bootstrap.KindNone {
+		opts = append(opts, huh.NewOption("default (config.toml): "+d.BootstrapHook, optDefault))
 		choice = optDefault
 	}
 	opts = append(opts,
-		huh.NewOption("none — skip provisioning", optNone),
+		huh.NewOption("none — skip the hook", optNone),
 		huh.NewOption("custom — enter a url:/cmd: spec", optCustom),
 	)
-	if err := form(tty, huh.NewSelect[string]().Title("Provisioner").Options(opts...).Value(&choice)); err != nil {
+	if err := form(tty, huh.NewSelect[string]().Title("Bootstrap hook").Options(opts...).Value(&choice)); err != nil {
 		return err
 	}
 	switch choice {
 	case optDefault:
-		s.Provision = d.Provision
+		s.BootstrapHook = d.BootstrapHook
 	case optNone:
-		s.Provision = provision.KindNone
+		s.BootstrapHook = bootstrap.KindNone
 	case optCustom:
 		custom := ""
 		if err := form(tty, huh.NewInput().
-			Title("Provision spec").
+			Title("Bootstrap-hook spec").
 			Placeholder("url:<URL> [args] | cmd:<path> [args] | none").
 			Value(&custom).
 			Validate(func(v string) error {
-				_, err := provision.ParseSpec(strings.TrimSpace(v))
+				_, err := bootstrap.ParseSpec(strings.TrimSpace(v))
 				return err
 			})); err != nil {
 			return err
 		}
-		s.Provision = strings.TrimSpace(custom)
+		s.BootstrapHook = strings.TrimSpace(custom)
 	}
 	return nil
 }

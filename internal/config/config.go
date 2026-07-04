@@ -41,12 +41,12 @@ const (
 	TransportMosh = "mosh"
 )
 
-// DefaultProvision is the built-in fallback provisioner: do nothing. A box's own
-// provisioner is chosen at create time (flag > global config.toml > this) and
+// DefaultBootstrapHook is the built-in fallback bootstrap-hook: do nothing. A
+// box's own hook is chosen at create time (flag > global config.toml > this) and
 // written concretely into its conf, so nothing personal is baked into the binary.
-// Users who want a default (e.g. their dotfiles bootstrap) set `provision` in
+// Users who want a default (e.g. their dotfiles bootstrap) set `bootstrap-hook` in
 // config.toml — see Defaults.
-const DefaultProvision = "none"
+const DefaultBootstrapHook = "none"
 
 // ErrNotFound is returned by Load when no conf file exists for a name. Callers
 // that also know about live-but-unregistered smol VMs handle that fallback.
@@ -65,7 +65,7 @@ func ValidName(name string) error {
 }
 
 // Machine is one registered dev box. Zero values mean "unset"; applyDefaults
-// fills the same defaults load_machine did (SSHPort 22, VNCPort 5901, Provision).
+// fills the same defaults load_machine did (SSHPort 22, VNCPort 5901, BootstrapHook).
 type Machine struct {
 	// Name is derived from the filename, not stored in the file.
 	Name string `toml:"-"`
@@ -89,9 +89,9 @@ type Machine struct {
 	Memory int `toml:"memory,omitempty"` // MiB
 
 	// shared
-	Repos     []string `toml:"repos,omitempty"`
-	Ports     []string `toml:"ports,omitempty"` // "HOST:GUEST" or bare "PORT"
-	Provision string   `toml:"provision,omitempty"`
+	Repos         []string `toml:"repos,omitempty"`
+	Ports         []string `toml:"ports,omitempty"` // "HOST:GUEST" or bare "PORT"
+	BootstrapHook string   `toml:"bootstrap_hook,omitempty"`
 
 	// ssh key seeding / hardening
 	AuthorizedKeys       []string `toml:"authorized_keys,omitempty"`
@@ -135,8 +135,8 @@ func (m *Machine) migrateLegacy() {
 // transport defaults apply only to remote backends, so a smol conf doesn't carry
 // meaningless ssh_port/vnc_port/transport.
 func (m *Machine) applyDefaults() {
-	if m.Provision == "" {
-		m.Provision = DefaultProvision
+	if m.BootstrapHook == "" {
+		m.BootstrapHook = DefaultBootstrapHook
 	}
 	if m.IsRemote() {
 		if m.SSHPort == 0 {

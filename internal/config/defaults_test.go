@@ -12,14 +12,14 @@ func TestLoadDefaultsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDefaults: %v", err)
 	}
-	if d.Provision != "" || d.Memory != 0 || d.Transport != "" {
+	if d.BootstrapHook != "" || d.Memory != 0 || d.Transport != "" {
 		t.Errorf("missing config should be zero Defaults, got %+v", d)
 	}
 }
 
 func TestSaveLoadDefaultsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	in := &Defaults{Provision: "url:https://x/b.sh --yes", Memory: 4096, Transport: TransportMosh}
+	in := &Defaults{BootstrapHook: "url:https://x/b.sh --yes", Memory: 4096, Transport: TransportMosh}
 	if err := SaveDefaults(dir, in); err != nil {
 		t.Fatalf("SaveDefaults: %v", err)
 	}

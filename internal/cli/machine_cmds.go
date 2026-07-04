@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) runExec(name string, argv []string) error {
-	_, b, err := a.resolve(name)
+	_, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func (a *App) runAttach(name, transport string) error {
 }
 
 func (a *App) interactive(name, transport string) (backend.Interactive, string, error) {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -77,7 +77,7 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 }
 
 func (a *App) runStart(name string) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (a *App) runStart(name string) error {
 }
 
 func (a *App) runStop(name string) error {
-	_, b, err := a.resolve(name)
+	_, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
@@ -104,10 +104,98 @@ func (a *App) runStop(name string) error {
 	return b.PowerStop()
 }
 
+// runProvision allocates the resource for a dormant machine (conf exists, no VM)
+// and bootstraps it — the inverse of deprovision, and the resource half of create.
+func (a *App) runProvision(name string) error {
+	m, b, err := a.resolve(name)
+	if err != nil {
+		return err
+	}
+	if m.IsRemote() {
+		fmt.Fprintf(a.Stderr,
+			"devvm: '%s' is a remote host; devvm does not manage its resource lifecycle yet (no-op).\n", name)
+		return nil
+	}
+	ok, err := b.Exists()
+	if err != nil {
+		return err
+	}
+	if ok {
+		return fmt.Errorf("'%s' is already provisioned (use 'start' to power it on)", name)
+	}
+	// A hand-edited conf can omit memory (Save strips zero ints, Load doesn't
+	// re-default it), which would allocate with --mem 0. Re-check as create does.
+	if m.Backend == config.BackendSmol && m.Memory < 512 {
+		return fmt.Errorf("smol machine '%s' needs memory >= 512 (MiB) in its conf (got %d)", name, m.Memory)
+	}
+	if err := a.provisionResource(m); err != nil {
+		return err
+	}
+	if err := a.runBootstrap(name); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Stdout, "devvm: provisioned '%s'\n", name)
+	return nil
+}
+
+// runDeprovision destroys a machine's resource (disk/VM) but keeps its registry
+// entry, so it can be rebuilt later with `provision`. It's the middle rung between
+// stop (resource kept) and delete (entry gone too).
+func (a *App) runDeprovision(name string, yes bool) error {
+	m, b, err := a.resolve(name)
+	if err != nil {
+		return err
+	}
+	if m.IsRemote() {
+		fmt.Fprintf(a.Stderr,
+			"devvm: '%s' is a remote host; devvm does not manage its resource lifecycle yet (no-op).\n", name)
+		return nil
+	}
+	ok, err := b.Exists()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintf(a.Stdout, "devvm: '%s' is already dormant (not provisioned)\n", name)
+		return nil
+	}
+	if !yes {
+		confirmed, cerr := confirm(fmt.Sprintf("Destroy '%s' disk but keep its registry entry?", name))
+		if cerr != nil {
+			return cerr
+		}
+		if !confirmed {
+			return fmt.Errorf("aborted")
+		}
+	}
+	// Reap forwards (stop the daemon) before tearing down the resource, so no dead
+	// forward squats a host port — same as stop.
+	if cl, derr := session.Existing(a.ConfigDir, name); derr == nil {
+		_ = cl.Stop()
+	}
+	if err := b.PowerDelete(); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Stdout,
+		"devvm: deprovisioned '%s' (registry entry kept; 'devvm provision %s' to rebuild)\n", name, name)
+	return nil
+}
+
 func (a *App) runDelete(name string) error {
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
+	}
+	// A dormant machine (conf but no resource) has nothing to destroy — just drop
+	// the registry entry, no scary confirm. On an Exists() error, fall through to
+	// the normal path so the real cause surfaces (don't silently remove a conf for
+	// a resource we couldn't probe).
+	if ok, exErr := b.Exists(); exErr == nil && !ok {
+		if err := config.Remove(a.ConfigDir, name); err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Stdout, "devvm: removed registry entry for '%s' (was dormant)\n", name)
+		return nil
 	}
 	switch {
 	case m.Backend == config.BackendSmol:
@@ -152,7 +240,11 @@ func (a *App) runStatus(name string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.Stdout, "Machine '%s' (%s): %s\n", st.Name, st.Backend, st.Raw)
+	raw := st.Raw
+	if !st.Exists {
+		raw = "dormant (not provisioned)"
+	}
+	fmt.Fprintf(a.Stdout, "Machine '%s' (%s): %s\n", st.Name, st.Backend, raw)
 	a.forwardReport(name)
 	return nil
 }

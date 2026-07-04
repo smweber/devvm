@@ -3,7 +3,7 @@
 // one instance), and ssh hardening. This decouples devvm from bootstrap.sh —
 // the default provisioner reproduces the old curl|bash path, but any URL/cmd
 // works.
-package provision
+package bootstrap
 
 import (
 	"context"

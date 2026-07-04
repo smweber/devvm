@@ -46,7 +46,7 @@ func (a *App) reportForward(name string, host, guest, pref int, bumped bool) {
 }
 
 func (a *App) runPort(name, mapping string) error {
-	m, _, err := a.resolve(name)
+	m, _, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func (a *App) runPortsList(name string) error {
 
 // tunnelDown stops the machine's live forwards, if any daemon is running.
 func (a *App) tunnelDown(name string) error {
-	if _, _, err := a.resolve(name); err != nil {
+	if _, _, err := a.resolveLive(name); err != nil {
 		return err
 	}
 	cl, err := session.Existing(a.ConfigDir, name)
@@ -151,7 +151,7 @@ func (a *App) tunnelDown(name string) error {
 // tunnelUp brings up every configured forward for the machine (used by
 // `tunnel up`, `start`, and vnc).
 func (a *App) tunnelUp(name string) error {
-	m, _, err := a.resolve(name)
+	m, _, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func (a *App) tunnelUp(name string) error {
 }
 
 func (a *App) runVNC(name string) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}

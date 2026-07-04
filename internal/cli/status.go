@@ -69,5 +69,10 @@ func (a *App) machineState(m *config.Machine) string {
 	if err != nil {
 		return "?"
 	}
+	// A registered machine with no live resource is dormant (e.g. after
+	// deprovision) — render it as such rather than smol's raw "not created".
+	if !st.Exists {
+		return "dormant"
+	}
 	return st.Raw
 }

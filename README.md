@@ -56,7 +56,7 @@ internal/agentrpc/  yamux stream protocol (forward / rpc / event) shared host+gu
 internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)
 internal/keys/      authorized_keys logic (dedup / revoke / list), host-side, was awk
 internal/auth/      login orchestration, URL bridge, callback-as-forward
-internal/provision/ prereqs (install on managed / check on adopt) + provisioner + hardening
+internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 ```
 

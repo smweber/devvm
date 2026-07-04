@@ -35,6 +35,36 @@ func (a *App) resolve(name string) (*config.Machine, backend.Backend, error) {
 	return m, b, nil
 }
 
+// requireProvisioned errors if a registered machine has no live backend resource
+// — a "dormant" box (conf exists, but the VM/host doesn't, e.g. after
+// `deprovision`). It lets commands that need a running box fail with a clear next
+// step instead of deep inside smolvm/exec. Remote backends report Exists()==true
+// always, so this is a no-op there.
+func requireProvisioned(m *config.Machine, b backend.Backend) error {
+	ok, err := b.Exists()
+	if err != nil {
+		return err // e.g. smolvm not installed — surface the real cause, not "dormant"
+	}
+	if !ok {
+		return fmt.Errorf("'%s' is not provisioned — run 'devvm provision %s'", m.Name, m.Name)
+	}
+	return nil
+}
+
+// resolveLive is resolve plus requireProvisioned, for the commands that need a
+// running box. Note it adds one `smolvm machine status` probe, which lands on the
+// exec/shell/forward hot path — cheap, but not free.
+func (a *App) resolveLive(name string) (*config.Machine, backend.Backend, error) {
+	m, b, err := a.resolve(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := requireProvisioned(m, b); err != nil {
+		return nil, nil, err
+	}
+	return m, b, nil
+}
+
 var yesRe = regexp.MustCompile(`^[Yy]([Ee][Ss])?$`)
 
 // confirm prompts on the controlling terminal, matching the old confirm().

@@ -79,7 +79,7 @@ internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
 internal/auth/      login orchestration, URL bridge, callback-as-forward
-internal/provision/ prereqs (install on managed / check on adopt) + provisioner + hardening
+internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 ```
 
@@ -102,7 +102,10 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   `keys {add,rm,list,dedupe}`, and `defaults {list,set,unset,path}` (global, so its
   leaves take a KEY not a NAME). NAME is always the **first positional of the leaf**
   (`devvm repos add NAME REPO`) so completion and "first arg = machine" hold at any
-  depth. Single-action verbs (start/stop/attach/…) stay flat. `repos add` records
+  depth. Single-action verbs (create/provision/start/stop/deprovision/delete/attach/…)
+  stay flat, but `--help` clusters them into Lifecycle/Connect/Configure groups in an
+  explicit lifecycle order via `cobra.EnableCommandSorting=false` + `AddGroup`/`GroupID`
+  (see `rootCmd`). `repos add` records
   in the conf and clones immediately (`--no-clone` to skip); `owner/repo` shorthand
   clones via gh, any URL via plain git, so non-GitHub hosts work.
 - **Keys**: `internal/keys` is pure text logic (SHA256 fingerprint computed in-Go,
@@ -118,16 +121,30 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
   install, gated behind explicit consent (`auth --install-agent` or a prompt) so
   devvm never writes to an adopted box unasked. `Install` returns the path to use.
-- **Provisioner**: `provision` may be `url:`, `cmd:`, or `none`; the built-in
-  default is **`none`** (nothing personal baked into the binary). Each box's
-  provisioner is resolved once at create time (flag > `config.toml` `provision` >
-  built-in) and written concretely into its conf, so editing global defaults never
-  changes what an existing box re-runs on `bootstrap`. A `url:` provisioner (e.g. a
-  dotfiles `bootstrap.sh`) is a per-user choice set via `defaults set provision …`.
+- **Vocabulary — don't re-conflate these.** `provision` means **allocate a
+  resource** (the VM/disk); `deprovision` frees it while keeping the registry entry.
+  The **`bootstrap-hook`** (conf `bootstrap_hook`, was `provision`) is the *user
+  setup step* the `bootstrap` phase runs (prereqs + hardening + hook). So
+  `provision` = make the box exist; `bootstrap-hook` = shape it.
+- **Lifecycle states** are **derived, not stored**: a machine is *dormant* when its
+  conf exists but the backend resource doesn't (`config.Exists ∧ ¬backend.Exists()`).
+  `provision` allocates a dormant box (+ bootstrap); `deprovision` returns a live box
+  to dormant (destroys disk, keeps conf); `delete` on a dormant box just deregisters.
+  `resolveLive`/`requireProvisioned` (`resolve.go`) guard the commands that need a
+  live box so they fail with a clear next step. Remote backends report
+  `Exists()==true` always, so provision/deprovision no-op there **until the hetzner
+  backend** adds real API-backed create/destroy.
+- **Bootstrap-hook**: may be `url:`, `cmd:`, or `none`; the built-in default is
+  **`none`** (nothing personal baked into the binary). Each box's hook is resolved
+  once at create time (flag > `config.toml` `bootstrap_hook` > built-in) and written
+  concretely into its conf, so editing global defaults never changes what an existing
+  box re-runs on `bootstrap`. A `url:` hook (e.g. a dotfiles `bootstrap.sh`) is a
+  per-user choice set via `defaults set bootstrap-hook …`.
 - **Global defaults** (`internal/config/defaults.go`): create-time defaults in
-  `$XDG_CONFIG_HOME/devvm/config.toml` (`provision`, `memory`, `transport`),
+  `$XDG_CONFIG_HOME/devvm/config.toml` (`bootstrap_hook`, `memory`, `transport`),
   sibling to `machines/`. Consulted **only** at create (to seed prompts and the
-  non-interactive path), never at runtime. Managed via `devvm defaults`.
+  non-interactive path), never at runtime. Managed via `devvm defaults` (its CLI keys
+  use hyphens, e.g. `bootstrap-hook`; the TOML uses snake_case `bootstrap_hook`).
 
 ## Testing gotchas (all real, learned the hard way)
 

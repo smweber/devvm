@@ -5,25 +5,25 @@ import (
 	"fmt"
 
 	"github.com/smweber/devvm/internal/backend"
+	"github.com/smweber/devvm/internal/bootstrap"
 	"github.com/smweber/devvm/internal/config"
-	"github.com/smweber/devvm/internal/provision"
 )
 
 func (a *App) runBootstrap(name string) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
 	// Prereqs installs on managed boxes (smol, remote-managed) and only checks on
 	// adopted remote-unmanaged hosts.
-	if err := provision.Prereqs(ctx, b, m); err != nil {
+	if err := bootstrap.Prereqs(ctx, b, m); err != nil {
 		return err
 	}
-	// The provisioner shapes the OS, so it runs only on boxes devvm owns; adopted
+	// The bootstrap-hook shapes the OS, so it runs only on boxes devvm owns; adopted
 	// hosts are left untouched.
 	if m.Managed() {
-		if err := provision.Run(ctx, b, m); err != nil {
+		if err := bootstrap.RunHook(ctx, b, m); err != nil {
 			return err
 		}
 	}
@@ -34,7 +34,7 @@ func (a *App) runBootstrap(name string) error {
 			return err
 		}
 		if m.Managed() && m.Harden {
-			if err := provision.Harden(ctx, b, m); err != nil {
+			if err := bootstrap.Harden(ctx, b, m); err != nil {
 				return err
 			}
 		}
@@ -43,7 +43,7 @@ func (a *App) runBootstrap(name string) error {
 }
 
 func (a *App) runLockdown(name string) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (a *App) runLockdown(name string) error {
 			return fmt.Errorf("aborted")
 		}
 	}
-	return provision.Harden(context.Background(), b, m)
+	return bootstrap.Harden(context.Background(), b, m)
 }
 
 // seedAuthorizedKeys pushes keys from the machine conf at bootstrap. A source

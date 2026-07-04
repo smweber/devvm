@@ -1,4 +1,4 @@
-package provision
+package bootstrap
 
 import (
 	"context"
