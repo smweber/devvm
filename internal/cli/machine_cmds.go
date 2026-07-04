@@ -14,6 +14,13 @@ func (a *App) runExec(name string, argv []string) error {
 	if err != nil {
 		return err
 	}
+	// Flag parsing is disabled so CMD's own flags pass through, which means a
+	// conventional `devvm exec NAME -- cmd` separator lands in argv. smol survives
+	// it (exec "$@" eats the --) but ssh renders `bash -lc "-- cmd"` and fails, so
+	// strip one leading -- for uniform behavior across backends.
+	if len(argv) > 0 && argv[0] == "--" {
+		argv = argv[1:]
+	}
 	return b.Run(context.Background(), backend.ExecOpts{Login: true}, argv...)
 }
 
