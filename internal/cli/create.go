@@ -123,10 +123,10 @@ func (a *App) probeRemote(m *config.Machine) error {
 func (a *App) printCreateNext(m *config.Machine) {
 	fmt.Printf("\nMachine '%s' (%s) is ready.\n\nNext:\n", m.Name, m.Backend)
 	if m.IsRemote() {
-		fmt.Printf("  devvm authorize-key %s   # add a client key if needed\n", m.Name)
+		fmt.Printf("  devvm keys add %s        # add a client key if needed\n", m.Name)
 	}
 	fmt.Printf("  devvm auth %s            # log in to github, codex, and claude\n", m.Name)
-	fmt.Printf("  devvm repos %s           # after adding repos to the machine conf\n", m.Name)
+	fmt.Printf("  devvm repos add %s owner/repo  # add + clone a repo\n", m.Name)
 	fmt.Printf("  devvm attach %s          # join the persistent dev tmux session\n", m.Name)
 }
 

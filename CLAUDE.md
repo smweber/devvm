@@ -92,7 +92,13 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   shell), both backend-dispatched via the `Interactive` interface and taking
   `--transport ssh|mosh`. There is no `ssh`/`mosh` command. `create` is
   backend-agnostic (flags-first, huh prompts on a TTY); it adopts remote hosts by
-  test-connecting before saving the conf.
+  test-connecting before saving the conf. Multi-op nouns are grouped:
+  `repos {add,rm,list,clone}`, `ports {add,rm,list,up,down}`, and
+  `keys {add,rm,list,dedupe}`. NAME is always the **first positional of the leaf**
+  (`devvm repos add NAME REPO`) so completion and "first arg = machine" hold at any
+  depth. Single-action verbs (start/stop/attach/…) stay flat. `repos add` records
+  in the conf and clones immediately (`--no-clone` to skip); `owner/repo` shorthand
+  clones via gh, any URL via plain git, so non-GitHub hosts work.
 - **Keys**: `internal/keys` is pure text logic (SHA256 fingerprint computed in-Go,
   matches `ssh-keygen`). It runs **host-side** — read `~/.ssh/authorized_keys`,
   process on the host, write back atomically (`umask 077` + temp + `mv`, content

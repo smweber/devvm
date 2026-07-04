@@ -114,50 +114,89 @@ func (a *App) authCmd() *cobra.Command {
 	return c
 }
 
+// reposCmd groups per-machine git repo management. NAME is the first positional
+// of each leaf, keeping "first arg = machine" consistent across the whole CLI.
 func (a *App) reposCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "repos NAME",
-		Short: "Clone this machine's configured repos",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runRepos(args[0]) },
+	c := &cobra.Command{Use: "repos", Short: "Manage a machine's git repositories"}
+
+	add := &cobra.Command{
+		Use:   "add NAME [REPO...]",
+		Short: "Add repo(s) to the conf and clone them (owner/repo, https://, ssh://)",
+		Long: "Add repositories to a machine and clone them into ~/src.\n\n" +
+			"REPO may be GitHub \"owner/repo\" shorthand (cloned via gh) or any git\n" +
+			"URL (https://, ssh://, git@host:path — cloned via git). With no REPO and\n" +
+			"a terminal it prompts, prefilling from the current directory's git origin.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			noClone, _ := cmd.Flags().GetBool("no-clone")
+			return a.runReposAdd(args[0], args[1:], !noClone)
+		},
+		ValidArgsFunction: a.completeMachines,
 	}
-	a.machineArg(c)
+	add.Flags().Bool("no-clone", false, "record in the conf only; don't clone now")
+
+	rm := &cobra.Command{
+		Use:   "rm NAME REPO",
+		Short: "Remove a repo from the conf (leaves the guest checkout)",
+		Args:  cobra.ExactArgs(2),
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runReposRm(args[0], args[1]) },
+	}
+
+	list := &cobra.Command{
+		Use:   "list NAME",
+		Short: "List a machine's configured repos",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runReposList(args[0]) },
+	}
+	a.machineArg(list)
+
+	clone := &cobra.Command{
+		Use:   "clone NAME",
+		Short: "Clone all of a machine's configured repos",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runReposClone(args[0]) },
+	}
+	a.machineArg(clone)
+
+	c.AddCommand(add, rm, list, clone)
 	return c
 }
 
-func (a *App) portCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "port NAME HOST:GUEST",
+// portsCmd groups per-machine port forwarding: add/rm/list mutate the conf,
+// up/down drive the live forwards.
+func (a *App) portsCmd() *cobra.Command {
+	c := &cobra.Command{Use: "ports", Short: "Manage a machine's port forwards"}
+
+	add := &cobra.Command{
+		Use:   "add NAME HOST:GUEST",
 		Short: "Forward host port HOST -> guest GUEST (auto-bumps on conflict)",
 		Args:  cobra.ExactArgs(2),
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPort(args[0], args[1]) },
 	}
-	return c
-}
-
-func (a *App) unportCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "unport NAME HOST:GUEST",
+	rm := &cobra.Command{
+		Use:   "rm NAME HOST:GUEST",
 		Short: "Remove a configured forward + tear it down",
 		Args:  cobra.ExactArgs(2),
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runUnport(args[0], args[1]) },
 	}
-	return c
-}
-
-func (a *App) tunnelCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:       "tunnel NAME [up|down|status]",
-		Short:     "Start/stop/inspect this machine's forwards",
-		Args:      cobra.RangeArgs(1, 2),
-		ValidArgs: []string{"up", "down", "status"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			action := "up"
-			if len(args) == 2 {
-				action = args[1]
-			}
-			return a.runTunnel(args[0], action)
-		},
+	list := &cobra.Command{
+		Use:   "list NAME",
+		Short: "List configured + live forwards",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPortsList(args[0]) },
 	}
+	a.machineArg(list)
+	up := &cobra.Command{
+		Use:   "up NAME",
+		Short: "Bring up all configured forwards",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.tunnelUp(args[0]) },
+	}
+	a.machineArg(up)
+	down := &cobra.Command{
+		Use:   "down NAME",
+		Short: "Tear down live forwards",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.tunnelDown(args[0]) },
+	}
+	a.machineArg(down)
+
+	c.AddCommand(add, rm, list, up, down)
 	return c
 }
 
@@ -217,46 +256,40 @@ func (a *App) vncCmd() *cobra.Command {
 	return c
 }
 
-func (a *App) authorizeKeyCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:                "authorize-key NAME [KEY|--from-github USER]",
+// keysCmd groups authorized_keys management for remote machines (host-side over
+// one exec; see internal/keys). NAME is the first positional of each leaf.
+func (a *App) keysCmd() *cobra.Command {
+	c := &cobra.Command{Use: "keys", Short: "Manage a machine's authorized SSH keys"}
+
+	add := &cobra.Command{
+		Use:                "add NAME [KEY|--from-github USER]",
 		Short:              "Add a client pubkey (remote machines)",
 		Args:               cobra.MinimumNArgs(1),
-		DisableFlagParsing: true,
+		DisableFlagParsing: true, // pass --from-github through untouched
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runAuthorizeKey(args[0], args[1:])
 		},
 	}
-	return c
-}
-
-func (a *App) keysCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "keys NAME",
+	list := &cobra.Command{
+		Use:   "list NAME",
 		Short: "List authorized keys (remote machines)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runKeys(args[0]) },
 	}
-	a.machineArg(c)
-	return c
-}
-
-func (a *App) revokeKeyCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "revoke-key NAME PATTERN",
+	a.machineArg(list)
+	rm := &cobra.Command{
+		Use:   "rm NAME PATTERN",
 		Short: "Remove one key by fingerprint, comment, or key-line substring",
 		Args:  cobra.ExactArgs(2),
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runRevokeKey(args[0], args[1]) },
 	}
-	return c
-}
-
-func (a *App) cleanupKeysCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "cleanup-keys NAME",
+	dedupe := &cobra.Command{
+		Use:   "dedupe NAME",
 		Short: "Remove duplicate authorized keys (remote machines)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runCleanupKeys(args[0]) },
 	}
-	a.machineArg(c)
+	a.machineArg(dedupe)
+
+	c.AddCommand(add, list, rm, dedupe)
 	return c
 }
 

@@ -84,7 +84,7 @@ func (a *App) runKeys(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireRemote(m, "keys"); err != nil {
+	if err := requireRemote(m, "keys list"); err != nil {
 		return err
 	}
 	lines, err := a.guestAuthKeys(b)
@@ -107,7 +107,7 @@ func (a *App) runCleanupKeys(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireRemote(m, "cleanup-keys"); err != nil {
+	if err := requireRemote(m, "keys dedupe"); err != nil {
 		return err
 	}
 	lines, err := a.guestAuthKeys(b)
@@ -131,7 +131,7 @@ func (a *App) runRevokeKey(name, pattern string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireRemote(m, "revoke-key"); err != nil {
+	if err := requireRemote(m, "keys rm"); err != nil {
 		return err
 	}
 	lines, err := a.guestAuthKeys(b)
@@ -161,7 +161,7 @@ func (a *App) runAuthorizeKey(name string, spec []string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireRemote(m, "authorize-key"); err != nil {
+	if err := requireRemote(m, "keys add"); err != nil {
 		return err
 	}
 	if len(spec) == 0 {
@@ -189,27 +189,6 @@ func (a *App) runAuthorizeKey(name string, spec []string) error {
 	return nil
 }
 
-func (a *App) runRepos(name string) error {
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	if len(m.Repos) == 0 {
-		fmt.Printf("No repositories configured for '%s'.\n", name)
-		fmt.Printf("Add repos = [\"owner/repo\", ...] to the machine conf.\n")
-		return nil
-	}
-	// Clone via a login shell so gh (Homebrew) is on PATH and uses the login token.
-	script := `mkdir -p "$HOME/src"; cd "$HOME/src"; [ -d "${1##*/}" ] || gh repo clone "$1"`
-	for _, repo := range m.Repos {
-		if err := b.Run(context.Background(), backend.ExecOpts{Login: true},
-			"bash", "-lc", script, "_", repo); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // resolvePubkeys turns a key spec into public-key lines, mirroring resolve_pubkeys:
 // --from-github USER, a bare inline key, a file path, or (empty) all local id_*.pub.
 func resolvePubkeys(spec []string) ([]string, error) {
@@ -218,7 +197,7 @@ func resolvePubkeys(spec []string) ([]string, error) {
 		return localPubkeys(), nil
 	case spec[0] == "--from-github":
 		if len(spec) < 2 || spec[1] == "" {
-			return nil, fmt.Errorf("authorize-key --from-github needs a USER")
+			return nil, fmt.Errorf("keys add --from-github needs a USER")
 		}
 		return githubKeys(spec[1])
 	case isInlineKey(spec[0]):

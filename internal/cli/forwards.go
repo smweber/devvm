@@ -84,32 +84,42 @@ func (a *App) runUnport(name, mapping string) error {
 	return nil
 }
 
-func (a *App) runTunnel(name, action string) error {
+// runPortsList shows the machine's configured forwards plus any that are live.
+func (a *App) runPortsList(name string) error {
+	m, _, err := a.resolve(name)
+	if err != nil {
+		return err
+	}
+	if len(m.Ports) == 0 {
+		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
+	} else {
+		fmt.Fprintln(a.Stdout, "configured:")
+		for _, p := range m.Ports {
+			fmt.Fprintf(a.Stdout, "  %s\n", p)
+		}
+	}
+	a.forwardReport(name)
+	return nil
+}
+
+// tunnelDown stops the machine's live forwards, if any daemon is running.
+func (a *App) tunnelDown(name string) error {
 	if _, _, err := a.resolve(name); err != nil {
 		return err
 	}
-	switch action {
-	case "up":
-		return a.tunnelUp(name)
-	case "down":
-		cl, err := session.Existing(a.ConfigDir, name)
-		if errors.Is(err, session.ErrNoDaemon) {
-			fmt.Println("devvm: no forwards running")
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if err := cl.Stop(); err != nil {
-			return err
-		}
-		fmt.Println("devvm: forwards stopped")
+	cl, err := session.Existing(a.ConfigDir, name)
+	if errors.Is(err, session.ErrNoDaemon) {
+		fmt.Fprintln(a.Stdout, "devvm: no forwards running")
 		return nil
-	case "status":
-		return a.runStatus(name)
-	default:
-		return fmt.Errorf("usage: devvm tunnel NAME [up|down|status]")
 	}
+	if err != nil {
+		return err
+	}
+	if err := cl.Stop(); err != nil {
+		return err
+	}
+	fmt.Fprintln(a.Stdout, "devvm: forwards stopped")
+	return nil
 }
 
 // tunnelUp brings up every configured forward for the machine (used by
@@ -120,7 +130,7 @@ func (a *App) tunnelUp(name string) error {
 		return err
 	}
 	if len(m.Ports) == 0 {
-		fmt.Printf("devvm: no ports configured; add one with 'devvm port %s HOST:GUEST'\n", name)
+		fmt.Printf("devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 		return nil
 	}
 	cl, err := session.Dial(a.ConfigDir, name)

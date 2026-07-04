@@ -306,3 +306,13 @@ func (m *Machine) HasPort(mapping string) bool {
 	}
 	return false
 }
+
+// HasRepo reports whether the exact repo spec is already configured.
+func (m *Machine) HasRepo(repo string) bool {
+	for _, r := range m.Repos {
+		if r == repo {
+			return true
+		}
+	}
+	return false
+}
