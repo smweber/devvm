@@ -54,8 +54,10 @@ write-back), so `keys` needs no agent and touches nothing on an adopt host but
 
 ## Two binaries, two targets — don't conflate them
 
-- **`devvm-agent` (guest)** runs *inside* the box, which is **always Linux**.
-  `build.sh` builds `linux/{amd64,arm64}` only — never macOS. These are committed
+- **`devvm-agent` (guest)** runs *inside* the box, which is **always Linux**
+  (`agentbin.Install` probes `uname -s` and fails early otherwise; agent-free
+  commands still work on any remote). `build.sh` builds `linux/{amd64,arm64}`
+  only — never macOS. These are committed
   under `internal/agentbin/bin/` and `go:embed`-ed into the host binary.
 - **`devvm` (host)** runs on the user's machine — macOS **or** Linux.
   `release.sh` cross-compiles `darwin`+`linux` × `arm64`+`amd64`.

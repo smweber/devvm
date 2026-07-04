@@ -75,7 +75,10 @@ agent — which is what lets `keys` work on an adopt host with zero footprint.
 
 `internal/agentbin/bin/devvm-agent-linux-{amd64,arm64}` are cross-compiled and
 committed, then `go:embed`-ed into the host binary so `go install …@latest`
-yields a self-contained artifact. Regenerate after changing `cmd/devvm-agent`:
+yields a self-contained artifact. Guests must be **Linux**: anything needing the
+agent (`auth`, smol forwards) fails early with a clear error on other OSes,
+while agent-free commands (`shell`, `attach`, `exec`, `keys`, ssh forwards)
+work on any remote with an sshd. Regenerate after changing `cmd/devvm-agent`:
 
 ```sh
 ./build.sh

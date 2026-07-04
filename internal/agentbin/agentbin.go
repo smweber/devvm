@@ -30,10 +30,22 @@ var binFS embed.FS
 // Adopted (unmanaged) hosts instead get a user-scoped ~/.local/bin install.
 const managedPath = "/usr/local/bin/devvm-agent"
 
-// binFor returns the embedded agent bytes for a linux guest arch (uname -m).
-func binFor(guestArch string) ([]byte, string, error) {
+// binFor returns the embedded agent bytes for a guest's `uname -s -m` (e.g.
+// "Linux x86_64"). Only linux binaries are embedded, so a non-Linux remote
+// (say a macOS adopt host) fails here with a clear message instead of after
+// installing a binary that can't exec.
+func binFor(unameSM string) ([]byte, string, error) {
+	fields := strings.Fields(unameSM)
+	if len(fields) != 2 {
+		return nil, "", fmt.Errorf("unexpected guest uname output %q", unameSM)
+	}
+	osname, guestArch := fields[0], fields[1]
+	if osname != "Linux" {
+		return nil, "", fmt.Errorf(
+			"guest OS is %s, but the devvm-agent only runs on Linux; 'auth' and smol forwards need it (everything else works agent-free)", osname)
+	}
 	var arch string
-	switch strings.TrimSpace(guestArch) {
+	switch guestArch {
 	case "aarch64", "arm64":
 		arch = "arm64"
 	case "x86_64", "amd64":
@@ -63,11 +75,11 @@ func sha256hex(b []byte) string {
 // error aborts, which is how the caller gates writes to an adopt host behind
 // explicit consent.
 func Install(ctx context.Context, b backend.Backend, m *config.Machine, approve func() error) (string, error) {
-	var archOut bytes.Buffer
-	if err := b.Run(ctx, backend.ExecOpts{Stdout: &archOut, Stderr: os.Stderr}, "uname", "-m"); err != nil {
-		return "", fmt.Errorf("probe guest arch: %w", err)
+	var unameOut bytes.Buffer
+	if err := b.Run(ctx, backend.ExecOpts{Stdout: &unameOut, Stderr: os.Stderr}, "uname", "-s", "-m"); err != nil {
+		return "", fmt.Errorf("probe guest os/arch: %w", err)
 	}
-	data, arch, err := binFor(archOut.String())
+	data, arch, err := binFor(unameOut.String())
 	if err != nil {
 		return "", err
 	}
