@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -46,12 +47,21 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 	if err := os.MkdirAll(config.RuntimeDir(configDir), 0o755); err != nil {
 		return err
 	}
+	// Serialize startup: two racing daemons could otherwise both pass the dial
+	// check, and the loser's stale-socket Remove would unlink the winner's live
+	// socket (and, on smol, both would briefly hold parallel agent execs).
+	lock, err := acquireLock(lockPath(configDir, m.Name))
+	if err != nil {
+		return err
+	}
+	defer lock.Close() // Close releases the flock
+
 	// If another daemon already owns the socket, defer to it.
 	if c, err := net.Dial("unix", sock); err == nil {
 		c.Close()
 		return nil
 	}
-	_ = os.Remove(sock) // clear a stale socket
+	_ = os.Remove(sock) // clear a stale socket (nobody answered it, and we hold the lock)
 
 	tr, err := newTransport(ctx, m, b)
 	if err != nil {
@@ -62,6 +72,8 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 		tr.Close()
 		return err
 	}
+	// The socket is live and dialable; let any queued starter in to see that.
+	lock.Close()
 
 	d := &daemon{
 		configDir: configDir,
@@ -209,4 +221,18 @@ func (d *daemon) dispatch(req Request) Response {
 func writeResp(w io.Writer, r Response) {
 	b, _ := json.Marshal(r)
 	w.Write(append(b, '\n'))
+}
+
+// acquireLock takes an exclusive flock on path, blocking until it's free.
+// Closing the returned file releases it.
+func acquireLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	return f, nil
 }

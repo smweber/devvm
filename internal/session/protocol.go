@@ -51,3 +51,8 @@ func socketPath(configDir, name string) string {
 func logPath(configDir, name string) string {
 	return filepath.Join(config.RuntimeDir(configDir), name+".log")
 }
+
+// lockPath is the startup lock serializing daemon creation for a machine.
+func lockPath(configDir, name string) string {
+	return filepath.Join(config.RuntimeDir(configDir), name+".lock")
+}
