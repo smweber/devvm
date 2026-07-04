@@ -15,19 +15,20 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Build with the exact toolchain in .go-version (not go.mod's floor), so
       # CI and local `mise` compile the guest agents with the same compiler and
       # the committed bytes stay reproducible.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: .go-version
 
       # Guard against a stale/dirty commit of the embedded guest agents: rebuild
-      # them and fail if they differ from what's committed. Reproducible only
-      # because the toolchain is pinned (go.mod `toolchain` == mise.toml == this
-      # runner via go-version-file), so identical source yields identical bytes.
+      # them and fail if they differ from what's committed. Reproducible because
+      # this runner and local `mise` build with the same toolchain (both read
+      # .go-version) and build.sh strips paths/VCS stamps, so identical source
+      # yields identical bytes.
       - name: Verify committed guest agents are up to date
         run: |
           ./build.sh
