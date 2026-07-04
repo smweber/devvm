@@ -1,7 +1,10 @@
 package backend
 
 import (
+	"slices"
 	"testing"
+
+	"github.com/smweber/devvm/internal/config"
 )
 
 // The quoting layer is the riskiest text logic carried over from bin/devvm:
@@ -49,6 +52,33 @@ func TestRootWrap(t *testing.T) {
 	}
 	if got := rootWrap(ExecOpts{}, []string{"ls"}); len(got) != 1 || got[0] != "ls" {
 		t.Errorf("non-root exec should pass through, got %v", got)
+	}
+}
+
+func TestSmolGuestArgv(t *testing.T) {
+	b := &smolBackend{m: &config.Machine{Name: "box"}}
+	// The hostname re-assert must come first (as root, before the sudo drop) —
+	// smolvm resets the runtime hostname every boot, and a mismatch makes each
+	// sudo print "unable to resolve host".
+	hostnameWrap := []string{"sh", "-c", `hostname "$1" 2>/dev/null; shift; exec "$@"`, "_", "box"}
+	tests := []struct {
+		name string
+		o    ExecOpts
+		argv []string
+		want []string
+	}{
+		{"dev user via sudo", ExecOpts{}, []string{"true"},
+			append(slices.Clone(hostnameWrap), "sudo", "-u", "dev", "-H", "env", "SMOLVM_GUEST=1", "true")},
+		{"root skips sudo", ExecOpts{User: "root"}, []string{"apt", "update"},
+			append(slices.Clone(hostnameWrap), "env", "SMOLVM_GUEST=1", "apt", "update")},
+		{"login wraps in bash -lc", ExecOpts{Login: true}, []string{"tmux", "new"},
+			append(slices.Clone(hostnameWrap), "sudo", "-u", "dev", "-H", "env", "SMOLVM_GUEST=1",
+				"bash", "-lc", `exec "$@"`, "_", "tmux", "new")},
+	}
+	for _, tt := range tests {
+		if got := b.guestArgv(tt.o, tt.argv); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: guestArgv = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
 

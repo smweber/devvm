@@ -163,12 +163,17 @@ func (b *smolBackend) execArgv(o ExecOpts, spawn bool, argv []string) []string {
 	return append(h, b.guestArgv(o, argv)...)
 }
 
-// guestArgv wraps argv to run as the requested user with the guest env. Unlike
-// the old smol_run it drops the per-exec `hostname` call (prereqs set
-// /etc/hostname once). SMOLVM_GUEST is set machine-wide at create; re-asserting
-// it here is harmless and keeps parity with the old dev-user wrapper.
+// guestArgv wraps argv to run as the requested user with the guest env.
+// SMOLVM_GUEST is set machine-wide at create; re-asserting it here is harmless
+// and keeps parity with the old dev-user wrapper.
+//
+// The leading `hostname` re-assert is load-bearing (the old smol_run had it
+// too): smolvm's init resets the runtime hostname to "container" on every boot
+// and ignores /etc/hostname, so without it every sudo below — i.e. every
+// non-root exec — spews "unable to resolve host container". The exec enters the
+// guest as root, so this is the one spot it can run before the user drop.
 func (b *smolBackend) guestArgv(o ExecOpts, argv []string) []string {
-	var out []string
+	out := []string{"sh", "-c", `hostname "$1" 2>/dev/null; shift; exec "$@"`, "_", b.m.Name}
 	if o.user() != "root" {
 		out = append(out, "sudo", "-u", o.user(), "-H")
 	}
