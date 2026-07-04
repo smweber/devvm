@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -238,21 +239,40 @@ func localPubkeys() []string {
 	return out
 }
 
+// githubUserRe matches a GitHub username (alphanumeric and hyphens). The user
+// string lands in a URL path, so this also blocks path traversal into other
+// github.com endpoints.
+var githubUserRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+
 func githubKeys(user string) ([]string, error) {
-	resp, err := http.Get("https://github.com/" + user + ".keys")
+	if !githubUserRe.MatchString(user) {
+		return nil, fmt.Errorf("invalid GitHub user %q", user)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get("https://github.com/" + user + ".keys")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching keys for GitHub user %q: %s", user, resp.Status)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, l := range strings.Split(string(body), "\n") {
-		if strings.TrimSpace(l) != "" {
-			out = append(out, strings.TrimSpace(l))
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
 		}
+		// The endpoint returns only key lines; anything else (an error page,
+		// say) must never be appended to authorized_keys.
+		if _, ok := keys.Parse(l); !ok {
+			return nil, fmt.Errorf("unexpected non-key line from github.com/%s.keys: %q", user, l)
+		}
+		out = append(out, l)
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no public keys for GitHub user %q", user)
