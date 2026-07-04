@@ -5,11 +5,21 @@ constraints; read the package docs for the rest.
 
 ## What this is
 
-`devvm` manages persistent dev boxes across two backends: local smolvm microVMs
-(`smol`) and existing SSH hosts (`ssh`). It is a **host CLI** (`cmd/devvm`) plus
-a **guest agent** (`cmd/devvm-agent`) the host installs into each box. It began
-as a ~2,100-line bash script; comments often explain *why* a behavior exists
-because it was hard-won there.
+`devvm` manages persistent dev boxes across three backends: local smolvm microVMs
+(`smol`), a remote host devvm shapes (`remote-managed`), and an existing host it
+adopts hands-off (`remote-unmanaged`). The two `remote-*` backends share one ssh
+transport (`ssh.go`) and differ only in posture: `Managed()` vs adopt. Old confs
+with `backend = "ssh"` (+ optional `unmanaged`) migrate on load. It is a **host
+CLI** (`cmd/devvm`) plus a **guest agent** (`cmd/devvm-agent`) the host installs
+into a box only when needed (see the agent note below). It began as a ~2,100-line
+bash script; comments often explain *why* a behavior exists because it was
+hard-won there.
+
+**Backend axes.** `Managed()` = smol || remote-managed (devvm owns the OS:
+installs prereqs, may harden, pins known_hosts). `IsRemote()` = both `remote-*`
+(reached over ssh). The old per-machine `unmanaged` bool is gone — the backend
+value carries it. A `transport` field (`ssh`|`mosh`) steers only the interactive
+connection on remote backends; forwards are always native `ssh -L`.
 
 ## Build & test
 
@@ -33,11 +43,14 @@ smol machine, every port forward and auth event rides a **single** persistent
 machine's lifetime, and the CLI is a thin client over a unix socket.
 
 Do **not** regress to one-exec-per-connection (the original `devvm-mux` was
-created specifically to escape that). One-shot guest actions (`keys`) are a
-single exec each, which is fine — the wall is about *parallel* execs.
+created specifically to escape that). The wall is about *parallel* execs, so a
+single one-shot exec is fine.
 
 ssh has no such limit: its forwards are native `ssh -L` on a ControlMaster; only
-rpc/events ride the agent exec.
+rpc/events ride the agent exec. **`authorized_keys` management is host-side**
+(`internal/keys` over one plain exec — read, process on the host, atomic
+write-back), so `keys` needs no agent and touches nothing on an adopt host but
+`~/.ssh`. The agent is now pulled in only by smol forwards and `auth`.
 
 ## Two binaries, two targets — don't conflate them
 
@@ -54,16 +67,16 @@ rpc/events ride the agent exec.
 
 ```
 cmd/devvm/          host CLI entrypoint
-cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url | keys
-internal/cli/       cobra command tree + handlers
+cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
+internal/cli/       cobra command tree + handlers (create's huh form in createform.go)
 internal/config/    TOML machine registry (~/.config/devvm/machines/<name>.toml)
-internal/backend/   Backend interface + smol.go + ssh.go (replaces string dispatch)
+internal/backend/   Backend interface + smol.go + ssh.go (both remote-* backends)
 internal/session/   per-machine forward daemon (owns the exec) + client + transports
 internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
-internal/agentbin/  embedded guest agent binaries (go:embed)
-internal/keys/      authorized_keys logic (was awk); pure/text, unit-tested
+internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
+internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
 internal/auth/      login orchestration, URL bridge, callback-as-forward
-internal/provision/ minimal prereqs + pluggable provisioner + ssh hardening
+internal/provision/ prereqs (install on managed / check on adopt) + provisioner + hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 ```
 
@@ -73,12 +86,26 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   detached. Owns the smol agent exec (yamux) or the ssh ControlMaster, allocates
   host ports (bumping on conflict), and idle-exits when it has no forwards.
 - **Config** is hand-editable TOML; keep it that way (don't hide state in an
-  opaque DB). No legacy sourced-bash reader.
-- **Keys**: `internal/keys` is pure text logic; the SHA256 fingerprint is
-  computed in-Go and matches `ssh-keygen`. It runs inside the agent.
+  opaque DB). No legacy sourced-bash reader. BurntSushi's `omitempty` doesn't drop
+  zero ints, so `Save` strips `key = 0` lines and defaults are backend-scoped.
+- **Connect surface**: `attach` (persistent dev tmux) and `shell` (raw login
+  shell), both backend-dispatched via the `Interactive` interface and taking
+  `--transport ssh|mosh`. There is no `ssh`/`mosh` command. `create` is
+  backend-agnostic (flags-first, huh prompts on a TTY); it adopts remote hosts by
+  test-connecting before saving the conf.
+- **Keys**: `internal/keys` is pure text logic (SHA256 fingerprint computed in-Go,
+  matches `ssh-keygen`). It runs **host-side** — read `~/.ssh/authorized_keys`,
+  process on the host, write back atomically (`umask 077` + temp + `mv`, content
+  over stdin so nothing is shell-interpolated). No agent, so it works on adopt
+  hosts with zero footprint. `internal/keys` preserves options/comments verbatim.
 - **Auth**: the guest pushes `open-url` events over the agent channel; OAuth
   loopback callbacks are bridged as ordinary forwards (no `nc`/`curl`; codex's
   `:1455` needs no VM restart).
+- **Agent install** (`internal/agentbin`): idempotent by sha256, arch-matched,
+  `$HOME`-resolved (never hardcode `/home/dev`). Managed boxes get a root-owned
+  `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
+  install, gated behind explicit consent (`auth --install-agent` or a prompt) so
+  devvm never writes to an adopted box unasked. `Install` returns the path to use.
 - **Provisioner**: `bootstrap.sh` is just the default `url:` provisioner, not a
   hard dependency — `provision` may be `url:`, `cmd:`, or `none`.
 
