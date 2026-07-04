@@ -28,6 +28,7 @@ go build ./...
 go test ./...     # everything is VM-independent — no smolvm or ssh host needed
 gofmt -l .
 ./build.sh        # rebuild + re-embed the guest agents (see below)
+./install.sh      # build for this host and install to ~/.local/bin (or $1)
 ./release.sh      # cross-compile host release binaries into dist/
 ```
 
