@@ -9,7 +9,9 @@ import (
 	"github.com/smweber/devvm/internal/session"
 )
 
-// parseMapping splits "HOST:GUEST" (or bare "PORT") into numeric ports.
+// parseMapping splits "HOST:GUEST" (or bare "PORT") into numeric ports. Both
+// must be concrete (1-65535): port 0 would bind a random port the daemon can't
+// report back (it records the preference, not the kernel's pick).
 func parseMapping(mapping string) (pref, guest int, err error) {
 	h, g := config.SplitPort(mapping)
 	pref, err1 := strconv.Atoi(h)
@@ -17,7 +19,21 @@ func parseMapping(mapping string) (pref, guest int, err error) {
 	if err1 != nil || err2 != nil {
 		return 0, 0, fmt.Errorf("'%s' must be numeric HOST:GUEST ports", mapping)
 	}
+	if pref < 1 || pref > 65535 || guest < 1 || guest > 65535 {
+		return 0, 0, fmt.Errorf("'%s' ports must be in 1-65535", mapping)
+	}
 	return pref, guest, nil
+}
+
+// findMapping returns the configured mapping equivalent to (pref, guest), so
+// "8080" and "8080:8080" name the same forward.
+func findMapping(m *config.Machine, pref, guest int) (string, bool) {
+	for _, p := range m.Ports {
+		if h, g, err := parseMapping(p); err == nil && h == pref && g == guest {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 func reportForward(name string, host, guest, pref int, bumped bool) {
@@ -45,7 +61,7 @@ func (a *App) runPort(name, mapping string) error {
 	if err != nil {
 		return err
 	}
-	if !m.HasPort(mapping) {
+	if _, ok := findMapping(m, pref, guest); !ok {
 		m.Ports = append(m.Ports, mapping)
 		if err := m.Save(a.ConfigDir); err != nil {
 			return err
@@ -60,13 +76,22 @@ func (a *App) runUnport(name, mapping string) error {
 	if err != nil {
 		return err
 	}
-	if !m.HasPort(mapping) {
+	// Match by parsed ports ("8080" == "8080:8080"); an unparseable argument
+	// can still remove an identical hand-edited conf entry by exact string.
+	configured, guest := mapping, 0
+	if pref, g, perr := parseMapping(mapping); perr == nil {
+		found, ok := findMapping(m, pref, g)
+		if !ok {
+			return fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
+		}
+		configured, guest = found, g
+	} else if !m.HasPort(mapping) {
 		return fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
 	}
 	// Drop the mapping from the conf.
 	kept := m.Ports[:0]
 	for _, p := range m.Ports {
-		if p != mapping {
+		if p != configured {
 			kept = append(kept, p)
 		}
 	}
@@ -75,12 +100,12 @@ func (a *App) runUnport(name, mapping string) error {
 		return err
 	}
 	// Tear down the live forward if a daemon is running.
-	if _, guest, err := parseMapping(mapping); err == nil {
+	if guest != 0 {
 		if cl, derr := session.Existing(a.ConfigDir, name); derr == nil {
 			_ = cl.Remove(guest)
 		}
 	}
-	fmt.Printf("devvm: removed forward %s from '%s'\n", mapping, name)
+	fmt.Printf("devvm: removed forward %s from '%s'\n", configured, name)
 	return nil
 }
 
