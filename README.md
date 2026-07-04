@@ -86,11 +86,10 @@ work on any remote with an sshd. Regenerate after changing `cmd/devvm-agent`:
 
 ## Publishing for `go install`
 
-`go install github.com/smweber/devvm/cmd/devvm@latest` needs this module at the
-root of a `smweber/devvm` repo. From the dotfiles repo:
+`go install github.com/smweber/devvm/cmd/devvm@latest` resolves the module from
+the repo named by its module path (`go.mod`), at the repo root. Publishing is
+just tagging a release:
 
 ```sh
-git subtree split --prefix=devvm -b devvm-split
-# push devvm-split to a new github.com/smweber/devvm repo, then tag:
 git tag v0.1.0 && git push --tags
 ```

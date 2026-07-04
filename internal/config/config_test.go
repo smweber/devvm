@@ -39,7 +39,7 @@ func TestSaveDropsNoise(t *testing.T) {
 }
 
 func TestValidName(t *testing.T) {
-	ok := []string{"dev", "scottdev3", "a.b_c-d", "A1"}
+	ok := []string{"dev", "devbox3", "a.b_c-d", "A1"}
 	for _, n := range ok {
 		if err := ValidName(n); err != nil {
 			t.Errorf("ValidName(%q) = %v, want nil", n, err)
@@ -134,9 +134,9 @@ func TestMigrateLegacySSH(t *testing.T) {
 func TestSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	orig := &Machine{
-		Name:                 "scottdev3",
+		Name:                 "devbox3",
 		Backend:              BackendRemoteUnmanaged,
-		SSHHost:              "scottdev3",
+		SSHHost:              "devbox3",
 		Transport:            TransportMosh,
 		Ports:                []string{"3000", "5901", "8080:80"},
 		VNCPort:              5901,
@@ -146,11 +146,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err := orig.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	got, err := Load(dir, "scottdev3")
+	got, err := Load(dir, "devbox3")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Backend != BackendRemoteUnmanaged || got.SSHHost != "scottdev3" {
+	if got.Backend != BackendRemoteUnmanaged || got.SSHHost != "devbox3" {
 		t.Errorf("core fields lost: %+v", got)
 	}
 	if got.Transport != TransportMosh {
