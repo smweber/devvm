@@ -107,7 +107,9 @@ func (b *smolBackend) PowerDelete() error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return smolCmd("machine", "delete", "--name", b.m.Name)
+	// --force skips smolvm's own confirmation; the host CLI already confirmed
+	// (and its second prompt would otherwise eat our stdin and leave the disk).
+	return smolCmd("machine", "delete", "--force", "--name", b.m.Name)
 }
 
 func (b *smolBackend) Status() (State, error) {
