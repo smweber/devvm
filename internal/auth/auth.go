@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"sync"
 
@@ -13,12 +14,9 @@ import (
 	"github.com/smweber/devvm/internal/agentbin"
 	"github.com/smweber/devvm/internal/agentrpc"
 	"github.com/smweber/devvm/internal/backend"
+	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/hostbrowser"
 )
-
-// browserShim is the guest wrapper devvm installs and points $BROWSER at; it
-// forwards login URLs to the running serve agent.
-const browserShimPath = "/usr/local/bin/devvm-open-url"
 
 // session holds the auth-scoped agent exec + yamux channel and any callback
 // forwards stood up during login.
@@ -27,23 +25,27 @@ type session struct {
 	b     backend.Backend
 	agent *backend.Session
 	mux   *yamux.Session
+	shim  string // guest $BROWSER wrapper path (co-located with the agent)
 
 	mu        sync.Mutex
 	callbacks map[int]net.Listener // guest callback port -> host listeners' owner
 }
 
 // Authenticate logs in the requested tools (github/codex/claude) inside the
-// guest, bridging the host browser and OAuth loopback callbacks over one
-// agent session. tools is the resolved list (e.g. all -> github,codex,claude).
-func Authenticate(ctx context.Context, b backend.Backend, tools []string) error {
-	if err := agentbin.Install(ctx, b); err != nil {
+// guest, bridging the host browser and OAuth loopback callbacks over one agent
+// session. tools is the resolved list (e.g. all -> github,codex,claude). approve
+// gates the agent install on adopt hosts (see agentbin.Install).
+func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, approve func() error) error {
+	agentPath, err := agentbin.Install(ctx, b, m, approve)
+	if err != nil {
 		return err
 	}
-	if err := installBrowserShim(ctx, b); err != nil {
+	shim, err := installBrowserShim(ctx, b, m, agentPath)
+	if err != nil {
 		return err
 	}
 	agent, err := b.Spawn(ctx, backend.ExecOpts{User: backend.DefaultUser},
-		agentbin.GuestPath, "serve")
+		agentPath, "serve")
 	if err != nil {
 		return err
 	}
@@ -52,7 +54,7 @@ func Authenticate(ctx context.Context, b backend.Backend, tools []string) error 
 	if err != nil {
 		return err
 	}
-	s := &session{ctx: ctx, b: b, agent: agent, mux: mux, callbacks: map[int]net.Listener{}}
+	s := &session{ctx: ctx, b: b, agent: agent, mux: mux, shim: shim, callbacks: map[int]net.Listener{}}
 	defer s.close()
 
 	go s.eventLoop()
@@ -193,7 +195,7 @@ func (s *session) interactive(script string) error {
 	return s.b.Run(s.ctx, backend.ExecOpts{
 		TTY:   true,
 		Login: true,
-		Env:   map[string]string{"BROWSER": browserShimPath},
+		Env:   map[string]string{"BROWSER": s.shim},
 	}, "bash", "-lc", script)
 }
 
@@ -207,13 +209,20 @@ func (s *session) codexSupportsDeviceAuth() bool {
 	return err == nil && strings.Contains(buf.String(), "--device-auth")
 }
 
-// installBrowserShim writes the $BROWSER wrapper that forwards URLs to the serve
-// agent (a tiny script keeps behavior uniform across tools that split $BROWSER).
-func installBrowserShim(ctx context.Context, b backend.Backend) error {
+// installBrowserShim writes the $BROWSER wrapper (a tiny script that forwards
+// URLs to the serve agent) next to the agent, and returns its path. It follows
+// the agent's ownership: root-owned beside a managed /usr/local/bin agent, or
+// user-owned in ~/.local/bin on an adopt host.
+func installBrowserShim(ctx context.Context, b backend.Backend, m *config.Machine, agentPath string) (string, error) {
+	shimPath := path.Join(path.Dir(agentPath), "devvm-open-url")
 	script := fmt.Sprintf(
 		`printf '#!/bin/sh\nexec %s open-url "$@"\n' > %s && chmod 0755 %s`,
-		agentbin.GuestPath, browserShimPath, browserShimPath)
-	return b.Run(ctx, backend.ExecOpts{User: "root"}, "sh", "-c", script)
+		agentPath, shimPath, shimPath)
+	user := ""
+	if m.Managed() {
+		user = "root"
+	}
+	return shimPath, b.Run(ctx, backend.ExecOpts{User: user}, "sh", "-c", script)
 }
 
 // Tools expands a tool selector into the ordered login list.

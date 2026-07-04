@@ -16,16 +16,19 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
+	"github.com/smweber/devvm/internal/config"
 )
 
 //go:embed bin/devvm-agent-linux-amd64 bin/devvm-agent-linux-arm64
 var binFS embed.FS
 
-// GuestPath is where the agent is installed in the guest (root-owned, on PATH).
-const GuestPath = "/usr/local/bin/devvm-agent"
+// managedPath is where the agent lives on a box devvm owns: root-owned, on PATH.
+// Adopted (unmanaged) hosts instead get a user-scoped ~/.local/bin install.
+const managedPath = "/usr/local/bin/devvm-agent"
 
 // binFor returns the embedded agent bytes for a linux guest arch (uname -m).
 func binFor(guestArch string) ([]byte, string, error) {
@@ -51,45 +54,93 @@ func sha256hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Install copies the correct-arch agent into the guest, idempotently: it skips
-// when the guest already has this exact build (sha256 match). Staging goes under
-// the dev user's home rather than /tmp, which can be a fresh tmpfs across execs.
-func Install(ctx context.Context, b backend.Backend) error {
+// Install copies the correct-arch agent into the guest and returns its absolute
+// path, idempotently: it skips when the guest already has this exact build
+// (sha256 match). Managed boxes (smol, remote-managed) get a root-owned
+// /usr/local/bin install; adopted remote-unmanaged hosts get a user-scoped
+// ~/.local/bin install (no root, nothing system-level touched). approve, if
+// non-nil, is called only when an install is actually needed — returning an
+// error aborts, which is how the caller gates writes to an adopt host behind
+// explicit consent.
+func Install(ctx context.Context, b backend.Backend, m *config.Machine, approve func() error) (string, error) {
 	var archOut bytes.Buffer
 	if err := b.Run(ctx, backend.ExecOpts{Stdout: &archOut, Stderr: os.Stderr}, "uname", "-m"); err != nil {
-		return fmt.Errorf("probe guest arch: %w", err)
+		return "", fmt.Errorf("probe guest arch: %w", err)
 	}
 	data, arch, err := binFor(archOut.String())
 	if err != nil {
-		return err
+		return "", err
 	}
 	want := sha256hex(data)
+
+	home, err := guestHome(ctx, b)
+	if err != nil {
+		return "", err
+	}
+	// Path + install strategy follow ownership. Staging sits beside the target so
+	// the final mv is an atomic same-dir swap.
+	guestPath := managedPath
+	staging := home + "/.devvm-agent.new"
+	if !m.Managed() {
+		guestPath = home + "/.local/bin/devvm-agent"
+		staging = home + "/.local/bin/.devvm-agent.new"
+	}
 
 	var guestSum bytes.Buffer
 	// A missing file yields empty output; that's a cache miss, not an error.
 	_ = b.Run(ctx, backend.ExecOpts{Stdout: &guestSum},
-		"sh", "-c", "sha256sum "+GuestPath+" 2>/dev/null | cut -d' ' -f1")
+		"sh", "-c", "sha256sum "+guestPath+" 2>/dev/null | cut -d' ' -f1")
 	if strings.TrimSpace(guestSum.String()) == want {
-		return nil
+		return guestPath, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "devvm: installing devvm-agent (linux/%s)...\n", arch)
+	if approve != nil {
+		if err := approve(); err != nil {
+			return "", err
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "devvm: installing devvm-agent (linux/%s) -> %s...\n", arch, guestPath)
 	tmp, err := os.CreateTemp("", "devvm-agent-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return err
+		return "", err
 	}
 	tmp.Close()
 
-	staging := "/home/" + backend.DefaultUser + "/.devvm-agent.new"
-	if err := b.Copy(tmp.Name(), staging); err != nil {
-		return fmt.Errorf("copy agent to guest: %w", err)
+	if m.Managed() {
+		if err := b.Copy(tmp.Name(), staging); err != nil {
+			return "", fmt.Errorf("copy agent to guest: %w", err)
+		}
+		// Install as root, then drop the staging copy.
+		return guestPath, b.Run(ctx, backend.ExecOpts{User: "root"},
+			"sh", "-c", fmt.Sprintf("install -m 0755 %s %s && rm -f %s", staging, guestPath, staging))
 	}
-	// Install as root, then drop the staging copy.
-	return b.Run(ctx, backend.ExecOpts{User: "root"},
-		"sh", "-c", fmt.Sprintf("install -m 0755 %s %s && rm -f %s", staging, GuestPath, staging))
+	// Unmanaged: user-scoped, no root. Ensure the dir exists before staging into it.
+	if err := b.Run(ctx, backend.ExecOpts{}, "sh", "-c", "mkdir -p "+path.Dir(guestPath)); err != nil {
+		return "", err
+	}
+	if err := b.Copy(tmp.Name(), staging); err != nil {
+		return "", fmt.Errorf("copy agent to guest: %w", err)
+	}
+	return guestPath, b.Run(ctx, backend.ExecOpts{},
+		"sh", "-c", fmt.Sprintf("chmod 0755 %s && mv %s %s", staging, staging, guestPath))
+}
+
+// guestHome resolves the connecting user's home directory in the guest, so the
+// agent path isn't hardcoded to a "dev" user (adopt hosts have arbitrary users).
+func guestHome(ctx context.Context, b backend.Backend) (string, error) {
+	var buf bytes.Buffer
+	if err := b.Run(ctx, backend.ExecOpts{Stdout: &buf}, "sh", "-c", "echo $HOME"); err != nil {
+		return "", fmt.Errorf("probe guest home: %w", err)
+	}
+	home := strings.TrimSpace(buf.String())
+	if home == "" {
+		return "", fmt.Errorf("guest $HOME is empty")
+	}
+	return home, nil
 }

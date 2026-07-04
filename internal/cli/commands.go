@@ -86,6 +86,7 @@ func (a *App) execCmd() *cobra.Command {
 }
 
 func (a *App) authCmd() *cobra.Command {
+	var installAgent bool
 	c := &cobra.Command{
 		Use:       "auth NAME [github|codex|claude|all]",
 		Short:     "Log in to github/codex/claude (all if omitted)",
@@ -96,9 +97,11 @@ func (a *App) authCmd() *cobra.Command {
 			if len(args) == 2 {
 				tool = args[1]
 			}
-			return a.runAuth(args[0], tool)
+			return a.runAuth(args[0], tool, installAgent)
 		},
 	}
+	c.Flags().BoolVar(&installAgent, "install-agent", false,
+		"pre-approve installing the helper agent in ~/.local/bin on an unmanaged host")
 	c.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:

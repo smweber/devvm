@@ -10,6 +10,7 @@ import (
 	"github.com/smweber/devvm/internal/agentbin"
 	"github.com/smweber/devvm/internal/agentrpc"
 	"github.com/smweber/devvm/internal/backend"
+	"github.com/smweber/devvm/internal/config"
 )
 
 // smolTransport carries every forward for a smol machine over one persistent
@@ -21,14 +22,16 @@ type smolTransport struct {
 	mux   *yamux.Session   // yamux client over the exec's stdio
 }
 
-func newSmolTransport(ctx context.Context, b backend.Backend) (*smolTransport, error) {
-	if err := agentbin.Install(ctx, b); err != nil {
+func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend) (*smolTransport, error) {
+	// smol is managed, so no approval gate (nil) and a root /usr/local/bin install.
+	agentPath, err := agentbin.Install(ctx, b, m, nil)
+	if err != nil {
 		return nil, err
 	}
 	// Spawn the agent as the dev user, raw (no login shell) so no banner
 	// corrupts the yamux stream.
 	agent, err := b.Spawn(ctx, backend.ExecOpts{User: backend.DefaultUser},
-		agentbin.GuestPath, "serve")
+		agentPath, "serve")
 	if err != nil {
 		return nil, err
 	}

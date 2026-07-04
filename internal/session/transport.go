@@ -30,7 +30,7 @@ type transport interface {
 func newTransport(ctx context.Context, m *config.Machine, b backend.Backend) (transport, error) {
 	switch m.Backend {
 	case config.BackendSmol:
-		return newSmolTransport(ctx, b)
+		return newSmolTransport(ctx, m, b)
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		conn, ok := b.(backend.SSHConnector)
 		if !ok {
