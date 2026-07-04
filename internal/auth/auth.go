@@ -28,7 +28,7 @@ type session struct {
 	shim  string // guest $BROWSER wrapper path (co-located with the agent)
 
 	mu        sync.Mutex
-	callbacks map[int]net.Listener // guest callback port -> host listeners' owner
+	callbacks map[int][]net.Listener // guest callback port -> host listeners (v4 and/or v6)
 }
 
 // Authenticate logs in the requested tools (github/codex/claude) inside the
@@ -54,7 +54,7 @@ func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, too
 	if err != nil {
 		return err
 	}
-	s := &session{ctx: ctx, b: b, agent: agent, mux: mux, shim: shim, callbacks: map[int]net.Listener{}}
+	s := &session{ctx: ctx, b: b, agent: agent, mux: mux, shim: shim, callbacks: map[int][]net.Listener{}}
 	defer s.close()
 
 	go s.eventLoop()
@@ -131,7 +131,7 @@ func (s *session) ensureCallback(port int) {
 		}
 	}
 	if len(lns) > 0 {
-		s.callbacks[port] = lns[0] // sentinel: callback is active
+		s.callbacks[port] = lns
 		fmt.Fprintf(os.Stderr, "devvm: bridging login callback on port %d\n", port)
 	}
 }
@@ -163,8 +163,10 @@ func (s *session) pump(conn net.Conn, guestPort int) {
 
 func (s *session) close() {
 	s.mu.Lock()
-	for _, ln := range s.callbacks {
-		ln.Close()
+	for _, lns := range s.callbacks {
+		for _, ln := range lns {
+			ln.Close()
+		}
 	}
 	s.mu.Unlock()
 	s.mux.Close()
