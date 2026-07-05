@@ -271,15 +271,20 @@ func (a *App) deleteCmd() *cobra.Command {
 }
 
 func (a *App) statusCmd() *cobra.Command {
-	var verbose bool
+	var verbose, plain bool
 	c := &cobra.Command{
 		Use:   "status [NAME]",
 		Short: "Machine status, grouped by backend; no NAME lists all machines",
 		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
 			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
-			"sizes, and per-machine forward detail. With NAME, always shows full detail.",
+			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
+			"--plain emits one tab-separated 'name<TAB>backend<TAB>state' row per machine\n" +
+			"(no headers or grouping) for scripts.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if plain {
+				return a.runStatusPlain()
+			}
 			if len(args) == 0 {
 				return a.runStatusAll(verbose)
 			}
@@ -288,6 +293,7 @@ func (a *App) statusCmd() *cobra.Command {
 		ValidArgsFunction: a.completeMachines,
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
+	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state' per line")
 	return c
 }
 

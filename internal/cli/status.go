@@ -75,6 +75,17 @@ func (a *App) runStatusAll(verbose bool) error {
 	return nil
 }
 
+// runStatusPlain emits one tab-separated row per machine — name, backend, and
+// derived state (running|stopped|dormant|reachable|…) — with no headers or
+// grouping, so scripts can enumerate machines (e.g. every running smol VM)
+// without scraping the human-formatted table.
+func (a *App) runStatusPlain() error {
+	for _, r := range a.gatherRows() {
+		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.name, r.backend, r.state)
+	}
+	return nil
+}
+
 func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
 	fmt.Fprintf(a.Stdout, "  %-16s %-10s %-8s %-8s %s\n", "NAME", "STATE", "MEM", "DISK", "FWDS")
 	for _, r := range rows {
