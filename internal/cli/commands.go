@@ -18,22 +18,25 @@ func (a *App) machineArg(cmd *cobra.Command) {
 func (a *App) createCmd() *cobra.Command {
 	var s createSpec
 	c := &cobra.Command{
-		Use:   "create NAME",
+		Use:   "create [NAME]",
 		Short: "Create/adopt + bootstrap a machine (any backend)",
-		Long: "Create a machine of any backend. Unset fields are prompted for on a\n" +
-			"terminal; pass them as flags to run non-interactively.\n\n" +
+		Long: "Create a machine of any backend. NAME and any unset fields are prompted\n" +
+			"for on a terminal; pass them as flags/args to run non-interactively.\n\n" +
 			"  smol              a new local smolvm microVM\n" +
 			"  remote-managed    a remote host devvm shapes (installs prereqs, may harden)\n" +
 			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)",
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s.Name = args[0]
+			if len(args) > 0 {
+				s.Name = args[0]
+			}
 			return a.runCreate(s)
 		},
 	}
 	f := c.Flags()
 	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged")
 	f.IntVarP(&s.Memory, "memory", "m", 0, "smol: VM memory in MiB")
+	f.IntVarP(&s.Disk, "disk", "d", 0, "smol: VM disk in GiB (default 50)")
 	f.StringVar(&s.SSHHost, "ssh-host", "", "remote: ssh destination (host or user@host)")
 	f.IntVar(&s.SSHPort, "ssh-port", 0, "remote: ssh port (default 22)")
 	f.StringVar(&s.Identity, "identity", "", "remote: ssh identity file")
@@ -187,11 +190,17 @@ func (a *App) portsCmd() *cobra.Command {
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runUnport(args[0], args[1]) },
 	}
 	list := &cobra.Command{
-		Use:   "list NAME",
-		Short: "List configured + live forwards",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPortsList(args[0]) },
+		Use:   "list [NAME]",
+		Short: "List configured + live forwards; no NAME shows every machine",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return a.runPortsListAll()
+			}
+			return a.runPortsList(args[0])
+		},
+		ValidArgsFunction: a.completeMachines,
 	}
-	a.machineArg(list)
 	up := &cobra.Command{
 		Use:   "up NAME",
 		Short: "Bring up all configured forwards",
@@ -262,28 +271,23 @@ func (a *App) deleteCmd() *cobra.Command {
 }
 
 func (a *App) statusCmd() *cobra.Command {
+	var verbose bool
 	c := &cobra.Command{
 		Use:   "status [NAME]",
-		Short: "Machine status; no NAME lists all machines",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Machine status, grouped by backend; no NAME lists all machines",
+		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
+			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
+			"sizes, and per-machine forward detail. With NAME, always shows full detail.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return a.runStatusAll()
+				return a.runStatusAll(verbose)
 			}
 			return a.runStatus(args[0])
 		},
 		ValidArgsFunction: a.completeMachines,
 	}
-	return c
-}
-
-func (a *App) vncCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "vnc NAME",
-		Short: "Tunnel (if needed) + open VNC (remote machines)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runVNC(args[0]) },
-	}
-	a.machineArg(c)
+	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
 	return c
 }
 

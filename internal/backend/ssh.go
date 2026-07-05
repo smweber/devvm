@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/smweber/devvm/internal/config"
@@ -229,21 +228,6 @@ func (b *sshBackend) findMoshServer() (string, error) {
 		fmt.Fprintf(os.Stderr, "devvm: configured mosh-server not executable; using %s\n", out)
 	}
 	return out, nil
-}
-
-// VNC brings the tunnel up (via the supplied hook) and opens a viewer.
-func (b *sshBackend) VNC(tunnelUp func() error) error {
-	if err := tunnelUp(); err != nil {
-		return err
-	}
-	port := b.m.VNCPort
-	if runtime.GOOS == "darwin" {
-		return exec.Command("open", fmt.Sprintf("vnc://localhost:%d", port)).Run()
-	}
-	if _, err := exec.LookPath("gvncviewer"); err == nil {
-		return exec.Command("gvncviewer", fmt.Sprintf("localhost:%d", port-5900)).Run()
-	}
-	return fmt.Errorf("gvncviewer not found; install it or connect to localhost:%d", port)
 }
 
 // SSHConn returns the parameters for a daemon-owned ControlMaster + native -L

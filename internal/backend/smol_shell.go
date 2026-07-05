@@ -14,11 +14,17 @@ const tmuxSocket = "/home/" + DefaultUser + "/.devvm/tmux.sock"
 
 // Shell opens a raw interactive login shell (no tmux). transport is ignored:
 // smol is reached via smolvm exec, never ssh/mosh.
+//
+// The `cd "$HOME"` matters: smolvm exec starts in / and a bash login shell does
+// not chdir home on its own (sudo -H only sets $HOME), so without it the prompt
+// opens in /. The outer `bash -c` just cds and execs the real `bash -l`, so
+// login semantics are unchanged — only the starting directory is fixed.
 func (b *smolBackend) Shell(string) error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return b.Run(context.Background(), ExecOpts{TTY: true}, "bash", "-l")
+	return b.Run(context.Background(), ExecOpts{TTY: true},
+		"bash", "-c", `cd "$HOME" 2>/dev/null; exec bash -l`)
 }
 
 // Attach joins the dev tmux session, starting a persistent keeper first if
@@ -58,11 +64,21 @@ func (b *smolBackend) ensureTmux() error {
 		socket="$1"
 		install -d -m 700 "$(dirname "$socket")"
 		rm -f "$socket"
+		cd "$HOME" 2>/dev/null || true
 		tmux -S "$socket" new-session -d -s dev
 		exec tmux -S "$socket" wait-for devvm-keeper-stop`
 	// Detached exec (-d) in its own context, running as the dev user.
+	//
+	// The leading `hostname` re-assert mirrors guestArgv (smol.go): this exec
+	// bypasses guestArgv, and smolvm resets the runtime hostname to "container"
+	// every boot. The tmux *server* born here is the parent of every shell you
+	// attach to, and bash caches \h at startup — so the hostname must be correct
+	// before `tmux new-session`, not just on the later attach exec. Runs as root
+	// (exec enters as root) before the sudo drop. The keeper's `cd "$HOME"` sets
+	// the session start dir, which tmux uses as the default-path for new panes.
 	args := []string{
 		"machine", "exec", "-d", "--name", b.m.Name, "-e", "TERM=xterm-256color", "--",
+		"sh", "-c", `hostname "$1" 2>/dev/null; shift; exec "$@"`, "_", b.m.Name,
 		"sudo", "-u", DefaultUser, "-H", "env", "SMOLVM_GUEST=1",
 		"bash", "-lc", keeper, "_", tmuxSocket,
 	}

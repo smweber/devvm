@@ -21,15 +21,31 @@ type createSpec struct {
 	Name          string
 	Backend       string
 	Memory        int
+	Disk          int
 	SSHHost       string
 	SSHPort       int
 	Identity      string
 	Transport     string
 	BootstrapHook string
-	Yes           bool // skip prompts; resolve every unset field from flag > config.toml > compiled
+
+	// Optional fields the interactive wizard offers (no flags; use the dedicated
+	// subcommands or edit the conf for the scripted path). Repos/Ports apply to any
+	// backend; the rest are remote-only (harden is remote-managed only).
+	Repos      []string
+	Ports      []string
+	KeysGithub []string
+	Harden     bool
+	Fail2ban   bool
+
+	Yes bool // skip prompts; resolve every unset field from flag > config.toml > compiled
 }
 
 func (a *App) runCreate(s createSpec) error {
+	// Name may be omitted on the command line; prompt for it before anything else
+	// so `devvm create` can be run bare on a terminal.
+	if err := resolveName(&s); err != nil {
+		return err
+	}
 	if err := config.ValidName(s.Name); err != nil {
 		return err
 	}
@@ -77,8 +93,12 @@ func (a *App) provisionResource(m *config.Machine) error {
 		if !backend.SmolAvailable() {
 			return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
 		}
-		fmt.Fprintf(a.Stdout, "Using %d MiB RAM.\n", m.Memory)
-		return backend.SmolCreate(m.Name, m.Memory)
+		disk := m.Disk
+		if disk <= 0 {
+			disk = backend.SmolDefaultDiskGiB
+		}
+		fmt.Fprintf(a.Stdout, "Using %d MiB RAM, %d GiB disk.\n", m.Memory, disk)
+		return backend.SmolCreate(m.Name, m.Memory, m.Disk)
 	default:
 		return a.probeRemote(m)
 	}
@@ -94,6 +114,7 @@ func (s createSpec) machine() (*config.Machine, error) {
 		}
 		m = config.NewSmol(s.Name)
 		m.Memory = s.Memory
+		m.Disk = s.Disk
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		if s.SSHHost == "" {
 			return nil, fmt.Errorf("remote backend needs --ssh-host")
@@ -106,9 +127,18 @@ func (s createSpec) machine() (*config.Machine, error) {
 		if s.Transport != "" {
 			m.Transport = s.Transport
 		}
+		m.AuthorizedKeysGithub = s.KeysGithub
+		// Hardening runs only on managed remotes (see runBootstrap); recording it
+		// on an adopt host would be a silent no-op, so keep it managed-only.
+		if s.Backend == config.BackendRemoteManaged {
+			m.Harden = s.Harden
+			m.Fail2ban = s.Fail2ban
+		}
 	default:
 		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged)", s.Backend)
 	}
+	m.Repos = s.Repos
+	m.Ports = s.Ports
 	if s.BootstrapHook != "" {
 		m.BootstrapHook = s.BootstrapHook
 	}

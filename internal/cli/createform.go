@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/bootstrap"
 	"github.com/smweber/devvm/internal/config"
 )
@@ -50,6 +51,9 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 		if err := resolveMemory(tty, interactive, s, defaults); err != nil {
 			return err
 		}
+		if err := resolveDisk(tty, interactive, s, defaults); err != nil {
+			return err
+		}
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		if err := resolveRemote(tty, interactive, s, defaults); err != nil {
 			return err
@@ -65,6 +69,36 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 			return err
 		}
 	}
+
+	// Offer the optional fields (repos, ports, keys, hardening) only on a terminal;
+	// the scripted path leaves them empty and uses the dedicated subcommands.
+	if interactive {
+		if err := askExtras(tty, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveName settles the machine name: the positional arg if given, else a
+// prompt (interactive) or an error (non-interactive), so `devvm create` runs bare.
+func resolveName(s *createSpec) error {
+	if s.Name != "" {
+		return nil
+	}
+	tty := openTTY()
+	if tty == nil || s.Yes {
+		return fmt.Errorf("a machine name is required (usage: devvm create NAME)")
+	}
+	defer tty.Close()
+	name := ""
+	if err := form(tty, huh.NewInput().
+		Title("Machine name").
+		Value(&name).
+		Validate(func(v string) error { return config.ValidName(strings.TrimSpace(v)) })); err != nil {
+		return err
+	}
+	s.Name = strings.TrimSpace(name)
 	return nil
 }
 
@@ -107,6 +141,101 @@ func askMemory(tty *os.File, s *createSpec, d *config.Defaults) error {
 	}
 	s.Memory, _ = strconv.Atoi(strings.TrimSpace(val))
 	return nil
+}
+
+// resolveDisk settles smol's disk: flag, else global default, else prompt
+// (interactive) or the compiled default (non-interactive). Unlike memory, disk
+// always has a built-in fallback (SmolDefaultDiskGiB), so it never errors.
+func resolveDisk(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+	if s.Disk != 0 { // flag wins
+		return nil
+	}
+	if interactive {
+		return askDisk(tty, s, d)
+	}
+	if d.Disk != 0 {
+		s.Disk = d.Disk
+	} else {
+		s.Disk = backend.SmolDefaultDiskGiB
+	}
+	return nil
+}
+
+func askDisk(tty *os.File, s *createSpec, d *config.Defaults) error {
+	pref := backend.SmolDefaultDiskGiB
+	if d.Disk != 0 {
+		pref = d.Disk
+	}
+	val := strconv.Itoa(pref)
+	if err := form(tty, huh.NewInput().
+		Title("VM disk (GiB)").
+		Value(&val).
+		Validate(func(v string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				return fmt.Errorf("must be an integer number of GiB")
+			}
+			if n < 1 {
+				return fmt.Errorf("must be at least 1 GiB")
+			}
+			return nil
+		})); err != nil {
+		return err
+	}
+	s.Disk, _ = strconv.Atoi(strings.TrimSpace(val))
+	return nil
+}
+
+// askExtras prompts the optional create-time fields. Repos and ports are offered
+// for any backend; github key-seeding is remote-only; hardening is remote-managed
+// only (it's a no-op elsewhere — see runBootstrap). Each accepts a space-separated
+// list and is safe to leave blank.
+func askExtras(tty *os.File, s *createSpec) error {
+	repos := strings.Join(s.Repos, " ")
+	ports := strings.Join(s.Ports, " ")
+	if err := form(tty,
+		huh.NewInput().Title("Repos to clone (owner/repo or URL, space-separated)").
+			Placeholder("me/app me/tools").Value(&repos),
+		huh.NewInput().Title("Ports to forward (HOST:GUEST or PORT, space-separated)").
+			Placeholder("3000 8080:80").Value(&ports),
+	); err != nil {
+		return err
+	}
+	s.Repos = fields(repos)
+	s.Ports = fields(ports)
+
+	if s.Backend == config.BackendRemoteManaged || s.Backend == config.BackendRemoteUnmanaged {
+		keys := strings.Join(s.KeysGithub, " ")
+		if err := form(tty, huh.NewInput().
+			Title("Seed authorized_keys from GitHub users (space-separated handles)").
+			Placeholder("alice bob").Value(&keys)); err != nil {
+			return err
+		}
+		s.KeysGithub = fields(keys)
+	}
+	if s.Backend == config.BackendRemoteManaged {
+		if err := form(tty,
+			huh.NewConfirm().Title("Harden the box (ssh lockdown)?").Value(&s.Harden),
+		); err != nil {
+			return err
+		}
+		if s.Harden {
+			if err := form(tty, huh.NewConfirm().Title("Install fail2ban?").Value(&s.Fail2ban)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// fields splits a space-separated list into a trimmed, non-empty slice (nil when
+// blank, so an empty answer leaves the conf field unset).
+func fields(s string) []string {
+	f := strings.Fields(s)
+	if len(f) == 0 {
+		return nil
+	}
+	return f
 }
 
 // resolveRemote settles the remote fields. Transport is seeded from the global

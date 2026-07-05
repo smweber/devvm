@@ -230,21 +230,3 @@ func (a *App) runDelete(name string) error {
 	fmt.Fprintf(a.Stdout, "devvm: removed '%s'\n", name)
 	return nil
 }
-
-func (a *App) runStatus(name string) error {
-	_, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	st, err := b.Status()
-	if err != nil {
-		return err
-	}
-	raw := st.Raw
-	if !st.Exists {
-		raw = "dormant (not provisioned)"
-	}
-	fmt.Fprintf(a.Stdout, "Machine '%s' (%s): %s\n", st.Name, st.Backend, raw)
-	a.forwardReport(name)
-	return nil
-}

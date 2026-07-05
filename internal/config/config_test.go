@@ -15,11 +15,19 @@ func TestSaveDropsNoise(t *testing.T) {
 
 	sm := NewSmol("s")
 	sm.Memory = 1024
+	sm.Disk = 50
 	if err := sm.Save(dir); err != nil {
 		t.Fatal(err)
 	}
+	if got, err := Load(dir, "s"); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if got.Memory != 1024 || got.Disk != 50 {
+		t.Errorf("smol spec lost: memory=%d disk=%d", got.Memory, got.Disk)
+	}
 	smData, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "s.toml"))
-	for _, bad := range []string{"ssh_port", "vnc_port", "transport", "memory = 0"} {
+	// Default-valued lines are stripped: no ssh transport fields on smol, no zero
+	// int, and bootstrap_hook="none" (the built-in default) is omitted too.
+	for _, bad := range []string{"ssh_port", "transport", "memory = 0", "bootstrap_hook"} {
 		if strings.Contains(string(smData), bad) {
 			t.Errorf("smol conf should not contain %q:\n%s", bad, smData)
 		}
@@ -33,8 +41,11 @@ func TestSaveDropsNoise(t *testing.T) {
 		t.Fatal(err)
 	}
 	rmData, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "r.toml"))
-	if strings.Contains(string(rmData), "memory") {
-		t.Errorf("remote conf should not contain memory:\n%s", rmData)
+	// transport="ssh" and bootstrap_hook="none" are stock defaults → omitted.
+	for _, bad := range []string{"memory", "transport", "bootstrap_hook"} {
+		if strings.Contains(string(rmData), bad) {
+			t.Errorf("remote conf should not contain %q:\n%s", bad, rmData)
+		}
 	}
 }
 
@@ -139,7 +150,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		SSHHost:              "devbox3",
 		Transport:            TransportMosh,
 		Ports:                []string{"3000", "5901", "8080:80"},
-		VNCPort:              5901,
 		MoshServer:           "/home/linuxbrew/.linuxbrew/bin/mosh-server",
 		AuthorizedKeysGithub: []string{"alice", "bob"},
 	}

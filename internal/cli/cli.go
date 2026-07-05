@@ -100,7 +100,6 @@ func (a *App) rootCmd() *cobra.Command {
 		a.attachCmd(),
 		a.shellCmd(),
 		a.execCmd(),
-		a.vncCmd(),
 		a.authCmd(),
 	)...)
 	root.AddCommand(group(groupConfigure,

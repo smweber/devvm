@@ -84,11 +84,6 @@ type Interactive interface {
 	Attach(transport string) error
 }
 
-// VNCer is the ssh-only viewer surface callers reach via type assertion.
-type VNCer interface {
-	VNC(tunnelUp func() error) error
-}
-
 // SSHConn carries what the session daemon needs to run a dedicated ControlMaster
 // and add/remove native `-L` forwards on it.
 type SSHConn struct {

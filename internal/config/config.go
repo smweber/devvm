@@ -65,7 +65,7 @@ func ValidName(name string) error {
 }
 
 // Machine is one registered dev box. Zero values mean "unset"; applyDefaults
-// fills the same defaults load_machine did (SSHPort 22, VNCPort 5901, BootstrapHook).
+// fills the same defaults load_machine did (SSHPort 22, BootstrapHook).
 type Machine struct {
 	// Name is derived from the filename, not stored in the file.
 	Name string `toml:"-"`
@@ -83,10 +83,13 @@ type Machine struct {
 	Identity   string `toml:"identity,omitempty"`
 	Transport  string `toml:"transport,omitempty"` // ssh (default) | mosh
 	MoshServer string `toml:"mosh_server,omitempty"`
-	VNCPort    int    `toml:"vnc_port,omitempty"`
 
-	// smol backend
+	// smol backend. Memory (MiB) and Disk (GiB) are a provisioning spec: read at
+	// create and (re)provision, but the live VM is the source of truth once it
+	// exists — `status` reports the VM's actual sizes, and editing these here only
+	// takes effect on the next provision (e.g. after a deprovision).
 	Memory int `toml:"memory,omitempty"` // MiB
+	Disk   int `toml:"disk,omitempty"`   // GiB
 
 	// shared
 	Repos         []string `toml:"repos,omitempty"`
@@ -133,7 +136,9 @@ func (m *Machine) migrateLegacy() {
 
 // applyDefaults fills unset fields, matching load_machine's defaulting. The ssh
 // transport defaults apply only to remote backends, so a smol conf doesn't carry
-// meaningless ssh_port/vnc_port/transport.
+// meaningless ssh_port/transport. Save strips the default-valued bootstrap_hook
+// and transport lines back out, so a conf shows only what deviates from stock —
+// but Load always has a concrete value in hand.
 func (m *Machine) applyDefaults() {
 	if m.BootstrapHook == "" {
 		m.BootstrapHook = DefaultBootstrapHook
@@ -141,9 +146,6 @@ func (m *Machine) applyDefaults() {
 	if m.IsRemote() {
 		if m.SSHPort == 0 {
 			m.SSHPort = 22
-		}
-		if m.VNCPort == 0 {
-			m.VNCPort = 5901
 		}
 		if m.Transport == "" {
 			m.Transport = TransportSSH
@@ -183,7 +185,7 @@ func (m *Machine) Managed() bool {
 }
 
 // IsRemote reports whether the box is reached over the ssh transport (both
-// remote-* backends). Drives ssh flags, key management, mosh/vnc, and forwards.
+// remote-* backends). Drives ssh flags, key management, mosh, and forwards.
 func (m *Machine) IsRemote() bool {
 	return m.Backend == BackendRemoteManaged || m.Backend == BackendRemoteUnmanaged
 }
@@ -248,12 +250,20 @@ func (m *Machine) Save(configDir string) error {
 	// conf with `memory = 0` (remote) or `ssh_port = 0` (smol). None of our int
 	// fields mean anything at 0 (Load re-defaults them), so drop those lines.
 	clean := zeroIntLine.ReplaceAllString(body.String(), "")
+	// Drop default-valued string lines too: applyDefaults always fills these, so
+	// omitempty can't, but an omitted line reloads to the exact same value. So a
+	// conf carries bootstrap_hook/transport only when they deviate from stock.
+	clean = defaultStrLine.ReplaceAllString(clean, "")
 	content := fmt.Sprintf("# devvm machine config for %q (tool-managed; edit freely)\n\n%s", m.Name, clean)
 	return os.WriteFile(confPath(configDir, m.Name), []byte(content), 0o644)
 }
 
 // zeroIntLine matches a TOML scalar line whose int value is 0 (see Save).
 var zeroIntLine = regexp.MustCompile(`(?m)^[a-z0-9_]+ = 0\n`)
+
+// defaultStrLine matches the string lines whose value equals the built-in
+// default, so Save omits them (Load re-fills via applyDefaults). See Save.
+var defaultStrLine = regexp.MustCompile(`(?m)^(?:bootstrap_hook = "` + DefaultBootstrapHook + `"|transport = "` + TransportSSH + `")\n`)
 
 // Exists reports whether a conf file is present for name.
 func Exists(configDir, name string) bool {

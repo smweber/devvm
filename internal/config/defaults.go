@@ -22,12 +22,13 @@ import (
 type Defaults struct {
 	BootstrapHook string `toml:"bootstrap_hook,omitempty"`
 	Memory        int    `toml:"memory,omitempty"` // MiB
+	Disk          int    `toml:"disk,omitempty"`   // GiB
 	Transport     string `toml:"transport,omitempty"`
 }
 
 // DefaultKeys are the settable keys, in display order. Drives `defaults list`
 // and shell completion, so it is the single source of truth for what exists.
-var DefaultKeys = []string{"bootstrap-hook", "memory", "transport"}
+var DefaultKeys = []string{"bootstrap-hook", "memory", "disk", "transport"}
 
 // DefaultKeyHelp is a one-line description of a key for completion and help.
 func DefaultKeyHelp(key string) string {
@@ -36,6 +37,8 @@ func DefaultKeyHelp(key string) string {
 		return "bootstrap-hook spec: url:<URL> [args] | cmd:<path> [args] | none"
 	case "memory":
 		return "smol VM memory in MiB (>= 512)"
+	case "disk":
+		return "smol VM disk in GiB (>= 1)"
 	case "transport":
 		return "remote interactive transport: ssh | mosh"
 	default:
@@ -104,6 +107,9 @@ func (d *Defaults) Validate() error {
 	if d.Memory != 0 && d.Memory < 512 {
 		return fmt.Errorf("memory %d too small (min 512 MiB)", d.Memory)
 	}
+	if d.Disk != 0 && d.Disk < 1 {
+		return fmt.Errorf("disk %d too small (min 1 GiB)", d.Disk)
+	}
 	return nil
 }
 
@@ -117,6 +123,11 @@ func (d *Defaults) Get(key string) (val string, set bool, err error) {
 			return "", false, nil
 		}
 		return strconv.Itoa(d.Memory), true, nil
+	case "disk":
+		if d.Disk == 0 {
+			return "", false, nil
+		}
+		return strconv.Itoa(d.Disk), true, nil
 	case "transport":
 		return d.Transport, d.Transport != "", nil
 	default:
@@ -138,6 +149,12 @@ func (d *Defaults) Set(key, value string) error {
 			return fmt.Errorf("memory must be an integer number of MiB")
 		}
 		trial.Memory = n
+	case "disk":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("disk must be an integer number of GiB")
+		}
+		trial.Disk = n
 	case "transport":
 		trial.Transport = value
 	default:
@@ -157,6 +174,8 @@ func (d *Defaults) Unset(key string) error {
 		d.BootstrapHook = ""
 	case "memory":
 		d.Memory = 0
+	case "disk":
+		d.Disk = 0
 	case "transport":
 		d.Transport = ""
 	default:

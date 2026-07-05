@@ -13,9 +13,12 @@ import (
 
 // smol defaults, matching the globals at the top of bin/devvm.
 const (
-	smolImage      = "ubuntu:24.04"
-	smolCPUs       = 4
-	smolStorageGiB = 50
+	smolImage = "ubuntu:24.04"
+	smolCPUs  = 4
+	// SmolDefaultDiskGiB is the fallback disk size when a machine's conf doesn't
+	// pin one (new confs resolve a concrete value at create; pre-disk confs and
+	// bare provisions fall back here).
+	SmolDefaultDiskGiB = 50
 )
 
 type smolBackend struct{ m *config.Machine }
@@ -186,10 +189,14 @@ func (b *smolBackend) guestArgv(o ExecOpts, argv []string) []string {
 }
 
 // SmolCreate provisions a new microVM (net-enabled, SMOLVM_GUEST=1) and starts
-// it. Mirrors the `smolvm machine create` invocation in create_machine.
-func SmolCreate(name string, memoryMiB int) error {
+// it. Mirrors the `smolvm machine create` invocation in create_machine. A
+// diskGiB <= 0 falls back to SmolDefaultDiskGiB, so a pre-disk conf still boots.
+func SmolCreate(name string, memoryMiB, diskGiB int) error {
 	if err := needSmolvm(); err != nil {
 		return err
+	}
+	if diskGiB <= 0 {
+		diskGiB = SmolDefaultDiskGiB
 	}
 	args := []string{
 		"machine", "create",
@@ -198,7 +205,7 @@ func SmolCreate(name string, memoryMiB int) error {
 		"--net",
 		"--cpus", fmt.Sprint(smolCPUs),
 		"--mem", fmt.Sprint(memoryMiB),
-		"--storage", fmt.Sprint(smolStorageGiB),
+		"--storage", fmt.Sprint(diskGiB),
 		"--env", "SMOLVM_GUEST=1",
 	}
 	fmt.Printf("+ smolvm %v\n", args)

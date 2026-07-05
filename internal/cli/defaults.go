@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"text/tabwriter"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/bootstrap"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/spf13/cobra"
@@ -124,6 +125,8 @@ func compiledDefaultDisplay(key string) string {
 		return bootstrap.KindNone
 	case "memory":
 		return fmt.Sprintf("%d (≈half of host RAM)", suggestedMemoryMiB())
+	case "disk":
+		return fmt.Sprintf("%d (GiB)", backend.SmolDefaultDiskGiB)
 	case "transport":
 		return config.TransportSSH
 	default:

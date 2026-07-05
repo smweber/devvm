@@ -140,11 +140,20 @@ case "$repo" in
   */*)         exec gh repo clone "$repo" ;;
   *)           echo "devvm: unrecognized repo '$repo'" >&2; exit 1 ;;
 esac`
+	// Clone every repo, warning-and-continuing past a failure so one bad spec (or
+	// an already-in-flight gh auth hiccup) doesn't strand the repos after it. The
+	// guest script already treats an existing checkout as success (exit 0), so a
+	// failure here is a real one worth surfacing but not aborting on.
+	var failed []string
 	for _, repo := range repos {
 		if err := b.Run(context.Background(), backend.ExecOpts{Login: true},
 			"bash", "-lc", script, "_", repo); err != nil {
-			return err
+			fmt.Fprintf(a.Stderr, "devvm: failed to clone %s: %v (continuing)\n", repo, err)
+			failed = append(failed, repo)
 		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed to clone %d repo(s): %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
 }

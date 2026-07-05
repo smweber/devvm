@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -128,6 +127,51 @@ func (a *App) runPortsList(name string) error {
 	return nil
 }
 
+// runPortsListAll is the global forwarding overview (`ports list` with no NAME):
+// a flat table of every machine's configured mappings and whether each is live,
+// so a box with many forwards is scannable in one place instead of via status.
+func (a *App) runPortsListAll() error {
+	names, _ := config.List(a.ConfigDir)
+	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE")
+	any := false
+	for _, name := range names {
+		m, err := config.Load(a.ConfigDir, name)
+		if err != nil {
+			continue
+		}
+		// guest port -> live host port, if a daemon is up for this machine.
+		live := map[int]int{}
+		if cl, err := session.Existing(a.ConfigDir, name); err == nil {
+			if fwds, err := cl.List(); err == nil {
+				for _, f := range fwds {
+					live[f.Guest] = f.Host
+				}
+			}
+		}
+		for _, p := range m.Ports {
+			any = true
+			_, guestStr := config.SplitPort(p)
+			guest, _ := strconv.Atoi(guestStr)
+			host, state := "—", "down"
+			if h, ok := live[guest]; ok {
+				host, state = fmt.Sprintf("localhost:%d", h), "up"
+				delete(live, guest) // consumed; leftover live entries are ephemeral
+			}
+			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %s\n", name, p, guest, host, state)
+		}
+		// Live forwards with no matching configured mapping (added ad hoc via up).
+		for guest, h := range live {
+			any = true
+			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %s\n",
+				name, "(ephemeral)", guest, fmt.Sprintf("localhost:%d", h), "up")
+		}
+	}
+	if !any {
+		fmt.Fprintln(a.Stdout, "devvm: no ports configured on any machine")
+	}
+	return nil
+}
+
 // tunnelDown stops the machine's live forwards, if any daemon is running.
 func (a *App) tunnelDown(name string) error {
 	if _, _, err := a.resolveLive(name); err != nil {
@@ -149,7 +193,7 @@ func (a *App) tunnelDown(name string) error {
 }
 
 // tunnelUp brings up every configured forward for the machine (used by
-// `tunnel up`, `start`, and vnc).
+// `tunnel up` and `start`).
 func (a *App) tunnelUp(name string) error {
 	m, _, err := a.resolveLive(name)
 	if err != nil {
@@ -177,18 +221,6 @@ func (a *App) tunnelUp(name string) error {
 		a.reportForward(name, host, guest, pref, bumped)
 	}
 	return nil
-}
-
-func (a *App) runVNC(name string) error {
-	m, b, err := a.resolveLive(name)
-	if err != nil {
-		return err
-	}
-	ex, ok := b.(backend.VNCer)
-	if !ok {
-		return fmt.Errorf("'vnc' only applies to remote machines ('%s' is %s)", name, m.Backend)
-	}
-	return ex.VNC(func() error { return a.tunnelUp(name) })
 }
 
 // forwardReport lists a machine's live forwards for `status`, or nothing if no
