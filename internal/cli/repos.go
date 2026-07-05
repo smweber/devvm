@@ -126,7 +126,8 @@ func (a *App) runReposClone(name string) error {
 // exist. GitHub "owner/repo" shorthand goes through gh (login token, private
 // repos); everything else (https://, ssh://, git@host:path) is a plain git
 // clone so non-GitHub hosts work too. Runs in a login shell so gh (Homebrew) is
-// on PATH.
+// on PATH. When jj is installed on the guest, a fresh checkout is initialized as
+// a jj colocated repo — it stays a normal git repo, just jj-ready.
 func (a *App) cloneRepos(b backend.Backend, repos []string) error {
 	// $1 is the untrusted repo spec; it's only ever a positional arg to git/gh,
 	// never interpolated into the script text.
@@ -136,10 +137,19 @@ repo="$1"
 dir="${repo##*/}"; dir="${dir%.git}"
 if [ -d "$dir" ]; then echo "devvm: $dir already cloned"; exit 0; fi
 case "$repo" in
-  *://*|*@*:*) exec git clone "$repo" ;;
-  */*)         exec gh repo clone "$repo" ;;
+  *://*|*@*:*) git clone "$repo" ;;
+  */*)         gh repo clone "$repo" ;;
   *)           echo "devvm: unrecognized repo '$repo'" >&2; exit 1 ;;
-esac`
+esac
+# jj-colocate the fresh checkout when jj is on the guest, so it's jj-ready while
+# staying a normal git repo. Best-effort: never fail the clone over it.
+if command -v jj >/dev/null 2>&1 && [ -d "$dir/.git" ] && [ ! -d "$dir/.jj" ]; then
+  if ( cd "$dir" && jj git init --colocate >/dev/null 2>&1 ); then
+    echo "devvm: initialized jj (colocated) in $dir"
+  else
+    echo "devvm: jj colocate skipped for $dir" >&2
+  fi
+fi`
 	// Clone every repo, warning-and-continuing past a failure so one bad spec (or
 	// an already-in-flight gh auth hiccup) doesn't strand the repos after it. The
 	// guest script already treats an existing checkout as success (exit 0), so a
