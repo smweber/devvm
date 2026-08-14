@@ -15,6 +15,27 @@ func (a *App) runBootstrap(name string) error {
 		return err
 	}
 	ctx := context.Background()
+	// A fresh cloud VM is reachable only as root. Establish the dev user first,
+	// then rewrite ssh_host so this run (and everything after) connects as dev —
+	// otherwise the hook, keys, and repos all land in /root and harden would
+	// lock the box.
+	if m.Backend == config.BackendRemoteManaged {
+		created, err := bootstrap.EnsureDevUser(ctx, b, m)
+		if err != nil {
+			return err
+		}
+		if created {
+			m.SSHHost = bootstrap.SwitchUser(m.SSHHost, backend.DefaultUser)
+			fmt.Fprintf(a.Stderr, "devvm: '%s' logs in as root; created user '%s' and set ssh_host = %q\n",
+				name, backend.DefaultUser, m.SSHHost)
+			if err := m.Save(a.ConfigDir); err != nil {
+				return err
+			}
+			if b, err = backend.For(m, a.ConfigDir); err != nil {
+				return err
+			}
+		}
+	}
 	// Prereqs installs on managed boxes (smol, remote-managed) and only checks on
 	// adopted remote-unmanaged hosts.
 	if err := bootstrap.Prereqs(ctx, b, m); err != nil {

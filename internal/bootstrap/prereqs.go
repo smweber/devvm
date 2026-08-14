@@ -6,7 +6,10 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -37,8 +40,74 @@ grep -qs '^precedence ::ffff:0:0/96  100' /etc/gai.conf || \
     printf 'precedence ::ffff:0:0/96  100\n' >>/etc/gai.conf
 `
 
+// ensureDevUser creates the unprivileged dev user on a remote-managed host whose
+// ssh login is root (a fresh cloud VM). Mirrors smolPrereqs' user setup and
+// copies root's authorized_keys over so the client key that reached root keeps
+// working as dev. Runs as the login user (root) with no sudo wrap — sudo may not
+// be installed yet, so it installs it here.
+const ensureDevUserScript = `
+set -e
+export DEBIAN_FRONTEND=noninteractive
+command -v sudo >/dev/null 2>&1 || { apt-get update; apt-get install -y sudo; }
+if ! id -u dev >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash dev
+fi
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' dev >/etc/sudoers.d/devvm
+chmod 0440 /etc/sudoers.d/devvm
+install -d -m 700 -o dev -g dev /home/dev/.ssh
+if [ -s /root/.ssh/authorized_keys ] && [ ! -s /home/dev/.ssh/authorized_keys ]; then
+    install -m 600 -o dev -g dev /root/.ssh/authorized_keys /home/dev/.ssh/authorized_keys
+fi
+`
+
+// LoginUser reports who the backend's default (non-root) exec actually runs as
+// on the guest.
+func LoginUser(ctx context.Context, b backend.Backend) (string, error) {
+	var out bytes.Buffer
+	if err := b.Run(ctx, backend.ExecOpts{Stdout: &out}, "id", "-un"); err != nil {
+		return "", fmt.Errorf("checking remote login user: %w", err)
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+// EnsureDevUser establishes the invariant the ssh backend's rootWrap relies on —
+// the login user is an unprivileged dev user with NOPASSWD sudo — on a
+// remote-managed host currently reached as root (a fresh cloud VM). It reports
+// whether it created the user, i.e. whether the caller must switch the machine's
+// ssh_host to the dev user. No-op on other backends or non-root logins.
+func EnsureDevUser(ctx context.Context, b backend.Backend, m *config.Machine) (bool, error) {
+	if m.Backend != config.BackendRemoteManaged {
+		return false, nil
+	}
+	user, err := LoginUser(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if user != "root" {
+		return false, nil
+	}
+	// Deliberately not ExecOpts{User: "root"}: that would prefix sudo, which a
+	// fresh box may lack. The login user is already root.
+	if err := b.Run(ctx, backend.ExecOpts{Stream: true}, "bash", "-c", ensureDevUserScript); err != nil {
+		return false, fmt.Errorf("creating dev user: %w", err)
+	}
+	return true, nil
+}
+
+// SwitchUser rewrites the user part of an ssh destination ("root@h" → "dev@h").
+// A bare host or ssh-config alias gets the user prepended — a command-line
+// user@ overrides an alias's configured User, so this holds for aliases too.
+func SwitchUser(sshHost, user string) string {
+	host := sshHost
+	if _, h, ok := strings.Cut(sshHost, "@"); ok {
+		host = h
+	}
+	return user + "@" + host
+}
+
 // managedRemotePrereqs is the lighter install path for remote-managed hosts (the
-// user + sudo already exist). Ports ssh_prepare_guest.
+// user + sudo exist — pre-existing, or created by EnsureDevUser on a root-only
+// box). Ports ssh_prepare_guest.
 const managedRemotePrereqs = `
 set -e
 apt-get update

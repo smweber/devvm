@@ -9,13 +9,14 @@ import (
 )
 
 // hardenBody is the lockdown script (ufw + sshd drop-in + auto-updates). It
-// reads SSH_PORT and WANT_FAIL2BAN prepended by Harden. Preserves the two
-// fail-safes from harden_machine: refuse if authorized_keys is empty (would lock
-// you out) and validate sshd config before reloading. Runs as root.
+// reads SSH_PORT and WANT_FAIL2BAN prepended by Harden and takes the dev user
+// as $1. Preserves the two fail-safes from harden_machine: refuse if
+// authorized_keys is empty (would lock you out) and validate sshd config before
+// reloading. Runs as root.
 const hardenBody = `
 set -euo pipefail
-DEV_USER="${SUDO_USER:-$(logname 2>/dev/null || echo dev)}"
-AUTHKEYS="/home/$DEV_USER/.ssh/authorized_keys"
+DEV_USER="$1"
+AUTHKEYS="$(getent passwd "$DEV_USER" | cut -d: -f6)/.ssh/authorized_keys"
 
 # Fail-safe: never disable password auth without a working key in place.
 if [ ! -s "$AUTHKEYS" ]; then
@@ -64,10 +65,20 @@ echo "devvm: lockdown applied (firewall + sshd + auto-updates)"
 
 // Harden applies firewall + sshd hardening + auto-updates to an ssh machine.
 func Harden(ctx context.Context, b backend.Backend, m *config.Machine) error {
+	// Pin AllowUsers to the actual connection user rather than guessing from
+	// SUDO_USER/logname inside the script. Hardening a root login would write
+	// `PermitRootLogin no` + `AllowUsers root` — a guaranteed lockout.
+	user, err := LoginUser(ctx, b)
+	if err != nil {
+		return err
+	}
+	if user == "" || user == "root" {
+		return fmt.Errorf("refusing to harden: the connection user is root; run 'devvm bootstrap %s' to create the dev user first", m.Name)
+	}
 	fail2ban := ""
 	if m.Fail2ban {
 		fail2ban = "1"
 	}
 	script := fmt.Sprintf("SSH_PORT=%d\nWANT_FAIL2BAN=%s\n%s", m.SSHPort, fail2ban, hardenBody)
-	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true}, "bash", "-c", script)
+	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true}, "bash", "-c", script, "_", user)
 }

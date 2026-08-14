@@ -96,7 +96,9 @@ func (b *sshBackend) Spawn(ctx context.Context, o ExecOpts, argv ...string) (*Se
 
 // rootWrap prefixes sudo when the caller wants root: an ssh host's login user is
 // the unprivileged dev user (with NOPASSWD sudo), unlike smol where exec already
-// runs as root. Other users run as the login user.
+// runs as root. Other users run as the login user. On a managed box that only
+// had root (a fresh cloud VM), bootstrap.EnsureDevUser establishes this
+// invariant before anything runs with User: "root".
 func rootWrap(o ExecOpts, argv []string) []string {
 	if o.User == "root" {
 		return append([]string{"sudo"}, argv...)

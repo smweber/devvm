@@ -136,6 +136,14 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
   install, gated behind explicit consent (`auth --install-agent` or a prompt) so
   devvm never writes to an adopted box unasked. `Install` returns the path to use.
+- **Root adoption (fresh cloud VMs)**: `bootstrap` on a remote-managed box whose
+  ssh login is root first runs `bootstrap.EnsureDevUser` — creates `dev`
+  (NOPASSWD sudo, copies root's `authorized_keys`) and rewrites the conf's
+  `ssh_host` to `dev@…` — so the hook/keys/repos never land in `/root`. This is
+  what establishes the invariant `rootWrap` assumes (login user = unprivileged
+  dev with sudo). `Harden` pins `AllowUsers` to the actual connection user and
+  refuses to run as root (it would write `PermitRootLogin no` + `AllowUsers
+  root` — a lockout).
 - **Vocabulary — don't re-conflate these.** `provision` means **allocate a
   resource** (the VM/disk); `deprovision` frees it while keeping the registry entry.
   The **`bootstrap-hook`** (conf `bootstrap_hook`, was `provision`) is the *user
