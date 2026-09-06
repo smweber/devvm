@@ -16,16 +16,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) cpCmd() *cobra.Command {
+func (a *App) cpInCmd() *cobra.Command {
 	var recursive bool
 	c := &cobra.Command{
-		Use:   "cp NAME SOURCE DEST",
+		Use:   "cp-in NAME SOURCE DEST",
 		Short: "Copy a local file or directory into a machine",
 		Long: "Copy a local file into a machine; use -r for directories.\n" +
 			"DEST is a guest path, relative to the login user's home unless absolute.\n" +
 			"Existing directories receive SOURCE's basename; existing files are overwritten.\n" +
-			"Files are copied as the normal guest user. Downloads are not supported.",
-		Example: "  devvm cp myvm ./notes.txt notes.txt\n  devvm cp -r myvm ./project /home/dev/project",
+			"Files are copied as the normal guest user.",
+		Example: "  devvm cp-in myvm ./notes.txt notes.txt\n  devvm cp-in -r myvm ./project /home/dev/project",
 		Args:    cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runCopy(cmd.Context(), args[0], args[1], args[2], recursive)
@@ -38,7 +38,7 @@ func (a *App) cpCmd() *cobra.Command {
 				return nil, cobra.ShellCompDirectiveDefault
 			}
 			if len(args) == 2 {
-				return a.completeCopyDestination(cmd.Context(), args[0], incomplete)
+				return a.completeCopyGuestPath(cmd.Context(), args[0], incomplete)
 			}
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		},

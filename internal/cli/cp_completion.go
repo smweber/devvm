@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) completeCopyDestination(ctx context.Context, name, prefix string) ([]string, cobra.ShellCompDirective) {
+func (a *App) completeCopyGuestPath(ctx context.Context, name, prefix string) ([]string, cobra.ShellCompDirective) {
 	// Load registered machines directly: resolveLive's smol discovery probes
 	// have no context and could block completion before the timed query starts.
 	m, err := config.Load(a.ConfigDir, name)

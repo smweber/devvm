@@ -32,18 +32,26 @@ the ssh transport, is the planned next backend.)
 - `devvm shell NAME` — a raw login shell, no tmux.
 - Both take `--transport ssh|mosh` for remote machines (default from the conf's
   `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
-- `devvm cp NAME SOURCE DEST` — copy a local file into a machine; add `-r` for
+- `devvm cp-in NAME SOURCE DEST` — copy a local file into a machine; add `-r` for
   directories. Relative guest destinations resolve from the login user's home.
   An existing destination directory receives the source's basename; existing
   files are overwritten. Copies run as the normal guest user on both smol and
-  remote backends. Requires `tar` locally and in the guest; uploads only.
+  remote backends. Requires `tar` locally and in the guest.
   With shell completion enabled, SOURCE completes local paths and DEST queries
   guest paths for registered machines (two-second timeout, no SSH password
   prompts). Directory suggestions end in `/` so you can keep completing inside.
+- `devvm cp-out NAME SOURCE DEST` — copy a guest file onto the host; add `-r`
+  for directories. SOURCE is relative to the guest user's home unless absolute;
+  DEST is a local path. Source completion queries the guest, while destination
+  completion uses local paths. Requires `tar` on both sides and GNU `realpath`
+  in the guest. Existing destination directories receive the source basename;
+  existing files are overwritten. Downloads run as the normal guest user.
 
 ```sh
-devvm cp myvm ./notes.txt notes.txt
-devvm cp -r myvm ./project /home/dev/project
+devvm cp-in myvm ./notes.txt notes.txt
+devvm cp-in -r myvm ./project /home/dev/project
+devvm cp-out myvm notes.txt ./notes.txt
+devvm cp-out -r myvm /home/dev/project ./backup
 ```
 
 ## Build
