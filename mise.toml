@@ -4,3 +4,5 @@
 # directive is only the *minimum* (floor), deliberately lower than this.
 [settings]
 idiomatic_version_file_enable_tools = ["go"]
+# Read .go-version instead of go.mod's minimum compatible version.
+idiomatic_version_file_disable_files = ["go:go.mod"]

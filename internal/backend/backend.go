@@ -29,14 +29,15 @@ type State struct {
 // ExecOpts tunes a single guest command. The zero value runs a non-interactive,
 // non-login command as the dev user with stdio wired to the parent process.
 type ExecOpts struct {
-	TTY    bool              // allocate a pty (interactive shell / login flows)
-	Stream bool              // smol: use --stream (unbuffered streaming output)
-	Login  bool              // wrap argv in `bash -lc` so the user's env/PATH is present
-	User   string            // guest user; "" -> DefaultUser, or "root"
-	Env    map[string]string // extra environment for the guest command
-	Stdin  io.Reader         // default os.Stdin
-	Stdout io.Writer         // default os.Stdout
-	Stderr io.Writer         // default os.Stderr
+	BatchMode bool              // SSH: disable authentication prompts (e.g. completion)
+	TTY       bool              // allocate a pty (interactive shell / login flows)
+	Stream    bool              // smol: use --stream (unbuffered streaming output)
+	Login     bool              // wrap argv in `bash -lc` so the user's env/PATH is present
+	User      string            // guest user; "" -> DefaultUser, or "root"
+	Env       map[string]string // extra environment for the guest command
+	Stdin     io.Reader         // default os.Stdin
+	Stdout    io.Writer         // default os.Stdout
+	Stderr    io.Writer         // default os.Stderr
 }
 
 func (o ExecOpts) user() string {

@@ -79,6 +79,9 @@ func (b *sshBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error 
 		return err
 	}
 	host := b.base()
+	if o.BatchMode {
+		host = append(host, "-o", "BatchMode=yes")
+	}
 	if o.TTY {
 		host = append(host, "-t")
 	}

@@ -32,6 +32,19 @@ the ssh transport, is the planned next backend.)
 - `devvm shell NAME` — a raw login shell, no tmux.
 - Both take `--transport ssh|mosh` for remote machines (default from the conf's
   `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
+- `devvm cp NAME SOURCE DEST` — copy a local file into a machine; add `-r` for
+  directories. Relative guest destinations resolve from the login user's home.
+  An existing destination directory receives the source's basename; existing
+  files are overwritten. Copies run as the normal guest user on both smol and
+  remote backends. Requires `tar` locally and in the guest; uploads only.
+  With shell completion enabled, SOURCE completes local paths and DEST queries
+  guest paths for registered machines (two-second timeout, no SSH password
+  prompts). Directory suggestions end in `/` so you can keep completing inside.
+
+```sh
+devvm cp myvm ./notes.txt notes.txt
+devvm cp -r myvm ./project /home/dev/project
+```
 
 ## Build
 
