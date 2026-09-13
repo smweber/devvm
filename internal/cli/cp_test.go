@@ -23,8 +23,13 @@ type localCopyBackend struct {
 func (b *localCopyBackend) Kind() string { return "remote-unmanaged" }
 func (b *localCopyBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
 	if argv[0] == "mktemp" {
+		// Mirror the real template so the caller's prefix check is exercised:
+		// staging must stay out of /tmp (see copyStageDir).
+		if len(argv) != 3 || argv[2] != copyStageDir+"/devvm-cp-XXXXXXXXXX" {
+			return fmt.Errorf("unexpected mktemp argv %q", argv)
+		}
 		var err error
-		b.stage, err = os.MkdirTemp("/tmp", "devvm-cp-")
+		b.stage, err = os.MkdirTemp(copyStageDir, "devvm-cp-")
 		if err == nil {
 			fmt.Fprintln(o.Stdout, b.stage)
 		}

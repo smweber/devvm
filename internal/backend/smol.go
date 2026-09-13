@@ -129,6 +129,12 @@ func (b *smolBackend) Status() (State, error) {
 	}, nil
 }
 
+// Copy uploads via `smolvm machine cp`, which writes into the machine's
+// overlay upperdir rather than through the running machine's mounts. Two
+// consequences for callers: a relative guestDst resolves against / (not the
+// login user's home), and anything under a guest tmpfs (/tmp, /run, /dev) is
+// shadowed and never visible inside the machine. Pass absolute, overlay-backed
+// paths only. Files are created as root.
 func (b *smolBackend) Copy(hostSrc, guestDst string) error {
 	if err := needSmolvm(); err != nil {
 		return err

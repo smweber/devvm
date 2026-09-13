@@ -88,14 +88,23 @@ func (a *App) runCopy(ctx context.Context, name, src, dst string, recursive bool
 	return copyArchive(ctx, b, archive, filepath.Base(src), dst, a.Stderr)
 }
 
+// copyStageDir is where the uploaded archive is staged in the guest. It must
+// NOT be /tmp: `smolvm machine cp` writes into the machine's overlay upperdir,
+// bypassing the running machine's mount namespace, and the machine mounts a
+// tmpfs over /tmp (and /run, /dev). An archive uploaded there lands in the
+// overlay's shadowed /tmp, invisible to every guest process, so the chmod and
+// extract steps fail with "No such file" and the cleanup can't remove it
+// either. /var/tmp is on the overlay, so uploads there are visible.
+const copyStageDir = "/var/tmp"
+
 func copyArchive(ctx context.Context, b backend.Backend, archive, base, dst string, stderr io.Writer) error {
 	var out bytes.Buffer
 	if err := b.Run(ctx, backend.ExecOpts{Stdout: &out, Stderr: stderr},
-		"mktemp", "-d", "/tmp/devvm-cp-XXXXXXXXXX"); err != nil {
+		"mktemp", "-d", copyStageDir+"/devvm-cp-XXXXXXXXXX"); err != nil {
 		return fmt.Errorf("create guest staging directory: %w", err)
 	}
 	stage := strings.TrimSpace(out.String())
-	if !strings.HasPrefix(stage, "/tmp/devvm-cp-") || strings.ContainsAny(strings.TrimPrefix(stage, "/tmp/"), "/\n\r") {
+	if !strings.HasPrefix(stage, copyStageDir+"/devvm-cp-") || strings.ContainsAny(strings.TrimPrefix(stage, copyStageDir+"/"), "/\n\r") {
 		return fmt.Errorf("unexpected guest staging path %q", stage)
 	}
 	defer func() {
