@@ -1,21 +1,22 @@
 # Roadmap: hubs + browser bridge
 
-Status: 2026-09-15, revised after a fifth review (ids and one reader on
-session connections, `relay` declared at session open, one session client
-with reconnect, relay sessions closed on transport loss, sticky `exact`,
-pending exact binds retried on the ticker, agent+shim as one install run
-by the smol transport, listing under `BatchMode` and a deadline; **two
-delivery tracks**, hub and bridge, joined at step 8, with the relay-only
-rules moved from step 5 to step 6; a per-step Testing section). This is
+Status: 2026-09-15, revised after a sixth review (`status --local` for
+hub listings so hubs never fan out, relay sessions refused while a
+transport is down, `keys add`/`repos add` inputs resolved on the laptop,
+a `flock` on the hub conf from the start, `hostbrowser.Open` reports
+success, a literal `[::1]` callback is refused when `::1` is unbound,
+tmux `set-environment` instead of `-e`, host-level subscriber priority
+across a relay stated, remote `BROWSER` plumbing deferred with the ssh
+agent exec, thin `auth` installs nothing; the piped-stdin test dropped). This is
 the single ordered plan for the two design docs in this directory. The docs
 own the *what* and *why*; this file owns the *order* and what each step
 ships. When they disagree, this file wins for sequencing and the design doc
 wins for mechanism. Mechanism for leases, subscriptions, ownership and bind
 policy lives in `browser-bridge.md` §3–4 only.
 
-- `hub.md` (v3.3): reach another host's smol VMs as `HUB/NAME`; the hub daemon
+- `hub.md` (v3.4): reach another host's smol VMs as `HUB/NAME`; the hub daemon
   is the only agent-exec owner, the laptop is a client.
-- `browser-bridge.md` (v2.5): the forward daemon binds ports and emits
+- `browser-bridge.md` (v2.6): the forward daemon binds ports and emits
   guest→host URL events; a subscribed client opens the browser; `auth` stops
   running its own agent exec on smol.
 
@@ -43,7 +44,10 @@ this list only names the decisions.
    at open, and the daemon binds nothing for a relay and closes relay
    sessions when its transport dies; every request and event carries an
    `id`, one reader per side; `subscribe` is a message on a session and is
-   acknowledged (a relaying daemon acks after its upstream ack); one session
+   acknowledged (a relaying daemon acks after its upstream ack); most
+   recent subscriber *of that daemon* wins, so priority across a relay is
+   per host (hub §8); a daemon refuses relay sessions while its transport
+   is down; one session
    client with reconnect serves `attach`/`shell`/`auth` and the hub
    transport; the hub proxy runs commands with `DEVVM_NO_SUBSCRIBE=1`, which
    skips the daemon. One forwarding contract (hub §7): clients always name
@@ -64,21 +68,22 @@ what `contrib/macos` must change in the same PR, if anything.
 | # | Step | From | Ships | Swift |
 |---|------|------|-------|-------|
 | 1 | Hub backend + `HUB/NAME` | hub §1–3 | `backend = "hub"` confs with `[machines.NAME]` tables, `create --backend hub`, name parsing in `resolve`, runtime identifier `HUB@NAME` for socket/log/lock, `cli.listMachines` (local + hub-conf tables; not in `config`) for status/update/`ports list`/completion, `delete` drops the table, shaping verbs refuse the hub itself, minimum-version check with a warning on other mismatches | none |
-| 2 | Proxy | hub §3 | `a.proxy` builds the remote argv from the parsed command (`$SHELL -lc`, `DEVVM_NO_SUBSCRIBE=1`, `-t` iff TTY, nothing after `--` touched); `attach`/`shell`/`exec`/lifecycle/`repos`/`keys`/`create` proxied | none |
-| 3 | Merged listing + watch | hub §5 | `status` merges per-hub `--plain`: state and backend from the hub row, forwards column from the laptop's own daemon for `HUB@NAME`; a row for the hub itself (`hub` group); the listing runs with a 2s connect timeout, `BatchMode=yes` and an overall deadline; cache in `cache/` outside watched dirs, `listMachines` reads it; `--watch` holds one hub pipe per hub, re-spawns it with backoff on EOF, re-reads hub confs on fsnotify; completion for `HUB/` | group rows by `HUB/` prefix; `unreachable` state token; `hub` backend rows |
+| 2 | Proxy | hub §3 | `a.proxy` builds the remote argv from the parsed command (`$SHELL -lc`, `DEVVM_NO_SUBSCRIBE=1`, `-t` iff TTY, nothing after `--` touched); laptop-side inputs resolved first (`keys add` spec to inline lines, `repos add` origin from the laptop cwd); `attach`/`shell`/`exec`/lifecycle/`repos`/`keys`/`create` proxied | none |
+| 3 | Merged listing + watch | hub §5 | `status --plain --local` (this host only, no hub fan-out); `status` merges per-hub `--plain --local`: state and backend from the hub row, forwards column from the laptop's own daemon for `HUB@NAME`; a row for the hub itself (`hub` group); the listing runs with a 2s connect timeout, `BatchMode=yes` and an overall deadline; cache in `cache/` outside watched dirs, `listMachines` reads it; `--watch` holds one hub pipe per hub, re-spawns it with backoff on EOF, re-reads hub confs on fsnotify; completion for `HUB/` | group rows by `HUB/` prefix; `unreachable` state token; `hub` backend rows |
 | 4 | cp over tar stdio | hub §6 | `cp-in --from-tar -`, `cp-out --to-tar -` (marker line before the stream), laptop-side loops | drop target works for hub machines (no change if it shells out by name) |
 | | **Milestone A** | | Laptop drives desktop VMs: list, attach, create, lifecycle, cp. Zero daemon changes. | |
 | 5 | Daemon ownership + sessions | bridge §3–4 | owner set and `exact` on `fwd`; `session` connections (long-lived; `id` on every request/event, one reader per side, serialized writes; `add`/`remove` owned by the connection, acked `subscribe`/`unsubscribe`, re-subscribe moves to front; no hub vocabulary yet: `relay` arrives in step 6); the session client in `internal/session` (dial, session, acked subscribe, reconnect with backoff); idle rule `forwards==0 && sessions==0`; `ports rm`/`ports down` per bridge §4; `restartDaemons` cycles every up daemon; `add` takes exact-or-bump, `restore()` honours it, `exact` sticky on reuse, a ticker retries pending exact binds (the same ticker expires `ttl` owners in step 7); every forward dual-stack with `::1` best-effort (ssh: one `localhost:` spec, IPv4 pre-probe decides busy); `up:N` counts `conf` only, never `up:0` | none (`down`/`-` already parsed) |
-| 6 | Hub forwards | hub §7 | `session {relay}` on the daemon (declared at open; the daemon closes relay sessions when its transport dies, bridge §3), `__session NAME` (one per hub machine: marker line, then a `session {relay:true}` relayed verbatim, forwards owned by its connection), `hubTransport` on the laptop daemon (one `__session` on its master; guest-port contract; `-L` to `127.0.0.1:hubPort`; a `pending` add reply is a bind failure; up only after hub `add` and `-L` both hold; `dead()` on master or process death; re-resolves the hub port in `restore()`); `start HUB/NAME` brings up laptop-configured forwards after proxying; `listMachines` also enumerates live `run/HUB@*.sock`; `update` cycles hub-machine daemons | forwards for hub machines appear like any other |
+| 6 | Hub forwards | hub §7 | `session {relay}` on the daemon (declared at open; the daemon closes relay sessions when its transport dies and refuses new ones until it is back, bridge §3), `__session NAME` (one per hub machine: marker line, then a `session {relay:true}` relayed verbatim, forwards owned by its connection), `hubTransport` on the laptop daemon (one `__session` on its master; guest-port contract; `-L` to `127.0.0.1:hubPort`; a `pending` add reply is a bind failure; up only after hub `add` and `-L` both hold; `dead()` on master or process death; re-resolves the hub port in `restore()`); `start HUB/NAME` brings up laptop-configured forwards after proxying; the hub-conf rewrite under `flock`; `listMachines` also enumerates live `run/HUB@*.sock`; `update` cycles hub-machine daemons | forwards for hub machines appear like any other |
 | | **Milestone B** | | `ports add desktop/web 3000` works from the laptop; both users can hold forwards to one VM. | |
-| 7 | Daemon bridge + agent reply | bridge §1–2, §4 | `events()` on the transport interface; kinds external/direct/redirect; `connection`-owned forwards for direct opens, `ttl` forwards for redirects (exact-port, wall-clock TTL, ≤20, no ports <1024, opens rate-limited); no bind for relay subscribers (a no-op until step 6 lands); `CallbackPort` moves to the daemon minus its 1455 exclusion; event carries `{url, kind, guest?, bound?}`, subscriber reply relayed to the guest with a timeout; `open-url` becomes request/response; agent+shim become one `agentbin.Install` op, run by the smol transport before it spawns the agent exec; `attach`/`shell` open a session and subscribe through the session client; **`build.sh` + commit agent** | none |
-| 8 | Thin `auth`, smol and hub | bridge §6, hub §8 | `auth` dials, subscribes, runs logins where the transport has events; the private session and `--auth` **stay** for remote backends; `__session` carries `subscribe`/`unsubscribe` and streams events/replies; `hubTransport.events()` is fed by them; the laptop daemon subscribes on the hub while it has local subscribers, re-subscribes on each new one, and acks a local subscribe only after the hub's ack; `attach`/`shell`/`auth desktop/web` = dial the laptop daemon, subscribe, proxy with `DEVVM_NO_SUBSCRIBE=1`; `hubBackend.Run` carries `BROWSER` in the proxied exec argv; agent/shim install skipped for hub machines | none |
+| 7 | Daemon bridge + agent reply | bridge §1–2, §4 | `events()` on the transport interface; kinds external/direct/redirect; `connection`-owned forwards for direct opens, `ttl` forwards for redirects (exact-port, wall-clock TTL, ≤20, no ports <1024, opens rate-limited); no bind for relay subscribers (a no-op until step 6 lands); `CallbackPort` moves to the daemon minus its 1455 exclusion; event carries `{url, kind, guest?, bound?}`, subscriber reply relayed to the guest with a timeout; `hostbrowser.Open` returns an error (refused URL, no opener, opener failed to start) and `opened:true` means the opener started; a literal `[::1]` URL is refused when the `::1` bind failed; `open-url` becomes request/response; agent+shim become one `agentbin.Install` op, run by the smol transport before it spawns the agent exec; `attach`/`shell` open a session and subscribe through the session client; **`build.sh` + commit agent** | none |
+| 8 | Thin `auth`, smol and hub | bridge §6, hub §8 | `auth` dials, reads the shim path from `ping`, subscribes, runs logins where the transport has events (no `agentbin.Install` on this path); the private session and `--auth` **stay** for remote backends; `__session` carries `subscribe`/`unsubscribe` and streams events/replies; `hubTransport.events()` is fed by them; the laptop daemon subscribes on the hub while it has local subscribers, re-subscribes on each new one, and acks a local subscribe only after the hub's ack; `attach`/`shell`/`auth desktop/web` = dial the laptop daemon, subscribe, proxy with `DEVVM_NO_SUBSCRIBE=1`; `hubBackend.Run` carries `BROWSER` in the proxied exec argv; agent/shim install skipped for hub machines | none |
 | | **Milestone C** | | One exec per smol VM in every flow. Any browser open from any smol or hub devvm session lands on the host you are sitting at. | |
-| 9 | `BROWSER` plumbing | bridge §5 | agent+shim installed at `bootstrap` on managed boxes; `profile.d` (guarded); tmux `new-session -e`; smol `Env`; README | none |
+| 9 | `BROWSER` plumbing (smol) | bridge §5 | agent+shim installed at `bootstrap` on managed smol boxes; `profile.d` (guarded); `tmux set-environment` before attach; smol `Env`; README. Remote boxes: deferred | none |
 
 Deferred, not scheduled: the ssh agent exec for remote boxes (bridge §1,
-"Remote"), and with it thin remote `auth` and the deletion of `--auth` and the
-second agent socket. Hub VMs do not need it; Hetzner boxes are the only
+"Remote"), and with it thin remote `auth`, `BROWSER` plumbing on remote
+boxes (bridge §5), and the deletion of `--auth` and the second agent
+socket. Hub VMs do not need it; Hetzner boxes are the only
 remaining case, and their `auth` keeps working on the private session it has
 today.
 
@@ -189,13 +194,18 @@ quoted as `3001` are the fake's bump and read `3000` on the ThinkPad.
 
 - Unit: the argv builder from a parsed cobra command: `--config-dir` is
   never emitted, only explicitly set leaf flags are, `HUB/` is stripped
-  from the first positional only, everything after `--` in `exec` and
-  `keys add` is byte-identical, `-t` iff stdin is a TTY,
+  from the first positional only, everything after `--` in `exec` is
+  byte-identical, `keys add h/web FILE` and a bare `keys add h/web` emit
+  inline key lines read on the laptop (never the path), `repos add h/web`
+  with no REPO emits the laptop cwd's origin, `-t` iff stdin is a TTY,
   `DEVVM_NO_SUBSCRIBE=1` is the prefix, shellJoin survives spaces, quotes
   and `$`.
 - Live: `devvm exec h/web -- sh -c 'id; echo $SMOLVM_GUEST'` prints `dev`
   and `1`; `devvm exec h/web -- echo --config-dir x` prints it literally;
-  `printf x | devvm exec h/web -- cat` prints exactly `x` (no `-t` noise);
+  `devvm exec h/web -- echo x </dev/null` prints exactly `x` (no `-t`
+  noise; a one-shot smol exec has no stdin, hub §4, so nothing is piped);
+  `keys add h/web ~/.ssh/id_ed25519.pub` then `keys list h/web` shows the
+  laptop key's fingerprint;
   `devvm stop h/web` then `status` shows `stopped`, `start h/web` shows
   `running` (the fake's state file); `devvm create h/api --backend smol
   --yes -m 512 -d 1` writes `api.toml` on the hub, `delete h/api` removes
@@ -205,8 +215,10 @@ quoted as `3001` are the fake's bump and read `3000` on the ThinkPad.
 
 **3. Merged listing + watch**
 
-- Unit: row merge takes state and backend from the hub row and the
-  forwards column from the laptop daemon; the hub's own row; cache
+- Unit: `status --plain --local` skips hub confs and dials no hub; the
+  listing argv sent to a hub carries `--local`; row merge takes state and
+  backend from the hub row and the forwards column from the laptop daemon;
+  the hub's own row; cache
   write/read in `cache/`, never under `machines/` or `run/`; a hub whose
   ssh exits non-zero, times out, or hangs (fake `ssh` that sleeps) renders
   cached rows `unreachable` within the deadline; `--plain` rows for hub
@@ -216,7 +228,9 @@ quoted as `3001` are the fake's bump and read `3000` on the ThinkPad.
   an unroutable address (`10.255.255.1`) makes `time devvm status` return
   in about 2s with `h2  hub  unreachable`; on the hub replace `devvm` with
   `sleep 60` and `time devvm status` returns within the overall deadline
-  with `h/web … unreachable`, restore; `devvm status --plain --watch` in
+  with `h/web … unreachable`, restore; on the hub register a hub conf at
+  `10.255.255.1` and the laptop's `time devvm status` is not slowed by it
+  (`--local`), remove it; `devvm status --plain --watch` in
   the background, then `devvm stop h/web` re-emits a `stopped` row, on the
   hub `pkill -u dev -f 'status --plain --watch'` and the watcher shows
   `unreachable` then recovers on its own, `create --backend hub h3 …`
@@ -278,8 +292,12 @@ loopback listeners, so conflicts and dual-stack are real)
   owned on the hub; a `session {relay: true}` is closed on hub transport
   death while a local session on the same daemon survives it; the
   laptop goes `reconnecting`, re-adds, and picks up a *changed* hub port
-  (hold the old one with a listener during the outage); a `pending` reply
-  leaves the laptop forward pending; `listMachines` sees `run/h@web.sock`.
+  (hold the old one with a listener during the outage); a `session {relay:
+  true}` opened while the hub transport is down is refused, the laptop
+  stays `reconnecting` and comes up on its next retry after `restore()`; a
+  `pending` reply leaves the laptop forward pending; two concurrent `ports
+  add` for different machines on one hub conf both land (`flock`);
+  `listMachines` sees `run/h@web.sock`.
 - Live: start the guest fixture; `devvm ports add h/web 3000` on the
   laptop, `curl localhost:3000` on the laptop is 200 and the hub's `ports
   list web` shows the same guest port on `3001` with a `connection` owner
@@ -311,7 +329,11 @@ on the host's `PATH` logs what "opened")
   bump, redirect binds exact `ttl`-owned or replies "in use"; relay
   subscribers get the event unbound; no subscriber logs and replies
   `opened:false`; reconnecting replies "forward pending"; subscriber
-  timeout and disconnect reply `opened:false`; rate limit, the 20-forward
+  timeout and disconnect reply `opened:false`; `hostbrowser.Open` with no
+  opener on `PATH`, and with an opener that fails to start, returns an
+  error and the subscriber replies `opened:false` and prints the URL; a
+  `redirect_uri` on a literal `[::1]` with the `::1` bind failed replies
+  "unavailable on the host" instead of a bound port; rate limit, the 20-forward
   cap, and ports below 1024 refuse with a reply; `CallbackPort` no longer
   skips 1455; an old agent that closes the stream after the event does not
   hang the daemon; `agentbin.Install` writes agent and shim in one call
@@ -325,7 +347,10 @@ on the host's `PATH` logs what "opened")
   binds exact 1455 with a TTL, and with 1455 held on the host the guest
   prints "callback port 1455 is in use"; an external URL opens verbatim;
   with no `attach` the guest prints "not opened" and `web.log` has the
-  URL; 15 opens in a minute refuse the last five; `pkill -f '__daemon
+  URL; rename the fake `xdg-open` away and an open inside `attach` prints
+  the URL on the host terminal and "not opened on host (no browser
+  opener)" in the guest, restore it; 15 opens in a minute refuse the last
+  five; `pkill -f '__daemon
   web'` during the attach (the `update` case), then open again: it still
   opens, without reattaching; ThinkPad: `pgrep -f 'devvm-agent serve'`
   shows exactly one exec through all of it.
@@ -336,8 +361,11 @@ on the host's `PATH` logs what "opened")
   subscriber and unsubscribes on the last; it acks a local `subscribe`
   only after the upstream ack; an event from `hubTransport.events()` runs
   the same handler, binds through `__session` then `-L`, and relays the
-  local reply upstream; thin `auth` dials, subscribes, runs the login
-  table, and on a remote backend still takes the private-session branch.
+  local reply upstream; ordering across a relay is per host: laptop A,
+  desktop B, laptop C subscribe, C leaves, the next event goes to A; thin
+  `auth` dials, reads the shim path from `ping`, subscribes, runs the
+  login table without calling `agentbin.Install`, and on a remote backend
+  still takes the private-session branch.
 - Live: laptop `attach h/web`, inside it `devvm-open-url
   http://localhost:3000/` logs on the **laptop** with the laptop's port and
   the guest line names that port; hold a hub-side `attach web` at the same
@@ -354,18 +382,19 @@ on the host's `PATH` logs what "opened")
 *Milestone C is done when the step-7 and step-8 live lists pass; the
 one-exec claim itself is a ThinkPad check.*
 
-**9. `BROWSER` plumbing**
+**9. `BROWSER` plumbing (smol)**
 
-- Unit: profile.d content and guard; tmux `-e` argv on ≥ 3.2 and the
-  fallback below it; the smol `ExecOpts.Env` path; adopt hosts get no
-  write.
-- Live: `bootstrap cloud` installs agent and shim and
-  `/etc/profile.d/devvm.sh`; `devvm shell cloud` then `echo $BROWSER`;
-  `attach cloud` gets it through tmux; on the hub `bootstrap web` then
-  `exec web -- bash -lc 'echo $BROWSER'`; re-register `cloud` as
-  remote-unmanaged (or use `scottdev3`) and confirm nothing under `/etc`
-  or `/usr/local` is written and `attach` sets `BROWSER` only if the agent
-  is already installed.
+- Unit: profile.d content and guard; the attach path emits
+  `set-environment -t dev BROWSER=…` after the session exists and before
+  `attach-session`; the smol `ExecOpts.Env` path; remote backends are
+  untouched (`bootstrap cloud` writes no profile.d, `attach cloud` sends
+  no `set-environment`).
+- Live (on the hub, against `web`): `bootstrap web` installs agent and
+  shim and `/etc/profile.d/devvm.sh`; `devvm shell web` then `echo
+  $BROWSER`; `attach web`, open a new tmux window, `echo $BROWSER` is set
+  there and unset in a pane that predates the attach; `exec web -- bash
+  -lc 'echo $BROWSER'` (profile.d); `bootstrap cloud` and `attach cloud`
+  leave `/etc/profile.d` and the tmux session environment alone.
 
 ### Only on real hardware
 

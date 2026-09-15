@@ -1,7 +1,7 @@
 # Proposal: a generic guest→host browser bridge and ad-hoc forwards
 
-Status: draft v2.5, 2026-09-15. Order of work lives in `ROADMAP.md` and
-nowhere else. Revised after five independent reviews. **Sections 3 and 4 are
+Status: draft v2.6, 2026-09-15. Order of work lives in `ROADMAP.md` and
+nowhere else. Revised after six independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
 Scope: `internal/auth`, `internal/session`, `cmd/devvm-agent`, `internal/agentrpc`,
@@ -39,7 +39,9 @@ reachable through the three hard-coded logins, and only while `auth` runs:
 
 ## Non-goals
 
-- Reverse forwards (host → guest), non-loopback binds, UDP.
+- Reverse forwards (host → guest), non-loopback binds, UDP, and guest
+  services that listen only on `::1` (forwards target the guest's
+  `127.0.0.1`; section 4).
 - A general RPC surface for the guest to drive the host CLI.
 - Changing how persistent `ports` config works.
 - Native Windows hosts (the daemon already needs `flock`); WSL is covered by
@@ -97,6 +99,18 @@ which is why that port must be exact on the host that shows the browser and
 why an occupied port there is a refused open rather than a bumped one. The
 subscriber's reply is what the daemon relays to the guest, so success means
 "bound and handed to a browser", not "delivered to someone".
+
+**"Handed to a browser" means the opener process started.** `hostbrowser.Open`
+returns nothing today and prints a fallback line when it finds no opener or
+the opener fails to start, so its caller cannot tell success from a printed
+URL. It returns an error for each of: URL refused (non-http(s)),
+no opener on `PATH`, opener failed to start. The subscriber replies
+`opened: true` only when `Start` succeeded, and otherwise `opened: false`
+with the reason, printing the URL on its own terminal so the user can paste
+it; the guest line reads `devvm: not opened on host (no browser opener);
+URL printed there`. Success is "launched", not "exited cleanly": `open` and
+`xdg-open` hand the URL off and exit, and their status says nothing about
+the browser, so waiting on them would add a delay and no information.
 
 Locally the subscriber is the `attach`/`shell`/`auth` process on this machine;
 for a hub machine it is the laptop's daemon across ssh (see `hub.md`
@@ -206,7 +220,10 @@ the user takes more than a minute. So:
   subscribed session moves it to the front (the laptop daemon does this on
   every new local subscriber, `hub.md` section 8). Events go to the most
   recently registered subscriber; when it unsubscribes or disconnects, the
-  next most recent one, if any, receives them.
+  next most recent one, if any, receives them. The order is per subscriber
+  of *this* daemon: a relay session is one subscriber, placed where its
+  newest local session put it, so across a hop priority is per host, not
+  per session (`hub.md` section 8 states the consequence).
 - **Wire shape.** Today's protocol is one request, one reply, one
   connection, with no correlation. A session connection carries requests,
   their replies, events and event replies on one pipe, so every request
@@ -231,10 +248,14 @@ the user takes more than a minute. So:
   talking to a new daemon; the session ops are a compatibility surface
   versioned by a floor like `--plain`, and the daemon's `ping` version is
   what a client checks before assuming an op exists.
-- **Transport loss closes relay sessions.** When the daemon's transport
-  dies it closes every session opened with `relay: true`, dropping the
-  forwards they own; local sessions and their forwards stay, and
-  `restore()` re-binds those as today. The reason is in `hub.md` section 7:
+- **Transport loss closes relay sessions, and no relay opens without one.**
+  When the daemon's transport dies it closes every session opened with
+  `relay: true`, dropping the forwards they own, and it refuses a new
+  `session {relay: true}` (error reply, close) until the transport is back;
+  local sessions and their forwards stay, and `restore()` re-binds those as
+  today. The refusal is what keeps the close sufficient: a relay admitted
+  during the outage would never be told when `restore()` finished
+  (`hub.md` section 7). The reason is in `hub.md` section 7:
   a relay's forwards are intermediate hops whose host port `restore()` may
   bump, and the far daemon has no way to learn the new port except by
   re-adding through its own reconnect.
@@ -337,7 +358,19 @@ forward. When nothing listens on `::1` the browser falls back to
 `127.0.0.1`, so an IPv4-only forward, new or reused, is reachable in every
 other case.
 
-Which owner a bridge open gets:
+**A literal `::1` in the URL is the one case best-effort cannot cover.** A
+`redirect_uri` of `http://[::1]:P/…` or a direct `http://[::1]:P/` names
+the family: the browser will not fall back to `127.0.0.1`. The classifier
+treats `::1` as loopback like the other two, and when the `::1` bind failed
+on the host that shows the browser, the daemon refuses the open with a
+reply (`callback address [::1]:P is unavailable on the host`) instead of
+reporting a forward the browser cannot reach. `localhost` and `127.0.0.1`
+URLs never need this. On the **guest** side nothing changes: a forward
+targets the guest's `127.0.0.1` (the smol transport's `ForwardHeader`
+target; ssh's `-L …:localhost:G`, resolved by sshd in the guest) and the
+transport API carries a port, not a family. A guest service listening only
+on `::1` is out of scope, as it is today; added to the non-goals.
+
 
 - **Direct loopback URL** (`http://localhost:3000/`): the subscribing
   client's connection. The forward lives as long as the session that opened
@@ -379,27 +412,38 @@ writing to an adopt host:
 
 | Path | smol | remote-managed | remote-unmanaged |
 |---|---|---|---|
-| `shell` | `ExecOpts.Env` | profile.d | not set (see note) |
-| `attach` | `ExecOpts.Env` + tmux `-e` | tmux `-e` + profile.d | tmux `-e` if agent installed |
-| other shells (cron, another ssh client) | profile.d | profile.d | not set |
+| `shell` | `ExecOpts.Env` | deferred | deferred |
+| `attach` | `ExecOpts.Env` + tmux session env | deferred | deferred |
+| other shells (cron) | profile.d | deferred | deferred |
 
 Notes:
 
-- Bare remote `shell` sends **no remote command** on purpose so the login shell
-  is honoured (`sshConnect`, `moshConnect`), and sshd drops `SetEnv` unless
-  `AcceptEnv` allows it. So on remote, `BROWSER` comes from tmux or profile.d,
-  never from the exec. On an adopt host without profile.d, bare `shell` does not
-  get it; `attach` does.
+- **Remote boxes are deferred with the ssh agent exec** (section 1,
+  Remote). Until the ssh daemon carries events, a `BROWSER` pointed at the
+  shim outside `auth` has no daemon to answer it and prints the URL, which
+  is what `gh` does on its own; plumbing it early would write `profile.d`
+  and `/usr/local/bin` on managed boxes for no behaviour change. When it
+  ships: bare remote `shell` sends **no remote command** on purpose so the
+  login shell is honoured (`sshConnect`, `moshConnect`), and sshd drops
+  `SetEnv` unless `AcceptEnv` allows it, so on remote `BROWSER` will come
+  from tmux or profile.d, never from the exec; an adopt host gets the tmux
+  path only when the agent is already installed, and never a profile.d
+  write.
 - `attach` joins an existing tmux server, so `Env` on the attach exec does not
-  reach existing panes. Use `tmux new-session -A -s dev -e BROWSER=…`
-  (tmux ≥ 3.2; on older tmux fall back to profile.d only). ssh `Attach` already
-  runs `new-session -A`; smol's keeper in `ensureTmux` gets the same flag.
-- **Managed boxes install the agent and shim at `bootstrap`**, not lazily at
-  first `auth`. Otherwise profile.d would point at a file that does not exist
-  yet and `gh` would fail outright instead of printing the URL.
+  reach panes. `new-session -e` does not either: `-e` sets the environment
+  only for a session it *creates*, and with `-A` an existing session is
+  attached unchanged. So the attach path runs `tmux set-environment -t dev
+  BROWSER=…` once the session exists and before attaching (any tmux; no
+  version floor). New windows and panes inherit it. A shell already running
+  in an existing pane keeps its environment; it needs `export BROWSER=…`
+  once, or profile.d on its next login. Documented, not repaired.
+- **Managed smol boxes install the agent and shim at `bootstrap`**, not lazily
+  at first `auth`. Otherwise profile.d would point at a file that does not
+  exist yet and `gh` would fail outright instead of printing the URL.
 - `/etc/profile.d/devvm.sh` is `export BROWSER=/usr/local/bin/devvm-open-url`
   guarded by `[ -z "$BROWSER" ] && [ -x … ]`. It is sh/bash only; fish and zsh
-  users on managed boxes get it via tmux `-e` or set it themselves. Documented.
+  users on managed boxes get it via the tmux session environment or set it
+  themselves. Documented.
 - The shim already prints the URL when no agent socket answers, so a stale
   `BROWSER` is harmless.
 - The `agent-auth.sock` / `--auth` distinction goes away on smol: one socket,
@@ -413,13 +457,20 @@ through the hub daemon:
 
 ```go
 func Authenticate(ctx, b, m, tools, approve) error {
-    agentPath, shim := agentbin.Install(...)   // agent + shim, one op; consent gate unchanged (adopt hosts)
     cl := session.Dial(configDir, name)        // the session client (section 3): spawn, session, reconnect
+    shim := cl.Ping().Shim                     // the daemon's smol transport installed agent + shim (section 5)
     release := cl.Subscribe(); defer release() // acked; bridge alive across logins
                                                // DEVVM_NO_SUBSCRIBE=1: skip the daemon
     for tool := range tools { s.login(tool) }  // BROWSER=shim, as today
 }
 ```
+
+The thin path installs nothing: the smol transport is the sole installer
+(section 5), and the `ping` reply reports the shim path it installed, so
+`auth` never runs `agentbin.Install` of its own on smol or for a hub
+machine (`hub.md` section 8). The consent-gated install (`--install-agent`,
+the prompt) lives only on the remote branch below, which is the only place
+an agent can be missing.
 
 On a remote backend `auth` keeps its private session unchanged until the ssh
 agent exec lands (section 1, Remote). `Authenticate` branches on whether the
@@ -499,5 +550,3 @@ Lives in `ROADMAP.md`, the only place sequencing is written down.
 - Should `start` open a session too, or only interactive commands? Proposed:
   no. `start` brings up configured forwards, and those already keep the daemon
   alive.
-- tmux `-e` needs 3.2 (2021). Do we care about older guests? Proposed: fall
-  back silently to profile.d.
