@@ -114,9 +114,17 @@ func (t *smolTransport) pump(conn net.Conn, guestPort int) {
 
 func (t *smolTransport) dead() <-chan struct{} { return t.mux.CloseChan() }
 
+// Close kills the agent exec FIRST, then closes the yamux session. The order
+// is load-bearing: yamux's Close blocks until its receive loop sees a read
+// error, and agentrpc.Stdio never fails a read on its own (Stdio.Close is a
+// no-op) — only the exec dying does. Closing the mux first deadlocked here,
+// leaving a "stopped" daemon holding the single agent exec while the next
+// `ports up` spawned a second one. (Not unit-testable without smolvm; the
+// same gotcha is pinned in the agentrpc tests.)
 func (t *smolTransport) Close() error {
+	err := t.agent.Close()
 	t.mux.Close()
-	return t.agent.Close()
+	return err
 }
 
 var _ transport = (*smolTransport)(nil)

@@ -23,7 +23,11 @@ func (b *sshBackend) Kind() string { return b.m.Backend }
 // scp, and mosh (build_ssh_flags). ControlMaster options are added separately
 // by base(), since scp/mosh don't want them.
 func (b *sshBackend) sshFlags() []string {
-	var f []string
+	// Fail fast on a host that is gone rather than sitting in the TCP timeout
+	// (~75s on macOS, longer on Linux): the forward daemon's reconnect dial,
+	// scp from the menu bar app, and status probes all need a bounded wait.
+	// Only the connect phase is bounded; established sessions are unaffected.
+	f := []string{"-o", "ConnectTimeout=10"}
 	if b.m.SSHPort != 22 && b.m.SSHPort != 0 {
 		f = append(f, "-o", fmt.Sprintf("Port=%d", b.m.SSHPort))
 	}

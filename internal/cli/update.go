@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,9 +34,20 @@ const (
 	releaseBase = "https://github.com/" + releaseRepo + "/releases"
 )
 
-// daemonGoneTimeout bounds the wait for a stopped daemon to unlink its socket
-// before its replacement is spawned (see session.WaitGone).
-const daemonGoneTimeout = 5 * time.Second
+// maxAssetSize caps a download so a broken or hostile server can't stream
+// into memory forever. Release binaries are a few tens of MB.
+const maxAssetSize = 256 << 20
+
+// daemonGoneTimeout bounds the wait for a stopped daemon to release its
+// transport and unlink its socket before its replacement is spawned (see
+// session.WaitGone). A daemon mid-dial finishes that dial first, which is
+// bounded by ssh's ConnectTimeout. Var so tests can shrink it.
+var daemonGoneTimeout = 30 * time.Second
+
+// tagRe is the only shape a release tag may take. The tag becomes a URL path
+// segment, so anything else (a `../` hop into another repo's release path,
+// say) is refused before it is ever used.
+var tagRe = regexp.MustCompile(`^v?\d+(\.\d+)*[A-Za-z0-9.+-]*$`)
 
 // reexec replaces the process image and executablePath locates the running
 // binary. Vars so tests can observe the hand-off and redirect the install
@@ -45,9 +59,9 @@ var (
 
 func (a *App) updateCmd() *cobra.Command {
 	var (
-		force, check bool
-		version      string
-		finishFrom   string
+		force, check, plain bool
+		version             string
+		finishFrom          string
 	)
 	c := &cobra.Command{
 		Use:   "update",
@@ -56,22 +70,29 @@ func (a *App) updateCmd() *cobra.Command {
 			"release's SHA256SUMS, and replace the running binary in place (no sudo; the\n" +
 			"install directory must be writable). The new binary then restarts every\n" +
 			"running forward daemon so none keeps executing the old code; forwards come\n" +
-			"back on the same host ports.\n\n" +
-			"Only release builds know their version. A 'dev' build (go build / install.sh)\n" +
-			"cannot be compared and refuses without --force. First-time installs still go\n" +
-			"through bootstrap.sh or install.sh.",
-		Example: "  devvm update\n  devvm update --check\n  devvm update --version v0.1.10",
+			"back on the same host ports, though connections through them drop for a\n" +
+			"moment. A daemon that is mid-reconnect is left alone.\n\n" +
+			"SHA256SUMS comes from the same release as the binary, so it catches a\n" +
+			"corrupt or partial download, not a compromised release.\n\n" +
+			"Release builds and `go install …@vX.Y.Z` builds know their version. A 'dev'\n" +
+			"build (go build / install.sh) cannot be compared and refuses without --force.\n" +
+			"First-time installs still go through your install route (bootstrap.sh or\n" +
+			"install.sh).",
+		Example: "  devvm update\n  devvm update --check\n  devvm update --check --plain   # current<TAB>latest<TAB>true|false\n  devvm update --version v0.1.10",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if finishFrom != "" {
 				return a.finishUpdate(finishFrom)
 			}
 			u := newUpdater(a.Stderr)
-			return a.runUpdate(cmd.Context(), u, updateOpts{force: force, check: check, version: version})
+			return a.runUpdate(cmd.Context(), u, updateOpts{force: force, check: check, plain: plain, version: version})
 		},
 	}
-	c.Flags().BoolVar(&force, "force", false, "install even if this is a dev build or already current")
+	c.Flags().BoolVar(&force, "force", false,
+		"install even if this is a dev build, already current, or lives in a package manager's tree "+
+			"(forcing a downgrade to a release older than this command installs fine but cannot cycle the daemons)")
 	c.Flags().BoolVar(&check, "check", false, "only report the current and latest versions")
+	c.Flags().BoolVar(&plain, "plain", false, "with --check: one tab-separated line for scripts")
 	c.Flags().StringVar(&version, "version", "", "install this release tag (vX.Y.Z) instead of the latest")
 	// The freshly installed binary is re-exec'd with this flag to run the
 	// post-install steps on the new code.
@@ -81,8 +102,8 @@ func (a *App) updateCmd() *cobra.Command {
 }
 
 type updateOpts struct {
-	force, check bool
-	version      string
+	force, check, plain bool
+	version             string
 }
 
 // updater fetches release metadata and assets. base is the releases root
@@ -93,29 +114,54 @@ type updater struct {
 	stderr io.Writer
 }
 
+// newUpdater builds a client with per-phase timeouts (dial, TLS, response
+// headers) and no overall deadline: a whole-request timeout would cap the
+// binary download and fail outright on a slow link.
 func newUpdater(stderr io.Writer) *updater {
-	return &updater{base: releaseBase, client: &http.Client{Timeout: 60 * time.Second}, stderr: stderr}
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}}
+	return &updater{base: releaseBase, client: client, stderr: stderr}
+}
+
+// currentVersion is the running build's version: the release stamp, else the
+// module version Go embeds for `go install …@vX.Y.Z` builds, else "dev".
+func currentVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && tagRe.MatchString(bi.Main.Version) {
+		return bi.Main.Version
+	}
+	return "dev"
 }
 
 func (a *App) runUpdate(ctx context.Context, u *updater, o updateOpts) error {
-	if runtime.GOOS == "windows" {
-		return errors.New("update is not supported on windows")
-	}
-	current := Version
+	current := currentVersion()
 	tag := o.version
 	if tag == "" {
 		var err error
 		if tag, err = u.latestTag(ctx); err != nil {
 			return fmt.Errorf("find latest release: %w", err)
 		}
+	} else if !tagRe.MatchString(tag) {
+		return fmt.Errorf("invalid release tag %q (want vX.Y.Z)", tag)
 	}
+	available := current != "dev" && compareVersions(tag, current) > 0
 	if o.check {
-		fmt.Fprintf(a.Stdout, "current: %s\nlatest:  %s\n", current, tag)
+		if o.plain {
+			fmt.Fprintf(a.Stdout, "%s\t%s\t%t\n", current, tag, available)
+		} else {
+			fmt.Fprintf(a.Stdout, "current: %s\nlatest:  %s\n", current, tag)
+		}
 		return nil
 	}
 	switch {
 	case current == "dev" && !o.force:
-		return fmt.Errorf("this is a dev build with no version to compare; use --force to install %s anyway, or rebuild with install.sh", tag)
+		return fmt.Errorf("this is a dev build with no version to compare; use --force to install %s anyway, or reinstall the way you first did", tag)
 	case current != "dev" && !o.force:
 		switch compareVersions(tag, current) {
 		case 0:
@@ -127,12 +173,19 @@ func (a *App) runUpdate(ctx context.Context, u *updater, o updateOpts) error {
 		}
 	}
 
-	exe, err := executablePath()
+	invoked, err := executablePath()
 	if err != nil {
-		return err
+		return fmt.Errorf("locate the running binary: %w", err)
 	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
-		return err
+	exe, err := filepath.EvalSymlinks(invoked)
+	if err != nil {
+		return fmt.Errorf("locate the running binary: %w", err)
+	}
+	if exe != invoked {
+		fmt.Fprintf(a.Stdout, "devvm is %s -> %s; replacing the target\n", invoked, exe)
+	}
+	if mgr := packageManagerFor(exe); mgr != "" && !o.force {
+		return fmt.Errorf("%s is installed by %s; update it there, or use --force to overwrite it in place", exe, mgr)
 	}
 	asset := "devvm-" + runtime.GOOS + "-" + runtime.GOARCH
 
@@ -164,44 +217,124 @@ func (a *App) runUpdate(ctx context.Context, u *updater, o updateOpts) error {
 	return nil
 }
 
+// packageManagerFor names the package manager whose tree exe lives in, or ""
+// if it looks hand-installed. Overwriting a keg or store path works for a
+// moment and then the manager's next upgrade reverts it or errors.
+func packageManagerFor(exe string) string {
+	switch {
+	case strings.Contains(exe, "/Cellar/"), strings.Contains(exe, "/linuxbrew/"):
+		return "Homebrew"
+	case strings.Contains(exe, "/nix/store/"):
+		return "Nix"
+	}
+	return ""
+}
+
 // finishUpdate runs on the freshly installed binary (see the --finish-from
-// hand-off): report, cycle the forward daemons, then the menu bar app.
+// hand-off): report, cycle the forward daemons, then the menu bar app. It
+// exits non-zero if any daemon failed to come back, so a scripted update
+// can't mistake half-restarted forwards for success.
 func (a *App) finishUpdate(old string) error {
 	fmt.Fprintf(a.Stdout, "updated devvm %s -> %s\n", old, Version)
-	a.restartDaemons()
+	res := a.restartDaemons()
 	a.updateMenubar()
+	if len(res.failed) > 0 {
+		return fmt.Errorf("forwards not restarted for %s; run 'devvm ports up NAME' for each", strings.Join(res.failed, ", "))
+	}
 	return nil
+}
+
+// restartResult is what restartDaemons did per machine.
+type restartResult struct {
+	cycled, skipped, failed []string
 }
 
 // restartDaemons cycles every running forward daemon through the same paths
 // as `ports down` + `ports up`, so none keeps running the pre-update code.
 // Forwards return on the host ports they had (the daemon re-requests the
-// configured preferred ports; only a port taken meanwhile bumps). Errors are
-// reported per machine and never abort the rest. Returns the machines cycled.
-func (a *App) restartDaemons() []string {
+// configured preferred ports; only a port taken meanwhile bumps). Left alone,
+// with a note: a daemon mid-reconnect (its forwards are pending anyway and a
+// stop would race the dial), one holding only forwards that aren't in the
+// conf (an `auth` callback bridge — `ports up` would not bring them back),
+// and one already on this build. Errors are reported per machine and never
+// abort the rest.
+func (a *App) restartDaemons() restartResult {
+	var res restartResult
 	names, _ := config.List(a.ConfigDir)
-	var cycled []string
 	for _, name := range names {
 		cl, err := session.Existing(a.ConfigDir, name)
 		if err != nil {
 			continue // no daemon: nothing running old code
 		}
+		st, err := cl.Status()
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "devvm: %s: query forwards: %v\n", name, err)
+			res.failed = append(res.failed, name)
+			continue
+		}
+		skip := func(why string) {
+			fmt.Fprintf(a.Stdout, "%s: %s\n", name, why)
+			res.skipped = append(res.skipped, name)
+		}
+		switch {
+		case st.Version == Version && Version != "dev":
+			skip("forward daemon already runs " + Version)
+			continue
+		case st.Reconnecting():
+			skip("forward daemon is reconnecting; not restarted, it picks up the new binary next time it is started")
+			continue
+		case !anyConfiguredForward(a.ConfigDir, name, st.Forwards):
+			skip("forward daemon holds no configured ports (idle, or an auth callback); left to exit on its own")
+			continue
+		}
 		if err := cl.Stop(); err != nil {
 			fmt.Fprintf(a.Stderr, "devvm: %s: stop forwards: %v\n", name, err)
+			res.failed = append(res.failed, name)
 			continue
 		}
 		if !session.WaitGone(a.ConfigDir, name, daemonGoneTimeout) {
-			fmt.Fprintf(a.Stderr, "devvm: %s: old forward daemon did not exit; run 'devvm ports up %s' once it has\n", name, name)
+			fmt.Fprintf(a.Stderr, "devvm: %s: old forward daemon did not exit within %s\n", name, daemonGoneTimeout)
+			res.failed = append(res.failed, name)
 			continue
 		}
 		fmt.Fprintf(a.Stdout, "restarting forwards for %s\n", name)
 		if err := a.tunnelUp(name); err != nil {
 			fmt.Fprintf(a.Stderr, "devvm: %s: bring forwards back up: %v\n", name, err)
+			res.failed = append(res.failed, name)
 			continue
 		}
-		cycled = append(cycled, name)
+		if cl, err := session.Existing(a.ConfigDir, name); err == nil {
+			if st, err := cl.Status(); err == nil && st.Version != Version {
+				fmt.Fprintf(a.Stderr, "devvm: %s: new forward daemon reports %q, expected %q\n", name, st.Version, Version)
+				res.failed = append(res.failed, name)
+				continue
+			}
+		}
+		res.cycled = append(res.cycled, name)
 	}
-	return cycled
+	return res
+}
+
+// anyConfiguredForward reports whether at least one of the daemon's forwards
+// maps a guest port listed in the machine's conf — i.e. whether `ports up`
+// would recreate anything after a stop.
+func anyConfiguredForward(configDir, name string, fwds []session.Forward) bool {
+	m, err := config.Load(configDir, name)
+	if err != nil {
+		return false
+	}
+	configured := map[int]bool{}
+	for _, mapping := range m.Ports {
+		if _, guest, err := parseMapping(mapping); err == nil {
+			configured[guest] = true
+		}
+	}
+	for _, f := range fwds {
+		if configured[f.Guest] {
+			return true
+		}
+	}
+	return false
 }
 
 // updateMenubar keeps the macOS menu bar app (if installed) at the CLI's
@@ -212,8 +345,12 @@ func (a *App) updateMenubar() {}
 
 // latestTag resolves the "latest" release without the GitHub API (no auth, no
 // rate limit): GitHub answers /releases/latest with a redirect to
-// /releases/tag/<tag>, so the tag is the redirect's last path segment.
+// /releases/tag/<tag>, so the tag is the redirect's last path segment. The
+// redirect is never followed; only its last segment is used, and only if it
+// is shaped like a tag.
 func (u *updater) latestTag(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.base+"/latest", nil)
 	if err != nil {
 		return "", err
@@ -225,13 +362,13 @@ func (u *updater) latestTag(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	loc := resp.Header.Get("Location")
 	if resp.StatusCode/100 != 3 || loc == "" {
 		return "", fmt.Errorf("expected a redirect from %s/latest, got %s", u.base, resp.Status)
 	}
 	tag := path.Base(loc)
-	if !strings.HasPrefix(tag, "v") {
+	if !strings.HasPrefix(tag, "v") || !tagRe.MatchString(tag) {
 		return "", fmt.Errorf("unexpected release redirect %q", loc)
 	}
 	return tag, nil
@@ -253,13 +390,19 @@ func (u *updater) fetch(ctx context.Context, tag, asset string, w io.Writer, pro
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: %s", url, resp.Status)
 	}
-	var r io.Reader = resp.Body
+	var r io.Reader = io.LimitReader(resp.Body, maxAssetSize+1)
 	if progress && resp.ContentLength > 0 {
-		r = &progressReader{r: resp.Body, total: resp.ContentLength, label: asset, out: u.stderr}
+		r = &progressReader{r: r, total: resp.ContentLength, label: asset, out: u.stderr}
 		defer fmt.Fprintln(u.stderr)
 	}
-	_, err = io.Copy(w, r)
-	return err
+	n, err := io.Copy(w, r)
+	if err != nil {
+		return err
+	}
+	if n > maxAssetSize {
+		return fmt.Errorf("%s exceeds %d bytes", asset, maxAssetSize)
+	}
+	return nil
 }
 
 type progressReader struct {
@@ -312,8 +455,9 @@ func sha256Hex(b []byte) string {
 
 // installBinary replaces target with data atomically: a temp file in the same
 // directory (same filesystem, so rename can't degrade to copy+unlink), the
-// existing mode, then rename over the running binary — which keeps executing
-// its old inode untouched. Never escalates: an unwritable directory is an error.
+// existing mode, fsync'd, then rename over the running binary — which keeps
+// executing its old inode untouched. Never escalates: an unwritable directory
+// is an error.
 func installBinary(data []byte, target string) error {
 	info, err := os.Stat(target)
 	if err != nil {
@@ -328,23 +472,28 @@ func installBinary(data []byte, target string) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	cleanup := func() { os.Remove(tmpName) }
-	if _, err := tmp.Write(data); err != nil {
+	fail := func(err error) error {
 		tmp.Close()
-		cleanup()
+		os.Remove(tmpName)
 		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail(err)
 	}
 	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
-		tmp.Close()
-		cleanup()
-		return err
+		return fail(err)
+	}
+	// Without the fsync a crash right after the rename could leave an empty
+	// devvm with the old inode already gone.
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
 	}
 	if err := tmp.Close(); err != nil {
-		cleanup()
+		os.Remove(tmpName)
 		return err
 	}
 	if err := os.Rename(tmpName, target); err != nil {
-		cleanup()
+		os.Remove(tmpName)
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("%s is not writable; re-run as the user who installed devvm there, or reinstall to a directory you own", dir)
 		}
@@ -353,10 +502,15 @@ func installBinary(data []byte, target string) error {
 	return nil
 }
 
-// compareVersions orders two release tags (v1.2.3, 1.2.3, or git-describe
-// forms like v1.2.3-4-gabcdef / v1.2.3-dirty) numerically by dotted
-// component: -1 if a < b, 0 if equal, 1 if a > b. A suffix after the numbers
-// marks a build past that tag, so it sorts above the bare tag.
+// describeRe matches git-describe's "commits past a tag" suffix.
+var describeRe = regexp.MustCompile(`^-(\d+)-g[0-9a-fA-F]+(-dirty)?$`)
+
+// compareVersions orders two release tags numerically by dotted component:
+// -1 if a < b, 0 if equal, 1 if a > b. Suffixes after the numbers break ties:
+// a git-describe suffix (-N-g<hash>, or -dirty on an exact tag) is a build
+// PAST the tag and sorts above it, with N compared numerically; any other
+// suffix (-rc1, -beta) is a prerelease and sorts BELOW the bare tag, so a
+// user on v1.2.0-rc1 is offered v1.2.0.
 func compareVersions(a, b string) int {
 	an, as := splitVersion(a)
 	bn, bs := splitVersion(b)
@@ -369,21 +523,45 @@ func compareVersions(a, b string) int {
 			y = bn[i]
 		}
 		if x != y {
-			if x < y {
-				return -1
-			}
-			return 1
+			return cmpInt(x, y)
 		}
 	}
-	switch {
-	case as == bs:
-		return 0
-	case as == "":
-		return -1
-	case bs == "":
-		return 1
+	ar, aN := suffixRank(as)
+	br, bN := suffixRank(bs)
+	if ar != br {
+		return cmpInt(ar, br)
+	}
+	if ar == 1 {
+		return cmpInt(aN, bN)
 	}
 	return strings.Compare(as, bs)
+}
+
+// suffixRank classifies a version suffix: 0 for none (the release itself),
+// 1 for a git-describe build past it (with its commit count), -1 for a
+// prerelease.
+func suffixRank(s string) (rank, commits int) {
+	switch {
+	case s == "":
+		return 0, 0
+	case s == "-dirty":
+		return 1, 0
+	}
+	if m := describeRe.FindStringSubmatch(s); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return 1, n
+	}
+	return -1, 0
+}
+
+func cmpInt(x, y int) int {
+	switch {
+	case x < y:
+		return -1
+	case x > y:
+		return 1
+	}
+	return 0
 }
 
 // splitVersion separates the dotted numeric prefix from any trailing suffix.

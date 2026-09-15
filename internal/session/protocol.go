@@ -14,7 +14,7 @@ import (
 
 // Request is a control message from the CLI to the daemon (one JSON line).
 type Request struct {
-	Op    string `json:"op"`              // add | remove | list | ping | stop
+	Op    string `json:"op"`              // add | remove | list | ping | kick | stop
 	Host  int    `json:"host,omitempty"`  // preferred host port (add)
 	Guest int    `json:"guest,omitempty"` // guest port (add/remove)
 }
@@ -44,6 +44,7 @@ type Response struct {
 	Pending  bool      `json:"pending,omitempty"` // recorded during an outage, not yet bound (add)
 	State    string    `json:"state,omitempty"`   // StateUp | StateReconnecting (list/ping)
 	Since    time.Time `json:"since,omitempty"`   // when State began (list/ping)
+	Version  string    `json:"version,omitempty"` // build the daemon runs (list/ping)
 	Forwards []Forward `json:"forwards,omitempty"`
 }
 
@@ -54,6 +55,7 @@ const (
 	OpList   = "list"
 	OpPing   = "ping"
 	OpStop   = "stop"
+	OpKick   = "kick" // retry a reconnect now instead of waiting out the backoff
 )
 
 // socketPath is the daemon's control socket for a machine.

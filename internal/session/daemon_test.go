@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/smweber/devvm/internal/agentrpc"
+	"github.com/smweber/devvm/internal/config"
 )
 
 // fakeTransport binds real host listeners (so bind conflicts drive the bump)
@@ -60,7 +62,7 @@ func newFakeTransport() *fakeTransport { return &fakeTransport{dc: make(chan str
 
 func newTestDaemon(t *testing.T) *daemon {
 	t.Helper()
-	d := newDaemon(t.TempDir(), "t", newFakeTransport(), func() (transport, error) {
+	d := newDaemon(t.TempDir(), "t", "test", newFakeTransport(), func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})
 	d.logf = t.Logf
@@ -406,4 +408,175 @@ func TestDaemonRemoveWhileReconnecting(t *testing.T) {
 	}
 	d.triggerStop()
 	waitDone(t, done, "stop")
+}
+
+// failingTransport binds nothing: every forward fails with a non-busy error,
+// like `ssh -O forward` against a master that came up degraded.
+type failingTransport struct {
+	*fakeTransport
+	fail atomic.Bool
+}
+
+func (f *failingTransport) forward(hostPort, guestPort int) (io.Closer, error) {
+	if f.fail.Load() {
+		return nil, errors.New("ssh -O forward: exit 255")
+	}
+	return f.fakeTransport.forward(hostPort, guestPort)
+}
+
+func TestDaemonRestoreFailureKeepsForwardsPendingAndRetries(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	pref := freePort(t)
+	if _, _, _, err := d.add(pref, guest); err != nil {
+		t.Fatal(err)
+	}
+	// First dial: a transport whose binds fail. Second: a healthy one.
+	bad := &failingTransport{fakeTransport: newFakeTransport()}
+	bad.fail.Store(true)
+	good := newFakeTransport()
+	var dials atomic.Int32
+	d.dial = func() (transport, error) {
+		if dials.Add(1) == 1 {
+			return bad, nil
+		}
+		return good, nil
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "second dial", func() bool { return dials.Load() >= 2 })
+	waitFor(t, "state back up", func() bool { s, _ := d.status(); return s == StateUp })
+	if !bad.closed.Load() {
+		t.Error("the transport that could not carry forwards was not closed")
+	}
+	fs := d.list()
+	if len(fs) != 1 || fs[0].Pending || fs[0].Host != pref {
+		t.Fatalf("forward after retry = %+v, want bound on %d", fs, pref)
+	}
+	if !portOpen(pref) {
+		t.Error("restored forward is not listening")
+	}
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+func TestDaemonKickRetriesImmediately(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	d.minBackoff, d.maxBackoff = time.Hour, time.Hour
+	first := d.tr.(*fakeTransport)
+	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+		t.Fatal(err)
+	}
+	second := newFakeTransport()
+	var dials atomic.Int32
+	d.dial = func() (transport, error) { dials.Add(1); return second, nil }
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	if dials.Load() != 0 {
+		t.Fatalf("dialed %d times before the backoff elapsed", dials.Load())
+	}
+	if r := d.dispatch(Request{Op: OpKick}); !r.OK {
+		t.Fatalf("kick = %+v", r)
+	}
+	waitFor(t, "state back up after kick", func() bool { s, _ := d.status(); return s == StateUp })
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+func TestDaemonStopInterruptsHangingDial(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	late := newFakeTransport()
+	d.dial = func() (transport, error) { <-release; return late, nil }
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	time.Sleep(3 * d.minBackoff) // let the dial start and hang
+	d.triggerStop()
+	waitDone(t, done, "stop during a hanging dial")
+	close(release)
+	waitFor(t, "late transport closed", func() bool { return late.closed.Load() })
+}
+
+func TestDaemonVMNotRunningWaitsWithoutFailing(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+		t.Fatal(err)
+	}
+	var dials atomic.Int32
+	second := newFakeTransport()
+	d.dial = func() (transport, error) {
+		if dials.Add(1) < 3 {
+			return nil, errVMNotRunning
+		}
+		return second, nil
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "state back up once the VM runs", func() bool { s, _ := d.status(); return s == StateUp })
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+func TestDaemonPingReportsVersion(t *testing.T) {
+	d := newTestDaemon(t)
+	if r := d.dispatch(Request{Op: OpPing}); r.Version != "test" || r.State != StateUp {
+		t.Fatalf("ping = %+v", r)
+	}
+	if r := d.dispatch(Request{Op: OpList}); r.Version != "test" {
+		t.Fatalf("list = %+v", r)
+	}
+}
+
+// orderedTransport records when Close ran so the shutdown-ordering test can
+// prove the socket outlived the transport.
+type orderedTransport struct {
+	*fakeTransport
+	sockAtClose bool // socket still present when Close ran
+	sock        string
+}
+
+func (o *orderedTransport) Close() error {
+	_, err := os.Stat(o.sock)
+	o.sockAtClose = err == nil
+	return o.fakeTransport.Close()
+}
+
+func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock := socketPath(dir, "t")
+	tr := &orderedTransport{fakeTransport: newFakeTransport(), sock: sock}
+	d := newDaemon(dir, "t", "test", tr, nil)
+	d.logf = t.Logf
+	ln, err := listenControl(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ln = ln
+	go d.serveControl()
+	if err := d.shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.closed.Load() {
+		t.Fatal("transport not closed")
+	}
+	if !tr.sockAtClose {
+		t.Error("socket was unlinked before the transport closed; WaitGone would race the old master")
+	}
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Errorf("socket still present after shutdown: %v", err)
+	}
 }

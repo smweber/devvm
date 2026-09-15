@@ -132,6 +132,7 @@ func (c *Client) Remove(guest int) error {
 type Status struct {
 	State    string
 	Since    time.Time
+	Version  string // build the daemon is running; "" from a pre-version daemon
 	Forwards []Forward
 }
 
@@ -147,7 +148,20 @@ func (c *Client) Status() (Status, error) {
 	if !resp.OK {
 		return Status{}, errors.New(resp.Err)
 	}
-	return Status{State: resp.State, Since: resp.Since, Forwards: resp.Forwards}, nil
+	return Status{State: resp.State, Since: resp.Since, Version: resp.Version, Forwards: resp.Forwards}, nil
+}
+
+// Kick asks a reconnecting daemon to retry now (e.g. after `devvm start`
+// brought the VM back) instead of waiting out its backoff. No-op when up.
+func (c *Client) Kick() error {
+	resp, err := c.request(Request{Op: OpKick})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return errors.New(resp.Err)
+	}
+	return nil
 }
 
 // List returns the daemon's forwards (live or pending).
@@ -164,11 +178,12 @@ func (c *Client) Stop() error {
 
 // WaitGone blocks until no daemon answers for the machine and its socket is
 // unlinked, or timeout elapses (reporting whether it is gone). Stop returns as
-// soon as the daemon has taken the request, before it has closed its listener
-// and removed its socket; a replacement spawned in that window could see the
-// old socket as stale, listen on the same path, and then have its fresh socket
-// unlinked by the old daemon's shutdown. Callers cycling a daemon (update)
-// wait here between Stop and Dial.
+// soon as the daemon has taken the request; the daemon then closes its
+// forwards and transport and unlinks the socket last (see daemon.shutdown),
+// so a missing socket means the old transport is released too. A replacement
+// spawned earlier could listen on the same path and have its fresh socket
+// unlinked, or find the old ssh master still holding the ControlPath. Callers
+// cycling a daemon (update) wait here between Stop and Dial.
 func WaitGone(configDir, name string, timeout time.Duration) bool {
 	c := &Client{configDir: configDir, name: name}
 	deadline := time.Now().Add(timeout)

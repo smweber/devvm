@@ -49,6 +49,7 @@ const (
 	groupLifecycle = "lifecycle"
 	groupConnect   = "connect"
 	groupConfigure = "configure"
+	groupMaintain  = "maintain"
 )
 
 func (a *App) rootCmd() *cobra.Command {
@@ -75,6 +76,7 @@ func (a *App) rootCmd() *cobra.Command {
 		&cobra.Group{ID: groupLifecycle, Title: "Lifecycle:"},
 		&cobra.Group{ID: groupConnect, Title: "Connect:"},
 		&cobra.Group{ID: groupConfigure, Title: "Configure:"},
+		&cobra.Group{ID: groupMaintain, Title: "Maintain devvm itself:"},
 	)
 
 	// checkCommandGroups panics on a GroupID with no registered group, so GroupID is
@@ -111,8 +113,9 @@ func (a *App) rootCmd() *cobra.Command {
 		a.defaultsCmd(),
 		a.statusCmd(),
 	)...)
-	// update is about devvm itself, not a machine, so it stays ungrouped.
-	root.AddCommand(a.updateCmd())
+	root.AddCommand(group(groupMaintain,
+		a.updateCmd(),
+	)...)
 	root.AddCommand(a.daemonCmd()) // hidden; falls under "Additional Commands"
 	return root
 }

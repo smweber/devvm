@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -23,9 +24,23 @@ func (a *App) completeCopyGuestPath(ctx context.Context, name, prefix string) ([
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, completeTimeout())
 	defer cancel()
 	return guestPathCompletions(ctx, b, prefix)
+}
+
+// completeTimeout bounds one guest lookup. Shell completion wants a short cap
+// (a stalled TAB is worse than no suggestions), but the macOS menu bar app,
+// which drives the same lookup from a text field, pays a cold ssh
+// ControlMaster handshake on the first keystroke that can exceed 2s, so it
+// sets DEVVM_COMPLETE_TIMEOUT (a Go duration such as "10s").
+func completeTimeout() time.Duration {
+	if v := os.Getenv("DEVVM_COMPLETE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 2 * time.Second
 }
 
 func guestPathCompletions(ctx context.Context, b backend.Backend, prefix string) ([]string, cobra.ShellCompDirective) {

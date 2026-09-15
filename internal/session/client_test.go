@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/smweber/devvm/internal/config"
 )
@@ -26,7 +27,7 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 		forwards:  map[int]*fwd{},
 		stop:      make(chan struct{}),
 	}
-	ln, err := net.Listen("unix", socketPath(dir, "t"))
+	ln, err := listenControl(socketPath(dir, "t"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,5 +69,44 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 	}
 	if fwds, _ := cl.List(); len(fwds) != 0 {
 		t.Fatalf("after Remove List = %v", fwds)
+	}
+}
+
+func TestWaitGone(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing there: gone at once.
+	if !WaitGone(dir, "t", time.Second) {
+		t.Fatal("WaitGone false with no socket")
+	}
+	// A live daemon: not gone until it shuts down.
+	d := newDaemon(dir, "t", "test", newFakeTransport(), nil)
+	d.logf = t.Logf
+	ln, err := listenControl(socketPath(dir, "t"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ln = ln
+	go d.serveControl()
+	if WaitGone(dir, "t", 100*time.Millisecond) {
+		t.Fatal("WaitGone true while the daemon answers")
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		d.shutdown()
+	}()
+	if !WaitGone(dir, "t", 2*time.Second) {
+		t.Fatal("WaitGone false after shutdown")
+	}
+	// A stale socket file nobody answers counts as present (not gone) until
+	// removed: the caller must not spawn over a path a daemon may still own.
+	sock := socketPath(dir, "t")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if WaitGone(dir, "t", 100*time.Millisecond) {
+		t.Fatal("WaitGone true with a socket path still present")
 	}
 }

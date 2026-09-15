@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +28,11 @@ type sshTransport struct {
 
 // checkInterval is how often the monitor probes the master (ssh -O check).
 const checkInterval = 30 * time.Second
+
+// controlTimeout bounds every `ssh -O` against the master. A wedged master
+// (socket present, process not answering — the usual post-sleep state) would
+// otherwise hang each cancel/exit/check for good.
+const controlTimeout = 5 * time.Second
 
 func newSSHTransport(conn backend.SSHConn) (*sshTransport, error) {
 	if _, err := exec.LookPath("ssh"); err != nil {
@@ -60,18 +66,30 @@ func (t *sshTransport) startMaster() error {
 		"-o", "ControlPath="+t.conn.ControlPath,
 		"-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
 		"-o", "ExitOnForwardFailure=no",
+		"-o", "BatchMode=yes", // detached: never wait on a password prompt
 		t.conn.Host)
 	cmd := exec.Command("ssh", args...)
 	cmd.Stderr = os.Stderr
-	return cmd.Run() // -f backgrounds after auth; Run returns once it forks
+	if err := cmd.Run(); err != nil { // -f backgrounds after auth; Run returns once it forks
+		return err
+	}
+	// `-M` exits 0 even when it degraded to a plain connection ("ControlSocket
+	// already exists, disabling multiplexing"). Without a master every `-O
+	// forward` would fail; surface that as an ordinary dial error instead.
+	if !t.masterAlive() {
+		return fmt.Errorf("ssh master for %s did not take %s", t.conn.Host, t.conn.ControlPath)
+	}
+	return nil
 }
 
-// control runs an `ssh -O <op>` against the master.
+// control runs an `ssh -O <op>` against the master, bounded by controlTimeout.
 func (t *sshTransport) control(op string, extra ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
 	args := []string{"-O", op, "-o", "ControlPath=" + t.conn.ControlPath}
 	args = append(args, extra...)
 	args = append(args, t.conn.Host)
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -115,7 +133,9 @@ func (t *sshTransport) monitor() {
 // masterAlive asks the master socket directly (ssh -O check): no network
 // round-trip, just "is a master still holding this ControlPath".
 func (t *sshTransport) masterAlive() bool {
-	cmd := exec.Command("ssh", "-O", "check",
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", "-O", "check",
 		"-o", "ControlPath="+t.conn.ControlPath, t.conn.Host)
 	return cmd.Run() == nil
 }
