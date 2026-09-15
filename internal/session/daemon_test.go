@@ -257,13 +257,21 @@ func TestDaemonReconnectRestoresForwards(t *testing.T) {
 	done := runLoop(d)
 
 	first.die()
-	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
-	if !first.closed.Load() {
-		t.Error("dead transport was not closed")
-	}
-	if r := d.dispatch(Request{Op: OpList}); r.State != StateReconnecting || len(r.Forwards) != 2 || !r.Forwards[0].Pending {
-		t.Errorf("list during outage = %+v", r)
-	}
+	// onDead marks the state under the lock and then tears the forwards and
+	// transport down outside it, so "reconnecting" is visible a moment before
+	// the closes land; wait for the whole picture, not the first sign of it.
+	waitFor(t, "outage torn down", func() bool {
+		r := d.dispatch(Request{Op: OpList})
+		if r.State != StateReconnecting || len(r.Forwards) != 2 || !first.closed.Load() {
+			return false
+		}
+		for _, f := range r.Forwards {
+			if !f.Pending {
+				return false
+			}
+		}
+		return true
+	})
 
 	waitFor(t, "state back up", func() bool { s, _ := d.status(); return s == StateUp })
 	if got := attempts.Load(); got != 3 {
