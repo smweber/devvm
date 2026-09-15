@@ -21,6 +21,27 @@ import (
 	"github.com/smweber/devvm/internal/session"
 )
 
+// A stamp that is not a release tag (a bare hash from `git describe
+// --always` on a tagless clone, a dirty dev build) must not be compared or
+// turned into a download URL.
+func TestCurrentVersionRequiresATag(t *testing.T) {
+	old := Version
+	t.Cleanup(func() { Version = old })
+	for stamp, want := range map[string]string{
+		"v0.1.10":            "v0.1.10",
+		"v0.1.10-3-gabc1234": "v0.1.10-3-gabc1234",
+		"83f409a":            "dev",
+		"83f409a-dirty":      "dev",
+		"dev":                "dev",
+		"0.1.10":             "dev",
+	} {
+		Version = stamp
+		if got := currentVersion(); got != want {
+			t.Errorf("Version=%q: currentVersion() = %q, want %q", stamp, got, want)
+		}
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	for _, tc := range []struct {
 		a, b string

@@ -284,6 +284,15 @@ if [ -n "$conflicts" ] && [ "$force" != true ]; then
   printf 'refusing to overwrite (use -f):\n%s' "$conflicts" >&2
   exit 1
 fi
+# -f: remove each conflict first so cp -R never writes *through* a
+# pre-existing destination symlink (cp dereferences an existing target). The
+# host side (cp_tar.go) refuses that; this keeps parity in the guest.
+if [ -n "$conflicts" ]; then
+  printf '%s' "$conflicts" | while IFS= read -r t; do
+    t=${t#  }
+    [ -n "$t" ] && rm -rf -- "$t"
+  done
+fi
 for base; do
   cp -R -- "$stage/files/$base" "$dest"
 done

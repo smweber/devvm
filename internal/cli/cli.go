@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/smweber/devvm/internal/config"
 	"github.com/spf13/cobra"
@@ -32,6 +34,13 @@ func newApp() *App {
 
 // Execute builds the command tree and runs it. Returns the process exit code.
 func Execute() int {
+	// A write to a closed stdout must not kill us mid-flight. The menu bar
+	// app runs `devvm update`/`devvm menubar`, which quit the app — the
+	// reader of our pipes — before relaunching it; with the default
+	// disposition the next Fprintf would end the process by SIGPIPE before
+	// the relaunch. Ignored, the write returns EPIPE, which the Fprintfs
+	// discard and `status --watch` already treats as a clean exit.
+	signal.Ignore(syscall.SIGPIPE)
 	app := newApp()
 	root := app.rootCmd()
 	if err := root.Execute(); err != nil {

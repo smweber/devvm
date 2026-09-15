@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 )
 
@@ -32,7 +33,13 @@ func Dial(configDir, name string) (*Client, error) {
 	if err := c.spawnDaemon(); err != nil {
 		return nil, err
 	}
-	for i := 0; i < 50; i++ {
+	// The daemon listens only after its first transport dial succeeds, and
+	// on ssh that dial is bounded by ConnectTimeout (plus auth), so the
+	// come-up wait must outlast it or a slow host reads as "did not come up"
+	// while the daemon in fact arrives moments later, holds no forwards, and
+	// idles out.
+	deadline := time.Now().Add(time.Duration(backend.SSHConnectTimeout())*time.Second + 10*time.Second)
+	for time.Now().Before(deadline) {
 		if c.alive() {
 			return c, nil
 		}

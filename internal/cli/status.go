@@ -278,7 +278,11 @@ func (a *App) forwardSummary(name string) fwdSummary {
 	if err != nil {
 		return fwdSummary{}
 	}
-	return fwdSummary{daemon: true, state: st.State, n: len(st.Forwards), since: st.Since}
+	state := st.State
+	if state == "" {
+		state = session.StateUp // a pre-0.1.11 daemon reports no state; it only ever ran up
+	}
+	return fwdSummary{daemon: true, state: state, n: len(st.Forwards), since: st.Since}
 }
 
 // smolLiveResources reads a running smol VM's actual memory (MiB) and root-fs

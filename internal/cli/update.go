@@ -40,9 +40,12 @@ const maxAssetSize = 256 << 20
 
 // daemonGoneTimeout bounds the wait for a stopped daemon to release its
 // transport and unlink its socket before its replacement is spawned (see
-// session.WaitGone). A daemon mid-dial finishes that dial first, which is
-// bounded by ssh's ConnectTimeout. Var so tests can shrink it.
-var daemonGoneTimeout = 30 * time.Second
+// session.WaitGone). A worst-case shutdown against a wedged ssh master is
+// one bounded `ssh -O cancel` per forward plus `-O exit` plus the wait for
+// a stop-interrupted dial, so this is generous rather than derived: a
+// daemon still tearing down must not be declared stuck. Var so tests can
+// shrink it.
+var daemonGoneTimeout = 90 * time.Second
 
 // tagRe is the only shape a release tag may take. The tag becomes a URL path
 // segment, so anything else (a `../` hop into another repo's release path,
@@ -130,7 +133,11 @@ func newUpdater(stderr io.Writer) *updater {
 // currentVersion is the running build's version: the release stamp, else the
 // module version Go embeds for `go install …@vX.Y.Z` builds, else "dev".
 func currentVersion() string {
-	if Version != "dev" {
+	// install.sh/release.sh stamp `git describe --tags --always --dirty`, so
+	// a clone with no reachable tag yields a bare hash: not a version, and
+	// it would parse as one ("83f409a" > "v0.1.11"). Every real tag starts
+	// with v, which is the reliable discriminator.
+	if strings.HasPrefix(Version, "v") && tagRe.MatchString(Version) {
 		return Version
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok && tagRe.MatchString(bi.Main.Version) {

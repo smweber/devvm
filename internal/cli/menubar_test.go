@@ -19,6 +19,7 @@ type fakeMac struct {
 	running bool
 	calls   []string
 	appsDir string
+	onOpen  func() // observe relaunch ordering
 }
 
 func (f *fakeMac) run(name string, args ...string) (string, error) {
@@ -37,6 +38,9 @@ func (f *fakeMac) run(name string, args ...string) (string, error) {
 		return "", nil
 	case "open":
 		f.running = true
+		if f.onOpen != nil {
+			f.onOpen()
+		}
 		return "", nil
 	case "/usr/libexec/PlistBuddy":
 		data, err := os.ReadFile(args[len(args)-1])
@@ -230,6 +234,43 @@ func TestMenubarReplacesRunningApp(t *testing.T) {
 		t.Errorf("pgrep not scoped to this user: %v", f.mac.calls)
 	}
 }
+
+// When the app itself runs `devvm menubar`/`devvm update`, quitting it
+// closes our stdout; the relaunch must therefore happen before the first
+// line of output, or the app never comes back.
+func TestMenubarRelaunchesBeforeReporting(t *testing.T) {
+	for _, viaUpdate := range []bool{false, true} {
+		// The fixture pins Version to v0.1.0, which is what updateMenubar
+		// installs; runMenubar takes the tag explicitly.
+		f := newMenubarFixture(t, "v0.1.0", false)
+		f.mac.installed(t, "v0.0.9")
+		f.mac.running = true
+		var order []string
+		f.app.Stdout = writerFunc(func(p []byte) (int, error) {
+			order = append(order, "stdout")
+			return f.stdout.Write(p)
+		})
+		f.mac.onOpen = func() { order = append(order, "open") }
+		if viaUpdate {
+			f.app.updateMenubar()
+		} else if err := f.app.runMenubar(context.Background(), f.u, "v0.1.0", false); err != nil {
+			t.Fatal(err)
+		}
+		if len(order) == 0 || order[0] != "open" {
+			t.Errorf("viaUpdate=%v: relaunch must precede output, got %v", viaUpdate, order)
+		}
+		if n := strings.Count(strings.Join(f.mac.calls, "\n"), "open -a"); n != 1 {
+			t.Errorf("viaUpdate=%v: opened %d times, want 1: %v", viaUpdate, n, f.mac.calls)
+		}
+		if !strings.Contains(f.stdout.String(), "relaunched DevVM.app") {
+			t.Errorf("viaUpdate=%v: stdout = %q", viaUpdate, f.stdout.String())
+		}
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
 
 func TestMenubarChecksumMismatchInstallsNothing(t *testing.T) {
 	f := newMenubarFixture(t, "v0.2.0", true)

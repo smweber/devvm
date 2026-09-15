@@ -509,7 +509,11 @@ func (d *daemon) shutdown() error {
 func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error) {
 	d.mu.Lock()
 	if f, ok := d.forwards[guest]; ok && (f.closer != nil || f.binding || d.state == StateReconnecting) {
-		host, pending := f.host, f.closer == nil // read under the lock; adopt writes them
+		// Read under the lock; adopt writes them. A slot another add is
+		// binding right now (while up) is reported as live at the port it
+		// claimed rather than pending: "pending" means "waiting on the
+		// transport" to the CLI, and that binder will adopt it momentarily.
+		host, pending := f.host, f.closer == nil && d.state == StateReconnecting
 		d.mu.Unlock()
 		return host, false, pending, nil
 	}

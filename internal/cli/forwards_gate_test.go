@@ -57,7 +57,7 @@ func TestRequireRunningForForwardsPolls(t *testing.T) {
 		{name: "remote backends skip the gate", b: &statusBackend{runningAfter: -1}, m: &config.Machine{Name: "r", Backend: config.BackendRemoteUnmanaged}, minCall: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := requireRunningForForwards(tc.m, tc.b)
+			err := requireRunningForForwards(tc.m, tc.b, runningPollTimeout)
 			if tc.wantErr == "" && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -93,6 +93,13 @@ func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "recorded 8080:8080; forwards come up on 'devvm start vm'") {
 		t.Fatalf("output = %q", out.String())
+	}
+	// A conf edit on a stopped VM must not stall on the start-time poll.
+	if b := (&statusBackend{runningAfter: -1}); true {
+		_ = a.addPort(m, b, "8081:8081")
+		if b.calls > 2 {
+			t.Fatalf("Status polled %d times on `ports add`; want at most 2", b.calls)
+		}
 	}
 	if entries, _ := os.ReadDir(filepath.Join(a.ConfigDir, "run")); len(entries) != 0 {
 		names := []string{}

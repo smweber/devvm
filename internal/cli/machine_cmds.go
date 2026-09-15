@@ -87,7 +87,7 @@ func (a *App) runStart(name string) error {
 	}
 	// Forwards follow the VM: resume configured ones on start.
 	if len(m.Ports) > 0 {
-		return a.tunnelUp(name)
+		return a.tunnelUpWait(name, runningPollTimeout) // smolvm may still say "starting"
 	}
 	return nil
 }

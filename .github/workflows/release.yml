@@ -46,6 +46,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Draft until the menubar job has attached the app zip: a published
+          # release flips /releases/latest at once, and `devvm update` on a
+          # host that installs it would then find no app to bring along.
           gh release create "${GITHUB_REF_NAME}" \
             dist/devvm-darwin-arm64 \
             dist/devvm-darwin-amd64 \
@@ -53,7 +56,8 @@ jobs:
             dist/devvm-linux-amd64 \
             dist/SHA256SUMS \
             --title "devvm ${GITHUB_REF_NAME}" \
-            --generate-notes
+            --generate-notes \
+            --draft
 
   # The menu bar app (contrib/macos) needs a macOS runner: it is Swift against
   # AppKit, compiled with the runner's Command Line Tools. It attaches to the
@@ -82,3 +86,11 @@ jobs:
             contrib/macos/dist/devvm-menubar.zip \
             contrib/macos/dist/devvm-menubar.zip.sha256 \
             --clobber
+
+      # Only now is the release complete. If this job fails the release stays
+      # a draft (nothing points at it); ship the CLI without the app by hand
+      # with `gh release edit vX.Y.Z --draft=false`.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false

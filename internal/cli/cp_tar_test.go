@@ -96,6 +96,11 @@ func TestArchiveGuards(t *testing.T) {
 			{name: "proj/y", typ: tar.TypeReg, body: "shared"},
 			{name: "proj/x", typ: tar.TypeLink, link: "proj/y"},
 		}, want: map[string]string{"proj/y": "shared", "proj/x": "shared"}},
+		{name: "hard link to a symlink", entries: []tarEntry{
+			{name: "proj/", typ: tar.TypeDir},
+			{name: "proj/l", typ: tar.TypeSymlink, link: "/etc/hosts"},
+			{name: "proj/h", typ: tar.TypeLink, link: "proj/l"},
+		}, readErr: "target is a symlink"},
 		{name: "fifo skipped with a note", entries: []tarEntry{
 			{name: "proj/", typ: tar.TypeDir},
 			{name: "proj/pipe", typ: tar.TypeFifo},
@@ -138,11 +143,6 @@ func TestArchiveGuards(t *testing.T) {
 			{name: "proj/d/", typ: tar.TypeDir},
 			{name: "proj/h", typ: tar.TypeLink, link: "proj/d"},
 		}, readErr: "target is a directory"},
-		{name: "hard link to a symlink stays a link", entries: []tarEntry{
-			{name: "proj/", typ: tar.TypeDir},
-			{name: "proj/l", typ: tar.TypeSymlink, link: "/etc/passwd"},
-			{name: "proj/h", typ: tar.TypeLink, link: "proj/l"},
-		}, wantLink: map[string]string{"proj/l": "/etc/passwd", "proj/h": "/etc/passwd"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			archive := craftArchive(t, tc.entries...)

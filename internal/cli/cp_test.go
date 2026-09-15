@@ -172,6 +172,35 @@ func TestCopyArchive(t *testing.T) {
 	}
 }
 
+// -f must replace a destination symlink, never write through it: the host
+// side refuses that for downloads, and the guest script keeps parity.
+func TestCopyForceReplacesDestinationSymlink(t *testing.T) {
+	root, home, elsewhere := t.TempDir(), t.TempDir(), t.TempDir()
+	const base = "note.txt"
+	writeTree(t, root, base)
+	victim := filepath.Join(elsewhere, "victim")
+	if err := os.WriteFile(victim, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(home, base)); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "payload.tar")
+	if err := writeArchive(archive, []string{filepath.Join(root, base)}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	b := &localCopyBackend{home: home}
+	if err := copyArchive(context.Background(), b, "vm", archive, []string{base}, base, copyOpts{force: true}, io.Discard); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if data, _ := os.ReadFile(victim); string(data) != "old" {
+		t.Fatalf("-f wrote through the destination symlink: %q", data)
+	}
+	if fi, err := os.Lstat(filepath.Join(home, base)); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("destination is still a symlink (or missing): %v %v", fi, err)
+	}
+}
+
 func TestCopyUploadFailureCleansStage(t *testing.T) {
 	b := &localCopyBackend{home: t.TempDir(), failUpload: true}
 	if err := copyArchive(context.Background(), b, "vm", "unused", []string{"file"}, "dest", copyOpts{}, io.Discard); err == nil {

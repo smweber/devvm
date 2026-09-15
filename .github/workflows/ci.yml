@@ -31,6 +31,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      # The Go tests are VM-independent, but the watcher's kqueue paths (marker
+      # write visibility, re-watching a removed dir) and unix-socket inode
+      # reuse on APFS only get exercised here, on the platform the app targets.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: .go-version
+      - run: go test -race ./...
       - name: Build the menu bar app
         run: |
           cd contrib/macos

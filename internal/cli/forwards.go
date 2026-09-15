@@ -85,7 +85,7 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 			return err
 		}
 	}
-	if err := requireRunningForForwards(m, b); err != nil {
+	if err := requireRunningForForwards(m, b, 0); err != nil {
 		fmt.Fprintf(a.Stdout, "devvm: recorded %s; forwards come up on 'devvm start %s'\n", mapping, m.Name)
 		return nil
 	}
@@ -227,7 +227,14 @@ func (a *App) tunnelDown(name string) error {
 
 // tunnelUp brings up every configured forward for the machine (used by
 // `tunnel up` and `start`).
-func (a *App) tunnelUp(name string) error {
+func (a *App) tunnelUp(name string) error { return a.tunnelUpWait(name, 0) }
+
+// tunnelUpWait is tunnelUp with a bound on how long to wait for a smol VM
+// to report running. `start` passes runningPollTimeout because smolvm can
+// return from `machine start` while the state is still "starting"; `ports
+// up` passes 0 so a deliberately stopped VM fails fast instead of stalling
+// ten seconds on forty `smolvm machine ls` calls.
+func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, b, err := a.resolveLive(name)
 	if err != nil {
@@ -237,7 +244,7 @@ func (a *App) tunnelUp(name string) error {
 		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 		return nil
 	}
-	if err := requireRunningForForwards(m, b); err != nil {
+	if err := requireRunningForForwards(m, b, wait); err != nil {
 		return err
 	}
 	cl, err := session.Dial(a.ConfigDir, name)
@@ -276,11 +283,11 @@ func (a *App) tunnelUp(name string) error {
 // It polls briefly: `devvm start` calls tunnelUp right after `smolvm machine
 // start` returns, and smolvm can still report the box as starting for a
 // moment. Failing there would tell the user to start a VM they just started.
-func requireRunningForForwards(m *config.Machine, b backend.Backend) error {
+func requireRunningForForwards(m *config.Machine, b backend.Backend, wait time.Duration) error {
 	if m.Backend != config.BackendSmol {
 		return nil
 	}
-	deadline := time.Now().Add(runningPollTimeout)
+	deadline := time.Now().Add(wait)
 	for {
 		st, err := b.Status()
 		if err != nil || st.Running {

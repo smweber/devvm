@@ -117,7 +117,8 @@ func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 	index := map[string]int{}
 	seen := map[string]bool{}  // accepted entries, for hard-link targets
 	named := map[string]bool{} // every entry, accepted or skipped
-	isDir := map[string]bool{} // accepted directories: never valid hard-link targets
+	isDir := map[string]bool{}
+	isLink := map[string]bool{} // accepted directories: never valid hard-link targets
 	tr := tar.NewReader(f)
 	for {
 		hdr, err := tr.Next()
@@ -157,6 +158,13 @@ func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 				// fail mid-extraction, breaking all-or-nothing.
 				return nil, fmt.Errorf("refusing hard link %q -> %q: target is a directory", hdr.Name, hdr.Linkname)
 			}
+			if isLink[target] {
+				// Whether link(2) follows a symlink target is platform
+				// folklore (Linux doesn't; darwin's has not been verified),
+				// and a hard link to what a symlink points at would alias a
+				// file outside the tree. An honest tar never emits this.
+				return nil, fmt.Errorf("refusing hard link %q -> %q: target is a symlink", hdr.Name, hdr.Linkname)
+			}
 		default:
 			fmt.Fprintf(stderr, "devvm: skipping %s: unsupported file type\n", hdr.Name)
 			continue
@@ -164,6 +172,9 @@ func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 		seen[name] = true
 		if hdr.Typeflag == tar.TypeDir {
 			isDir[name] = true
+		}
+		if hdr.Typeflag == tar.TypeSymlink {
+			isLink[name] = true
 		}
 		i, ok := index[top]
 		if !ok {

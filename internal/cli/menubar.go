@@ -114,10 +114,15 @@ func (a *App) runMenubar(ctx context.Context, u *updater, version string, force 
 	if installed := m.installedVersion(); installed != "" && compareVersions(installed, tag) == 0 && !force {
 		fmt.Fprintf(a.Stdout, "%s.app %s is already installed in %s\n", menubarAppName, installed, m.appsDir)
 	} else {
-		if _, err := m.install(ctx, tag); err != nil {
+		relaunched, err := m.install(ctx, tag)
+		if err != nil {
 			return err
 		}
 		fmt.Fprintf(a.Stdout, "installed %s.app %s to %s\n", menubarAppName, tag, m.appsDir)
+		if relaunched {
+			fmt.Fprintf(a.Stdout, "relaunched %s.app\n", menubarAppName)
+			return nil
+		}
 	}
 	if err := m.open(); err != nil {
 		return err
@@ -127,8 +132,8 @@ func (a *App) runMenubar(ctx context.Context, u *updater, version string, force 
 }
 
 // updateMenubar is update's post-install step: if the menu bar app is
-// installed and on another version, re-install it at this build's version,
-// relaunching only if it was running. The CLI itself updated fine by the time
+// installed and on another version, re-install it at this build's version
+// (install relaunches it if it was running). The CLI itself updated fine by the time
 // this runs, so a failure here is reported with a hint, never an exit code.
 func (a *App) updateMenubar() {
 	if menubarGOOS != "darwin" {
@@ -151,16 +156,14 @@ func (a *App) updateMenubar() {
 		fmt.Fprintf(a.Stdout, "%s.app already %s\n", menubarAppName, installed)
 		return
 	}
-	wasRunning, err := m.install(context.Background(), tag)
+	relaunched, err := m.install(context.Background(), tag)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: menu bar app not updated: %v\n  run 'devvm menubar' to retry\n", err)
 		return
 	}
 	fmt.Fprintf(a.Stdout, "updated %s.app %s -> %s\n", menubarAppName, installed, tag)
-	if wasRunning {
-		if err := m.open(); err != nil {
-			fmt.Fprintf(a.Stderr, "devvm: could not relaunch %s.app: %v\n", menubarAppName, err)
-		}
+	if relaunched {
+		fmt.Fprintf(a.Stdout, "relaunched %s.app\n", menubarAppName)
 	}
 }
 
@@ -230,10 +233,14 @@ func (m *menubarInstaller) open() error {
 }
 
 // install downloads the release's app zip, verifies it, quits a running app,
-// and swaps the bundle into place. Reports whether the app was running so
-// the caller can decide about relaunching. Nothing is replaced until the
-// download has verified.
-func (m *menubarInstaller) install(ctx context.Context, tag string) (wasRunning bool, err error) {
+// swaps the bundle into place, and — if the app was running — relaunches it
+// before returning. The relaunch has to come before the caller prints
+// anything: when the caller *is* the app (its "Update now" item runs
+// `devvm update`), quitting it closed our stdout, and a write there ends
+// the process (or, with SIGPIPE ignored, just fails) — either way the app
+// must already be back. Reports whether it relaunched. Nothing is replaced
+// until the download has verified.
+func (m *menubarInstaller) install(ctx context.Context, tag string) (relaunched bool, err error) {
 	if err := os.MkdirAll(m.appsDir, 0o755); err != nil {
 		return false, err
 	}
@@ -274,10 +281,10 @@ func (m *menubarInstaller) install(ctx context.Context, tag string) (wasRunning 
 		return false, fmt.Errorf("%s does not contain %s.app", menubarAsset, menubarAppName)
 	}
 
-	wasRunning = m.running()
+	wasRunning := m.running()
 	if wasRunning {
 		if err := m.quit(); err != nil {
-			return true, err
+			return false, err
 		}
 	}
 	// Move the old bundle aside rather than deleting it, so a failed rename
@@ -300,5 +307,11 @@ func (m *menubarInstaller) install(ctx context.Context, tag string) (wasRunning 
 	if hadOld {
 		os.RemoveAll(old)
 	}
-	return wasRunning, nil
+	if wasRunning {
+		if err := m.open(); err != nil {
+			return false, fmt.Errorf("installed, but relaunch failed: %w", err)
+		}
+		return true, nil
+	}
+	return false, nil
 }

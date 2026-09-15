@@ -92,10 +92,12 @@ live in [`contrib/macos`](contrib/macos/README.md). Remove it by dragging
 ```sh
 go build ./...            # everything
 go test ./...             # unit tests (forwards, daemon, keys, config, auth)
-go build -o ~/.local/bin/devvm ./cmd/devvm   # install the host CLI
+./install.sh              # install the host CLI to ~/.local/bin, version-stamped
 ```
 
-`bootstrap.sh` (host profile) does the last step for you.
+`install.sh` stamps the version from `git describe`; a bare `go build` yields
+a `dev` build that `devvm update` and `devvm menubar` refuse (they can't tell
+what release it is). `bootstrap.sh` (host profile) installs a release binary.
 
 ## Layout
 

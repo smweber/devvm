@@ -96,6 +96,11 @@ internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-t
 internal/auth/      login orchestration, URL bridge, callback-as-forward
 internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
+contrib/macos/      Swift menu bar app: a thin shell over the CLI (drop target = cp-in,
+                    list fed by `status --plain --watch`); built only by its build.sh
+                    on macOS; release.yml attaches the zip + .sha256 sidecar
+.github/workflows/  ci.yml (Go on ubuntu + Go tests and the Swift build on macos, every
+                    push); release.yml (tag push)
 ```
 
 ## Architecture notes
@@ -103,6 +108,45 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
 - **Session daemon**: spawned via the hidden `devvm __daemon NAME` command,
   detached. Owns the smol agent exec (yamux) or the ssh ControlMaster, allocates
   host ports (bumping on conflict), and idle-exits when it has no forwards.
+  When the transport dies (laptop sleep outlives ssh's keepalives) it
+  **reconnects instead of exiting**: backoff 2–30s, forwards stay in the map
+  closer-less as *pending* and come back on the same host ports; a `kick` op
+  (sent by `ports up`/`start`) resets the backoff. It never dials a stopped smol
+  VM (`smolvm machine exec` may boot it) — neither does the CLI spawn a daemon
+  for one (`requireRunningForForwards`; `start` alone waits for "running").
+  Shutdown closes the transport **before** unlinking the socket (`WaitGone`
+  relies on that) and unlinks only its own (`ownsSocket`: inode check *plus* a
+  dial — ext4/APFS reuse inode numbers, tmpfs doesn't, which hid the bug
+  locally). Binds run outside `d.mu`: an `ssh -O forward` against a wedged
+  master must not freeze `list`/`ping`.
+- **Change marker**: every state-changing command and daemon transition calls
+  `config.TouchChanged` (a *write* to `run/changed`, because kqueue ignores
+  utimes); `status --plain --watch` (fsnotify on `machines/` + `run/`) re-emits
+  on it. Rule: a new state-changing command gets `defer
+  config.TouchChanged(a.ConfigDir)`. `Machine.Save` is atomic (temp + rename) so
+  the watcher never reads a half-written conf.
+- **`--plain` is a compatibility surface** parsed by the Swift app:
+  `name\tbackend\tstate\tforwards` with state ∈ {running, stopped, dormant,
+  reachable, broken conf, ?} and forwards ∈ {up:N, reconnecting:N, down, -}; so
+  are the `ports list` line (`guest N -> localhost:M [(pending)]`), `devvm
+  --version` (`devvm version vX.Y.Z`), and `update --check --plain`
+  (`current\tlatest\ttrue|false`). Changing any of them means a Swift change.
+- **Maintain devvm itself** (help group): `update` finds the latest tag via the
+  `releases/latest` redirect (no API), verifies against SHA256SUMS, renames over
+  the running binary, then re-execs the new one with hidden `--finish-from` to
+  cycle live forward daemons (skipping reconnecting/unconfigured/same-version
+  ones) and bring an installed menu bar app along. `menubar` installs/opens the
+  app at this build's version (`.sha256` sidecar, `ditto` so the ad-hoc
+  signature survives). Both need a real version: `-X cli.Version` is stamped by
+  install.sh/release.sh from `git describe`; a plain `go build` (or a tagless
+  clone) is `dev` and they refuse without `--force`/`--version`. `install()`
+  relaunches the app *before* printing anything — when the app itself ran the
+  command, quitting it closed our stdout (SIGPIPE is ignored in `Execute` for
+  the same reason).
+- **Env overrides**: `DEVVM_SSH_CONNECT_TIMEOUT` (seconds or duration; every
+  ssh/scp/mosh call gets `ConnectTimeout`, default 10) and
+  `DEVVM_COMPLETE_TIMEOUT` (duration; guest path completion, default 2s; the
+  app sets 10s for cold ControlMasters).
 - **Config** is hand-editable TOML; keep it that way (don't hide state in an
   opaque DB). No legacy sourced-bash reader. BurntSushi's `omitempty` doesn't drop
   zero ints, so `Save` strips `key = 0` lines and defaults are backend-scoped.
@@ -178,12 +222,23 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
   underlying conn is closed — close the conns first in tests.
 - **Port allocation needs a concrete preferred port**; `0` ("any") can't be
   reported back to the caller.
+- **Unix-socket tests must not rely on inode identity.** tmpfs (`/tmp` here)
+  hands out inodes monotonically; ext4 (CI) and APFS reuse them at once, so a
+  successor socket can share dev+ino with the one just unlinked.
+- **cp**: the upload archive is built in Go (no host tar, no xattr pax headers);
+  the guest needs only a busybox-compatible `tar` (no `--no-same-owner`, no
+  `realpath`). Staging is `/var/tmp` (`/tmp` is tmpfs-shadowed under `machine
+  cp`). Extraction guards for cp-out live in `cp_tar.go` and are tested with
+  hostile archives — keep them all-or-nothing.
 
 ## Releases
 
-Tag `vX.Y.Z` and push — `.github/workflows/release.yml` builds and publishes the
-host binaries. Manual equivalent: `./release.sh && gh release create vX.Y.Z
-dist/devvm-* dist/SHA256SUMS`.
+Tag `vX.Y.Z` and push — `.github/workflows/release.yml` builds the host binaries
+as a **draft** release, then a macOS job builds `contrib/macos` and attaches
+`devvm-menubar.zip` + `.sha256` and publishes. If the macOS job fails the release
+stays a draft (`gh release edit vX.Y.Z --draft=false` ships without the app).
+Manual equivalent: `./release.sh && gh release create vX.Y.Z dist/devvm-*
+dist/SHA256SUMS`.
 
 ## Conventions
 
