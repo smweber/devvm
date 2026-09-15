@@ -16,7 +16,7 @@ import (
 // by the fake transport. This is the IPC that `port`/`tunnel` ride, minus a VM.
 func TestClientDaemonRoundTrip(t *testing.T) {
 	_, guest := echoServer(t)
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	if err := os.MkdirAll(config.RuntimeDir(dir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 }
 
 func TestWaitGone(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
 		t.Fatal(err)
 	}

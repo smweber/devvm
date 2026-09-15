@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -553,7 +554,7 @@ func (o *orderedTransport) Close() error {
 }
 
 func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +585,7 @@ func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
 // A replacement daemon that took the socket path while this one was still
 // tearing down must not have its socket unlinked by our shutdown.
 func TestDaemonShutdownLeavesSuccessorSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +619,7 @@ func TestDaemonShutdownLeavesSuccessorSocket(t *testing.T) {
 // before shutdown unlinks the socket, or the process exits with an orphaned
 // exec/master that the next daemon then runs in parallel with.
 func TestDaemonShutdownWaitsForLateDial(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -813,4 +814,21 @@ func TestDaemonConcurrentAddBindsOnce(t *testing.T) {
 	if f := d.forwards[1]; f == nil || f.closer == nil || f.binding {
 		t.Fatalf("forward not settled: %+v", f)
 	}
+}
+
+// shortTempDir is t.TempDir() moved under /tmp: macOS caps a unix socket path
+// at 104 bytes and the default temp root (/var/folders/…/T/TestName…) blows
+// it ("bind: invalid argument"). Resolved through EvalSymlinks because /tmp
+// and /var are symlinks on macOS and tests compare paths.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "devvm-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return dir
 }

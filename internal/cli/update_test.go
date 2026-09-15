@@ -193,7 +193,7 @@ func newUpdateFixture(t *testing.T, tag string, tamper bool) *updateFixture {
 	// so the test binary is never the thing replaced.
 	f := &updateFixture{u: testUpdater(s)}
 	f.app = &App{ConfigDir: t.TempDir(), Stdout: &f.stdout, Stderr: io.Discard}
-	f.exe = filepath.Join(t.TempDir(), "devvm")
+	f.exe = filepath.Join(shortTempDir(t), "devvm")
 	if err := os.WriteFile(f.exe, []byte("old-binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +443,7 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 	daemonGoneTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
-	a := &App{ConfigDir: t.TempDir(), Stdout: &out, Stderr: io.Discard}
+	a := &App{ConfigDir: shortTempDir(t), Stdout: &out, Stderr: io.Discard}
 	for _, name := range []string{"reconn", "unconf", "stuck", "fresh"} {
 		m := &config.Machine{Name: name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}
 		if err := m.Save(a.ConfigDir); err != nil {
@@ -494,7 +494,7 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 // updater is never built, so no release server (or network) is involved.
 func TestFinishFromNeverDownloads(t *testing.T) {
 	var out bytes.Buffer
-	a := &App{ConfigDir: t.TempDir(), Stdout: &out, Stderr: io.Discard}
+	a := &App{ConfigDir: shortTempDir(t), Stdout: &out, Stderr: io.Discard}
 	root := a.rootCmd()
 	root.SetArgs([]string{"--config-dir", a.ConfigDir, "update", "--finish-from", "v0.0.1"})
 	if err := root.Execute(); err != nil {
@@ -503,4 +503,21 @@ func TestFinishFromNeverDownloads(t *testing.T) {
 	if !strings.Contains(out.String(), "updated devvm v0.0.1 -> "+Version) {
 		t.Errorf("output = %q", out.String())
 	}
+}
+
+// shortTempDir is t.TempDir() moved under /tmp: macOS caps a unix socket path
+// at 104 bytes and the default temp root (/var/folders/…/T/TestName…) blows
+// it ("bind: invalid argument"). Resolved through EvalSymlinks because /tmp
+// and /var are symlinks on macOS and tests compare paths.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "devvm-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return dir
 }
