@@ -57,7 +57,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
     }
 
     func show() {
-        Log.menu.notice("copy out panel opened for \(machine, privacy: .public)")
+        Log.menu.notice("copy out panel opened for \(self.machine, privacy: .public)")
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(field)
