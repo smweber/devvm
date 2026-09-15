@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -63,12 +64,15 @@ func sinceHuman(t time.Time) string {
 
 func (a *App) runPort(name, mapping string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, _, err := a.resolveLive(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
 	pref, guest, err := parseMapping(mapping)
 	if err != nil {
+		return err
+	}
+	if err := requireRunningForForwards(m, b); err != nil {
 		return err
 	}
 	cl, err := session.Dial(a.ConfigDir, name)
@@ -217,13 +221,16 @@ func (a *App) tunnelDown(name string) error {
 // `tunnel up` and `start`).
 func (a *App) tunnelUp(name string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, _, err := a.resolveLive(name)
+	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
 	if len(m.Ports) == 0 {
 		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 		return nil
+	}
+	if err := requireRunningForForwards(m, b); err != nil {
+		return err
 	}
 	cl, err := session.Dial(a.ConfigDir, name)
 	if err != nil {
@@ -250,6 +257,22 @@ func (a *App) tunnelUp(name string) error {
 		}
 	}
 	return nil
+}
+
+// requireRunningForForwards refuses to spawn a forward daemon for a stopped
+// smol VM. resolveLive only checks the VM is provisioned; the daemon's first
+// transport would exec into the machine, and smolvm's exec may boot one the
+// user deliberately stopped. (The daemon guards its reconnect dials the same
+// way; this catches the initial dial before a daemon exists.)
+func requireRunningForForwards(m *config.Machine, b backend.Backend) error {
+	if m.Backend != config.BackendSmol {
+		return nil
+	}
+	st, err := b.Status()
+	if err != nil || st.Running {
+		return nil
+	}
+	return fmt.Errorf("%s is not running; start it first ('devvm start %s' also brings its forwards up)", m.Name, m.Name)
 }
 
 // forwardState is the per-forward column value: "up", or "reconnecting" for

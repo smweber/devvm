@@ -52,7 +52,14 @@ type daemon struct {
 	version   string                    // build that spawned this daemon (cli.Version)
 	dial      func() (transport, error) // re-dials the transport after it dies
 	ln        net.Listener
+	sockInfo  os.FileInfo // the socket we created; shutdown unlinks only that inode
 	logf      func(format string, args ...any)
+
+	// late counts transports that arrived after a stop interrupted their
+	// dial; shutdown waits (bounded by lateWait) for them to be closed so the
+	// process never exits with an orphaned smol exec or ssh master.
+	late     sync.WaitGroup
+	lateWait time.Duration
 
 	// Backoff/idle knobs live on the struct so tests can shrink them.
 	minBackoff, maxBackoff, idle time.Duration
@@ -82,6 +89,7 @@ func newDaemon(configDir, name, version string, tr transport, dial func() (trans
 		minBackoff: minReconnectBackoff,
 		maxBackoff: maxReconnectBackoff,
 		idle:       idleTimeout,
+		lateWait:   5 * time.Second,
 		forwards:   map[int]*fwd{},
 		state:      StateUp,
 		since:      time.Now(),
@@ -115,11 +123,25 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 	}
 	_ = os.Remove(sock) // clear a stale socket (nobody answered it, and we hold the lock)
 
+	// A stopped smol VM is never dialed — not on reconnect and not on the
+	// first dial either: exec'ing into it could boot a machine the user
+	// deliberately stopped, and it can't hold forwards anyway. `devvm start`
+	// brings the forwards back via tunnelUp.
+	vmRunning := func() bool {
+		if m.Backend != config.BackendSmol {
+			return true
+		}
+		st, err := b.Status()
+		return err != nil || st.Running
+	}
+	if !vmRunning() {
+		return fmt.Errorf("%w; start it first", errVMNotRunning)
+	}
 	tr, err := newTransport(ctx, m, b)
 	if err != nil {
 		return err
 	}
-	ln, err := listenControl(sock)
+	ln, info, err := listenControl(sock)
 	if err != nil {
 		tr.Close()
 		return err
@@ -128,18 +150,13 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 	lock.Close()
 
 	dial := func() (transport, error) {
-		// A stopped smol VM is never dialed: exec'ing into it could boot a
-		// machine the user deliberately stopped, and it can't hold forwards
-		// anyway. `devvm start` brings the forwards back via tunnelUp.
-		if m.Backend == config.BackendSmol {
-			if st, err := b.Status(); err == nil && !st.Running {
-				return nil, errVMNotRunning
-			}
+		if !vmRunning() {
+			return nil, errVMNotRunning
 		}
 		return newTransport(ctx, m, b)
 	}
 	d := newDaemon(configDir, m.Name, version, tr, dial)
-	d.ln = ln
+	d.ln, d.sockInfo = ln, info
 	go d.serveControl()
 	d.loop()
 	return d.shutdown()
@@ -147,14 +164,21 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 
 // listenControl opens the control socket. Go unlinks a unix socket when its
 // listener closes; that is turned off so shutdown() controls when the path
-// disappears (last, after the transport is released — see shutdown).
-func listenControl(sock string) (*net.UnixListener, error) {
+// disappears (last, after the transport is released — see shutdown). The
+// socket's file info is returned so shutdown can tell its own socket from a
+// replacement daemon's.
+func listenControl(sock string) (*net.UnixListener, os.FileInfo, error) {
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ln.SetUnlinkOnClose(false)
-	return ln, nil
+	info, err := os.Lstat(sock)
+	if err != nil {
+		ln.Close()
+		return nil, nil, err
+	}
+	return ln, info, nil
 }
 
 // loop supervises the daemon: exit on stop or idle; on transport death, drop
@@ -218,6 +242,7 @@ func (d *daemon) teardown() {
 		}
 	}
 	tr := d.tr
+	d.tr = nil // a bind in flight on the old transport sees this and stays pending
 	d.mu.Unlock()
 	for _, c := range closers {
 		c.Close()
@@ -320,7 +345,9 @@ func (d *daemon) dialInterruptible() (transport, error) {
 	case r := <-ch:
 		return r.tr, r.err
 	case <-d.stop:
+		d.late.Add(1)
 		go func() {
+			defer d.late.Done()
 			if r := <-ch; r.tr != nil {
 				r.tr.Close()
 			}
@@ -337,39 +364,68 @@ func (d *daemon) dialInterruptible() (transport, error) {
 // caller retries the whole attempt — a forward is never dropped because one
 // `ssh -O forward` hiccupped right after wake. Port exhaustion is logged and
 // the forward left pending without failing the rest.
+//
+// Binds run outside d.mu (each is an `ssh -O forward`, bounded only by its
+// timeout against a degraded master), so ping/list/add stay responsive; the
+// loop picks up forwards added while a batch was binding.
 func (d *daemon) restore(tr transport) bool {
 	d.mu.Lock()
 	d.tr = tr
-	guests := make([]int, 0, len(d.forwards))
-	for g := range d.forwards {
-		guests = append(guests, g)
-	}
-	sort.Ints(guests)
-	restored, ok := 0, true
-	for _, g := range guests {
-		f := d.forwards[g]
-		host, bumped, err := d.bind(f.host, g)
-		if err != nil {
-			d.logf("%s: forward for guest %d still pending: %v", d.name, g, err)
-			if !errors.Is(err, errPortExhausted) {
-				ok = false
-				break
+	d.mu.Unlock()
+	restored := 0
+	tried := map[int]bool{}
+	for {
+		d.mu.Lock()
+		var batch []fwd
+		for g, f := range d.forwards {
+			if f.closer == nil && !tried[g] {
+				batch = append(batch, *f)
 			}
-			continue
 		}
-		if bumped {
-			d.logf("%s: host port %d taken; guest %d now on localhost:%d", d.name, f.host, g, host)
-		}
-		restored++
-	}
-	if !ok {
 		d.mu.Unlock()
-		return false
+		if len(batch) == 0 {
+			break
+		}
+		sort.Slice(batch, func(i, j int) bool { return batch[i].guest < batch[j].guest })
+		for _, f := range batch {
+			tried[f.guest] = true
+			host, closer, bumped, err := bind(tr, f.host, f.guest)
+			if err != nil {
+				d.logf("%s: forward for guest %d still pending: %v", d.name, f.guest, err)
+				if !errors.Is(err, errPortExhausted) {
+					return false
+				}
+				continue
+			}
+			if bumped {
+				d.logf("%s: host port %d taken; guest %d now on localhost:%d", d.name, f.host, f.guest, host)
+			}
+			if d.adopt(tr, f.guest, host, closer) {
+				restored++
+			}
+		}
 	}
+	d.mu.Lock()
 	d.setStateLocked(StateUp)
 	d.mu.Unlock()
 	config.TouchChanged(d.configDir)
 	d.logf("%s: reconnected, %d forwards restored", d.name, restored)
+	return true
+}
+
+// adopt records a forward bound outside the lock. It is dropped (closed) if
+// the guest was removed meanwhile, if another bind already won, or if the
+// transport it was bound on is no longer the current one.
+func (d *daemon) adopt(tr transport, guest, host int, closer io.Closer) bool {
+	d.mu.Lock()
+	f, ok := d.forwards[guest]
+	if !ok || f.closer != nil || d.tr != tr {
+		d.mu.Unlock()
+		closer.Close()
+		return false
+	}
+	f.host, f.closer = host, closer
+	d.mu.Unlock()
 	return true
 }
 
@@ -389,13 +445,27 @@ func (d *daemon) triggerStop() {
 // daemon come up while this one still holds the ssh master (its `-M` would
 // then silently degrade to a plain connection and every forward would fail)
 // or, on smol, the agent exec (two parallel execs — the one-exec rule).
+//
+// Between ln.Close and the unlink, `ports up` can already have spawned a
+// replacement that cleared our (unanswered) socket and listened on its own,
+// so only the inode we created is removed — never a successor's.
 func (d *daemon) shutdown() error {
 	d.ln.Close()
 	d.teardown()
 	d.mu.Lock()
 	d.forwards = map[int]*fwd{}
 	d.mu.Unlock()
-	os.Remove(socketPath(d.configDir, d.name))
+	lateDone := make(chan struct{})
+	go func() { d.late.Wait(); close(lateDone) }()
+	select {
+	case <-lateDone:
+	case <-time.After(d.lateWait):
+		d.logf("%s: a dial interrupted by stop is still closing; not waiting further", d.name)
+	}
+	sock := socketPath(d.configDir, d.name)
+	if info, err := os.Lstat(sock); err == nil && (d.sockInfo == nil || os.SameFile(info, d.sockInfo)) {
+		os.Remove(sock)
+	}
 	// The socket vanishing is itself a watch event; the marker covers the
 	// no-forwards-on-exit case where a consumer would otherwise infer nothing.
 	config.TouchChanged(d.configDir)
@@ -405,10 +475,12 @@ func (d *daemon) shutdown() error {
 // add allocates a host port (bumping on conflict, up to +20) and starts the
 // forward, mirroring smol_forward_up / ssh_forwards. While reconnecting it
 // only records the request (pending=true) so a `ports up` issued during an
-// outage comes up as soon as the transport is back, instead of erroring.
+// outage comes up as soon as the transport is back, instead of erroring. A
+// forward left pending while up (port exhaustion during restore) is re-bound
+// here rather than reported pending forever.
 func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error) {
 	d.mu.Lock()
-	if f, ok := d.forwards[guest]; ok {
+	if f, ok := d.forwards[guest]; ok && (f.closer != nil || d.state == StateReconnecting) {
 		d.mu.Unlock()
 		return f.host, false, f.closer == nil, nil
 	}
@@ -418,31 +490,53 @@ func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error
 		config.TouchChanged(d.configDir)
 		return pref, false, true, nil
 	}
-	host, bumped, err = d.bind(pref, guest)
+	tr := d.tr
+	if _, ok := d.forwards[guest]; !ok {
+		d.forwards[guest] = &fwd{host: pref, guest: guest} // claim the slot; bind below
+	}
 	d.mu.Unlock()
+	host, closer, bumped, err := bind(tr, pref, guest)
+	if err != nil {
+		d.mu.Lock()
+		if f, ok := d.forwards[guest]; ok && f.closer == nil && d.state == StateUp {
+			delete(d.forwards, guest) // an add that never bound isn't remembered
+		}
+		d.mu.Unlock()
+		return 0, false, false, err
+	}
+	if !d.adopt(tr, guest, host, closer) {
+		// Removed, or the transport died and the slot is pending again.
+		d.mu.Lock()
+		f, ok := d.forwards[guest]
+		d.mu.Unlock()
+		if ok {
+			return f.host, false, f.closer == nil, nil
+		}
+		return 0, false, false, fmt.Errorf("forward for guest %d was removed while binding", guest)
+	}
 	config.TouchChanged(d.configDir)
-	return host, bumped, false, err
+	return host, bumped, false, nil
 }
 
 // errPortExhausted: no host port in the bump range could be bound.
 var errPortExhausted = errors.New("no free host port")
 
-// bind is the port-allocating core of add/restore; d.mu must be held. It
-// records the forward in the map (creating or updating the entry for guest).
-func (d *daemon) bind(pref, guest int) (host int, bumped bool, err error) {
+// bind is the port-allocating core of add/restore. It touches no daemon
+// state — callers adopt the result under the lock — so the `ssh -O forward`
+// it runs never blocks ping/list.
+func bind(tr transport, pref, guest int) (host int, closer io.Closer, bumped bool, err error) {
 	h := pref
 	for tries := 0; tries < 20; tries++ {
-		closer, ferr := d.tr.forward(h, guest)
+		c, ferr := tr.forward(h, guest)
 		if ferr == nil {
-			d.forwards[guest] = &fwd{host: h, guest: guest, closer: closer}
-			return h, h != pref, nil
+			return h, c, h != pref, nil
 		}
 		if !errors.Is(ferr, errPortBusy) {
-			return 0, false, ferr
+			return 0, nil, false, ferr
 		}
 		h++
 	}
-	return 0, false, fmt.Errorf("%w for guest %d in range %d-%d", errPortExhausted, guest, pref, pref+19)
+	return 0, nil, false, fmt.Errorf("%w for guest %d in range %d-%d", errPortExhausted, guest, pref, pref+19)
 }
 
 func (d *daemon) remove(guest int) {

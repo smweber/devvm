@@ -27,7 +27,7 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 		forwards:  map[int]*fwd{},
 		stop:      make(chan struct{}),
 	}
-	ln, err := listenControl(socketPath(dir, "t"))
+	ln, _, err := listenControl(socketPath(dir, "t"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestWaitGone(t *testing.T) {
 	// A live daemon: not gone until it shuts down.
 	d := newDaemon(dir, "t", "test", newFakeTransport(), nil)
 	d.logf = t.Logf
-	ln, err := listenControl(socketPath(dir, "t"))
+	ln, _, err := listenControl(socketPath(dir, "t"))
 	if err != nil {
 		t.Fatal(err)
 	}

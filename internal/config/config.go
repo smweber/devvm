@@ -260,8 +260,14 @@ func (m *Machine) Save(configDir string) error {
 
 // writeFileAtomic writes via a temp file in the same directory and a rename,
 // so a reader (notably `status --watch`, which re-snapshots on the write
-// event) never sees a truncated or half-written conf.
+// event) never sees a truncated or half-written conf. An existing file keeps
+// its mode (a conf the user chmod'ed to 0600 stays that way); mode applies
+// only to a new file. The data is fsync'ed before the rename so a crash can't
+// leave a zero-length conf behind the new name.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -274,6 +280,11 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := tmp.Chmod(mode); err != nil { // CreateTemp is 0600 regardless of umask
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(name)
 		return err

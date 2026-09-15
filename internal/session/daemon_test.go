@@ -561,11 +561,11 @@ func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
 	tr := &orderedTransport{fakeTransport: newFakeTransport(), sock: sock}
 	d := newDaemon(dir, "t", "test", tr, nil)
 	d.logf = t.Logf
-	ln, err := listenControl(sock)
+	ln, info, err := listenControl(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.ln = ln
+	d.ln, d.sockInfo = ln, info
 	go d.serveControl()
 	if err := d.shutdown(); err != nil {
 		t.Fatal(err)
@@ -579,4 +579,168 @@ func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Errorf("socket still present after shutdown: %v", err)
 	}
+}
+
+// A replacement daemon that took the socket path while this one was still
+// tearing down must not have its socket unlinked by our shutdown.
+func TestDaemonShutdownLeavesSuccessorSocket(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock := socketPath(dir, "t")
+	ln, info, err := listenControl(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stand in for the successor: it clears our unanswered socket and listens
+	// on its own, between our ln.Close and our unlink. Simulated up front,
+	// since the ordering within shutdown is what's under test.
+	ln.Close()
+	os.Remove(sock)
+	successor, _, err := listenControl(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successor.Close()
+	d := newDaemon(dir, "t", "test", newFakeTransport(), nil)
+	d.logf = t.Logf
+	d.ln, d.sockInfo = ln, info
+	if err := d.shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("successor's socket was unlinked: %v", err)
+	}
+}
+
+// A transport that arrives after stop interrupted its dial must be closed
+// before shutdown unlinks the socket, or the process exits with an orphaned
+// exec/master that the next daemon then runs in parallel with.
+func TestDaemonShutdownWaitsForLateDial(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, guest := echoServer(t)
+	sock := socketPath(dir, "t")
+	first := newFakeTransport()
+	release := make(chan struct{})
+	late := newFakeTransport()
+	d := newDaemon(dir, "t", "test", first, func() (transport, error) { <-release; return late, nil })
+	d.logf = t.Logf
+	d.minBackoff, d.maxBackoff = 5*time.Millisecond, 20*time.Millisecond
+	ln, info, err := listenControl(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.ln, d.sockInfo = ln, info
+	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+		t.Fatal(err)
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	time.Sleep(3 * d.minBackoff) // the dial is now hanging on release
+	d.triggerStop()
+	waitDone(t, done, "stop")
+	shut := make(chan struct{})
+	go func() { d.shutdown(); close(shut) }()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-shut:
+		t.Fatal("shutdown finished while the late dial was still open")
+	default:
+	}
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatal("socket unlinked before the late transport was closed")
+	}
+	close(release)
+	select {
+	case <-shut:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not finish after the late dial returned")
+	}
+	if !late.closed.Load() {
+		t.Error("late transport not closed")
+	}
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Errorf("socket still present after shutdown: %v", err)
+	}
+}
+
+// exhaustingTransport refuses every bind until released, standing in for a
+// port range that was fully taken during restore.
+type exhaustingTransport struct {
+	*fakeTransport
+	busy atomic.Bool
+}
+
+func (e *exhaustingTransport) forward(hostPort, guestPort int) (io.Closer, error) {
+	if e.busy.Load() {
+		return nil, errPortBusy
+	}
+	return e.fakeTransport.forward(hostPort, guestPort)
+}
+
+// A forward left pending by port exhaustion during restore is re-bound by the
+// next add (what `ports up` does), not reported pending forever.
+func TestDaemonAddRebindsForwardPendingAfterExhaustion(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	pref := freePort(t)
+	if _, _, _, err := d.add(pref, guest); err != nil {
+		t.Fatal(err)
+	}
+	second := &exhaustingTransport{fakeTransport: newFakeTransport()}
+	second.busy.Store(true)
+	d.dial = func() (transport, error) { return second, nil }
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "state up with the forward pending", func() bool {
+		s, _ := d.status()
+		fs := d.list()
+		return s == StateUp && len(fs) == 1 && fs[0].Pending
+	})
+	second.busy.Store(false)
+	host, _, pending, err := d.add(pref, guest)
+	if err != nil || pending || host != pref {
+		t.Fatalf("add after exhaustion = host %d pending %v err %v; want bound on %d", host, pending, err, pref)
+	}
+	if !portOpen(pref) {
+		t.Error("re-bound forward is not listening")
+	}
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+// add binds outside the lock; a list issued while a bind is blocked must not
+// wait for it.
+func TestDaemonListNotBlockedByBind(t *testing.T) {
+	d := newTestDaemon(t)
+	release := make(chan struct{})
+	d.tr = &blockingTransport{fakeTransport: newFakeTransport(), release: release}
+	added := make(chan struct{})
+	go func() { d.add(freePort(t), 1); close(added) }()
+	time.Sleep(20 * time.Millisecond)
+	listed := make(chan struct{})
+	go func() { d.list(); d.status(); close(listed) }()
+	select {
+	case <-listed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("list blocked behind a bind in flight")
+	}
+	close(release)
+	<-added
+}
+
+type blockingTransport struct {
+	*fakeTransport
+	release chan struct{}
+}
+
+func (b *blockingTransport) forward(hostPort, guestPort int) (io.Closer, error) {
+	<-b.release
+	return nil, errors.New("bind failed after the wait")
 }

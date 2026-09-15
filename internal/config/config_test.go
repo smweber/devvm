@@ -231,8 +231,19 @@ func TestSaveIsAtomic(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "s.toml" {
 		t.Fatalf("machines dir = %v, want only s.toml", entries)
 	}
-	info, _ := os.Stat(filepath.Join(MachinesDir(dir), "s.toml"))
+	conf := filepath.Join(MachinesDir(dir), "s.toml")
+	info, _ := os.Stat(conf)
 	if info.Mode().Perm() != 0o644 {
 		t.Fatalf("conf mode = %o, want 0644", info.Mode().Perm())
+	}
+	// A mode the user chose survives a rewrite.
+	if err := os.Chmod(conf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(conf); info.Mode().Perm() != 0o600 {
+		t.Fatalf("conf mode after rewrite = %o, want the user's 0600", info.Mode().Perm())
 	}
 }
