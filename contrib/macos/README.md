@@ -104,3 +104,24 @@ instead.
   old binary until the app restarts it; the app does that when it notices
   the CLI version changed (on the next menu open), and the update flow
   relaunches the app anyway.
+
+## Troubleshooting
+
+The app has no window, so it narrates to the unified log instead. In a
+terminal:
+
+```sh
+log stream --process DevVM --level info
+```
+
+then reproduce (drop a file, open the menu). You will see the PATH the app
+resolved and the `devvm` it found at launch, every `devvm` command it runs
+with its exit status and last stderr line, each drag that reaches the icon
+(`drop: entered`, `drop: performed`), and every notification it tried to
+show and whether the notification center accepted it or a toast was used.
+
+To run a local build instead of the installed one:
+
+```sh
+cd contrib/macos && ./build.sh && open dist/DevVM.app
+```

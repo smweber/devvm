@@ -19,7 +19,10 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     private var usable = false
 
     func setup() {
-        guard Bundle.main.bundleIdentifier != nil else { return } // UNUserNotificationCenter requires a bundle
+        guard Bundle.main.bundleIdentifier != nil else {
+            NSLog("notify: no bundle identifier; using toasts")
+            return // UNUserNotificationCenter requires a bundle
+        }
         usable = true
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -34,7 +37,8 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
             let granted = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
             DispatchQueue.main.async { if granted { self?.authorized = true } }
         }
-        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, err in
+            NSLog("notify: authorization granted=%ld %@", granted ? 1 : 0, err.map { "\($0)" } ?? "")
             DispatchQueue.main.async { self?.authorized = granted }
         }
     }
@@ -53,6 +57,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func post(title: String, body: String, retry: [String]?) {
+        NSLog("notify: %@ — %@", title, body)
         guard usable, authorized else {
             Toast.show(title: title, body: body, retry: retry)
             return
@@ -66,7 +71,8 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { err in
-            if err != nil {
+            if let err = err {
+                NSLog("notify: center refused (%@); showing a toast", "\(err)")
                 DispatchQueue.main.async { Toast.show(title: title, body: body, retry: retry) }
             }
         }

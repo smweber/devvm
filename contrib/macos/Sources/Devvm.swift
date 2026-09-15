@@ -36,6 +36,10 @@ final class Devvm {
         env["PATH"] = path
         environment = env
         executable = Devvm.locate("devvm", path: path)
+        // Unified log (Console.app, or `log stream --process DevVM`): the one
+        // place to see why a drop did nothing, since the app has no window.
+        NSLog("devvm: PATH=%@", path)
+        NSLog("devvm: executable=%@", executable ?? "(not found)")
     }
 
     // MARK: PATH
@@ -157,12 +161,15 @@ final class Devvm {
             }
             return nil
         }
+        NSLog("devvm: run %@", args.joined(separator: " "))
         DispatchQueue.global().async {
             p.waitUntilExit()
             group.wait()
             let result = CommandResult(status: p.terminationStatus,
                                        stdout: String(decoding: box.out, as: UTF8.self),
                                        stderr: String(decoding: box.err, as: UTF8.self))
+            NSLog("devvm: exit %d for %@%@", result.status, args.first ?? "",
+                  result.stderr.isEmpty ? "" : " — " + result.lastStderrLine)
             DispatchQueue.main.async { completion(result) }
         }
         return p
