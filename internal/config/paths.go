@@ -68,3 +68,11 @@ func TouchChanged(configDir string) {
 	_ = EnsureRuntimeDir(configDir)
 	_ = os.WriteFile(ChangedPath(configDir), []byte(time.Now().Format(time.RFC3339Nano)+"\n"), 0o600)
 }
+
+// CacheDir holds derived data that is safe to lose: per-hub listing caches
+// (`hub-HUB.list`, roadmap step 3). It is deliberately outside machines/ and
+// run/ so `status --watch`, which watches those two, never sees its own cache
+// write and re-triggers.
+func CacheDir(configDir string) string {
+	return filepath.Join(configDir, "cache")
+}

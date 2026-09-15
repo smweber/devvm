@@ -11,10 +11,62 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// resolve loads a machine and its backend, applying load_machine's fallback:
-// an unregistered name that smolvm knows about is treated as a smol machine, so
-// pre-registry VMs keep working.
+// resolve loads a machine and its backend for the verbs that act *on* a
+// machine (attach, exec, ports, keys, bootstrap, lifecycle, …). It refuses a
+// hub: a hub is reached like a remote box but is never shaped, so every one of
+// those verbs fails here, in one place, with the same message. `status` and
+// `delete`, which do apply to a hub, use resolveAny.
 func (a *App) resolve(name string) (*config.Machine, backend.Backend, error) {
+	m, b, err := a.resolveAny(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := requireMachine(m); err != nil {
+		return nil, nil, err
+	}
+	if m.IsHubMachine() {
+		// Roadmap step 2 replaces this with the proxy dispatch: leaves that run
+		// on the hub call a.proxy(hub, cmd, args) with the rebuilt argv, and the
+		// local leaves (ports, cp, auth) use hubBackend's small surface. Until
+		// then nothing can act on a hub machine, so say so here rather than let
+		// a verb reach the hub itself with the machine's record.
+		return nil, nil, fmt.Errorf("%s: %w", name, backend.ErrHubProxy)
+	}
+	return m, b, nil
+}
+
+// requireMachine is the shared shaping-verb guard: the one message every verb
+// prints when handed a hub instead of a machine.
+func requireMachine(m *config.Machine) error {
+	if m.IsHub() {
+		return fmt.Errorf("%s is a hub, not a machine", m.Name)
+	}
+	return nil
+}
+
+// resolveAny loads a machine, a hub, or a HUB/NAME hub-machine record and its
+// backend, applying load_machine's fallback: an unregistered name that smolvm
+// knows about is treated as a smol machine, so pre-registry VMs keep working.
+//
+// HUB/NAME is dispatched here, not in a root interceptor: every leaf already
+// calls resolve, and cobra cannot find the first positional before parsing
+// (cp-in puts flags first, exec disables flag parsing). It reads the hub's
+// conf only — no ssh — so a sleeping hub costs nothing until a command is
+// actually run against one of its machines.
+func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) {
+	if _, _, isHub, err := config.SplitHubName(name); err != nil {
+		return nil, nil, err
+	} else if isHub {
+		m, err := config.LoadHubMachine(a.ConfigDir, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		b, err := backend.For(m, a.ConfigDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		return m, b, nil
+	}
 	m, err := config.Load(a.ConfigDir, name)
 	if errors.Is(err, config.ErrNotFound) {
 		if err2 := config.ValidName(name); err2 != nil {

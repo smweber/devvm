@@ -95,6 +95,7 @@ func TestManagedAndRemote(t *testing.T) {
 		{BackendSmol, true, false},
 		{BackendRemoteManaged, true, true},
 		{BackendRemoteUnmanaged, false, true},
+		{BackendHub, false, true}, // reached like a remote box, never shaped
 	}
 	for _, tt := range tests {
 		m := &Machine{Backend: tt.backend}

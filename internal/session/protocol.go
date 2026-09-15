@@ -58,17 +58,21 @@ const (
 	OpKick   = "kick" // retry a reconnect now instead of waiting out the backoff
 )
 
+// Runtime files are keyed by the display name run through config.RuntimeName
+// (HUB/NAME -> HUB@NAME); the three helpers below are the only place a name
+// becomes a path, so the mapping is applied once and nowhere else.
+
 // socketPath is the daemon's control socket for a machine.
 func socketPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), name+".sock")
+	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".sock")
 }
 
 // logPath is where a spawned daemon's stderr lands.
 func logPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), name+".log")
+	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".log")
 }
 
 // lockPath is the startup lock serializing daemon creation for a machine.
 func lockPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), name+".lock")
+	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".lock")
 }

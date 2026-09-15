@@ -24,10 +24,15 @@ import (
 //	                 manages the OS. (Future: hetzner adds API-backed lifecycle.)
 //	remote-unmanaged an existing host devvm adopts hands-off (checks prereqs, never
 //	                 modifies the OS), reached over the ssh transport.
+//	hub              another host running devvm whose machines are reached as
+//	                 HUB/NAME (docs/proposals/hub.md). Reached over the ssh
+//	                 transport like a remote box, but never shaped: no
+//	                 bootstrap, keys, repos, ports or agent land on it.
 const (
 	BackendSmol            = "smol"
 	BackendRemoteManaged   = "remote-managed"
 	BackendRemoteUnmanaged = "remote-unmanaged"
+	BackendHub             = "hub"
 
 	// legacyBackendSSH is the pre-rename backend value; migrated on load onto the
 	// remote-managed / remote-unmanaged split (see migrateLegacy).
@@ -64,11 +69,25 @@ func ValidName(name string) error {
 	return nil
 }
 
+// HubMachine is the laptop-side state for one machine on a hub: the
+// `[machines.NAME]` table in the hub's conf. Ports (this host's own forwards,
+// inherently per client) is the only field; everything else about the machine
+// lives in the hub's registry, which is the single source of truth.
+type HubMachine struct {
+	Ports []string `toml:"ports,omitempty"` // "HOST:GUEST" or bare "PORT"
+}
+
 // Machine is one registered dev box. Zero values mean "unset"; applyDefaults
 // fills the same defaults load_machine did (SSHPort 22, BootstrapHook).
 type Machine struct {
-	// Name is derived from the filename, not stored in the file.
+	// Name is derived from the filename, not stored in the file. For a hub
+	// machine it is the display form HUB/NAME (see hubname.go).
 	Name string `toml:"-"`
+
+	// Hub is set only on a hub-machine record (LoadHubMachine): the loaded conf
+	// of the hub the machine lives on. Such a record is synthesized, never
+	// written — the hub's [machines.NAME] table is the only thing on disk.
+	Hub *Machine `toml:"-"`
 
 	Backend string `toml:"backend"`
 
@@ -101,6 +120,12 @@ type Machine struct {
 	AuthorizedKeysGithub []string `toml:"authorized_keys_github,omitempty"`
 	Harden               bool     `toml:"harden,omitempty"`
 	Fail2ban             bool     `toml:"fail2ban,omitempty"`
+
+	// hub backend only: one table per machine this host has laptop-side state
+	// for, keyed by the machine's name on the hub. Kept in the hub's own conf
+	// (no second registry tree) so `delete HUB` is one file and List stays a
+	// plain directory read.
+	Machines map[string]HubMachine `toml:"machines,omitempty"`
 }
 
 // NewSmol returns a defaulted smol machine. Used for the "live but unregistered
@@ -115,6 +140,13 @@ func NewSmol(name string) *Machine {
 // given ssh host. Callers set optional fields (identity, transport, ...) after.
 func NewRemote(name, backend, sshHost string) *Machine {
 	m := &Machine{Name: name, Backend: backend, SSHHost: sshHost}
+	m.applyDefaults()
+	return m
+}
+
+// NewHub returns a defaulted hub conf for the given ssh destination.
+func NewHub(name, sshHost string) *Machine {
+	m := &Machine{Name: name, Backend: BackendHub, SSHHost: sshHost}
 	m.applyDefaults()
 	return m
 }
@@ -156,7 +188,7 @@ func (m *Machine) applyDefaults() {
 // Validate enforces the invariants load_machine checked at source time.
 func (m *Machine) Validate() error {
 	switch m.Backend {
-	case BackendSmol, BackendRemoteManaged, BackendRemoteUnmanaged:
+	case BackendSmol, BackendRemoteManaged, BackendRemoteUnmanaged, BackendHub:
 	case "":
 		return fmt.Errorf("machine %q has no backend set", m.Name)
 	default:
@@ -164,6 +196,13 @@ func (m *Machine) Validate() error {
 	}
 	if m.IsRemote() && m.SSHHost == "" {
 		return fmt.Errorf("remote machine %q needs ssh_host", m.Name)
+	}
+	if m.IsHub() {
+		if err := m.validateHub(); err != nil {
+			return err
+		}
+	} else if len(m.Machines) > 0 {
+		return fmt.Errorf("machine %q: [machines.*] tables only apply to a hub", m.Name)
 	}
 	if !m.IsRemote() && m.Transport != "" {
 		return fmt.Errorf("machine %q: transport only applies to remote backends", m.Name)
@@ -177,6 +216,64 @@ func (m *Machine) Validate() error {
 	return nil
 }
 
+// validateHub rejects the fields that would shape the hub itself. A hub is
+// reached like a remote box but is never bootstrapped, forwarded to, or given
+// repos/keys — those verbs refuse it — so a conf carrying them is a mistake
+// (most likely a remote conf whose backend was flipped by hand) rather than
+// something to silently ignore. transport/mosh_server stay allowed: they steer
+// the interactive hop to the hub, which is what a proxied attach rides.
+func (m *Machine) validateHub() error {
+	// transport (and mosh_server) are deliberately not on this list: they steer
+	// the interactive hop to the hub, which a proxied attach/shell rides.
+	var bad []string
+	if len(m.Ports) > 0 {
+		bad = append(bad, "ports")
+	}
+	if m.Memory != 0 {
+		bad = append(bad, "memory")
+	}
+	if m.Disk != 0 {
+		bad = append(bad, "disk")
+	}
+	if len(m.Repos) > 0 {
+		bad = append(bad, "repos")
+	}
+	if m.BootstrapHook != "" && m.BootstrapHook != DefaultBootstrapHook {
+		bad = append(bad, "bootstrap_hook")
+	}
+	if len(m.AuthorizedKeys) > 0 {
+		bad = append(bad, "authorized_keys")
+	}
+	if len(m.AuthorizedKeysGithub) > 0 {
+		bad = append(bad, "authorized_keys_github")
+	}
+	if m.Harden {
+		bad = append(bad, "harden")
+	}
+	if m.Fail2ban {
+		bad = append(bad, "fail2ban")
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("hub %q is not a machine: it cannot carry %s (forwards and setup belong to the machines on it, as [machines.NAME] tables)",
+			m.Name, strings.Join(bad, ", "))
+	}
+	for name := range m.Machines {
+		if err := ValidName(name); err != nil {
+			return fmt.Errorf("hub %q: [machines.%s]: %w", m.Name, name, err)
+		}
+	}
+	return nil
+}
+
+// IsHub reports whether this conf registers a hub (another host's devvm) rather
+// than a machine. A hub-machine record (Hub != nil) is not a hub.
+func (m *Machine) IsHub() bool {
+	return m.Backend == BackendHub && m.Hub == nil
+}
+
+// IsHubMachine reports whether this is a synthesized HUB/NAME record.
+func (m *Machine) IsHubMachine() bool { return m.Hub != nil }
+
 // Managed reports whether devvm owns this box's OS and lifecycle — it installs
 // prereqs, may harden, and pins known_hosts. smol and remote-managed are managed;
 // adopted remote-unmanaged hosts are not (devvm only checks them, never modifies).
@@ -185,9 +282,11 @@ func (m *Machine) Managed() bool {
 }
 
 // IsRemote reports whether the box is reached over the ssh transport (both
-// remote-* backends). Drives ssh flags, key management, mosh, and forwards.
+// remote-* backends, and a hub — its ssh fields drive the hop to it). Drives
+// ssh flags, key management, mosh, and forwards. A hub-machine record carries
+// the hub's ssh fields for the same reason, so it counts too.
 func (m *Machine) IsRemote() bool {
-	return m.Backend == BackendRemoteManaged || m.Backend == BackendRemoteUnmanaged
+	return m.Backend == BackendRemoteManaged || m.Backend == BackendRemoteUnmanaged || m.Backend == BackendHub
 }
 
 // TransportName is the effective interactive transport (defaulted to ssh).
@@ -235,6 +334,11 @@ func Load(configDir, name string) (*Machine, error) {
 // Save writes the machine's conf as commented TOML. It is tool-managed but
 // meant to stay hand-editable, so we lead with a header like the old confs.
 func (m *Machine) Save(configDir string) error {
+	if m.IsHubMachine() {
+		// The record is derived from the hub's conf; the only persistent part
+		// is its [machines.NAME] table, which callers edit on the hub conf.
+		return fmt.Errorf("%s is a machine on hub %s; save the hub's conf instead", m.Name, m.Hub.Name)
+	}
 	if err := ValidName(m.Name); err != nil {
 		return err
 	}
@@ -249,6 +353,8 @@ func (m *Machine) Save(configDir string) error {
 	// BurntSushi keeps zero-valued ints even with omitempty, which would litter a
 	// conf with `memory = 0` (remote) or `ssh_port = 0` (smol). None of our int
 	// fields mean anything at 0 (Load re-defaults them), so drop those lines.
+	// Both patterns are anchored at column 0: the encoder indents the keys of
+	// nested [machines.NAME] tables, so those lines are never touched.
 	clean := zeroIntLine.ReplaceAllString(body.String(), "")
 	// Drop default-valued string lines too: applyDefaults always fills these, so
 	// omitempty can't, but an omitted line reloads to the exact same value. So a

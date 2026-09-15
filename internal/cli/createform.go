@@ -33,7 +33,7 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 	// Backend is required and has no global default.
 	if s.Backend == "" {
 		if !interactive {
-			return fmt.Errorf("--backend is required (smol|remote-managed|remote-unmanaged)")
+			return fmt.Errorf("--backend is required (smol|remote-managed|remote-unmanaged|hub)")
 		}
 		if err := form(tty, huh.NewSelect[string]().
 			Title("Backend").
@@ -41,6 +41,7 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 				huh.NewOption("smol — new local microVM", config.BackendSmol),
 				huh.NewOption("remote-managed — shape a remote host", config.BackendRemoteManaged),
 				huh.NewOption("remote-unmanaged — adopt an existing host", config.BackendRemoteUnmanaged),
+				huh.NewOption("hub — another host running devvm; reach its machines as NAME/…", config.BackendHub),
 			).Value(&s.Backend)); err != nil {
 			return err
 		}
@@ -54,7 +55,8 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 		if err := resolveDisk(tty, interactive, s, defaults); err != nil {
 			return err
 		}
-	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
+	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged, config.BackendHub:
+		// A hub is reached over the same ssh fields as a remote box.
 		if err := resolveRemote(tty, interactive, s, defaults); err != nil {
 			return err
 		}
@@ -71,8 +73,9 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 	}
 
 	// Offer the optional fields (repos, ports, keys, hardening) only on a terminal;
-	// the scripted path leaves them empty and uses the dedicated subcommands.
-	if interactive {
+	// the scripted path leaves them empty and uses the dedicated subcommands. A
+	// hub has none of them: they belong to the machines on it.
+	if interactive && s.Backend != config.BackendHub {
 		if err := askExtras(tty, s); err != nil {
 			return err
 		}

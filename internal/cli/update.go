@@ -267,8 +267,7 @@ type restartResult struct {
 // abort the rest.
 func (a *App) restartDaemons() restartResult {
 	var res restartResult
-	names, _ := config.List(a.ConfigDir)
-	for _, name := range names {
+	for _, name := range a.listMachines() {
 		cl, err := session.Existing(a.ConfigDir, name)
 		if err != nil {
 			continue // no daemon: nothing running old code
@@ -326,7 +325,7 @@ func (a *App) restartDaemons() restartResult {
 // maps a guest port listed in the machine's conf — i.e. whether `ports up`
 // would recreate anything after a stop.
 func anyConfiguredForward(configDir, name string, fwds []session.Forward) bool {
-	m, err := config.Load(configDir, name)
+	m, err := config.LoadAny(configDir, name)
 	if err != nil {
 		return false
 	}

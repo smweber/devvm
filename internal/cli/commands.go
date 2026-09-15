@@ -25,7 +25,8 @@ func (a *App) createCmd() *cobra.Command {
 			"for on a terminal; pass them as flags/args to run non-interactively.\n\n" +
 			"  smol              a new local smolvm microVM\n" +
 			"  remote-managed    a remote host devvm shapes (installs prereqs, may harden)\n" +
-			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)",
+			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)\n" +
+			"  hub               another host running devvm; its machines become NAME/MACHINE",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -35,7 +36,7 @@ func (a *App) createCmd() *cobra.Command {
 		},
 	}
 	f := c.Flags()
-	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged")
+	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged | hub")
 	f.IntVarP(&s.Memory, "memory", "m", 0, "smol: VM memory in MiB")
 	f.IntVarP(&s.Disk, "disk", "d", 0, "smol: VM disk in GiB (default 50)")
 	f.StringVar(&s.SSHHost, "ssh-host", "", "remote: ssh destination (host or user@host)")
@@ -262,12 +263,16 @@ func (a *App) deprovisionCmd() *cobra.Command {
 }
 
 func (a *App) deleteCmd() *cobra.Command {
+	var force bool
 	c := &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete the machine (backend-aware)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0]) },
+		Short: "Delete the machine (backend-aware); a hub with machines needs --force",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], force) },
 	}
+	c.Flags().BoolVar(&force, "force", false,
+		"hub: delete even if it has [machines.*] entries or live forward daemons (stops them)")
 	a.machineArg(c)
+	c.ValidArgsFunction = a.completeAnyMachine // delete takes a hub too
 	return c
 }
 
@@ -307,7 +312,7 @@ func (a *App) statusCmd() *cobra.Command {
 			}
 			return a.runStatus(args[0])
 		},
-		ValidArgsFunction: a.completeMachines,
+		ValidArgsFunction: a.completeAnyMachine, // status takes a hub too
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
 	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards' per line")

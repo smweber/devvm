@@ -47,6 +47,13 @@ func (a *App) runCreate(s createSpec) error {
 	if err := resolveName(&s); err != nil {
 		return err
 	}
+	if _, _, onHub, err := config.SplitHubName(s.Name); err != nil {
+		return err
+	} else if onHub {
+		// `create HUB/NAME` proxies to the hub, which writes the conf there
+		// (roadmap step 2); nothing about it lives on this host.
+		return fmt.Errorf("create %s: %w", s.Name, backend.ErrHubProxy)
+	}
 	if err := config.ValidName(s.Name); err != nil {
 		return err
 	}
@@ -73,6 +80,23 @@ func (a *App) runCreate(s createSpec) error {
 	// `devvm bootstrap`).
 	if err := a.provisionResource(m); err != nil {
 		return err
+	}
+	if m.IsHub() {
+		// A hub is registered, never shaped: no bootstrap. The one extra check
+		// is that its devvm is usable at all (installed, on the login shell's
+		// PATH, and not older than the hub surface), before the conf exists.
+		b, err := backend.For(m, a.ConfigDir)
+		if err != nil {
+			return err
+		}
+		if err := a.checkHubVersion(context.Background(), b, m); err != nil {
+			return err
+		}
+		if err := m.Save(a.ConfigDir); err != nil {
+			return err
+		}
+		a.printCreateNext(m)
+		return nil
 	}
 	if err := m.Save(a.ConfigDir); err != nil {
 		return err
@@ -116,6 +140,28 @@ func (s createSpec) machine() (*config.Machine, error) {
 		m = config.NewSmol(s.Name)
 		m.Memory = s.Memory
 		m.Disk = s.Disk
+	case config.BackendHub:
+		if s.SSHHost == "" {
+			return nil, fmt.Errorf("hub backend needs --ssh-host")
+		}
+		m = config.NewHub(s.Name, s.SSHHost)
+		if s.SSHPort != 0 {
+			m.SSHPort = s.SSHPort
+		}
+		m.Identity = s.Identity
+		if s.Transport != "" {
+			m.Transport = s.Transport
+		}
+		// Nothing else applies to a hub: memory, disk, repos, ports, keys, the
+		// hook and hardening belong to the machines on it. Rather than silently
+		// dropping a flag that was passed, record everything the spec carries
+		// and let Validate refuse it with the same field list a hand-edited
+		// conf would get (validateHub).
+		m.Memory = s.Memory
+		m.Disk = s.Disk
+		m.AuthorizedKeysGithub = s.KeysGithub
+		m.Harden = s.Harden
+		m.Fail2ban = s.Fail2ban
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		if s.SSHHost == "" {
 			return nil, fmt.Errorf("remote backend needs --ssh-host")
@@ -136,7 +182,7 @@ func (s createSpec) machine() (*config.Machine, error) {
 			m.Fail2ban = s.Fail2ban
 		}
 	default:
-		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged)", s.Backend)
+		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged|hub)", s.Backend)
 	}
 	m.Repos = s.Repos
 	m.Ports = s.Ports
@@ -164,6 +210,12 @@ func (a *App) probeRemote(m *config.Machine) error {
 }
 
 func (a *App) printCreateNext(m *config.Machine) {
+	if m.IsHub() {
+		fmt.Fprintf(a.Stdout, "\nHub '%s' is registered (%s).\n\nIts machines are addressed as %s/NAME:\n", m.Name, m.SSHHost, m.Name)
+		fmt.Fprintf(a.Stdout, "  %-24s # lists the hub and its machines\n", "devvm status")
+		fmt.Fprintf(a.Stdout, "  %-24s # join a machine's dev tmux session\n", "devvm attach "+m.Name+"/NAME")
+		return
+	}
 	fmt.Fprintf(a.Stdout, "\nMachine '%s' (%s) is ready.\n\nNext:\n", m.Name, m.Backend)
 	if m.IsRemote() {
 		fmt.Fprintf(a.Stdout, "  devvm keys add %s        # add a client key if needed\n", m.Name)

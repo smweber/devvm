@@ -51,7 +51,7 @@ func (o ExecOpts) user() string {
 // two exec styles: Run waits with stdio wired through; Spawn returns a Session
 // whose stdin/stdout pipes the caller drives (the persistent agent exec).
 type Backend interface {
-	Kind() string // config.BackendSmol | config.BackendRemote{Managed,Unmanaged}
+	Kind() string // config.BackendSmol | config.BackendRemote{Managed,Unmanaged} | config.BackendHub
 	Exists() (bool, error)
 	PowerStart() error
 	PowerStop() error
@@ -69,6 +69,13 @@ func For(m *config.Machine, configDir string) (Backend, error) {
 	case config.BackendSmol:
 		return &smolBackend{m: m}, nil
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
+		return &sshBackend{m: m, configDir: configDir}, nil
+	case config.BackendHub:
+		if m.IsHubMachine() {
+			return &hubBackend{m: m, hub: &sshBackend{m: m.Hub, configDir: configDir}}, nil
+		}
+		// The hub itself is reached exactly like a remote box (its conf carries
+		// the same ssh fields); the shaping verbs refuse it before they get here.
 		return &sshBackend{m: m, configDir: configDir}, nil
 	default:
 		return nil, fmt.Errorf("machine %q has unsupported backend %q", m.Name, m.Backend)

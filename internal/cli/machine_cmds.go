@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -185,11 +187,17 @@ func (a *App) runDeprovision(name string, yes bool) error {
 	return nil
 }
 
-func (a *App) runDelete(name string) error {
+func (a *App) runDelete(name string, force bool) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveAny(name)        // delete applies to hubs and hub machines too
 	if err != nil {
 		return err
+	}
+	if m.IsHubMachine() {
+		return a.deleteHubMachine(m)
+	}
+	if m.IsHub() {
+		return a.deleteHub(m, force)
 	}
 	// A dormant machine (conf but no resource) has nothing to destroy — just drop
 	// the registry entry, no scary confirm. On an Exists() error, fall through to
@@ -233,5 +241,87 @@ func (a *App) runDelete(name string) error {
 		return err
 	}
 	fmt.Fprintf(a.Stdout, "devvm: removed '%s'\n", name)
+	return nil
+}
+
+// deleteHubMachine is `delete HUB/NAME`: the hub owns the machine's registry
+// entry, so the deregistration proxies to it (roadmap step 2 — the call
+// slots in first, before any local state goes, so a failed remote delete
+// leaves the laptop side intact); then the laptop's own daemon for it is
+// stopped and its [machines.NAME] table dropped from the hub conf.
+func (a *App) deleteHubMachine(m *config.Machine) error {
+	hub, machine := m.Hub, m.HubMachineName()
+	_, recorded := hub.Machines[machine]
+	daemon, derr := session.Existing(a.ConfigDir, m.Name)
+	if !recorded && derr != nil {
+		return fmt.Errorf("nothing to remove for '%s' on this host (its registry entry lives on the hub; deregistering there is not proxied yet)", m.Name)
+	}
+	// Confirm before anything changes: once step 2 proxies the delete, the
+	// next line destroys a real VM on the hub.
+	ok, err := confirm(fmt.Sprintf("Delete '%s' (the machine on hub '%s' and this host's forwards for it)?", m.Name, hub.Name))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("aborted")
+	}
+	// TODO(roadmap step 2): a.proxy(hub, delete, [machine]) goes here.
+	if derr == nil {
+		_ = daemon.Stop()
+	}
+	if recorded {
+		// Step 6 wraps this read-modify-write in a flock on the hub conf: two
+		// `ports add HUB/a` and `ports add HUB/b` share one file, and Save is
+		// atomic but not serialized.
+		delete(hub.Machines, machine)
+		if err := hub.Save(a.ConfigDir); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(a.Stdout, "devvm: removed '%s' from this host (the hub's registry is untouched)\n", m.Name)
+	return nil
+}
+
+// deleteHub is `delete HUB`: the hub was only ever registered, never shaped,
+// so this removes one conf file and touches nothing on the host. It refuses
+// while any [machines.*] table or live run/HUB@*.sock exists (hub.md §2):
+// the tables are the laptop's forwards for machines that still exist on the
+// hub, and a live daemon holds forwards the conf removal would orphan.
+// --force stops those daemons and removes the conf anyway. The refusal runs
+// before the prompt, so a scripted delete fails fast. (Step 6, which adds
+// the daemons, changes nothing here: liveHubSockets already sees them.)
+func (a *App) deleteHub(m *config.Machine, force bool) error {
+	var held []string
+	for name := range m.Machines {
+		held = append(held, "[machines."+name+"]")
+	}
+	var live []string
+	for _, display := range liveHubSockets(a.ConfigDir) {
+		if hub, _, _, _ := config.SplitHubName(display); hub == m.Name {
+			live = append(live, display)
+			held = append(held, "forwards for "+display)
+		}
+	}
+	if len(held) > 0 && !force {
+		sort.Strings(held)
+		return fmt.Errorf("hub '%s' still has %s; delete those machines first, or use --force",
+			m.Name, strings.Join(held, ", "))
+	}
+	ok, err := confirm(fmt.Sprintf("Remove hub '%s' from the registry (leaves the host untouched)?", m.Name))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("aborted")
+	}
+	for _, display := range live {
+		if cl, err := session.Existing(a.ConfigDir, display); err == nil {
+			_ = cl.Stop()
+		}
+	}
+	if err := config.Remove(a.ConfigDir, m.Name); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Stdout, "devvm: removed hub '%s'\n", m.Name)
 	return nil
 }

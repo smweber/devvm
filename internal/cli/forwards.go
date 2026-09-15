@@ -162,11 +162,10 @@ func (a *App) runPortsList(name string) error {
 // a flat table of every machine's configured mappings and whether each is live,
 // so a box with many forwards is scannable in one place instead of via status.
 func (a *App) runPortsListAll() error {
-	names, _ := config.List(a.ConfigDir)
 	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE")
 	any := false
-	for _, name := range names {
-		m, err := config.Load(a.ConfigDir, name)
+	for _, name := range a.listMachines() {
+		m, err := config.LoadAny(a.ConfigDir, name)
 		if err != nil {
 			continue
 		}

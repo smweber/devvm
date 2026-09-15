@@ -72,7 +72,8 @@ func (a *App) rootCmd() *cobra.Command {
 		Long: "devvm manages persistent dev boxes across backends:\n" +
 			"  smol              local, isolated smolvm microVMs\n" +
 			"  remote-managed    a remote host devvm shapes (over ssh)\n" +
-			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n\n" +
+			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n" +
+			"  hub               another host running devvm; its machines are HUB/NAME\n\n" +
 			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml.",
 		Version:       Version,
 		SilenceUsage:  true,
@@ -130,13 +131,28 @@ func (a *App) rootCmd() *cobra.Command {
 	return root
 }
 
-// completeMachines is the ValidArgsFunction for commands that take a machine
-// name: it offers registered machines (and, once the smol backend is wired,
-// live-but-unregistered VMs).
+// completeMachines is the ValidArgsFunction for the verbs that go through
+// resolve: every name listMachines knows except hubs themselves, which those
+// verbs always refuse (HUB/NAME machines stay: they are what the verb acts
+// on). status and delete, which do take a hub, use completeAnyMachine.
 func (a *App) completeMachines(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) != 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	names, _ := config.List(a.ConfigDir)
+	var names []string
+	for _, n := range a.listMachines() {
+		if m, err := config.Load(a.ConfigDir, n); err == nil && m.IsHub() {
+			continue // a HUB/NAME never loads as a local conf, so it stays
+		}
+		names = append(names, n)
+	}
 	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeAnyMachine offers the full listing, hubs included.
+func (a *App) completeAnyMachine(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return a.listMachines(), cobra.ShellCompDirectiveNoFileComp
 }

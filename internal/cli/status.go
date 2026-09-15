@@ -19,6 +19,7 @@ var statusGroups = []struct{ backend, title string }{
 	{config.BackendSmol, "smol"},
 	{config.BackendRemoteManaged, "remote-managed"},
 	{config.BackendRemoteUnmanaged, "remote-unmanaged"},
+	{config.BackendHub, "hub"}, // the hub's own row, and (until step 3 merges the hub's listing) its machines
 }
 
 // smolLifecycle is the derived-state track shown in the verbose view; the live
@@ -137,9 +138,17 @@ func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
 }
 
 func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
-	fmt.Fprintf(a.Stdout, "  %-16s %-10s %-22s %s\n", "NAME", "STATE", "HOST", "FWDS")
+	// HOST is sized to the widest value so a long user@address does not push
+	// FWDS out of line.
+	hostW := 22
 	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "  %-16s %-10s %-22s %s\n", r.name, r.state, r.host, fwdsCount(r.fwds))
+		if len(r.host) > hostW {
+			hostW = len(r.host)
+		}
+	}
+	fmt.Fprintf(a.Stdout, "  %-16s %-10s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
+	for _, r := range rows {
+		fmt.Fprintf(a.Stdout, "  %-16s %-10s %-*s %s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds))
 		if verbose {
 			a.renderVerboseDetail(r)
 		}
@@ -170,8 +179,8 @@ func (a *App) renderVerboseDetail(r statusRow) {
 	}
 }
 
-// gatherRows resolves every registered machine plus any live-but-unregistered
-// smol VM into a statusRow.
+// gatherRows resolves every machine listMachines knows (registry, hubs, hub
+// machines) plus any live-but-unregistered smol VM into a statusRow.
 //
 // smolvm is listed once per call and every smol row is derived from that one
 // listing (rather than the backend's per-machine Status probe): a snapshot is
@@ -181,10 +190,9 @@ func (a *App) gatherRows() []statusRow {
 	var rows []statusRow
 	seen := map[string]bool{}
 	smols := smolSnapshot()
-	names, _ := config.List(a.ConfigDir)
-	for _, name := range names {
+	for _, name := range a.listMachines() {
 		seen[name] = true
-		m, err := config.Load(a.ConfigDir, name)
+		m, err := config.LoadAny(a.ConfigDir, name)
 		if err != nil {
 			rows = append(rows, statusRow{name: name, backend: "?", state: "broken conf"})
 			continue
@@ -236,6 +244,16 @@ func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 		st, ok := smols.state[m.Name]
 		r.exists, r.running = ok && st != "not created", st == "running"
 		r.state = smolStateLabel(r.exists, r.running)
+		r.fwds = a.forwardSummary(m.Name)
+		return r
+	}
+	if m.IsHubMachine() {
+		// The laptop knows nothing about a hub machine's state on its own; the
+		// merged listing (roadmap step 3) fills state and backend from the hub's
+		// `status --plain --local` row. `?` is the documented "could not be
+		// asked" token, so no consumer sees anything new. The forwards column is
+		// real: it is this host's own daemon for HUB@NAME.
+		r.state = "?"
 		r.fwds = a.forwardSummary(m.Name)
 		return r
 	}
@@ -323,7 +341,7 @@ func (a *App) smolLiveResources(name string, m *config.Machine) (memMiB, diskGiB
 // runStatus is the single-machine drill-in: always detailed (state, lifecycle,
 // live sizes for smol, and live forwards).
 func (a *App) runStatus(name string) error {
-	m, b, err := a.resolve(name)
+	m, b, err := a.resolveAny(name) // a hub and a hub machine both have a status
 	if err != nil {
 		return err
 	}
