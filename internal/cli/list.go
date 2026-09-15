@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"bufio"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -55,33 +53,14 @@ func (a *App) listMachines() []string {
 	return names
 }
 
-// hubCachePath is the per-hub listing cache: the hub's `status --plain
-// --local` rows, written by the merged listing (roadmap step 3). It sits in
-// cache/, outside the two directories `status --watch` observes.
-func hubCachePath(configDir, hub string) string {
-	return filepath.Join(config.CacheDir(configDir), "hub-"+hub+".list")
-}
-
-// cachedHubMachines returns the machine names in a hub's cached listing:
-// column 1 of each --plain row, which the hub emits as bare names. Nothing
-// writes the cache before roadmap step 3, so today this reads nothing; it is
-// here so listMachines has its four sources from the start and step 3 only
-// has to write the file.
+// cachedHubMachines returns the machine names in a hub's cached listing
+// (hublist.go): column 1 of each --plain row, which the hub emits as bare
+// names. A hint for enumeration and completion only; the merged listing
+// says whether a machine is still there.
 func cachedHubMachines(configDir, hub string) []string {
-	f, err := os.Open(hubCachePath(configDir, hub))
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
 	var names []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		name, _, _ := strings.Cut(sc.Text(), "\t")
-		// ValidName also rejects a HUB/ prefix or an @ form: hubs never nest,
-		// and a hub's --local rows carry bare names.
-		if config.ValidName(name) == nil {
-			names = append(names, name)
-		}
+	for _, r := range readHubCache(configDir, hub) {
+		names = append(names, r.name)
 	}
 	return names
 }

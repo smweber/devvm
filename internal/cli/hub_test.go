@@ -244,21 +244,21 @@ func TestCreateHubVersionProbe(t *testing.T) {
 
 func TestStatusPlainHubRows(t *testing.T) {
 	a := newTestApp(t)
-	log := fakeSSH(t, "exit 1") // status never dials in step 1
+	log := fakeSSH(t, "exit 1") // the hub's devvm fails: nothing fresh, no cache
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
 	var out bytes.Buffer
 	a.Stdout = &out
-	if err := a.runStatusPlain(); err != nil {
+	if err := a.runStatusPlain(false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(log); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(log)
-		t.Errorf("status dialed the hub:\n%s", data)
+	if lines := sshLines(t, log); len(lines) != 1 {
+		t.Errorf("status dialed the hub %d times, want once:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	// The hub row uses the existing `reachable` token like every remote; a
-	// hub machine's state is `?` until the merged listing (step 3), and its
-	// forwards column is this host's own (none configured → down).
-	want := "h\thub\treachable\t-\nh/web\thub\t?\tdown\n"
+	// The hub row is `unreachable` when its listing fails; a hub machine known
+	// only from this host's own [machines.web] table has no backend or state
+	// to report, and its forwards column is this host's own (ports configured,
+	// no daemon → down). Column 1 is `h/web`, nothing else is new.
+	want := "h\thub\tunreachable\t-\nh/web\thub\tunreachable\tdown\n"
 	if out.String() != want {
 		t.Errorf("plain =\n%s\nwant\n%s", out.String(), want)
 	}

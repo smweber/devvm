@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/smweber/devvm/internal/config"
@@ -21,8 +22,16 @@ var Version = "dev"
 // App carries process-wide context to command handlers.
 type App struct {
 	ConfigDir string
+	Stdin     io.Reader // nil means os.Stdin; set by tests that drive a stdin-EOF path
 	Stdout    io.Writer
 	Stderr    io.Writer
+}
+
+func (a *App) stdin() io.Reader {
+	if a.Stdin != nil {
+		return a.Stdin
+	}
+	return os.Stdin
 }
 
 func newApp() *App {
@@ -154,7 +163,7 @@ func (a *App) completeMachines(cmd *cobra.Command, args []string, toComplete str
 		}
 		names = append(names, n)
 	}
-	return names, cobra.ShellCompDirectiveNoFileComp
+	return withPrefix(names, toComplete), cobra.ShellCompDirectiveNoFileComp
 }
 
 // completeAnyMachine offers the full listing, hubs included.
@@ -162,5 +171,25 @@ func (a *App) completeAnyMachine(cmd *cobra.Command, args []string, toComplete s
 	if len(args) != 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return a.listMachines(), cobra.ShellCompDirectiveNoFileComp
+	return withPrefix(a.listMachines(), toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+// withPrefix keeps the candidates that start with what was typed. cobra
+// filters only static ValidArgs, not a ValidArgsFunction's answer, and the
+// shell scripts do their own filtering — except that `devvm __complete
+// attach h/` is also read directly (the menu bar app, the roadmap's live
+// check), so "the hub's machines" must be what comes back for `h/`. The
+// names come from listMachines: confs, hub tables, the cache — never a
+// dial, so completion of a sleeping hub costs nothing.
+func withPrefix(names []string, prefix string) []string {
+	if prefix == "" {
+		return names
+	}
+	var out []string
+	for _, n := range names {
+		if strings.HasPrefix(n, prefix) {
+			out = append(out, n)
+		}
+	}
+	return out
 }

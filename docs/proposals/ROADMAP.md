@@ -232,7 +232,7 @@ quoted as `3001` are the fake's bump and read `3000` on the ThinkPad.
   `10.255.255.1` and the laptop's `time devvm status` is not slowed by it
   (`--local`), remove it; `devvm status --plain --watch` in
   the background, then `devvm stop h/web` re-emits a `stopped` row, on the
-  hub `pkill -u dev -f 'status --plain --watch'` and the watcher shows
+  hub `pkill -u dev -f 'status --plain --local --watch'` and the watcher shows
   `unreachable` then recovers on its own, `create --backend hub h3 …`
   while watching opens a pipe for `h3` without a restart; `devvm
   __complete attach h/` lists `web`. Swift: the menu groups rows under

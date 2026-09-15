@@ -265,6 +265,7 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	if cl, err := session.Existing(a.ConfigDir, m.Name); err == nil {
 		_ = cl.Stop()
 	}
+	dropFromHubCache(a.ConfigDir, hub.Name, machine)
 	if _, recorded := hub.Machines[machine]; recorded {
 		// Step 6 wraps this read-modify-write in a flock on the hub conf: two
 		// `ports add HUB/a` and `ports add HUB/b` share one file, and Save is
@@ -318,6 +319,7 @@ func (a *App) deleteHub(m *config.Machine, force bool) error {
 	if err := config.Remove(a.ConfigDir, m.Name); err != nil {
 		return err
 	}
+	removeHubCache(a.ConfigDir, m.Name) // derived from the conf that just went
 	fmt.Fprintf(a.Stdout, "devvm: removed hub '%s'\n", m.Name)
 	return nil
 }

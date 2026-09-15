@@ -21,20 +21,55 @@ import (
 // one snapshot.
 const watchDebounce = 200 * time.Millisecond
 
+// statusExitFlag is the hidden `status --watch` flag that ends the watch on
+// stdin EOF. The laptop's hub watch pipe passes it so the hub-side watcher
+// dies with the laptop's (hubListArgv); nothing else sets it.
+const statusExitFlag = "--exit-on-stdin-eof"
+
 // runStatusWatch is `status --plain --watch`: the plain listing, re-emitted
-// whenever devvm's own state on disk changes. It never polls; see watchStatus
-// for what it observes and what it can't.
-func (a *App) runStatusWatch(ctx context.Context) error {
+// whenever devvm's own state on disk changes — or, unless local, whenever a
+// hub's held listing pipe emits a block. It never polls; see watchStatus for
+// what it observes and what it can't. exitOnEOF (statusExitFlag) ends it
+// when stdin closes: over ssh that is the laptop side going away.
+func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	return watchStatus(ctx, a.ConfigDir, a.plainSnapshot, a.Stdout, watchDebounce)
+	if exitOnEOF {
+		go func() {
+			_, _ = io.Copy(io.Discard, a.stdin())
+			cancel()
+		}()
+	}
+	if local {
+		return watchStatus(ctx, a.ConfigDir, func() string { return a.plainSnapshot(statusScope{local: true}) }, a.Stdout, watchDebounce, nil)
+	}
+	return a.watchWithHubs(ctx, a.Stdout, watchDebounce)
+}
+
+// watchWithHubs is the merged --watch: the local loop plus a hubWatcher
+// whose pipes wake it. The hub confs are re-read on every snapshot, and the
+// loop takes one on every machines/ event, so the pipe set follows a hub
+// conf created, deleted or re-pointed while watching. The first block waits
+// (bounded by the listing deadline) for the pipes to speak, so a consumer
+// does not start from a flash of `unreachable`.
+func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Duration) error {
+	hw := newHubWatcher(a)
+	defer hw.stop()
+	snapshot := func() string {
+		hubs := a.hubConfs() // once per block: the pipe set and the rows use the same read
+		hw.sync(hubs)
+		return a.plainSnapshot(statusScope{hubs: hubs, listings: hw.listings()})
+	}
+	hw.sync(a.hubConfs())
+	hw.settle(ctx, hubTimes.deadline)
+	return watchStatus(ctx, a.ConfigDir, snapshot, out, debounce, hw.wake)
 }
 
 // plainSnapshot renders the plain listing as one string so identical
 // snapshots can be suppressed byte-for-byte.
-func (a *App) plainSnapshot() string {
+func (a *App) plainSnapshot(sc statusScope) string {
 	var b []byte
-	for _, r := range a.gatherRows() {
+	for _, r := range a.gatherRows(sc) {
 		b = fmt.Appendf(b, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
 	}
 	return string(b)
@@ -44,7 +79,9 @@ func (a *App) plainSnapshot() string {
 // the machines dir (conf create/delete/edit) or the runtime dir (daemon sockets
 // come and go; the change marker every state-changing command and daemon
 // transition rewrites), blank-line separated so a consumer replaces its whole
-// list on each block. Identical consecutive snapshots are dropped.
+// list on each block. Identical consecutive snapshots are dropped. wake, if
+// not nil, is a third source of changes: the hub pipes nudge it on every
+// block they receive and every time one of them dies.
 //
 // It sees only what devvm itself does. A `smolvm machine stop` run directly, a
 // VM crash, or a remote host going away leaves nothing on disk here, so a UI
@@ -58,7 +95,7 @@ func (a *App) plainSnapshot() string {
 // watch (verified on both inotify and kqueue), so it is recreated and
 // re-added, and any watcher error triggers a re-snapshot rather than being
 // treated as fatal — a long-running consumer must never go blind.
-func watchStatus(ctx context.Context, configDir string, snapshot func() string, out io.Writer, debounce time.Duration) error {
+func watchStatus(ctx context.Context, configDir string, snapshot func() string, out io.Writer, debounce time.Duration, wake <-chan struct{}) error {
 	// Both dirs must exist to be watched; an empty registry is a valid thing to
 	// watch (the first `create` is the change). Match Save's and
 	// EnsureRuntimeDir's modes so nothing is loosened.
@@ -128,6 +165,10 @@ func watchStatus(ctx context.Context, configDir string, snapshot func() string, 
 					}
 				}
 			}
+			if pending == nil {
+				pending = time.After(debounce)
+			}
+		case <-wake:
 			if pending == nil {
 				pending = time.After(debounce)
 			}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,7 @@ var statusGroups = []struct{ backend, title string }{
 	{config.BackendSmol, "smol"},
 	{config.BackendRemoteManaged, "remote-managed"},
 	{config.BackendRemoteUnmanaged, "remote-unmanaged"},
-	{config.BackendHub, "hub"}, // the hub's own row, and (until step 3 merges the hub's listing) its machines
+	{config.BackendHub, "hub"}, // every hub's own row followed by its machines, whatever backend the hub reports for them
 }
 
 // smolLifecycle is the derived-state track shown in the verbose view; the live
@@ -31,7 +32,8 @@ var smolLifecycle = []string{"dormant", "running", "stopped"}
 type statusRow struct {
 	name    string
 	backend string
-	state   string // dormant | running | stopped | reachable | broken conf | ?
+	state   string // dormant | running | stopped | reachable | unreachable | broken conf | ?
+	hub     string // the hub this row belongs to (its own row included); "" for a local machine
 	exists  bool
 	running bool
 	mem     int // MiB (smol conf spec)
@@ -50,11 +52,11 @@ type fwdSummary struct {
 	since  time.Time // when state began
 }
 
-// runStatusAll lists every machine (registry ∪ live smol), grouped by backend.
-// verbose adds a lifecycle track, live smol resource sizes, and per-machine
-// forward detail.
-func (a *App) runStatusAll(verbose bool) error {
-	rows := a.gatherRows()
+// runStatusAll lists every machine (registry ∪ live smol ∪ the hubs'
+// listings), grouped by backend. verbose adds a lifecycle track, live smol
+// resource sizes, and per-machine forward detail. local stops at this host.
+func (a *App) runStatusAll(verbose, local bool) error {
+	rows := a.gatherRows(statusScope{local: local})
 	if len(rows) == 0 {
 		fmt.Fprintln(a.Stdout, "No machines. Create one with 'devvm create'.")
 		return nil
@@ -64,7 +66,7 @@ func (a *App) runStatusAll(verbose bool) error {
 	for _, g := range statusGroups {
 		var group []statusRow
 		for _, r := range rows {
-			if r.backend == g.backend {
+			if groupOf(r) == g.backend {
 				group = append(group, r)
 			}
 		}
@@ -90,7 +92,7 @@ func (a *App) runStatusAll(verbose bool) error {
 // enumerate machines (e.g. every running smol VM) without scraping the
 // human-formatted table. The token sets are the format's contract:
 //
-//	state:    running | stopped | dormant | reachable | broken conf | ?
+//	state:    running | stopped | dormant | reachable | unreachable | broken conf | ?
 //	forwards: up:N | reconnecting:N | down | -
 //
 // N is the number of forwards the daemon owns; `down` means ports are
@@ -101,11 +103,26 @@ func (a *App) runStatusAll(verbose bool) error {
 // load. Consumers should treat any other token as "unknown", not fail.
 // `--watch` re-emits this listing on devvm-made changes (see watchStatus); the
 // format is the same, so a consumer parses one thing.
-func (a *App) runStatusPlain() error {
-	for _, r := range a.gatherRows() {
+//
+// Hubs add no column: a hub's own row is `HUB<TAB>hub<TAB>reachable|unreachable`,
+// and a machine on it is `HUB/NAME` with the backend and state the hub
+// reported (`unreachable` for every row of a hub that did not answer, from
+// the cache) and this host's own forwards column. A consumer that wants to
+// group by hub splits column 1 on `/`. --local lists this host only.
+func (a *App) runStatusPlain(local bool) error {
+	for _, r := range a.gatherRows(statusScope{local: local}) {
 		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
 	}
 	return nil
+}
+
+// groupOf is the status section a row renders in: a hub and every machine
+// on it share the hub section, whatever backend the hub reports for them.
+func groupOf(r statusRow) string {
+	if r.hub != "" {
+		return config.BackendHub
+	}
+	return r.backend
 }
 
 // plainForwards renders the machine-readable forward column (see runStatusPlain).
@@ -121,7 +138,7 @@ func plainForwards(r statusRow) string {
 }
 
 func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
-	fmt.Fprintf(a.Stdout, "  %-16s %-10s %-8s %-8s %s\n", "NAME", "STATE", "MEM", "DISK", "FWDS")
+	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s\n", "NAME", "STATE", "MEM", "DISK", "FWDS")
 	for _, r := range rows {
 		mem, disk := r.mem, r.disk
 		if verbose && r.running {
@@ -129,7 +146,7 @@ func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
 				mem, disk = lm, ld
 			}
 		}
-		fmt.Fprintf(a.Stdout, "  %-16s %-10s %-8s %-8s %s\n",
+		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s\n",
 			r.name, r.state, memHuman(mem), diskHuman(disk), fwdsCount(r.fwds))
 		if verbose {
 			a.renderVerboseDetail(r)
@@ -146,9 +163,9 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 			hostW = len(r.host)
 		}
 	}
-	fmt.Fprintf(a.Stdout, "  %-16s %-10s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
+	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
 	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "  %-16s %-10s %-*s %s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds))
+		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds))
 		if verbose {
 			a.renderVerboseDetail(r)
 		}
@@ -158,8 +175,18 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 // renderVerboseDetail prints the lifecycle track (registered smol) and each live
 // forward under a machine's row.
 func (a *App) renderVerboseDetail(r statusRow) {
-	if r.backend == config.BackendSmol && r.note == "" {
+	if r.backend == config.BackendSmol && r.note == "" && r.hub == "" {
 		fmt.Fprintf(a.Stdout, "    lifecycle: %s\n", lifecycleTrack(smolLifecycle, r.state))
+	}
+	if r.hub != "" && r.name != r.hub {
+		// The HOST column carries the hub; the backend the hub reported for
+		// the machine has nowhere else to show in the human table. A row the
+		// hub did not name (this host's table or daemon only) has none.
+		if r.backend == config.BackendHub {
+			fmt.Fprintf(a.Stdout, "    backend: unknown (hub %s does not list it)\n", r.hub)
+		} else {
+			fmt.Fprintf(a.Stdout, "    backend: %s (as reported by hub %s)\n", r.backend, r.hub)
+		}
 	}
 	if cl, err := session.Existing(a.ConfigDir, r.name); err == nil {
 		if st, err := cl.Status(); err == nil && len(st.Forwards) > 0 {
@@ -179,23 +206,41 @@ func (a *App) renderVerboseDetail(r statusRow) {
 	}
 }
 
-// gatherRows resolves every machine listMachines knows (registry, hubs, hub
-// machines) plus any live-but-unregistered smol VM into a statusRow.
+// statusScope says how far a listing reaches. local stops at this host: no
+// hub conf is read, nothing is dialed (hub.md §5: it is what a hub runs for
+// *its* callers, so hubs never fan out). Otherwise every hub conf
+// contributes its rows — fetched now when listings is nil, or, under
+// --watch, the latest block from each held pipe.
+type statusScope struct {
+	local    bool
+	hubs     []*config.Machine // the hub confs, when the caller already loaded them (--watch); nil loads them here
+	listings hubListings
+}
+
+// gatherRows resolves every local machine listMachines knows plus any
+// live-but-unregistered smol VM into a statusRow, then (unless local) each
+// hub's block: its own row and a row per machine on it (hubRows).
 //
 // smolvm is listed once per call and every smol row is derived from that one
 // listing (rather than the backend's per-machine Status probe): a snapshot is
 // re-taken on every --watch event, and N+1 `smolvm machine ls` subprocesses
 // per change would be the polling this command exists to avoid.
-func (a *App) gatherRows() []statusRow {
+func (a *App) gatherRows(sc statusScope) []statusRow {
 	var rows []statusRow
 	seen := map[string]bool{}
 	smols := smolSnapshot()
 	for _, name := range a.listMachines() {
+		if _, _, onHub, _ := config.SplitHubName(name); onHub {
+			continue // rendered under its hub below, or not at all with --local
+		}
 		seen[name] = true
-		m, err := config.LoadAny(a.ConfigDir, name)
+		m, err := config.Load(a.ConfigDir, name)
 		if err != nil {
 			rows = append(rows, statusRow{name: name, backend: "?", state: "broken conf"})
 			continue
+		}
+		if m.IsHub() {
+			continue // its row comes with its listing
 		}
 		rows = append(rows, a.rowFor(m, smols))
 	}
@@ -211,6 +256,80 @@ func (a *App) gatherRows() []statusRow {
 			exists: sm.State != "not created", running: sm.State == "running",
 			note: "unregistered", fwds: a.forwardSummary(sm.Name),
 		})
+	}
+	if sc.local {
+		return rows
+	}
+	hubs := sc.hubs
+	if hubs == nil {
+		hubs = a.hubConfs()
+	}
+	listings := sc.listings
+	if listings == nil {
+		listings = a.fetchHubListings(context.Background(), hubs)
+	}
+	for _, hub := range hubs {
+		rows = append(rows, a.hubRows(hub, listings[hub.Name])...)
+	}
+	return rows
+}
+
+// hubRows renders one hub: its own row, then a row per machine on it. In
+// the human table every row of the hub shows the hub's ssh host in HOST and
+// no backend column (the section is the hub's, whatever backend the hub
+// reports for a machine); `-v` prints the reported backend under the row.
+// The
+// machine set is the union of what the hub listed (fresh, or cached when it
+// did not answer) and what this host knows on its own — a [machines.NAME]
+// table, a live run/HUB@NAME.sock — so a laptop-side forward for a machine
+// the hub no longer lists still shows, with state `?` (the hub answered and
+// did not name it; `delete HUB/NAME` clears it) and backend `hub` (nothing
+// reported one). State and backend otherwise come from the hub's row, the
+// forwards column from this host's own daemon for HUB@NAME, never the
+// hub's. With no fresh answer every row of the hub is `unreachable`,
+// whatever the cache remembers: a cached `running` would be a claim nobody
+// is making.
+func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
+	state := "reachable"
+	if !l.fresh {
+		state = "unreachable"
+	}
+	rows := []statusRow{{name: hub.Name, backend: config.BackendHub, hub: hub.Name, state: state, host: hub.SSHHost, m: hub}}
+	byName := map[string]hubRow{}
+	names := map[string]bool{}
+	for _, r := range l.rows {
+		byName[r.name], names[r.name] = r, true
+	}
+	for n := range hub.Machines {
+		names[n] = true
+	}
+	for _, display := range liveHubSockets(a.ConfigDir) {
+		if h, n, _, _ := config.SplitHubName(display); h == hub.Name {
+			names[n] = true
+		}
+	}
+	sorted := make([]string, 0, len(names))
+	for n := range names {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
+	for _, n := range sorted {
+		display := config.JoinHubName(hub.Name, n)
+		r := statusRow{
+			name: display, hub: hub.Name, host: hub.SSHHost,
+			m: &config.Machine{Name: display, Hub: hub, Backend: config.BackendHub, Ports: hub.Machines[n].Ports},
+		}
+		if hr, ok := byName[n]; ok {
+			r.backend, r.state = hr.backend, hr.state
+			r.exists, r.running = hr.state != "dormant", hr.state == "running"
+		} else {
+			r.backend, r.state = config.BackendHub, "?"
+		}
+		if !l.fresh {
+			r.state = "unreachable"
+		}
+		r.fwds = a.forwardSummary(display)
+		rows = append(rows, r)
 	}
 	return rows
 }
@@ -244,16 +363,6 @@ func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 		st, ok := smols.state[m.Name]
 		r.exists, r.running = ok && st != "not created", st == "running"
 		r.state = smolStateLabel(r.exists, r.running)
-		r.fwds = a.forwardSummary(m.Name)
-		return r
-	}
-	if m.IsHubMachine() {
-		// The laptop knows nothing about a hub machine's state on its own; the
-		// merged listing (roadmap step 3) fills state and backend from the hub's
-		// `status --plain --local` row. `?` is the documented "could not be
-		// asked" token, so no consumer sees anything new. The forwards column is
-		// real: it is this host's own daemon for HUB@NAME.
-		r.state = "?"
 		r.fwds = a.forwardSummary(m.Name)
 		return r
 	}
@@ -345,6 +454,9 @@ func (a *App) runStatus(name string) error {
 	if err != nil {
 		return err
 	}
+	if m.IsHubMachine() {
+		return a.runStatusHubMachine(m)
+	}
 	st, err := b.Status()
 	if err != nil {
 		return err
@@ -369,6 +481,34 @@ func (a *App) runStatus(name string) error {
 	}
 	a.forwardReport(name)
 	return nil
+}
+
+// runStatusHubMachine is the drill-in for HUB/NAME: one listing from its hub
+// (the same call the merged listing makes, same cache, same deadline), its
+// row picked out. A hub that does not answer says so on its own line rather
+// than dressing a cached token up as the current state.
+func (a *App) runStatusHubMachine(m *config.Machine) error {
+	l := a.listHub(context.Background(), m.Hub)
+	for _, r := range a.hubRows(m.Hub, l) {
+		if r.name != m.Name {
+			continue
+		}
+		if r.backend == config.BackendHub { // the hub did not name it, so no backend is known
+			fmt.Fprintf(a.Stdout, "%s (on hub %s, %s)\n", m.Name, m.Hub.Name, m.Hub.SSHHost)
+		} else {
+			fmt.Fprintf(a.Stdout, "%s (%s on hub %s, %s)\n", m.Name, r.backend, m.Hub.Name, m.Hub.SSHHost)
+		}
+		fmt.Fprintf(a.Stdout, "  state: %s\n", r.state)
+		if !l.fresh {
+			fmt.Fprintf(a.Stdout, "  hub: %s did not answer within %s; the machine is from its last listing\n", m.Hub.Name, hubTimes.deadline)
+		}
+		a.forwardReport(m.Name)
+		return nil
+	}
+	if !l.fresh {
+		return fmt.Errorf("hub '%s' (%s) did not answer, and its last listing does not name %s", m.Hub.Name, m.Hub.SSHHost, m.HubMachineName())
+	}
+	return fmt.Errorf("hub '%s' lists no machine %q; run 'devvm status'", m.Hub.Name, m.HubMachineName())
 }
 
 // lifecycleTrack renders states joined by arrows with the current one bracketed.

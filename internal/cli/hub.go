@@ -20,12 +20,13 @@ import (
 // a one-line warning, and `dev` on either side is never refused (the hubs run
 // cross-builds while this lands).
 //
-// Hubs are usable only once the hub answers `status --plain --local`
-// (roadmap step 3): an older hub would answer the listing with "unknown
-// flag" and read as unreachable forever. So this constant must equal the
-// first tag that ships step 3, and no release may be tagged between step 1
-// and step 3 with hubs enabled. v0.1.13 is the next tag after v0.1.12 on
-// that assumption; if step 3 lands in a later tag, bump this and
+// Hubs are usable only once the hub answers `status --plain --local` (the
+// merged listing, roadmap step 3, which ships in the same tag as this
+// constant): an older hub would answer the listing with "unknown flag" and
+// read as unreachable forever. So this constant must equal the first tag
+// that ships the listing, and no release may be tagged between step 1 and
+// step 3 with hubs enabled. v0.1.13 is the next tag after v0.1.12 on that
+// assumption; if the listing lands in a later tag, bump this and
 // TestHubMinVersionPinned together so the change is deliberate.
 const hubMinVersion = "v0.1.13"
 

@@ -94,19 +94,20 @@ func (b *hubBackend) ProxyInteractive(transport string, argv ...string) error {
 func (b *hubBackend) Kind() string { return config.BackendHub }
 
 // Exists is true: resolve never asks the hub whether a machine exists (the
-// proxied command reports that itself), and the cached listing that will
-// answer this properly is roadmap step 3.
+// proxied command reports that itself), and the leaves that would act on
+// the answer are refused for hub machines before they ask.
 func (b *hubBackend) Exists() (bool, error) { return true, nil }
 
 // Status reports what the laptop knows on its own, which is nothing about the
-// VM's state: the merged listing (roadmap step 3) fills state and backend
-// from the hub's `status --plain --local` row.
+// VM's state: the merged listing (cli's hubRows) takes state and backend from
+// the hub's `status --plain --local` row instead, and `status HUB/NAME`
+// goes there rather than here.
 func (b *hubBackend) Status() (State, error) {
 	return State{
 		Name:    b.m.Name,
 		Backend: config.BackendHub,
 		Exists:  true,
-		Raw:     fmt.Sprintf("on hub %s (%s); state is not queried yet", b.m.Hub.Name, b.m.Hub.SSHHost),
+		Raw:     fmt.Sprintf("on hub %s (%s); see 'devvm status'", b.m.Hub.Name, b.m.Hub.SSHHost),
 	}, nil
 }
 

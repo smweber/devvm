@@ -3,15 +3,46 @@ import Foundation
 /// One row of `devvm status --plain`. Tokens are passed through as strings so
 /// a newer CLI can add states without breaking the app; helpers below map the
 /// documented ones and treat anything else as unknown.
+///
+/// Hubs (another host running devvm) add no column: a hub's own row has
+/// backend `hub`, and a machine on it is named `HUB/NAME` with the state the
+/// hub reported, or `unreachable` for every row of a hub that did not answer
+/// (its last listing, so the machines stay visible). The forwards column of
+/// a hub machine is this Mac's own.
 struct Machine {
     let name: String
     let backend: String
-    let state: String    // running | stopped | dormant | reachable | broken conf | ?
+    let state: String    // running | stopped | dormant | reachable | unreachable | broken conf | ?
     let forwards: String // up:N | reconnecting:N | down | -
 
+    /// A hub's own row: a host machines live on, not a machine. Never a
+    /// drop target, never started or stopped. The backend alone does not
+    /// say: a `HUB/NAME` row also carries backend `hub` when the hub did not
+    /// list the machine (or did not answer and only this Mac's tables name
+    /// it), so a hub is a `hub`-backend row with no slash in its name.
+    var isHub: Bool { backend == "hub" && hub == nil }
+    /// The hub a `HUB/NAME` row lives on, or nil for a local machine.
+    var hub: String? {
+        guard let slash = name.firstIndex(of: "/") else { return nil }
+        return String(name[..<slash])
+    }
+    /// What the row shows: a hub machine sits under its hub's header, so the
+    /// part after the slash is enough. Actions still use the full `name`.
+    var label: String {
+        guard let slash = name.firstIndex(of: "/") else { return name }
+        return String(name[name.index(after: slash)...])
+    }
+    var isUnreachable: Bool { state == "unreachable" }
+
     /// Running smol VMs and remote hosts (which always report `reachable`;
-    /// devvm does not probe them, so this is "selectable", not "alive").
-    var isLive: Bool { state == "running" || state == "reachable" }
+    /// devvm does not probe them, so this is "selectable", not "alive"). A
+    /// hub itself is neither: nothing is copied to or started on it.
+    var isLive: Bool { !isHub && (state == "running" || state == "reachable") }
+    /// Copy in/out and ports work only on machines this Mac reaches
+    /// directly until devvm's hub cp (roadmap step 4) and hub forwards
+    /// (step 6) land; a hub machine is started and stopped through its hub
+    /// already. Drop-target selection is gated on this too.
+    var isDirect: Bool { hub == nil }
     var isReconnecting: Bool { forwards.hasPrefix("reconnecting") }
     var forwardsUp: Bool { forwards.hasPrefix("up:") && forwardCount > 0 }
     var forwardCount: Int {
@@ -21,7 +52,7 @@ struct Machine {
 
     var stateWords: String {
         switch state {
-        case "running", "stopped", "dormant", "reachable": return state
+        case "running", "stopped", "dormant", "reachable", "unreachable": return state
         case "broken conf": return "broken conf"
         default: return "unknown"
         }
@@ -36,7 +67,8 @@ struct Machine {
         return "forwards unknown"
     }
 
-    /// A glyph for the menu row. Filled = live, hollow = off, dotted = unknown.
+    /// A glyph for the menu row. Filled = live, hollow = off, dotted = unknown
+    /// (which `unreachable` is: the hub did not say).
     var glyph: String {
         if isLive { return "●" }
         if state == "stopped" || state == "dormant" { return "○" }
@@ -45,7 +77,10 @@ struct Machine {
 
     /// The menu row title; also used to refresh rows in place while the menu
     /// is open.
-    var rowTitle: String { "\(glyph) \(name) — \(stateWords), \(forwardsWords)" }
+    var rowTitle: String { "\(glyph) \(label) — \(stateWords), \(forwardsWords)" }
+
+    /// The section header for a hub: its name and whether it answered.
+    var hubHeaderTitle: String { "\(name) — hub, \(stateWords)" }
 }
 
 /// Parses one blank-line-separated block of tab-separated rows.

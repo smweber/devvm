@@ -39,6 +39,11 @@ type ExecOpts struct {
 	Stdin     io.Reader         // default os.Stdin
 	Stdout    io.Writer         // default os.Stdout
 	Stderr    io.Writer         // default os.Stderr
+
+	// ConnectTimeout (seconds) replaces SSHConnectTimeout() for this one ssh
+	// call; 0 keeps the default. The hub listing uses it: a hub that is asleep
+	// must cost `status` two seconds, whatever DEVVM_SSH_CONNECT_TIMEOUT says.
+	ConnectTimeout int
 }
 
 func (o ExecOpts) user() string {

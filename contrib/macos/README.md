@@ -15,6 +15,12 @@ What it does:
   `status --plain --watch` child and redraws when devvm reports a change.
   No polling. Opening the menu also runs a one-off `status --plain`, which
   is how a VM stopped behind devvm's back gets noticed.
+- **Hubs**: machines on another host running devvm (`HUB/NAME` in the
+  CLI) are listed in a section per hub, under a header row for the hub
+  itself. When a hub does not answer its machines show as *unreachable*
+  (the last listing devvm saw) until it is back; nothing on them can be
+  chosen meanwhile. Every action on them is the same `devvm` call with the
+  full `HUB/NAME`.
 - **Icon**: a filled box when the selected drop target is running; a badge
   dot when any machine's forwards are reconnecting (laptop just woke, host
   unreachable); an outline when there is no usable drop target.

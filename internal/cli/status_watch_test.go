@@ -82,7 +82,7 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 	defer cancel()
 	out := newBlockWriter()
 	done := make(chan error, 1)
-	go func() { done <- watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond) }()
+	go func() { done <- watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond, nil) }()
 
 	out.next(t, "a\tsmol\tstopped\t-\n") // initial, unconditional
 
@@ -135,7 +135,7 @@ func TestWatchStatusEmptyRegistryAndConsumerGone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- watchStatus(ctx, dir, func() string { return "" }, out, 50*time.Millisecond) }()
+	go func() { done <- watchStatus(ctx, dir, func() string { return "" }, out, 50*time.Millisecond, nil) }()
 	out.next(t, "") // an empty registry still yields one (blank) block
 	cancel()
 	if err := <-done; err != nil {
@@ -145,7 +145,7 @@ func TestWatchStatusEmptyRegistryAndConsumerGone(t *testing.T) {
 	// A consumer that has gone away (write error) ends the loop cleanly.
 	pr, pw := io.Pipe()
 	pr.Close()
-	err := watchStatus(context.Background(), dir, func() string { return "x\n" }, pw, 50*time.Millisecond)
+	err := watchStatus(context.Background(), dir, func() string { return "x\n" }, pw, 50*time.Millisecond, nil)
 	if err != nil {
 		t.Fatalf("closed consumer should end the watch with nil, got %v", err)
 	}
@@ -178,7 +178,7 @@ func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := newBlockWriter()
-	go func() { _ = watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond) }()
+	go func() { _ = watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond, nil) }()
 	out.next(t, "a\tsmol\tstopped\t-\n")
 
 	set("after removal\n")

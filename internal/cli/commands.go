@@ -298,22 +298,27 @@ func (a *App) deleteCmd() *cobra.Command {
 }
 
 func (a *App) statusCmd() *cobra.Command {
-	var verbose, plain, watch bool
+	var verbose, plain, watch, local, exitOnEOF bool
 	c := &cobra.Command{
 		Use:   "status [NAME]",
 		Short: "Machine status, grouped by backend; no NAME lists all machines",
 		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
 			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
 			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
+			"Machines on a hub are listed as HUB/NAME with the state the hub reports\n" +
+			"(each hub is asked in parallel, with a short timeout; a hub that does not\n" +
+			"answer shows its last listing as 'unreachable'). --local lists this host\n" +
+			"only: no hub is read or dialed.\n" +
 			"--plain emits one tab-separated 'name<TAB>backend<TAB>state<TAB>forwards' row\n" +
 			"per machine (no headers or grouping) for scripts: state is one of running,\n" +
-			"stopped, dormant, reachable, 'broken conf' or ?; forwards is up:N,\n" +
-			"reconnecting:N, down (ports configured, no daemon) or - (none configured).\n" +
-			"Consumers should treat any other token as unknown. --plain --watch keeps\n" +
-			"running and re-emits the whole listing, blank-line separated, whenever devvm\n" +
-			"changes a machine's state (no polling). Changes made behind devvm's back —\n" +
-			"'smolvm machine stop' run directly, a VM crash — are not observed; re-run a\n" +
-			"plain status on demand for those.",
+			"stopped, dormant, reachable, unreachable, 'broken conf' or ?; forwards is\n" +
+			"up:N, reconnecting:N, down (ports configured, no daemon) or - (none\n" +
+			"configured). Consumers should treat any other token as unknown.\n" +
+			"--plain --watch keeps running and re-emits the whole listing, blank-line\n" +
+			"separated, whenever devvm changes a machine's state or a hub reports one\n" +
+			"(no polling). Changes made behind devvm's back — 'smolvm machine stop' run\n" +
+			"directly, a VM crash — are not observed; re-run a plain status on demand\n" +
+			"for those.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if watch && !plain {
@@ -322,14 +327,17 @@ func (a *App) statusCmd() *cobra.Command {
 			if watch && len(args) > 0 {
 				return fmt.Errorf("--watch lists every machine; it does not take a NAME")
 			}
+			if local && len(args) > 0 {
+				return fmt.Errorf("--local lists every machine on this host; it does not take a NAME")
+			}
 			if watch {
-				return a.runStatusWatch(cmd.Context())
+				return a.runStatusWatch(cmd.Context(), local, exitOnEOF)
 			}
 			if plain {
-				return a.runStatusPlain()
+				return a.runStatusPlain(local)
 			}
 			if len(args) == 0 {
-				return a.runStatusAll(verbose)
+				return a.runStatusAll(verbose, local)
 			}
 			return a.runStatus(args[0])
 		},
@@ -338,6 +346,12 @@ func (a *App) statusCmd() *cobra.Command {
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
 	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards' per line")
 	c.Flags().BoolVar(&watch, "watch", false, "with --plain: re-emit the listing on every devvm-made change (event-driven, not polled)")
+	c.Flags().BoolVar(&local, "local", false, "this host only: skip every hub (what a hub runs for its own callers)")
+	// Hidden: the laptop's hub watch pipe sets it (hublist.go). Opt-in only,
+	// so the menu bar app's own watch child (stdin /dev/null: EOF at once)
+	// and an interactive user are untouched.
+	c.Flags().BoolVar(&exitOnEOF, strings.TrimPrefix(statusExitFlag, "--"), false, "with --watch: exit when stdin reaches EOF (for a watcher held over ssh)")
+	_ = c.Flags().MarkHidden(strings.TrimPrefix(statusExitFlag, "--"))
 	return c
 }
 

@@ -70,7 +70,12 @@ func parseConnectTimeout(v string) (int, error) {
 // sshFlags builds the shared port/identity/known_hosts options used by ssh,
 // scp, and mosh (build_ssh_flags). ControlMaster options are added separately
 // by base(), since scp/mosh don't want them.
-func (b *sshBackend) sshFlags() []string {
+func (b *sshBackend) sshFlags() []string { return b.sshFlagsTimeout(SSHConnectTimeout()) }
+
+// sshFlagsTimeout is sshFlags with an explicit ConnectTimeout (seconds). It
+// has to be the first -o ConnectTimeout on the line: ssh keeps the first
+// value it sees for an option, so a later override would be ignored.
+func (b *sshBackend) sshFlagsTimeout(connectSecs int) []string {
 	// Fail fast on a host that is gone rather than sitting in the TCP timeout
 	// (~75s on macOS, longer on Linux): the forward daemon's reconnect dial,
 	// scp from the menu bar app, and status probes all need a bounded wait.
@@ -78,7 +83,7 @@ func (b *sshBackend) sshFlags() []string {
 	// the banner exchange too, so a host that is slow to answer can be given
 	// longer via DEVVM_SSH_CONNECT_TIMEOUT (seconds), the same override
 	// pattern as DEVVM_COMPLETE_TIMEOUT.
-	f := []string{"-o", "ConnectTimeout=" + strconv.Itoa(SSHConnectTimeout())}
+	f := []string{"-o", "ConnectTimeout=" + strconv.Itoa(connectSecs)}
 	if b.m.SSHPort != 22 && b.m.SSHPort != 0 {
 		f = append(f, "-o", fmt.Sprintf("Port=%d", b.m.SSHPort))
 	}
@@ -96,8 +101,10 @@ func (b *sshBackend) sshFlags() []string {
 
 // base returns the ssh command with shared flags + a reused ControlMaster, so
 // concurrent sessions (login + a URL watcher, say) share one connection.
-func (b *sshBackend) base() []string {
-	ssh := append([]string{"ssh"}, b.sshFlags()...)
+func (b *sshBackend) base() []string { return b.baseTimeout(SSHConnectTimeout()) }
+
+func (b *sshBackend) baseTimeout(connectSecs int) []string {
+	ssh := append([]string{"ssh"}, b.sshFlagsTimeout(connectSecs)...)
 	_ = os.MkdirAll(b.configDir, 0o755)
 	ssh = append(ssh,
 		"-o", "ControlMaster=auto",
@@ -133,7 +140,11 @@ func (b *sshBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error 
 	if err := needCmd("ssh"); err != nil {
 		return err
 	}
-	host := b.base()
+	connect := o.ConnectTimeout
+	if connect <= 0 {
+		connect = SSHConnectTimeout()
+	}
+	host := b.baseTimeout(connect)
 	if o.BatchMode {
 		host = append(host, "-o", "BatchMode=yes")
 	}

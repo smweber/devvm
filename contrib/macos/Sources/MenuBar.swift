@@ -54,7 +54,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
             button.addSubview(dropView)
             dropView.frame = button.bounds // the button may have been sized since init
         }
-        dropView.canAccept = { [weak self] in self?.selectedMachine?.isLive ?? false }
+        dropView.canAccept = { [weak self] in
+            guard let m = self?.selectedMachine else { return false }
+            return m.isLive && m.isDirect
+        }
         dropView.onDrop = { [weak self] urls in self?.copyIn(urls: urls) }
         rebuildMenu()
         updateIcon()
@@ -81,9 +84,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
             Log.status.notice("drop target \(name, privacy: .public) left the registry; selection cleared")
             selectedName = nil
         }
-        // Auto-select only when nothing is chosen and exactly one machine is live.
-        if selectedName == nil, machines.filter({ $0.isLive }).count == 1,
-           let only = machines.first(where: { $0.isLive })?.name {
+        // Auto-select only when nothing is chosen and exactly one machine is
+        // live and reached directly (a hub machine cannot take drops yet).
+        if selectedName == nil, machines.filter({ $0.isLive && $0.isDirect }).count == 1,
+           let only = machines.first(where: { $0.isLive && $0.isDirect })?.name {
             Log.status.notice("auto-selected \(only, privacy: .public) as the drop target (only live machine)")
             selectedName = only
         }
@@ -107,7 +111,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let style: IconStyle
         if machines.contains(where: { $0.isReconnecting }) {
             style = .badged
-        } else if let m = selectedMachine, m.isLive {
+        } else if let m = selectedMachine, m.isLive, m.isDirect {
             style = .filled
         } else {
             style = .outline
@@ -172,7 +176,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
             self.apply(machines)
         }
         // Ports per live machine, for the "Open localhost:PORT" entries.
-        for m in machines where m.isLive && m.forwardCount > 0 {
+        for m in machines where m.isLive && m.isDirect && m.forwardCount > 0 {
             let lookup = portsLookups[m.name] ?? SingleFlight()
             portsLookups[m.name] = lookup
             lookup.run(devvm, ["ports", "list", m.name]) { [weak self] r in
@@ -254,18 +258,25 @@ final class MenuBar: NSObject, NSMenuDelegate {
         if machines.isEmpty {
             menu.addItem(item("No machines registered", nil))
         }
-        for m in machines {
-            // No action on the row itself: AppKit routes a click on an item
-            // with a submenu to opening it, never to the action. Selection
-            // lives inside the submenu ("Use as drop target").
-            let it = item(m.rowTitle, nil, m.name)
-            it.state = (m.name == selectedName) ? .on : .off
-            let sub = NSMenu(title: m.name)
-            sub.delegate = self // so open/close of the submenu is tracked
-            fillSubmenu(sub, for: m)
-            submenus[m.name] = sub
-            it.submenu = sub
-            menu.addItem(it)
+        // Local machines first, then one section per hub: a disabled header
+        // row for the hub itself (it is a host, not a machine: nothing to
+        // start, stop or drop on) and its machines indented under it.
+        let locals = machines.filter { !$0.isHub && $0.hub == nil }
+        for m in locals {
+            menu.addItem(machineRow(m))
+        }
+        for group in hubGroups() {
+            menu.addItem(.separator())
+            // representedObject names the hub so refreshRowsInPlace can
+            // retitle the header (reachable → unreachable) while the menu
+            // is open; no submenu is what tells it apart from a machine row.
+            let hubHeader = item(group.header?.hubHeaderTitle ?? "\(group.name) — hub", nil, group.header?.name)
+            menu.addItem(hubHeader)
+            for m in group.members {
+                let it = machineRow(m)
+                it.indentationLevel = 1
+                menu.addItem(it)
+            }
         }
 
         menu.addItem(.separator())
@@ -277,6 +288,41 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(item(cliVersion.map { "devvm \($0) · app \(MenuBar.appVersion)" } ?? "app \(MenuBar.appVersion)", nil))
         menu.addItem(.separator())
         menu.addItem(item("Quit", #selector(quit)))
+    }
+
+    /// One machine's row with its submenu. No action on the row itself:
+    /// AppKit routes a click on an item with a submenu to opening it, never
+    /// to the action. Selection lives inside the submenu ("Use as drop
+    /// target").
+    private func machineRow(_ m: Machine) -> NSMenuItem {
+        let it = item(m.rowTitle, nil, m.name)
+        it.state = (m.name == selectedName) ? .on : .off
+        let sub = NSMenu(title: m.name)
+        sub.delegate = self // so open/close of the submenu is tracked
+        fillSubmenu(sub, for: m)
+        submenus[m.name] = sub
+        it.submenu = sub
+        return it
+    }
+
+    /// The rows grouped by hub, in the order devvm listed the hubs: the
+    /// hub's own row (backend `hub`) as the header, its `HUB/NAME` rows as
+    /// members. A hub whose own row is missing (a broken hub conf) still
+    /// gets a section for the members that name it.
+    private func hubGroups() -> [(name: String, header: Machine?, members: [Machine])] {
+        var order: [String] = []
+        var headers: [String: Machine] = [:]
+        var members: [String: [Machine]] = [:]
+        for m in machines {
+            let key: String
+            if m.isHub { key = m.name } else if let h = m.hub { key = h } else { continue }
+            if members[key] == nil {
+                order.append(key)
+                members[key] = []
+            }
+            if m.isHub { headers[key] = m } else { members[key]!.append(m) }
+        }
+        return order.map { (name: $0, header: headers[$0], members: members[$0] ?? []) }
     }
 
     private func headerTitle() -> String {
@@ -292,8 +338,12 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private func refreshRowsInPlace() {
         headerItem?.title = headerTitle()
         for it in menu.items {
-            guard let name = it.representedObject as? String, it.submenu != nil,
+            guard let name = it.representedObject as? String,
                   let m = machines.first(where: { $0.name == name }) else { continue }
+            if it.submenu == nil {
+                it.title = m.hubHeaderTitle // a hub's section header
+                continue
+            }
             it.title = m.rowTitle
             it.state = (m.name == selectedName) ? .on : .off
         }
@@ -312,7 +362,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     private func fillSubmenu(_ sub: NSMenu, for m: Machine) {
         sub.removeAllItems()
-        if m.isLive {
+        if m.isLive && m.isDirect {
             sub.addItem(item("Use as drop target", #selector(selectMachine(_:)), m.name))
             sub.addItem(.separator())
         }
@@ -324,7 +374,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         default:
             break
         }
-        if m.isLive {
+        if m.isLive && m.isDirect {
             if m.forwards != "-" {
                 sub.addItem(item("Ports up", #selector(portsUp(_:)), m.name))
                 sub.addItem(item("Ports down", #selector(portsDown(_:)), m.name))
@@ -341,7 +391,15 @@ final class MenuBar: NSObject, NSMenuDelegate {
             sub.addItem(item("Set inbox folder… (\(inbox(for: m.name)))", #selector(setInbox(_:)), m.name))
         }
         if sub.items.isEmpty {
-            sub.addItem(item(m.state == "dormant" ? "Dormant: provision it from the terminal" : "Nothing to do here", nil))
+            let note: String
+            if m.isUnreachable {
+                note = "Unreachable: its hub did not answer"
+            } else if m.state == "dormant" {
+                note = "Dormant: provision it from the terminal"
+            } else {
+                note = "Nothing to do here"
+            }
+            sub.addItem(item(note, nil))
         }
     }
 
@@ -355,9 +413,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc private func selectMachine(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String,
               let m = machines.first(where: { $0.name == name }) else { return }
-        guard m.isLive else {
-            Log.menu.notice("select \(name, privacy: .public) refused: not live (\(m.state, privacy: .public))")
-            Notifications.shared.info(name, "Not running; start it first.")
+        guard m.isLive, m.isDirect else {
+            Log.menu.notice("select \(name, privacy: .public) refused: not live or on a hub (\(m.state, privacy: .public))")
+            Notifications.shared.info(name, m.isDirect ? "Not running; start it first." : "Machines on a hub cannot take drops yet.")
             return
         }
         Log.menu.notice("drop target set to \(name, privacy: .public)")
