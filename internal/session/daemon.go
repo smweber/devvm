@@ -171,6 +171,27 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 // disappears (last, after the transport is released — see shutdown). The
 // socket's file info is returned so shutdown can tell its own socket from a
 // replacement daemon's.
+// ownsSocket reports whether the path still holds the socket this daemon
+// created, so shutdown never unlinks a successor's. Inode identity alone is
+// not enough: ext4 and APFS recycle inode numbers, so a successor that
+// unlinked our stale socket and listened on the same path can get the very
+// same inode (tmpfs never does, which is how this hid locally). Our own
+// listener is closed by now, so anything that answers a dial is a successor.
+func (d *daemon) ownsSocket(sock string) bool {
+	info, err := os.Lstat(sock)
+	if err != nil {
+		return false
+	}
+	if d.sockInfo != nil && !os.SameFile(info, d.sockInfo) {
+		return false
+	}
+	if c, err := net.DialTimeout("unix", sock, 500*time.Millisecond); err == nil {
+		c.Close()
+		return false
+	}
+	return true
+}
+
 func listenControl(sock string) (*net.UnixListener, os.FileInfo, error) {
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
@@ -470,7 +491,7 @@ func (d *daemon) shutdown() error {
 		d.logf("%s: a dial interrupted by stop is still closing; not waiting further", d.name)
 	}
 	sock := socketPath(d.configDir, d.name)
-	if info, err := os.Lstat(sock); err == nil && (d.sockInfo == nil || os.SameFile(info, d.sockInfo)) {
+	if d.ownsSocket(sock) {
 		os.Remove(sock)
 	}
 	// The socket vanishing is itself a watch event; the marker covers the
