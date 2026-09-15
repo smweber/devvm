@@ -213,3 +213,26 @@ func TestList(t *testing.T) {
 		t.Errorf("List = %v, want 2", names)
 	}
 }
+
+// Save goes through a temp file and rename so `status --watch` never snapshots
+// a half-written conf; no temp file may be left behind.
+func TestSaveIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	m := NewSmol("s")
+	for i := 0; i < 2; i++ { // second save replaces an existing conf
+		if err := m.Save(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(MachinesDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "s.toml" {
+		t.Fatalf("machines dir = %v, want only s.toml", entries)
+	}
+	info, _ := os.Stat(filepath.Join(MachinesDir(dir), "s.toml"))
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("conf mode = %o, want 0644", info.Mode().Perm())
+	}
+}

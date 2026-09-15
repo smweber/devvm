@@ -9,13 +9,14 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // writeArchive tars each source (a file, symlink or directory tree) under its
 // basename. Symlinks are stored as links, never followed; modes and mtimes are
-// kept; ownership and xattrs are deliberately not (the guest extracts with
-// --no-same-owner, and macOS quarantine metadata must not travel). Entries of
-// other types (sockets, devices) are skipped with a note, as tar would.
+// kept; ownership and xattrs are deliberately not (the guest extracts as its
+// own user, and macOS quarantine metadata must not travel). Entries of other
+// types (sockets, devices) are skipped with a note, as tar would.
 func writeArchive(archive string, srcs []string, stderr io.Writer) error {
 	f, err := os.Create(archive)
 	if err != nil {
@@ -97,11 +98,15 @@ type archivePath struct {
 	isDir bool
 }
 
-// readArchive lists an archive's contents grouped by top-level entry, so a
-// destination check can run before anything is extracted. Names must be
-// relative and free of "..": the guest is the user's own box, but a download
-// still never writes outside the chosen destination.
-func readArchive(archive string) ([]archiveEntry, error) {
+// readArchive lists an archive's contents grouped by top-level entry and
+// validates every entry, so a destination check can run — and any refusal
+// happen — before anything is extracted. Names must be relative and free of
+// "..", a hard link must point inside its own top-level entry, and entry types
+// neither side can represent (fifos, devices) are skipped with a note, as the
+// write side does. The guest is the user's own box, but a download still never
+// writes outside the chosen destination: extractArchive refuses to write
+// through a symlink, which is the only way a well-formed name could escape.
+func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 	f, err := os.Open(archive)
 	if err != nil {
 		return nil, err
@@ -109,6 +114,7 @@ func readArchive(archive string) ([]archiveEntry, error) {
 	defer f.Close()
 	var entries []archiveEntry
 	index := map[string]int{}
+	seen := map[string]bool{}
 	tr := tar.NewReader(f)
 	for {
 		hdr, err := tr.Next()
@@ -118,11 +124,29 @@ func readArchive(archive string) ([]archiveEntry, error) {
 		if err != nil {
 			return nil, err
 		}
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		name, err := cleanArchiveName(hdr.Name)
 		if err != nil {
 			return nil, err
 		}
 		top, rel, _ := strings.Cut(name, "/")
+		switch hdr.Typeflag {
+		case tar.TypeReg, tar.TypeDir, tar.TypeSymlink:
+		case tar.TypeLink:
+			target, err := cleanArchiveName(hdr.Linkname)
+			if err != nil {
+				return nil, fmt.Errorf("hard link %q: %w", hdr.Name, err)
+			}
+			if t, _, _ := strings.Cut(target, "/"); t != top || !seen[target] {
+				return nil, fmt.Errorf("refusing hard link %q -> %q: target is outside the copied tree", hdr.Name, hdr.Linkname)
+			}
+		default:
+			fmt.Fprintf(stderr, "devvm: skipping %s: unsupported file type\n", hdr.Name)
+			continue
+		}
+		seen[name] = true
 		i, ok := index[top]
 		if !ok {
 			i = len(entries)
@@ -144,7 +168,14 @@ func cleanArchiveName(name string) (string, error) {
 // extractArchive unpacks every entry whose top-level name is in roots, placing
 // it at roots[name] (so a single entry can land under a new name). Existing
 // files are replaced only when force is set; the caller has already checked
-// for conflicts, so this is the second phase of an all-or-nothing copy.
+// for conflicts via readArchive, so this is the second phase of an
+// all-or-nothing copy and skips what readArchive skipped.
+//
+// Nothing is ever written through a symlink: every directory component below
+// a root is Lstat'ed before use. A tar from an honest tree never has children
+// under a symlinked directory (tar stores the link and does not descend), so
+// this only ever refuses a crafted archive, e.g. `proj/link -> /etc` followed
+// by `proj/link/passwd`.
 func extractArchive(archive string, roots map[string]string, force bool) error {
 	f, err := os.Open(archive)
 	if err != nil {
@@ -156,6 +187,29 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 		mode fs.FileMode
 	}
 	var dirs []dirMode
+	safeDirs := map[string]bool{} // directories verified symlink-free
+	safeParent := func(root, rel string) error {
+		dir := path.Dir(rel)
+		if dir == "." {
+			return nil
+		}
+		parts := strings.Split(dir, "/")
+		for i := range parts {
+			sub := filepath.Join(root, filepath.FromSlash(path.Join(parts[:i+1]...)))
+			if safeDirs[sub] {
+				continue
+			}
+			info, err := os.Lstat(sub)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to write through symlink %s", sub)
+			}
+			safeDirs[sub] = true
+		}
+		return nil
+	}
 	tr := tar.NewReader(f)
 	for {
 		hdr, err := tr.Next()
@@ -164,6 +218,9 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 		}
 		if err != nil {
 			return err
+		}
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue
 		}
 		name, err := cleanArchiveName(hdr.Name)
 		if err != nil {
@@ -175,6 +232,9 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 			return fmt.Errorf("unexpected archive entry %q", hdr.Name)
 		}
 		dst := filepath.Join(root, filepath.FromSlash(rel))
+		if err := safeParent(root, rel); err != nil {
+			return err
+		}
 		mode := hdr.FileInfo().Mode().Perm()
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -182,7 +242,10 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 			// mode alone, as cp -R would. New ones are created writable and get
 			// the recorded mode once populated, so a read-only directory
 			// doesn't block its own children.
-			if _, err := os.Lstat(dst); err == nil {
+			if info, err := os.Lstat(dst); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					return fmt.Errorf("refusing to write through symlink %s", dst)
+				}
 				continue
 			}
 			if err := os.Mkdir(dst, mode|0700); err != nil {
@@ -193,7 +256,7 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 			if force {
 				os.Remove(dst) // a stale symlink or read-only file; errors surface on create
 			}
-			w, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+			w, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
 			if err != nil {
 				return err
 			}
@@ -217,8 +280,23 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 			if err := os.Symlink(hdr.Linkname, dst); err != nil {
 				return err
 			}
+		case tar.TypeLink:
+			// readArchive verified the target sits inside this entry's tree
+			// and precedes this header, so it has already been extracted.
+			target, _ := cleanArchiveName(hdr.Linkname)
+			_, targetRel, _ := strings.Cut(target, "/")
+			src := filepath.Join(root, filepath.FromSlash(targetRel))
+			if force {
+				os.Remove(dst)
+			}
+			if err := os.Link(src, dst); err != nil {
+				// Some filesystems refuse hard links; a copy keeps the content.
+				if err := copyFile(src, dst, mode); err != nil {
+					return err
+				}
+			}
 		default:
-			return fmt.Errorf("unsupported archive entry type for %q", hdr.Name)
+			continue // readArchive already noted the skip
 		}
 	}
 	for i := len(dirs) - 1; i >= 0; i-- { // children before parents
@@ -227,4 +305,22 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 		}
 	}
 	return nil
+}
+
+// copyFile is the hard-link fallback: a plain copy with the recorded mode.
+func copyFile(src, dst string, mode fs.FileMode) error {
+	r, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	w, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(w, r); err != nil {
+		w.Close()
+		return err
+	}
+	return w.Close()
 }

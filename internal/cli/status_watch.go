@@ -2,11 +2,12 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -49,8 +50,15 @@ func (a *App) plainSnapshot() string {
 // VM crash, or a remote host going away leaves nothing on disk here, so a UI
 // should still re-run a plain status on demand (e.g. when its menu opens).
 //
-// Returns nil on ctx cancellation and when the consumer goes away (a write
-// error such as EPIPE), so a supervising process sees a clean exit.
+// Returns nil on ctx cancellation and on a write error, so a supervising
+// process sees a clean exit when it is the one that closed the pipe. (With a
+// real stdout pipe Go's default SIGPIPE handling on fd 1 ends the process
+// first, which is equivalent; the write-error path matters for other writers.)
+//
+// If a watched directory is removed or renamed the kernel silently drops its
+// watch (verified on both inotify and kqueue), so it is recreated and
+// re-added, and any watcher error triggers a re-snapshot rather than being
+// treated as fatal — a long-running consumer must never go blind.
 func watchStatus(ctx context.Context, configDir string, snapshot func() string, out io.Writer, debounce time.Duration) error {
 	// Both dirs must exist to be watched; an empty registry is a valid thing to
 	// watch (the first `create` is the change). Match Save's and
@@ -66,10 +74,21 @@ func watchStatus(ctx context.Context, configDir string, snapshot func() string, 
 		return err
 	}
 	defer w.Close()
-	for _, dir := range []string{config.MachinesDir(configDir), config.RuntimeDir(configDir)} {
+	dirs := []string{config.MachinesDir(configDir), config.RuntimeDir(configDir)}
+	for _, dir := range dirs {
 		if err := w.Add(dir); err != nil {
 			return fmt.Errorf("watch %s: %w", dir, err)
 		}
+	}
+	rewatch := func(dir string) {
+		// Best-effort: the directory may be mid-rename; the next event or
+		// error retries. Modes match the initial creation above.
+		if dir == config.RuntimeDir(configDir) {
+			_ = config.EnsureRuntimeDir(configDir)
+		} else {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+		_ = w.Add(dir)
 	}
 
 	last := ""
@@ -103,16 +122,29 @@ func watchStatus(ctx context.Context, configDir string, snapshot func() string, 
 			if isWatchNoise(ev.Name) {
 				continue
 			}
+			if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
+				for _, dir := range dirs {
+					if filepath.Clean(ev.Name) == filepath.Clean(dir) {
+						rewatch(dir)
+					}
+				}
+			}
 			if pending == nil {
 				pending = time.After(debounce)
 			}
-		case err, ok := <-w.Errors:
+		case _, ok := <-w.Errors:
 			if !ok {
 				return nil
 			}
-			// A watcher error (overflow, dir removed) is not fatal: re-snapshot
-			// so nothing is missed, keep going.
-			if errors.Is(err, fsnotify.ErrEventOverflow) && pending == nil {
+			// A watcher error (overflow, a watch lost) is not fatal: make sure
+			// both dirs are still watched, re-snapshot so nothing is missed,
+			// keep going.
+			for _, dir := range dirs {
+				if !slices.Contains(w.WatchList(), dir) {
+					rewatch(dir)
+				}
+			}
+			if pending == nil {
 				pending = time.After(debounce)
 			}
 		case <-pending:

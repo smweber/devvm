@@ -85,14 +85,21 @@ func (a *App) runStatusAll(verbose bool) error {
 }
 
 // runStatusPlain emits one tab-separated row per machine — name, backend,
-// derived state (running|stopped|dormant|reachable|…), and forward state — with
-// no headers or grouping, so scripts can enumerate machines (e.g. every running
-// smol VM) without scraping the human-formatted table. The forward column is
-// `up:N` / `reconnecting:N` (N = forwards the daemon owns), `down` (ports
-// configured but no daemon), or `-` (nothing configured); a UI can badge
-// "forwards are down or stuck reconnecting" from it alone. `--watch` re-emits
-// this listing on devvm-made changes (see watchStatus); the format is the
-// same, so a consumer parses one thing.
+// state, and forward state — with no headers or grouping, so scripts can
+// enumerate machines (e.g. every running smol VM) without scraping the
+// human-formatted table. The token sets are the format's contract:
+//
+//	state:    running | stopped | dormant | reachable | broken conf | ?
+//	forwards: up:N | reconnecting:N | down | -
+//
+// N is the number of forwards the daemon owns; `down` means ports are
+// configured but no daemon answers (the normal state of a stopped VM, so a UI
+// should only flag it on a running machine); `-` means nothing is configured.
+// `reachable` is what every remote reports (devvm does not probe them), and
+// `?` / `broken conf` mean the backend could not be asked / the conf did not
+// load. Consumers should treat any other token as "unknown", not fail.
+// `--watch` re-emits this listing on devvm-made changes (see watchStatus); the
+// format is the same, so a consumer parses one thing.
 func (a *App) runStatusPlain() error {
 	for _, r := range a.gatherRows() {
 		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
@@ -165,9 +172,15 @@ func (a *App) renderVerboseDetail(r statusRow) {
 
 // gatherRows resolves every registered machine plus any live-but-unregistered
 // smol VM into a statusRow.
+//
+// smolvm is listed once per call and every smol row is derived from that one
+// listing (rather than the backend's per-machine Status probe): a snapshot is
+// re-taken on every --watch event, and N+1 `smolvm machine ls` subprocesses
+// per change would be the polling this command exists to avoid.
 func (a *App) gatherRows() []statusRow {
 	var rows []statusRow
 	seen := map[string]bool{}
+	smols := smolSnapshot()
 	names, _ := config.List(a.ConfigDir)
 	for _, name := range names {
 		seen[name] = true
@@ -176,11 +189,11 @@ func (a *App) gatherRows() []statusRow {
 			rows = append(rows, statusRow{name: name, backend: "?", state: "broken conf"})
 			continue
 		}
-		rows = append(rows, a.rowFor(m))
+		rows = append(rows, a.rowFor(m, smols))
 	}
-	// Live smol VMs not in the registry.
-	smols, _ := backend.SmolList()
-	for _, sm := range smols {
+	// Live smol VMs not in the registry. They can still have a daemon (ports
+	// added by hand), so the forward column is real for them too.
+	for _, sm := range smols.list {
 		if seen[sm.Name] {
 			continue
 		}
@@ -188,14 +201,44 @@ func (a *App) gatherRows() []statusRow {
 			name: sm.Name, backend: config.BackendSmol,
 			state:  smolStateLabel(sm.State != "not created", sm.State == "running"),
 			exists: sm.State != "not created", running: sm.State == "running",
-			note: "unregistered",
+			note: "unregistered", fwds: a.forwardSummary(sm.Name),
 		})
 	}
 	return rows
 }
 
-func (a *App) rowFor(m *config.Machine) statusRow {
+// smolMachines is one `smolvm machine ls` taken for a whole status snapshot.
+type smolMachines struct {
+	available bool // smolvm is installed; otherwise every smol row is "?"
+	list      []backend.SmolMachine
+	state     map[string]string
+}
+
+func smolSnapshot() smolMachines {
+	s := smolMachines{available: backend.SmolAvailable(), state: map[string]string{}}
+	if !s.available {
+		return s
+	}
+	s.list, _ = backend.SmolList()
+	for _, sm := range s.list {
+		s.state[sm.Name] = sm.State
+	}
+	return s
+}
+
+func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 	r := statusRow{name: m.Name, backend: m.Backend, m: m, mem: m.Memory, disk: m.Disk, host: m.SSHHost}
+	if m.Backend == config.BackendSmol {
+		if !smols.available {
+			r.state = "?"
+			return r
+		}
+		st, ok := smols.state[m.Name]
+		r.exists, r.running = ok && st != "not created", st == "running"
+		r.state = smolStateLabel(r.exists, r.running)
+		r.fwds = a.forwardSummary(m.Name)
+		return r
+	}
 	b, err := backend.For(m, a.ConfigDir)
 	if err != nil {
 		r.state = "broken conf"
@@ -207,11 +250,7 @@ func (a *App) rowFor(m *config.Machine) statusRow {
 		return r
 	}
 	r.exists, r.running = st.Exists, st.Running
-	if m.Backend == config.BackendSmol {
-		r.state = smolStateLabel(st.Exists, st.Running)
-	} else {
-		r.state = "reachable"
-	}
+	r.state = "reachable"
 	r.fwds = a.forwardSummary(m.Name)
 	return r
 }

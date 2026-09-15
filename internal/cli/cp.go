@@ -189,17 +189,26 @@ func copyArchive(ctx context.Context, b backend.Backend, name, archive string, b
 		"mktemp", "-d", copyStageDir+"/devvm-cp-XXXXXXXXXX"); err != nil {
 		return fmt.Errorf("create guest staging directory: %w", err)
 	}
+	// mktemp created something; make sure it is removed on every path out,
+	// including a reply we refuse to use. Only a plain single-line path under
+	// copyStageDir is trusted (a login banner or rc echo could pollute stdout),
+	// and the cleanup takes the same raw line: rm -rf of a nonexistent or odd
+	// path is harmless, while a leaked staging directory is not.
 	stage := strings.TrimSpace(out.String())
-	if !strings.HasPrefix(stage, copyStageDir+"/devvm-cp-") || strings.ContainsAny(strings.TrimPrefix(stage, copyStageDir+"/"), "/\n\r") {
-		return fmt.Errorf("unexpected guest staging path %q", stage)
-	}
-	defer func() {
+	cleanup := func() {
+		if !strings.HasPrefix(stage, copyStageDir+"/devvm-cp-") {
+			return // nothing we can safely name
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := b.Run(cleanupCtx, backend.ExecOpts{Stderr: stderr}, "rm", "-rf", "--", stage); err != nil {
 			fmt.Fprintf(stderr, "devvm: could not clean up %s: %v\n", stage, err)
 		}
-	}()
+	}
+	defer cleanup()
+	if !strings.HasPrefix(stage, copyStageDir+"/devvm-cp-") || strings.ContainsAny(strings.TrimPrefix(stage, copyStageDir+"/"), "/\n\r") {
+		return fmt.Errorf("unexpected guest staging path %q", stage)
+	}
 	if err := b.Copy(archive, stage+"/payload.tar"); err != nil {
 		return fmt.Errorf("upload archive: %w", err)
 	}
@@ -227,7 +236,9 @@ func copyArchive(ctx context.Context, b backend.Backend, name, archive string, b
 }
 
 // Guest staging is owned by the login user. Even on smol (whose transport
-// copies as root), extraction and the final copy run without root privileges.
+// copies as root), extraction and the final copy run without root privileges,
+// so tar ignores the archive's ownership by itself (no --no-same-owner, which
+// a busybox tar may lack).
 //
 // Placement is two-phase: extract into the stage, then check every staged
 // path against its destination and refuse (listing the conflicts) before cp
@@ -237,7 +248,7 @@ func copyArchive(ctx context.Context, b backend.Backend, name, archive string, b
 const copyArchiveScript = `set -eu
 stage=$1; dest=$2; asdir=$3; force=$4; shift 4
 mkdir "$stage/files"
-tar -xf "$stage/payload.tar" -C "$stage/files" --no-same-owner
+tar -xf "$stage/payload.tar" -C "$stage/files"
 cd "$HOME"
 case "$dest" in
   '~') dest=$HOME ;;
@@ -288,7 +299,13 @@ case "$src" in
   '~') src=$HOME ;;
   '~/'*) src="$HOME/${src#\~/}" ;;
 esac
-src=$(realpath -ms -- "$src")
+case "$src" in /*) ;; *) src="$HOME/$src" ;; esac
+while [ "$src" != / ] && [ "${src%/}" != "$src" ]; do src=${src%/}; done
+# No realpath: busybox's takes no options. Resolve . and .. components
+# through cd so tar sees a proper basename (an entry named "." is refused).
+case "$(basename -- "$src")" in
+  .|..) src=$(cd -- "$src" 2>/dev/null && pwd -P) || { echo "$1: no such directory" >&2; exit 1; } ;;
+esac
 [ "$src" != / ] || { echo 'copying the filesystem root is not supported' >&2; exit 1; }
 if [ -d "$src" ] && [ ! -L "$src" ] && [ "$2" != true ]; then
   echo "$src is a directory; use -r to copy it" >&2; exit 1

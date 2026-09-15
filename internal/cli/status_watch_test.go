@@ -161,3 +161,48 @@ func TestWatchRequiresPlain(t *testing.T) {
 		t.Fatalf("expected a --plain requirement error, got %v", err)
 	}
 }
+
+// Removing a watched directory silently drops its watch on both inotify and
+// kqueue; the watcher must re-create and re-add it rather than go blind.
+func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	current := "a\tsmol\tstopped\t-\n"
+	snapshot := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	set := func(s string) { mu.Lock(); current = s; mu.Unlock() }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := newBlockWriter()
+	go func() { _ = watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond) }()
+	out.next(t, "a\tsmol\tstopped\t-\n")
+
+	set("after removal\n")
+	if err := os.RemoveAll(config.RuntimeDir(dir)); err != nil {
+		t.Fatal(err)
+	}
+	out.next(t, "after removal\n") // the removal itself is a change
+
+	// The recreated directory must be watched again: a marker write there is
+	// still seen.
+	set("after marker\n")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		config.TouchChanged(dir)
+		select {
+		case got := <-out.blocks:
+			if got != "after marker\n" {
+				t.Fatalf("snapshot = %q", got)
+			}
+			return
+		case <-time.After(150 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("marker write in the recreated runtime dir was not observed")
+			}
+		}
+	}
+}

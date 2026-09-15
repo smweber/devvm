@@ -60,3 +60,25 @@ func TestSinceHuman(t *testing.T) {
 		}
 	}
 }
+
+// Smol rows come from one `smolvm machine ls` per snapshot, not a probe per
+// machine (a --watch re-emit would otherwise spawn N+1 subprocesses).
+func TestRowForSmolUsesSnapshot(t *testing.T) {
+	a := &App{ConfigDir: t.TempDir()}
+	m := &config.Machine{Name: "vm", Backend: config.BackendSmol, Ports: []string{"80:80"}}
+	if got := a.rowFor(m, smolMachines{available: false}).state; got != "?" {
+		t.Errorf("smolvm missing: state = %q, want ?", got)
+	}
+	snap := smolMachines{available: true, state: map[string]string{"vm": "running", "other": "stopped"}}
+	if r := a.rowFor(m, snap); r.state != "running" || !r.running || !r.exists || plainForwards(r) != "down" {
+		t.Errorf("running vm: row = %+v, forwards %q", r, plainForwards(r))
+	}
+	snap.state["vm"] = "stopped"
+	if got := a.rowFor(m, snap).state; got != "stopped" {
+		t.Errorf("stopped vm: state = %q", got)
+	}
+	delete(snap.state, "vm")
+	if got := a.rowFor(m, snap).state; got != "dormant" {
+		t.Errorf("unknown vm: state = %q, want dormant", got)
+	}
+}

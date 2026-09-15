@@ -99,7 +99,7 @@ func copyOut(ctx context.Context, b backend.Backend, name string, srcs []string,
 		if err := downloadArchive(ctx, b, name, src, archive, o.recursive, stderr); err != nil {
 			return err
 		}
-		got, err := readArchive(archive)
+		got, err := readArchive(archive, stderr)
 		if err != nil {
 			return fmt.Errorf("read download of %s: %w", src, err)
 		}

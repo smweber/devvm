@@ -280,7 +280,10 @@ func (a *App) statusCmd() *cobra.Command {
 			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
 			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
 			"--plain emits one tab-separated 'name<TAB>backend<TAB>state<TAB>forwards' row\n" +
-			"per machine (no headers or grouping) for scripts. --plain --watch keeps\n" +
+			"per machine (no headers or grouping) for scripts: state is one of running,\n" +
+			"stopped, dormant, reachable, 'broken conf' or ?; forwards is up:N,\n" +
+			"reconnecting:N, down (ports configured, no daemon) or - (none configured).\n" +
+			"Consumers should treat any other token as unknown. --plain --watch keeps\n" +
 			"running and re-emits the whole listing, blank-line separated, whenever devvm\n" +
 			"changes a machine's state (no polling). Changes made behind devvm's back —\n" +
 			"'smolvm machine stop' run directly, a VM crash — are not observed; re-run a\n" +
@@ -289,6 +292,9 @@ func (a *App) statusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if watch && !plain {
 				return fmt.Errorf("--watch requires --plain")
+			}
+			if watch && len(args) > 0 {
+				return fmt.Errorf("--watch lists every machine; it does not take a NAME")
 			}
 			if watch {
 				return a.runStatusWatch(cmd.Context())

@@ -255,7 +255,38 @@ func (m *Machine) Save(configDir string) error {
 	// conf carries bootstrap_hook/transport only when they deviate from stock.
 	clean = defaultStrLine.ReplaceAllString(clean, "")
 	content := fmt.Sprintf("# devvm machine config for %q (tool-managed; edit freely)\n\n%s", m.Name, clean)
-	return os.WriteFile(confPath(configDir, m.Name), []byte(content), 0o644)
+	return writeFileAtomic(confPath(configDir, m.Name), []byte(content), 0o644)
+}
+
+// writeFileAtomic writes via a temp file in the same directory and a rename,
+// so a reader (notably `status --watch`, which re-snapshots on the write
+// event) never sees a truncated or half-written conf.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil { // CreateTemp is 0600 regardless of umask
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // zeroIntLine matches a TOML scalar line whose int value is 0 (see Save).
