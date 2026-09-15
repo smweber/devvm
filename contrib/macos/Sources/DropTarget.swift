@@ -39,7 +39,11 @@ final class DropTargetView: NSView {
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let accept = canAccept(), urls = fileURLs(sender)
-        NSLog("drop: entered (target selected=%ld, file urls=%ld)", accept ? 1 : 0, urls.count)
+        if accept && !urls.isEmpty {
+            Log.drop.notice("drag entered: \(urls.count, privacy: .public) file(s), accepting")
+        } else {
+            Log.drop.notice("drag entered: refused (drop target selected=\(accept, privacy: .public), file urls=\(urls.count, privacy: .public))")
+        }
         guard accept, !urls.isEmpty else { return [] }
         button?.highlight(true)
         return .copy
@@ -60,7 +64,8 @@ final class DropTargetView: NSView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         button?.highlight(false)
         let urls = fileURLs(sender)
-        NSLog("drop: performed with %ld file urls", urls.count)
+        let names = urls.map { $0.lastPathComponent }.joined(separator: ", ")
+        Log.drop.notice("dropped \(urls.count, privacy: .public) file(s): \(names, privacy: .public)")
         guard !urls.isEmpty else { return false }
         onDrop(urls)
         return true

@@ -107,18 +107,41 @@ instead.
 
 ## Troubleshooting
 
-The app has no window, so it narrates to the unified log instead. In a
-terminal:
+The app has no window, so it narrates to the unified log (Console.app, or
+`log` in a terminal). Everything is under the subsystem
+`com.smweber.devvm.menubar`, split into categories:
+
+| category | what it records |
+|---|---|
+| `app`    | launch (version, bundle path), the resolved PATH and the `devvm` binary found, SIGTERM, termination |
+| `devvm`  | every CLI invocation with its pid, exit status, and last stderr line |
+| `drop`   | each drag that reaches the icon and why it was accepted or refused, what was dropped, and the copy result |
+| `status` | the `status --plain --watch` child (start, exit, restart delay), every snapshot applied, drop-target selection changes, `ports list` results |
+| `menu`   | every menu action (start, stop, ports, copy in/out, inbox, launch at login, quit) and its outcome; completion lookups at debug level |
+| `notify` | notification authorization, every notification posted, fallbacks to the toast panel, Replace actions |
+| `update` | update checks and their result, Update now / Reinstall, the relaunch path taken |
+
+Live, while you reproduce (drop a file, open the menu):
 
 ```sh
-log stream --process DevVM --level info
+log stream --predicate 'subsystem == "com.smweber.devvm.menubar"' --level info
 ```
 
-then reproduce (drop a file, open the menu). You will see the PATH the app
-resolved and the `devvm` it found at launch, every `devvm` command it runs
-with its exit status and last stderr line, each drag that reaches the icon
-(`drop: entered`, `drop: performed`), and every notification it tried to
-show and whether the notification center accepted it or a toast was used.
+Add `--level debug` to also see the per-keystroke completion lookups of the
+Copy out panel. After the fact, the last ten minutes:
+
+```sh
+log show --last 10m --predicate 'subsystem == "com.smweber.devvm.menubar"' --info
+```
+
+One category only, for example drops:
+
+```sh
+log stream --predicate 'subsystem == "com.smweber.devvm.menubar" AND category == "drop"'
+```
+
+Values are logged in the clear on purpose (paths, machine names, the last
+stderr line); a command's full output is never logged.
 
 To run a local build instead of the installed one:
 

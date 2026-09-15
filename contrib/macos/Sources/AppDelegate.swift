@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var watcher: StatusWatcher?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.app.notice("launched DevVM \(MenuBar.appVersion, privacy: .public) from \(Bundle.main.bundlePath, privacy: .public)")
         let devvm = Devvm.shared // resolves the login PATH and locates devvm
         Notifications.shared.setup()
         let menuBar = MenuBar(devvm: devvm)
@@ -26,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Log.app.notice("terminating; stopping the status watcher")
         watcher?.stop()
     }
 }

@@ -57,6 +57,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
     }
 
     func show() {
+        Log.menu.notice("copy out panel opened for \(machine, privacy: .public)")
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(field)
@@ -90,14 +91,17 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
     /// ssh handshake can take longer than that.
     private func lookup() {
         let text = field.stringValue
+        Log.menu.debug("completion lookup on \(self.machine, privacy: .public) for \"\(text, privacy: .public)\"")
         lookups.run(devvm, ["__complete", "cp-out", machine, text],
                     extraEnv: ["DEVVM_COMPLETE_TIMEOUT": "10s"]) { [weak self] r in
             guard let self = self, self.field.stringValue == text else { return }
             var found: [String] = []
+            var directive = ""
             for line in r.stdout.split(separator: "\n") {
-                if line.hasPrefix(":") { break } // cobra's directive line ends the list
+                if line.hasPrefix(":") { directive = String(line); break } // cobra's directive line ends the list
                 found.append(String(line))
             }
+            Log.menu.debug("completion for \"\(text, privacy: .public)\": \(found.count, privacy: .public) candidate(s), directive \(directive, privacy: .public)")
             self.candidates = found
             self.candidatesFor = text
             self.hint.stringValue = found.isEmpty ? "" : "\(found.count) match\(found.count == 1 ? "" : "es") — press Tab"
@@ -174,12 +178,16 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
 
     private func run(_ args: [String], what: String) {
         panel.orderOut(nil)
+        Log.menu.notice("copy out \(self.machine, privacy: .public):\(what, privacy: .public)")
         devvm.run(args) { [machine = self.machine] r in
             if r.ok {
+                Log.menu.notice("copy out of \(what, privacy: .public) from \(machine, privacy: .public) succeeded")
                 Notifications.shared.info("Copied \(what)", "from \(machine)")
             } else if r.isOverwriteRefusal {
+                Log.menu.notice("copy out of \(what, privacy: .public) refused: would overwrite locally")
                 Notifications.shared.conflict("Already exists locally", r.lastStderrLine, retryWith: args)
             } else {
+                Log.menu.error("copy out of \(what, privacy: .public) from \(machine, privacy: .public) failed: \(r.lastStderrLine, privacy: .public)")
                 Notifications.shared.error("Copy from \(machine) failed", r.lastStderrLine)
             }
         }

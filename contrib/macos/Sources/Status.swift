@@ -92,11 +92,15 @@ final class StatusWatcher {
         restartTimer?.invalidate()
         generation += 1 // orphan any late callbacks
         clearReader()
-        if let p = process, p.isRunning { p.terminate() }
+        if let p = process, p.isRunning {
+            Log.status.notice("stopping watch child [\(p.processIdentifier, privacy: .public)]")
+            p.terminate()
+        }
         process = nil
     }
 
     func restart() {
+        Log.status.notice("restarting the watch child (the devvm binary changed)")
         restartTimer?.invalidate()
         backoff = 1
         generation += 1
@@ -139,10 +143,12 @@ final class StatusWatcher {
         do {
             try p.run()
         } catch {
+            Log.status.error("watch child did not start: \(error.localizedDescription, privacy: .public)")
             handle.readabilityHandler = nil
             scheduleRestart()
             return
         }
+        Log.status.notice("watch child started [\(p.processIdentifier, privacy: .public)]: devvm status --plain --watch")
         readHandle = handle
         process = p
         launchedAt = Date()
@@ -156,13 +162,22 @@ final class StatusWatcher {
         while let range = buffer.range(of: StatusWatcher.separator) {
             let block = String(decoding: buffer.subdata(in: buffer.startIndex..<range.lowerBound), as: UTF8.self)
             buffer.removeSubrange(buffer.startIndex..<range.upperBound)
-            onSnapshot?(parseStatusBlock(block))
+            let machines = parseStatusBlock(block)
+            Log.status.notice("snapshot: \(StatusWatcher.summary(machines), privacy: .public)")
+            onSnapshot?(machines)
         }
         // An empty registry is a lone blank line, never followed by a second.
         if buffer == Data("\n".utf8) {
             buffer = Data()
+            Log.status.notice("snapshot: no machines registered")
             onSnapshot?([])
         }
+    }
+
+    /// One line per snapshot: `personal=running/up:2 work=stopped/-`.
+    static func summary(_ machines: [Machine]) -> String {
+        if machines.isEmpty { return "no machines registered" }
+        return "\(machines.count) machine(s): " + machines.map { "\($0.name)=\($0.state)/\($0.forwards)" }.joined(separator: " ")
     }
 
     private func exited(gen: Int) {
@@ -172,6 +187,8 @@ final class StatusWatcher {
         // every second. Judged here, at exit, where the uptime is known (the
         // first block arrives immediately, so it says nothing about that).
         if Date().timeIntervalSince(launchedAt) > 10 { backoff = 1 }
+        let status = process?.terminationStatus ?? -1
+        Log.status.error("watch child exited with status \(status, privacy: .public) after \(Int(Date().timeIntervalSince(launchedAt)), privacy: .public)s")
         clearReader()
         process = nil
         scheduleRestart()
@@ -181,6 +198,7 @@ final class StatusWatcher {
         guard !stopped else { return }
         let delay = backoff
         backoff = min(backoff * 2, 30)
+        Log.status.notice("restarting the watch child in \(Int(delay), privacy: .public)s")
         restartTimer?.invalidate()
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.launch()

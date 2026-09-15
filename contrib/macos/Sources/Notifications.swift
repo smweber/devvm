@@ -20,7 +20,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
 
     func setup() {
         guard Bundle.main.bundleIdentifier != nil else {
-            NSLog("notify: no bundle identifier; using toasts")
+            Log.notify.error("no bundle identifier (running outside the .app?); using toasts")
             return // UNUserNotificationCenter requires a bundle
         }
         usable = true
@@ -35,10 +35,15 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         // needlessly fall back to a toast on an already-authorized install.
         center.getNotificationSettings { [weak self] settings in
             let granted = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+            Log.notify.notice("stored authorization status: \(settings.authorizationStatus.rawValue, privacy: .public) (granted=\(granted, privacy: .public))")
             DispatchQueue.main.async { if granted { self?.authorized = true } }
         }
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, err in
-            NSLog("notify: authorization granted=%ld %@", granted ? 1 : 0, err.map { "\($0)" } ?? "")
+            if let err = err {
+                Log.notify.error("authorization request failed: \(err.localizedDescription, privacy: .public); using toasts")
+            } else {
+                Log.notify.notice("authorization granted=\(granted, privacy: .public)\(granted ? "" : "; using toasts", privacy: .public)")
+            }
             DispatchQueue.main.async { self?.authorized = granted }
         }
     }
@@ -57,8 +62,9 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func post(title: String, body: String, retry: [String]?) {
-        NSLog("notify: %@ — %@", title, body)
+        Log.notify.notice("\(title, privacy: .public) — \(body, privacy: .public)")
         guard usable, authorized else {
+            Log.notify.notice("notification center unavailable (usable=\(self.usable, privacy: .public), authorized=\(self.authorized, privacy: .public)); showing a toast")
             Toast.show(title: title, body: body, retry: retry)
             return
         }
@@ -72,7 +78,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { err in
             if let err = err {
-                NSLog("notify: center refused (%@); showing a toast", "\(err)")
+                Log.notify.error("notification center refused: \(err.localizedDescription, privacy: .public); showing a toast")
                 DispatchQueue.main.async { Toast.show(title: title, body: body, retry: retry) }
             }
         }
@@ -89,6 +95,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         if response.actionIdentifier == Notifications.replaceAction,
            let args = response.notification.request.content.userInfo[Notifications.retryKey] as? [String] {
+            Log.notify.notice("Replace chosen from notification")
             DispatchQueue.main.async { Notifications.rerunWithForce(args) }
         }
         completionHandler()
@@ -97,6 +104,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     static func rerunWithForce(_ args: [String]) {
         var forced = args
         if !forced.contains("-f") { forced.insert("-f", at: 1) } // after the verb
+        Log.notify.notice("re-running with -f: devvm \(forced.joined(separator: " "), privacy: .public)")
         Devvm.shared.run(forced) { r in
             if r.ok {
                 Notifications.shared.info("Replaced", forced.joined(separator: " "))
@@ -177,6 +185,7 @@ private final class ToastAction: NSObject {
         self.panel = panel
     }
     @objc func fire() {
+        Log.notify.notice("Replace chosen from toast")
         if let panel = panel { Toast.dismiss(panel) }
         Notifications.rerunWithForce(args)
     }

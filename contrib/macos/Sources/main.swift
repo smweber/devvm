@@ -16,7 +16,10 @@ app.setActivationPolicy(.accessory)
 // (a global) or it is cancelled immediately.
 signal(SIGTERM, SIG_IGN)
 let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-sigterm.setEventHandler { NSApp.terminate(nil) }
+sigterm.setEventHandler {
+    Log.app.notice("SIGTERM received; terminating cleanly")
+    NSApp.terminate(nil)
+}
 sigterm.resume()
 
 app.run()

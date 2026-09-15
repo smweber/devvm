@@ -36,10 +36,12 @@ final class Devvm {
         env["PATH"] = path
         environment = env
         executable = Devvm.locate("devvm", path: path)
-        // Unified log (Console.app, or `log stream --process DevVM`): the one
-        // place to see why a drop did nothing, since the app has no window.
-        NSLog("devvm: PATH=%@", path)
-        NSLog("devvm: executable=%@", executable ?? "(not found)")
+        Log.app.notice("PATH=\(path, privacy: .public)")
+        if let exe = executable {
+            Log.app.notice("devvm executable: \(exe, privacy: .public)")
+        } else {
+            Log.app.error("devvm not found on PATH")
+        }
     }
 
     // MARK: PATH
@@ -76,7 +78,10 @@ final class Devvm {
         p.standardError = FileHandle.nullDevice
         let out = Pipe()
         p.standardOutput = out
-        do { try p.run() } catch { return "" }
+        do { try p.run() } catch {
+            Log.app.error("login shell \(shell, privacy: .public) did not start: \(error.localizedDescription, privacy: .public)")
+            return ""
+        }
 
         let box = DataBox()
         let done = DispatchSemaphore(value: 0)
@@ -90,10 +95,14 @@ final class Devvm {
             kill(p.processIdentifier, SIGKILL)
             kill(-p.processIdentifier, SIGKILL)
             try? out.fileHandleForWriting.close()
+            Log.app.error("login shell \(shell, privacy: .public) took over 5s to print its PATH; killed, using defaults")
             return ""
         }
         p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return "" }
+        guard p.terminationStatus == 0 else {
+            Log.app.error("login shell \(shell, privacy: .public) exited \(p.terminationStatus, privacy: .public); using default PATH")
+            return ""
+        }
         let text = String(decoding: box.out, as: UTF8.self)
         for line in text.split(separator: "\n") where line.hasPrefix("PATH=") {
             return String(line.dropFirst("PATH=".count))
@@ -118,6 +127,7 @@ final class Devvm {
     func run(_ args: [String], extraEnv: [String: String] = [:],
              completion: @escaping (CommandResult) -> Void) -> Process? {
         guard let exe = executable else {
+            Log.devvm.error("cannot run \(args.joined(separator: " "), privacy: .public): devvm not found")
             DispatchQueue.main.async {
                 completion(CommandResult(status: 127, stdout: "", stderr: "devvm not found on PATH"))
             }
@@ -156,20 +166,25 @@ final class Devvm {
             // Release the readers: with the write ends closed they hit EOF.
             try? out.fileHandleForWriting.close()
             try? err.fileHandleForWriting.close()
+            Log.devvm.error("cannot run \(args.joined(separator: " "), privacy: .public): \(error.localizedDescription, privacy: .public)")
             DispatchQueue.main.async {
                 completion(CommandResult(status: 126, stdout: "", stderr: "cannot run devvm: \(error.localizedDescription)"))
             }
             return nil
         }
-        NSLog("devvm: run %@", args.joined(separator: " "))
+        let argv = args.joined(separator: " ")
+        Log.devvm.notice("run [\(p.processIdentifier, privacy: .public)] devvm \(argv, privacy: .public)")
         DispatchQueue.global().async {
             p.waitUntilExit()
             group.wait()
             let result = CommandResult(status: p.terminationStatus,
                                        stdout: String(decoding: box.out, as: UTF8.self),
                                        stderr: String(decoding: box.err, as: UTF8.self))
-            NSLog("devvm: exit %d for %@%@", result.status, args.first ?? "",
-                  result.stderr.isEmpty ? "" : " — " + result.lastStderrLine)
+            if result.ok {
+                Log.devvm.notice("exit 0 [\(p.processIdentifier, privacy: .public)] devvm \(args.first ?? "", privacy: .public)")
+            } else {
+                Log.devvm.error("exit \(result.status, privacy: .public) [\(p.processIdentifier, privacy: .public)] devvm \(argv, privacy: .public): \(result.lastStderrLine, privacy: .public)")
+            }
             DispatchQueue.main.async { completion(result) }
         }
         return p
@@ -180,7 +195,9 @@ final class Devvm {
         run(["--version"]) { r in
             guard r.ok else { completion(nil); return }
             let words = r.stdout.split(whereSeparator: { $0 == " " || $0 == "\n" })
-            completion(words.last.map { String($0) })
+            let v = words.last.map { String($0) }
+            Log.devvm.notice("devvm --version: \(v ?? "(unparsed)", privacy: .public)")
+            completion(v)
         }
     }
 }
@@ -207,7 +224,10 @@ final class SingleFlight {
     func run(_ devvm: Devvm, _ args: [String], extraEnv: [String: String] = [:],
              terminatePrevious: Bool = false,
              completion: @escaping (CommandResult) -> Void) {
-        if terminatePrevious, let old = current, old.isRunning { old.terminate() }
+        if terminatePrevious, let old = current, old.isRunning {
+            Log.devvm.notice("terminating superseded [\(old.processIdentifier, privacy: .public)] for devvm \(args.first ?? "", privacy: .public)")
+            old.terminate()
+        }
         var proc: Process?
         proc = devvm.run(args, extraEnv: extraEnv) { [weak self] r in
             guard let self = self, self.current === proc else { return }
@@ -220,7 +240,10 @@ final class SingleFlight {
     /// Drops the in-flight result and terminates the process if it is still
     /// running (terminating an already-reaped process is undefined).
     func cancel() {
-        if let old = current, old.isRunning { old.terminate() }
+        if let old = current, old.isRunning {
+            Log.devvm.notice("cancelling [\(old.processIdentifier, privacy: .public)]")
+            old.terminate()
+        }
         current = nil
     }
 }
