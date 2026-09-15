@@ -111,6 +111,8 @@ func (a *App) rootCmd() *cobra.Command {
 		a.defaultsCmd(),
 		a.statusCmd(),
 	)...)
+	// update is about devvm itself, not a machine, so it stays ungrouped.
+	root.AddCommand(a.updateCmd())
 	root.AddCommand(a.daemonCmd()) // hidden; falls under "Additional Commands"
 	return root
 }

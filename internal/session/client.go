@@ -161,3 +161,25 @@ func (c *Client) Stop() error {
 	_, err := c.request(Request{Op: OpStop})
 	return err
 }
+
+// WaitGone blocks until no daemon answers for the machine and its socket is
+// unlinked, or timeout elapses (reporting whether it is gone). Stop returns as
+// soon as the daemon has taken the request, before it has closed its listener
+// and removed its socket; a replacement spawned in that window could see the
+// old socket as stale, listen on the same path, and then have its fresh socket
+// unlinked by the old daemon's shutdown. Callers cycling a daemon (update)
+// wait here between Stop and Dial.
+func WaitGone(configDir, name string, timeout time.Duration) bool {
+	c := &Client{configDir: configDir, name: name}
+	deadline := time.Now().Add(timeout)
+	for {
+		_, statErr := os.Stat(socketPath(configDir, name))
+		if os.IsNotExist(statErr) && !c.alive() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
