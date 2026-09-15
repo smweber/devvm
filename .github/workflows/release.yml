@@ -54,3 +54,31 @@ jobs:
             dist/SHA256SUMS \
             --title "devvm ${GITHUB_REF_NAME}" \
             --generate-notes
+
+  # The menu bar app (contrib/macos) needs a macOS runner: it is Swift against
+  # AppKit, compiled with the runner's Command Line Tools. It attaches to the
+  # release the linux job created, so it must run after it. macOS minutes are
+  # free on a public repository. The zip is verified by its own .sha256 sidecar
+  # (written by build.sh) rather than SHA256SUMS, which release.sh computed on
+  # linux before this job ran.
+  menubar:
+    needs: release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the menu bar app
+        run: |
+          cd contrib/macos
+          ./build.sh "${GITHUB_REF_NAME}"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            contrib/macos/dist/devvm-menubar.zip \
+            contrib/macos/dist/devvm-menubar.zip.sha256 \
+            --clobber

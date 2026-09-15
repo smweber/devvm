@@ -68,7 +68,22 @@ and then restarts every running forward daemon so none keeps executing the old
 code. `--check` only reports (`--check --plain` prints
 `current<TAB>latest<TAB>true|false` for scripts); `--version vX.Y.Z` pins a
 release. A `dev` build has no version to compare and needs `--force`. First-time
-installs still go through `install.sh` (or your bootstrap script).
+installs still go through `install.sh` (or your bootstrap script). If the menu
+bar app is installed, `update` brings it to the same version too.
+
+## Menu bar app (macOS)
+
+`devvm menubar` installs the DevVM menu bar app into `~/Applications` at your
+CLI's version and opens it (run it again any time to open it). The app is a
+thin shell over the CLI: the status item is a drop target that runs `cp-in`
+for the selected machine, the menu lists machines and their forwards (fed by
+`status --plain --watch`), and each machine offers start/stop, ports up/down,
+its forwarded ports, and copy in/out. It never spawns a terminal. The zip
+comes from the same release as the binaries, verified against its `.sha256`
+sidecar; downloads made by devvm carry no quarantine flag, so the ad-hoc
+signed app opens without Gatekeeper prompts. Sources and a local build script
+live in [`contrib/macos`](contrib/macos/README.md). Remove it by dragging
+`DevVM.app` out of `~/Applications`.
 
 ## Build
 

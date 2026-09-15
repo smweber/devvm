@@ -115,6 +115,7 @@ func (a *App) rootCmd() *cobra.Command {
 	)...)
 	root.AddCommand(group(groupMaintain,
 		a.updateCmd(),
+		a.menubarCmd(),
 	)...)
 	root.AddCommand(a.daemonCmd()) // hidden; falls under "Additional Commands"
 	return root

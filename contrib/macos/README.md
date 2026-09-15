@@ -45,7 +45,14 @@ zips it to `dist/devvm-menubar.zip` with a `.sha256` beside it.
 
 To install by hand: `ditto dist/DevVM.app ~/Applications/DevVM.app`. The
 supported route once a release exists is `devvm menubar`, which downloads
-the zip matching your CLI version into `~/Applications` and opens it.
+`devvm-menubar.zip` for your CLI's version from the GitHub release, verifies
+it against its `.sha256` sidecar, installs it into `~/Applications` (quitting
+a running copy first), and opens it. Run it again to open the app; it only
+re-downloads when the installed version differs (`--force` reinstalls,
+`--version vX.Y.Z` pins a release for dev builds). After that, `devvm update`
+keeps the app at the CLI's version, relaunching it if it was running. The
+release workflow builds the zip on a macOS runner and attaches it to every
+tagged release.
 
 ## How it finds devvm
 

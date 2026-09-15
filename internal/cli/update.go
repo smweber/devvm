@@ -337,12 +337,6 @@ func anyConfiguredForward(configDir, name string, fwds []session.Forward) bool {
 	return false
 }
 
-// updateMenubar keeps the macOS menu bar app (if installed) at the CLI's
-// version. TODO(menubar): lands with the app itself — download the matching
-// app asset from the same release into ~/Applications and relaunch it if it
-// was running. Until then there is nothing to update.
-func (a *App) updateMenubar() {}
-
 // latestTag resolves the "latest" release without the GitHub API (no auth, no
 // rate limit): GitHub answers /releases/latest with a redirect to
 // /releases/tag/<tag>, so the tag is the redirect's last path segment. The
