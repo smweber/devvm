@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -271,17 +272,27 @@ func (a *App) deleteCmd() *cobra.Command {
 }
 
 func (a *App) statusCmd() *cobra.Command {
-	var verbose, plain bool
+	var verbose, plain, watch bool
 	c := &cobra.Command{
 		Use:   "status [NAME]",
 		Short: "Machine status, grouped by backend; no NAME lists all machines",
 		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
 			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
 			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
-			"--plain emits one tab-separated 'name<TAB>backend<TAB>state' row per machine\n" +
-			"(no headers or grouping) for scripts.",
+			"--plain emits one tab-separated 'name<TAB>backend<TAB>state<TAB>forwards' row\n" +
+			"per machine (no headers or grouping) for scripts. --plain --watch keeps\n" +
+			"running and re-emits the whole listing, blank-line separated, whenever devvm\n" +
+			"changes a machine's state (no polling). Changes made behind devvm's back —\n" +
+			"'smolvm machine stop' run directly, a VM crash — are not observed; re-run a\n" +
+			"plain status on demand for those.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if watch && !plain {
+				return fmt.Errorf("--watch requires --plain")
+			}
+			if watch {
+				return a.runStatusWatch(cmd.Context())
+			}
 			if plain {
 				return a.runStatusPlain()
 			}
@@ -293,7 +304,8 @@ func (a *App) statusCmd() *cobra.Command {
 		ValidArgsFunction: a.completeMachines,
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
-	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state' per line")
+	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards' per line")
+	c.Flags().BoolVar(&watch, "watch", false, "with --plain: re-emit the listing on every devvm-made change (event-driven, not polled)")
 	return c
 }
 

@@ -77,6 +77,7 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 }
 
 func (a *App) runStart(name string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
@@ -92,6 +93,7 @@ func (a *App) runStart(name string) error {
 }
 
 func (a *App) runStop(name string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	_, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
@@ -107,6 +109,7 @@ func (a *App) runStop(name string) error {
 // runProvision allocates the resource for a dormant machine (conf exists, no VM)
 // and bootstraps it — the inverse of deprovision, and the resource half of create.
 func (a *App) runProvision(name string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
@@ -142,6 +145,7 @@ func (a *App) runProvision(name string) error {
 // entry, so it can be rebuilt later with `provision`. It's the middle rung between
 // stop (resource kept) and delete (entry gone too).
 func (a *App) runDeprovision(name string, yes bool) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
@@ -182,6 +186,7 @@ func (a *App) runDeprovision(name string, yes bool) error {
 }
 
 func (a *App) runDelete(name string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err

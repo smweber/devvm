@@ -1,0 +1,131 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+	"github.com/smweber/devvm/internal/config"
+)
+
+// watchDebounce coalesces a burst of filesystem events (a conf save is several
+// writes; a daemon start touches the socket, the lock, and the marker) into
+// one snapshot.
+const watchDebounce = 200 * time.Millisecond
+
+// runStatusWatch is `status --plain --watch`: the plain listing, re-emitted
+// whenever devvm's own state on disk changes. It never polls; see watchStatus
+// for what it observes and what it can't.
+func (a *App) runStatusWatch(ctx context.Context) error {
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return watchStatus(ctx, a.ConfigDir, a.plainSnapshot, a.Stdout, watchDebounce)
+}
+
+// plainSnapshot renders the plain listing as one string so identical
+// snapshots can be suppressed byte-for-byte.
+func (a *App) plainSnapshot() string {
+	var b []byte
+	for _, r := range a.gatherRows() {
+		b = fmt.Appendf(b, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
+	}
+	return string(b)
+}
+
+// watchStatus prints snapshot() once, then again after every change under
+// the machines dir (conf create/delete/edit) or the runtime dir (daemon sockets
+// come and go; the change marker every state-changing command and daemon
+// transition rewrites), blank-line separated so a consumer replaces its whole
+// list on each block. Identical consecutive snapshots are dropped.
+//
+// It sees only what devvm itself does. A `smolvm machine stop` run directly, a
+// VM crash, or a remote host going away leaves nothing on disk here, so a UI
+// should still re-run a plain status on demand (e.g. when its menu opens).
+//
+// Returns nil on ctx cancellation and when the consumer goes away (a write
+// error such as EPIPE), so a supervising process sees a clean exit.
+func watchStatus(ctx context.Context, configDir string, snapshot func() string, out io.Writer, debounce time.Duration) error {
+	// Both dirs must exist to be watched; an empty registry is a valid thing to
+	// watch (the first `create` is the change). Match Save's and
+	// EnsureRuntimeDir's modes so nothing is loosened.
+	if err := os.MkdirAll(config.MachinesDir(configDir), 0o755); err != nil {
+		return err
+	}
+	if err := config.EnsureRuntimeDir(configDir); err != nil {
+		return err
+	}
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	for _, dir := range []string{config.MachinesDir(configDir), config.RuntimeDir(configDir)} {
+		if err := w.Add(dir); err != nil {
+			return fmt.Errorf("watch %s: %w", dir, err)
+		}
+	}
+
+	last := ""
+	emit := func() error {
+		s := snapshot()
+		if s == last {
+			return nil
+		}
+		last = s
+		_, err := io.WriteString(out, s+"\n")
+		return err
+	}
+	// The first block is unconditional so the consumer starts with a full list
+	// (an empty registry yields a lone blank line, which is still "a block").
+	last = snapshot()
+	if _, err := io.WriteString(out, last+"\n"); err != nil {
+		return nil
+	}
+
+	var pending <-chan time.Time // nil until an event arms the debounce
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev, ok := <-w.Events:
+			if !ok {
+				return nil
+			}
+			// The lock file and log churn on every daemon start/stop; the
+			// socket and marker are what matter there, so skip the noise.
+			if isWatchNoise(ev.Name) {
+				continue
+			}
+			if pending == nil {
+				pending = time.After(debounce)
+			}
+		case err, ok := <-w.Errors:
+			if !ok {
+				return nil
+			}
+			// A watcher error (overflow, dir removed) is not fatal: re-snapshot
+			// so nothing is missed, keep going.
+			if errors.Is(err, fsnotify.ErrEventOverflow) && pending == nil {
+				pending = time.After(debounce)
+			}
+		case <-pending:
+			pending = nil
+			if err := emit(); err != nil {
+				return nil
+			}
+		}
+	}
+}
+
+// isWatchNoise filters runtime-dir entries that change without meaning a
+// state change: the daemon startup lock and the per-daemon stderr log.
+func isWatchNoise(name string) bool {
+	return strings.HasSuffix(name, ".lock") || strings.HasSuffix(name, ".log")
+}

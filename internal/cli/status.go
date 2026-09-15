@@ -90,7 +90,9 @@ func (a *App) runStatusAll(verbose bool) error {
 // smol VM) without scraping the human-formatted table. The forward column is
 // `up:N` / `reconnecting:N` (N = forwards the daemon owns), `down` (ports
 // configured but no daemon), or `-` (nothing configured); a UI can badge
-// "forwards are down or stuck reconnecting" from it alone.
+// "forwards are down or stuck reconnecting" from it alone. `--watch` re-emits
+// this listing on devvm-made changes (see watchStatus); the format is the
+// same, so a consumer parses one thing.
 func (a *App) runStatusPlain() error {
 	for _, r := range a.gatherRows() {
 		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))

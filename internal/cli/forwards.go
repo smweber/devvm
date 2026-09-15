@@ -62,6 +62,7 @@ func sinceHuman(t time.Time) string {
 }
 
 func (a *App) runPort(name, mapping string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, _, err := a.resolveLive(name)
 	if err != nil {
 		return err
@@ -89,6 +90,7 @@ func (a *App) runPort(name, mapping string) error {
 }
 
 func (a *App) runUnport(name, mapping string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, _, err := a.resolve(name)
 	if err != nil {
 		return err
@@ -192,6 +194,7 @@ func (a *App) runPortsListAll() error {
 
 // tunnelDown stops the machine's live forwards, if any daemon is running.
 func (a *App) tunnelDown(name string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	if _, _, err := a.resolveLive(name); err != nil {
 		return err
 	}
@@ -213,6 +216,7 @@ func (a *App) tunnelDown(name string) error {
 // tunnelUp brings up every configured forward for the machine (used by
 // `tunnel up` and `start`).
 func (a *App) tunnelUp(name string) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, _, err := a.resolveLive(name)
 	if err != nil {
 		return err

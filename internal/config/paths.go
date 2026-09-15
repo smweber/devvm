@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DefaultConfigDir resolves $XDG_CONFIG_HOME/devvm (or ~/.config/devvm),
@@ -49,4 +50,21 @@ func EnsureRuntimeDir(configDir string) error {
 		return err
 	}
 	return os.Chmod(dir, 0o700)
+}
+
+// ChangedPath is the change marker under the runtime dir: `status --watch`
+// watches it so state changes that leave no other trace on disk (a smol VM
+// starting or stopping, a daemon flipping to reconnecting) still wake it.
+func ChangedPath(configDir string) string {
+	return filepath.Join(RuntimeDir(configDir), "changed")
+}
+
+// TouchChanged rewrites the change marker. Best-effort: a missing runtime dir
+// or a read-only config is never a reason to fail the command that changed
+// state. The file is truncated and written (not just utimes-touched) because
+// kqueue reports a directory watch's entries on write, not on attribute change,
+// so a bare touch would go unseen on macOS.
+func TouchChanged(configDir string) {
+	_ = EnsureRuntimeDir(configDir)
+	_ = os.WriteFile(ChangedPath(configDir), []byte(time.Now().Format(time.RFC3339Nano)+"\n"), 0o600)
 }

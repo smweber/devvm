@@ -175,6 +175,7 @@ func (d *daemon) onDead() {
 func (d *daemon) setState(state string) {
 	if d.state != state {
 		d.state, d.since = state, time.Now()
+		config.TouchChanged(d.configDir)
 	}
 }
 
@@ -255,6 +256,9 @@ func (d *daemon) triggerStop() {
 func (d *daemon) shutdown() error {
 	d.ln.Close()
 	os.Remove(socketPath(d.configDir, d.name))
+	// The socket vanishing is itself a watch event; the marker covers the
+	// no-forwards-on-exit case where a consumer would otherwise infer nothing.
+	defer config.TouchChanged(d.configDir)
 	d.mu.Lock()
 	for _, f := range d.forwards {
 		if f.closer != nil {
@@ -277,6 +281,7 @@ func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error
 	if f, ok := d.forwards[guest]; ok {
 		return f.host, false, f.closer == nil, nil
 	}
+	defer config.TouchChanged(d.configDir)
 	if d.state == StateReconnecting {
 		d.forwards[guest] = &fwd{host: pref, guest: guest}
 		return pref, false, true, nil
@@ -311,6 +316,7 @@ func (d *daemon) remove(guest int) {
 			f.closer.Close()
 		}
 		delete(d.forwards, guest)
+		config.TouchChanged(d.configDir)
 	}
 }
 

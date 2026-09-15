@@ -41,6 +41,7 @@ type createSpec struct {
 }
 
 func (a *App) runCreate(s createSpec) error {
+	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	// Name may be omitted on the command line; prompt for it before anything else
 	// so `devvm create` can be run bare on a terminal.
 	if err := resolveName(&s); err != nil {
