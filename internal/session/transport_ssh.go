@@ -46,6 +46,14 @@ func newSSHTransport(conn backend.SSHConn) (*sshTransport, error) {
 // startMaster launches a backgrounded ControlMaster (ssh -M -N -f). Keepalives
 // make a dropped link kill the master; monitor() notices it's gone.
 func (t *sshTransport) startMaster() error {
+	// A master that died without unlinking its socket (killed, or a link drop
+	// mid-cleanup) would make `-M` fall back to a plain connection with
+	// "ControlSocket already exists, disabling multiplexing" — and the daemon's
+	// reconnect would then find no master and spin. Only a socket nobody
+	// answers is removed.
+	if _, err := os.Stat(t.conn.ControlPath); err == nil && !t.masterAlive() {
+		_ = os.Remove(t.conn.ControlPath)
+	}
 	args := append([]string{}, t.conn.Flags...)
 	args = append(args,
 		"-M", "-N", "-f",

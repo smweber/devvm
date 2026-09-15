@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -35,9 +36,17 @@ type statusRow struct {
 	mem     int // MiB (smol conf spec)
 	disk    int // GiB (smol conf spec)
 	host    string
-	fwds    int    // live forward count
+	fwds    fwdSummary
 	note    string // e.g. "unregistered"
 	m       *config.Machine
+}
+
+// fwdSummary is what status knows about a machine's forward daemon.
+type fwdSummary struct {
+	daemon bool      // a daemon answered
+	state  string    // session.StateUp | session.StateReconnecting
+	n      int       // forwards it owns (live or pending)
+	since  time.Time // when state began
 }
 
 // runStatusAll lists every machine (registry ∪ live smol), grouped by backend.
@@ -75,15 +84,30 @@ func (a *App) runStatusAll(verbose bool) error {
 	return nil
 }
 
-// runStatusPlain emits one tab-separated row per machine — name, backend, and
-// derived state (running|stopped|dormant|reachable|…) — with no headers or
-// grouping, so scripts can enumerate machines (e.g. every running smol VM)
-// without scraping the human-formatted table.
+// runStatusPlain emits one tab-separated row per machine — name, backend,
+// derived state (running|stopped|dormant|reachable|…), and forward state — with
+// no headers or grouping, so scripts can enumerate machines (e.g. every running
+// smol VM) without scraping the human-formatted table. The forward column is
+// `up:N` / `reconnecting:N` (N = forwards the daemon owns), `down` (ports
+// configured but no daemon), or `-` (nothing configured); a UI can badge
+// "forwards are down or stuck reconnecting" from it alone.
 func (a *App) runStatusPlain() error {
 	for _, r := range a.gatherRows() {
-		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\n", r.name, r.backend, r.state)
+		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
 	}
 	return nil
+}
+
+// plainForwards renders the machine-readable forward column (see runStatusPlain).
+func plainForwards(r statusRow) string {
+	switch {
+	case r.fwds.daemon:
+		return fmt.Sprintf("%s:%d", r.fwds.state, r.fwds.n)
+	case r.m != nil && len(r.m.Ports) > 0:
+		return "down"
+	default:
+		return "-"
+	}
 }
 
 func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
@@ -120,10 +144,18 @@ func (a *App) renderVerboseDetail(r statusRow) {
 		fmt.Fprintf(a.Stdout, "    lifecycle: %s\n", lifecycleTrack(smolLifecycle, r.state))
 	}
 	if cl, err := session.Existing(a.ConfigDir, r.name); err == nil {
-		if fwds, err := cl.List(); err == nil && len(fwds) > 0 {
-			fmt.Fprintln(a.Stdout, "    forwards:")
-			for _, f := range fwds {
-				fmt.Fprintf(a.Stdout, "      localhost:%d -> %s:%d\n", f.Host, r.name, f.Guest)
+		if st, err := cl.Status(); err == nil && len(st.Forwards) > 0 {
+			if st.Reconnecting() {
+				fmt.Fprintf(a.Stdout, "    forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
+			} else {
+				fmt.Fprintln(a.Stdout, "    forwards:")
+			}
+			for _, f := range st.Forwards {
+				suffix := ""
+				if f.Pending {
+					suffix = "  (pending)"
+				}
+				fmt.Fprintf(a.Stdout, "      localhost:%d -> %s:%d%s\n", f.Host, r.name, f.Guest, suffix)
 			}
 		}
 	}
@@ -178,7 +210,7 @@ func (a *App) rowFor(m *config.Machine) statusRow {
 	} else {
 		r.state = "reachable"
 	}
-	r.fwds = a.forwardCount(m.Name)
+	r.fwds = a.forwardSummary(m.Name)
 	return r
 }
 
@@ -194,17 +226,18 @@ func smolStateLabel(exists, running bool) string {
 	}
 }
 
-// forwardCount returns how many forwards are live for a machine (0 if no daemon).
-func (a *App) forwardCount(name string) int {
+// forwardSummary asks a machine's daemon for its state and forward count; a
+// zero value means no daemon answered.
+func (a *App) forwardSummary(name string) fwdSummary {
 	cl, err := session.Existing(a.ConfigDir, name)
 	if err != nil {
-		return 0
+		return fwdSummary{}
 	}
-	fwds, err := cl.List()
+	st, err := cl.Status()
 	if err != nil {
-		return 0
+		return fwdSummary{}
 	}
-	return len(fwds)
+	return fwdSummary{daemon: true, state: st.State, n: len(st.Forwards), since: st.Since}
 }
 
 // smolLiveResources reads a running smol VM's actual memory (MiB) and root-fs
@@ -307,9 +340,14 @@ func diskHuman(giB int) string {
 }
 
 // fwdsCount renders a forward count, or "—" when none are up.
-func fwdsCount(n int) string {
-	if n == 0 {
+// fwdsCount is the FWDS column: a count, flagged while the daemon is between
+// transports so a stuck reconnect reads differently from healthy forwards.
+func fwdsCount(f fwdSummary) string {
+	if f.n == 0 {
 		return "—"
 	}
-	return strconv.Itoa(n)
+	if f.state == session.StateReconnecting {
+		return fmt.Sprintf("%d (reconnecting %s)", f.n, sinceHuman(f.since))
+	}
+	return strconv.Itoa(f.n)
 }

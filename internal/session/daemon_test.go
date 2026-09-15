@@ -1,17 +1,26 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smweber/devvm/internal/agentrpc"
 )
 
 // fakeTransport binds real host listeners (so bind conflicts drive the bump)
 // and forwards to a real guest port, standing in for smol/ssh in unit tests.
-type fakeTransport struct{ dc chan struct{} }
+type fakeTransport struct {
+	dc        chan struct{}
+	closeOnce sync.Once
+	closed    atomic.Bool
+	binds     atomic.Int32 // forwards bound on this transport instance
+}
 
 func (f *fakeTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
@@ -34,21 +43,67 @@ func (f *fakeTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 			}(c)
 		}
 	}()
+	f.binds.Add(1)
 	return ln, nil
 }
 
 func (f *fakeTransport) dead() <-chan struct{} { return f.dc }
-func (f *fakeTransport) Close() error          { return nil }
+func (f *fakeTransport) Close() error {
+	f.closed.Store(true)
+	return nil
+}
+
+// die simulates the link dropping (idempotent, like the real transports).
+func (f *fakeTransport) die() { f.closeOnce.Do(func() { close(f.dc) }) }
+
+func newFakeTransport() *fakeTransport { return &fakeTransport{dc: make(chan struct{})} }
 
 func newTestDaemon(t *testing.T) *daemon {
 	t.Helper()
-	return &daemon{
-		configDir: t.TempDir(),
-		name:      "t",
-		tr:        &fakeTransport{dc: make(chan struct{})},
-		forwards:  map[int]*fwd{},
-		stop:      make(chan struct{}),
+	d := newDaemon(t.TempDir(), "t", newFakeTransport(), func() (transport, error) {
+		return nil, errors.New("no dial in this test")
+	})
+	d.logf = t.Logf
+	d.minBackoff, d.maxBackoff = 5*time.Millisecond, 20*time.Millisecond
+	return d
+}
+
+// runLoop runs the supervision loop in the background and returns a channel
+// that closes when it exits.
+func runLoop(d *daemon) <-chan struct{} {
+	done := make(chan struct{})
+	go func() { d.loop(); close(done) }()
+	return done
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func waitDone(t *testing.T, done <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("loop did not exit after %s", what)
+	}
+}
+
+func portOpen(port int) bool {
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 // freePort returns a currently-free loopback port (bind :0, read it, release).
@@ -88,7 +143,7 @@ func TestDaemonAddRemoveList(t *testing.T) {
 	d := newTestDaemon(t)
 
 	pref := freePort(t)
-	host, bumped, err := d.add(pref, guest)
+	host, bumped, _, err := d.add(pref, guest)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -113,7 +168,7 @@ func TestDaemonAddRemoveList(t *testing.T) {
 	}
 
 	// Adding the same guest again is idempotent (same host port).
-	host2, _, _ := d.add(host, guest)
+	host2, _, _, _ := d.add(host, guest)
 	if host2 != host {
 		t.Errorf("re-add host = %d, want %d", host2, host)
 	}
@@ -136,7 +191,7 @@ func TestDaemonPortBump(t *testing.T) {
 	defer occ.Close()
 	pref := occ.Addr().(*net.TCPAddr).Port
 
-	host, bumped, err := d.add(pref, guest)
+	host, bumped, _, err := d.add(pref, guest)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -161,7 +216,7 @@ func TestDaemonDispatch(t *testing.T) {
 	if r := d.dispatch(Request{Op: OpAdd, Host: freePort(t), Guest: guest}); !r.OK {
 		t.Errorf("add not ok: %+v", r)
 	}
-	if r := d.dispatch(Request{Op: OpList}); !r.OK || len(r.Forwards) != 1 {
+	if r := d.dispatch(Request{Op: OpList}); !r.OK || len(r.Forwards) != 1 || r.State != StateUp || r.Since.IsZero() {
 		t.Errorf("list wrong: %+v", r)
 	}
 	if r := d.dispatch(Request{Op: OpRemove, Guest: guest}); !r.OK {
@@ -170,4 +225,185 @@ func TestDaemonDispatch(t *testing.T) {
 	if r := d.dispatch(Request{Op: "bogus"}); r.OK || r.Err == "" {
 		t.Errorf("bogus op should error: %+v", r)
 	}
+}
+
+func TestDaemonReconnectRestoresForwards(t *testing.T) {
+	_, guest := echoServer(t)
+	_, guest2 := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+
+	// Fail twice, then hand back a fresh transport.
+	var attempts atomic.Int32
+	second := newFakeTransport()
+	d.dial = func() (transport, error) {
+		if attempts.Add(1) <= 2 {
+			return nil, errors.New("link still down")
+		}
+		return second, nil
+	}
+
+	pref, pref2 := freePort(t), freePort(t)
+	host, _, _, err := d.add(pref, guest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := d.add(pref2, guest2); err != nil {
+		t.Fatal(err)
+	}
+	done := runLoop(d)
+
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	if !first.closed.Load() {
+		t.Error("dead transport was not closed")
+	}
+	if r := d.dispatch(Request{Op: OpList}); r.State != StateReconnecting || len(r.Forwards) != 2 || !r.Forwards[0].Pending {
+		t.Errorf("list during outage = %+v", r)
+	}
+
+	waitFor(t, "state back up", func() bool { s, _ := d.status(); return s == StateUp })
+	if got := attempts.Load(); got != 3 {
+		t.Errorf("dial attempts = %d, want 3", got)
+	}
+	if second.binds.Load() != 2 {
+		t.Errorf("forwards bound on new transport = %d, want 2", second.binds.Load())
+	}
+	byGuest := map[int]Forward{}
+	for _, f := range d.list() {
+		byGuest[f.Guest] = f
+	}
+	if len(byGuest) != 2 || byGuest[guest].Host != host || byGuest[guest].Pending || byGuest[guest2].Host != pref2 {
+		t.Fatalf("restored forwards = %+v (want same host ports %d, %d)", byGuest, host, pref2)
+	}
+	// Traffic flows through the restored forward.
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", host))
+	if err != nil {
+		t.Fatalf("dial restored forward: %v", err)
+	}
+	io.WriteString(conn, "hi\n")
+	buf := make([]byte, 3)
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "hi\n" {
+		t.Fatalf("echo = %q err=%v", buf, err)
+	}
+	conn.Close()
+
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+func TestDaemonReconnectBumpsTakenPort(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	pref := freePort(t)
+	if _, _, _, err := d.add(pref, guest); err != nil {
+		t.Fatal(err)
+	}
+	// Steal the host port while the link is down.
+	var occ net.Listener
+	d.dial = func() (transport, error) {
+		if occ == nil {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", pref))
+			if err != nil {
+				return nil, err
+			}
+			occ = ln
+		}
+		return newFakeTransport(), nil
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	waitFor(t, "state back up", func() bool { s, _ := d.status(); return s == StateUp })
+	defer occ.Close()
+	fs := d.list()
+	if len(fs) != 1 || fs[0].Host == pref || fs[0].Host <= pref || fs[0].Host > pref+20 {
+		t.Fatalf("restored forwards = %+v, want a bumped host port above %d", fs, pref)
+	}
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+func TestDaemonAddWhileReconnecting(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	release := make(chan struct{})
+	second := newFakeTransport()
+	d.dial = func() (transport, error) {
+		select {
+		case <-release:
+			return second, nil
+		default:
+			return nil, errors.New("down")
+		}
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+
+	pref := freePort(t)
+	host, bumped, pending, err := d.add(pref, guest)
+	if err != nil || host != pref || bumped || !pending {
+		t.Fatalf("add during outage = host %d bumped %v pending %v err %v", host, bumped, pending, err)
+	}
+	if portOpen(pref) {
+		t.Fatal("pending forward must not be bound yet")
+	}
+	// Re-adding the same guest during the outage is idempotent and still pending.
+	if _, _, pending, _ := d.add(pref, guest); !pending {
+		t.Error("re-add during outage should report pending")
+	}
+
+	close(release)
+	waitFor(t, "state back up", func() bool { s, _ := d.status(); return s == StateUp })
+	waitFor(t, "pending forward bound", func() bool { return portOpen(pref) })
+	if fs := d.list(); len(fs) != 1 || fs[0].Pending {
+		t.Fatalf("after reconnect list = %+v", fs)
+	}
+	d.triggerStop()
+	waitDone(t, done, "stop")
+}
+
+func TestDaemonStopWhileReconnecting(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	d.minBackoff, d.maxBackoff = time.Hour, time.Hour // stop must not wait out a backoff
+	first := d.tr.(*fakeTransport)
+	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+		t.Fatal(err)
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	d.triggerStop()
+	waitDone(t, done, "stop during reconnect")
+}
+
+func TestDaemonReconnectIdlesOutWithNoForwards(t *testing.T) {
+	d := newTestDaemon(t)
+	d.idle = 30 * time.Millisecond
+	first := d.tr.(*fakeTransport)
+	done := runLoop(d)
+	first.die()
+	waitDone(t, done, "idle with nothing to restore")
+}
+
+func TestDaemonRemoveWhileReconnecting(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+		t.Fatal(err)
+	}
+	done := runLoop(d)
+	first.die()
+	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
+	d.remove(guest) // closer is nil; must not panic
+	if fs := d.list(); len(fs) != 0 {
+		t.Fatalf("list after remove = %+v", fs)
+	}
+	d.triggerStop()
+	waitDone(t, done, "stop")
 }

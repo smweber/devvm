@@ -7,6 +7,7 @@ package session
 
 import (
 	"path/filepath"
+	"time"
 
 	"github.com/smweber/devvm/internal/config"
 )
@@ -18,18 +19,31 @@ type Request struct {
 	Guest int    `json:"guest,omitempty"` // guest port (add/remove)
 }
 
-// Forward is one live forward: the actual host port and the guest port it maps.
+// Forward is one forward the daemon owns: the actual host port and the guest
+// port it maps. Pending means the transport is down and it will be re-bound on
+// reconnect (the host port is the one it had, or the preferred one if added
+// during the outage).
 type Forward struct {
-	Host  int `json:"host"`
-	Guest int `json:"guest"`
+	Host    int  `json:"host"`
+	Guest   int  `json:"guest"`
+	Pending bool `json:"pending,omitempty"`
 }
+
+// Daemon states, reported on list/ping.
+const (
+	StateUp           = "up"
+	StateReconnecting = "reconnecting"
+)
 
 // Response is the daemon's reply (one JSON line).
 type Response struct {
 	OK       bool      `json:"ok"`
 	Err      string    `json:"err,omitempty"`
-	Host     int       `json:"host,omitempty"`   // actual host port after any bump (add)
-	Bumped   bool      `json:"bumped,omitempty"` // preferred port was taken
+	Host     int       `json:"host,omitempty"`    // actual host port after any bump (add)
+	Bumped   bool      `json:"bumped,omitempty"`  // preferred port was taken
+	Pending  bool      `json:"pending,omitempty"` // recorded during an outage, not yet bound (add)
+	State    string    `json:"state,omitempty"`   // StateUp | StateReconnecting (list/ping)
+	Since    time.Time `json:"since,omitempty"`   // when State began (list/ping)
 	Forwards []Forward `json:"forwards,omitempty"`
 }
 

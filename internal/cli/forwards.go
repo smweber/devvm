@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
@@ -36,11 +37,27 @@ func findMapping(m *config.Machine, pref, guest int) (string, bool) {
 	return "", false
 }
 
-func (a *App) reportForward(name string, host, guest, pref int, bumped bool) {
-	if bumped {
+func (a *App) reportForward(name string, host, guest, pref int, bumped, pending bool) {
+	switch {
+	case pending:
+		fmt.Fprintf(a.Stdout, "devvm: forward localhost:%d -> %s:%d pending (daemon is reconnecting; it comes up when the link is back)\n", host, name, guest)
+	case bumped:
 		fmt.Fprintf(a.Stdout, "devvm: forwarding localhost:%d -> %s:%d (preferred %d taken)\n", host, name, guest, pref)
-	} else {
+	default:
 		fmt.Fprintf(a.Stdout, "devvm: forwarding localhost:%d -> %s:%d\n", host, name, guest)
+	}
+}
+
+// sinceHuman renders how long ago t was, coarsely ("12s", "3m", "2h5m").
+func sinceHuman(t time.Time) string {
+	d := time.Since(t).Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 }
 
@@ -57,7 +74,7 @@ func (a *App) runPort(name, mapping string) error {
 	if err != nil {
 		return err
 	}
-	host, bumped, err := cl.Add(pref, guest)
+	host, bumped, pending, err := cl.Add(pref, guest)
 	if err != nil {
 		return err
 	}
@@ -67,7 +84,7 @@ func (a *App) runPort(name, mapping string) error {
 			return err
 		}
 	}
-	a.reportForward(name, host, guest, pref, bumped)
+	a.reportForward(name, host, guest, pref, bumped, pending)
 	return nil
 }
 
@@ -139,12 +156,13 @@ func (a *App) runPortsListAll() error {
 		if err != nil {
 			continue
 		}
-		// guest port -> live host port, if a daemon is up for this machine.
-		live := map[int]int{}
+		// guest port -> daemon-owned forward, if a daemon is up for this machine.
+		// A pending forward (daemon reconnecting) shows its host port but not "up".
+		live := map[int]session.Forward{}
 		if cl, err := session.Existing(a.ConfigDir, name); err == nil {
 			if fwds, err := cl.List(); err == nil {
 				for _, f := range fwds {
-					live[f.Guest] = f.Host
+					live[f.Guest] = f
 				}
 			}
 		}
@@ -153,17 +171,17 @@ func (a *App) runPortsListAll() error {
 			_, guestStr := config.SplitPort(p)
 			guest, _ := strconv.Atoi(guestStr)
 			host, state := "—", "down"
-			if h, ok := live[guest]; ok {
-				host, state = fmt.Sprintf("localhost:%d", h), "up"
+			if f, ok := live[guest]; ok {
+				host, state = fmt.Sprintf("localhost:%d", f.Host), forwardState(f)
 				delete(live, guest) // consumed; leftover live entries are ephemeral
 			}
 			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %s\n", name, p, guest, host, state)
 		}
 		// Live forwards with no matching configured mapping (added ad hoc via up).
-		for guest, h := range live {
+		for guest, f := range live {
 			any = true
 			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %s\n",
-				name, "(ephemeral)", guest, fmt.Sprintf("localhost:%d", h), "up")
+				name, "(ephemeral)", guest, fmt.Sprintf("localhost:%d", f.Host), forwardState(f))
 		}
 	}
 	if !any {
@@ -213,29 +231,48 @@ func (a *App) tunnelUp(name string) error {
 			fmt.Fprintf(a.Stderr, "devvm: skipping %q: %v\n", mapping, perr)
 			continue
 		}
-		host, bumped, aerr := cl.Add(pref, guest)
+		host, bumped, pending, aerr := cl.Add(pref, guest)
 		if aerr != nil {
 			fmt.Fprintf(a.Stderr, "devvm: %v\n", aerr)
 			continue
 		}
-		a.reportForward(name, host, guest, pref, bumped)
+		a.reportForward(name, host, guest, pref, bumped, pending)
 	}
 	return nil
 }
 
-// forwardReport lists a machine's live forwards for `status`, or nothing if no
-// daemon is running.
+// forwardState is the per-forward column value: "up", or "reconnecting" for
+// one the daemon remembers but has not re-bound yet.
+func forwardState(f session.Forward) string {
+	if f.Pending {
+		return session.StateReconnecting
+	}
+	return session.StateUp
+}
+
+// forwardReport lists a machine's daemon-owned forwards for `ports list`, or
+// nothing if no daemon is running. While the daemon is reconnecting the header
+// says so (and for how long) and each forward is marked pending, so a stuck
+// reconnect is visible rather than looking like healthy forwards.
 func (a *App) forwardReport(name string) {
 	cl, err := session.Existing(a.ConfigDir, name)
 	if err != nil {
 		return
 	}
-	fwds, err := cl.List()
-	if err != nil || len(fwds) == 0 {
+	st, err := cl.Status()
+	if err != nil || len(st.Forwards) == 0 {
 		return
 	}
-	fmt.Fprintln(a.Stdout, "  forwards:")
-	for _, f := range fwds {
-		fmt.Fprintf(a.Stdout, "    guest %-5d -> localhost:%d\n", f.Guest, f.Host)
+	if st.Reconnecting() {
+		fmt.Fprintf(a.Stdout, "  forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
+	} else {
+		fmt.Fprintln(a.Stdout, "  forwards:")
+	}
+	for _, f := range st.Forwards {
+		suffix := ""
+		if f.Pending {
+			suffix = "  (pending)"
+		}
+		fmt.Fprintf(a.Stdout, "    guest %-5d -> localhost:%d%s\n", f.Guest, f.Host, suffix)
 	}
 }

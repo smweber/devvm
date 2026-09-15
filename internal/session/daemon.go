@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +23,15 @@ import (
 // (ControlPersist-style), so a `tunnel down` or last `unport` reaps it.
 const idleTimeout = 60 * time.Second
 
+// Reconnect backoff bounds. A laptop waking from sleep usually has its link
+// back within a few seconds; a box that is really gone should not be hammered.
+const (
+	minReconnectBackoff = 2 * time.Second
+	maxReconnectBackoff = 30 * time.Second
+)
+
+// fwd is one forward the daemon is responsible for. closer is nil while the
+// transport is down: the forward is remembered and re-bound on reconnect.
 type fwd struct {
 	host, guest int
 	closer      io.Closer
@@ -29,14 +40,41 @@ type fwd struct {
 type daemon struct {
 	configDir string
 	name      string
-	tr        transport
+	dial      func() (transport, error) // re-dials the transport after it dies
 	ln        net.Listener
+	logf      func(format string, args ...any)
+
+	// Backoff/idle knobs live on the struct so tests can shrink them.
+	minBackoff, maxBackoff, idle time.Duration
 
 	mu       sync.Mutex
+	tr       transport
 	forwards map[int]*fwd // keyed by guest port
+	state    string       // StateUp | StateReconnecting
+	since    time.Time    // when state last changed
 
 	stopOnce sync.Once
 	stop     chan struct{}
+}
+
+// newDaemon wires a daemon around an already-connected transport; dial is how
+// it gets a fresh one when that transport dies.
+func newDaemon(configDir, name string, tr transport, dial func() (transport, error)) *daemon {
+	logger := log.New(os.Stderr, "devvm-daemon: ", log.LstdFlags)
+	return &daemon{
+		configDir:  configDir,
+		name:       name,
+		tr:         tr,
+		dial:       dial,
+		logf:       logger.Printf,
+		minBackoff: minReconnectBackoff,
+		maxBackoff: maxReconnectBackoff,
+		idle:       idleTimeout,
+		forwards:   map[int]*fwd{},
+		state:      StateUp,
+		since:      time.Now(),
+		stop:       make(chan struct{}),
+	}
 }
 
 // RunDaemon is the per-machine daemon entrypoint (the hidden `__daemon`
@@ -75,36 +113,133 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 	// The socket is live and dialable; let any queued starter in to see that.
 	lock.Close()
 
-	d := &daemon{
-		configDir: configDir,
-		name:      m.Name,
-		tr:        tr,
-		ln:        ln,
-		forwards:  map[int]*fwd{},
-		stop:      make(chan struct{}),
-	}
+	d := newDaemon(configDir, m.Name, tr, func() (transport, error) { return newTransport(ctx, m, b) })
+	d.ln = ln
 	go d.serveControl()
 	d.loop()
 	return d.shutdown()
 }
 
-// loop supervises the daemon: exit on stop, transport death, or idle.
+// loop supervises the daemon: exit on stop or idle; on transport death, drop
+// the dead channel and reconnect rather than exit. Before this, a laptop sleep
+// long enough to exhaust ssh keepalives killed the daemon and every forward
+// with it, and the user had to run `ports up` after each wake.
 func (d *daemon) loop() {
-	idle := time.NewTimer(idleTimeout)
+	idle := time.NewTimer(d.idle)
 	defer idle.Stop()
 	for {
 		select {
 		case <-d.stop:
 			return
-		case <-d.tr.dead():
-			return
+		case <-d.transport().dead():
+			d.onDead()
+			if !d.reconnect() {
+				return
+			}
+			// Restart the idle clock: the reconnect loop ran its own.
+			idle.Reset(d.idle)
 		case <-idle.C:
 			if d.count() == 0 {
 				return
 			}
-			idle.Reset(idleTimeout)
+			idle.Reset(d.idle)
 		}
 	}
+}
+
+func (d *daemon) transport() transport {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.tr
+}
+
+// onDead tears down every forward on the dead transport (their host listeners
+// or -L channels are gone or about to be) and reaps the transport itself, then
+// marks the daemon reconnecting. The forwards stay in the map, closer-less, so
+// reconnect() knows what to restore and clients can still see them as pending.
+func (d *daemon) onDead() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, f := range d.forwards {
+		if f.closer != nil {
+			f.closer.Close()
+			f.closer = nil
+		}
+	}
+	_ = d.tr.Close()
+	d.setState(StateReconnecting)
+	d.logf("%s: transport died; reconnecting (%d forwards to restore)", d.name, len(d.forwards))
+}
+
+// setState must be called with d.mu held.
+func (d *daemon) setState(state string) {
+	if d.state != state {
+		d.state, d.since = state, time.Now()
+	}
+}
+
+// reconnect re-dials with exponential backoff until it succeeds (true), is
+// stopped (false), or has sat with nothing to restore for the idle period
+// (false) — the same idle rule an up daemon follows.
+func (d *daemon) reconnect() bool {
+	backoff := d.minBackoff
+	wait := time.NewTimer(backoff)
+	defer wait.Stop()
+	idle := time.NewTimer(d.idle)
+	defer idle.Stop()
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-d.stop:
+			return false
+		case <-idle.C:
+			if d.count() == 0 {
+				d.logf("%s: no forwards to restore; exiting", d.name)
+				return false
+			}
+			idle.Reset(d.idle)
+		case <-wait.C:
+			tr, err := d.dial()
+			if err != nil {
+				backoff = min(backoff*2, d.maxBackoff)
+				d.logf("%s: reconnect attempt %d failed: %v (retrying in %s)", d.name, attempt, err, backoff)
+				wait.Reset(backoff)
+				continue
+			}
+			d.restore(tr)
+			return true
+		}
+	}
+}
+
+// restore adopts a fresh transport and re-binds every remembered forward at
+// its previous host port, so browser tabs and tool configs pointing at
+// localhost:PORT keep working across the outage. A port taken meanwhile bumps
+// exactly like a first-time add; any other failure drops that forward.
+func (d *daemon) restore(tr transport) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.tr = tr
+	guests := make([]int, 0, len(d.forwards))
+	for g := range d.forwards {
+		guests = append(guests, g)
+	}
+	sort.Ints(guests)
+	restored := 0
+	for _, g := range guests {
+		f := d.forwards[g]
+		host, bumped, err := d.bind(f.host, g)
+		if err != nil {
+			d.logf("%s: dropping forward for guest %d: %v", d.name, g, err)
+			delete(d.forwards, g)
+			continue
+		}
+		if bumped {
+			d.logf("%s: host port %d taken; guest %d now on localhost:%d", d.name, f.host, g, host)
+		}
+		restored++
+	}
+	d.setState(StateUp)
+	d.logf("%s: reconnected, %d forwards restored", d.name, restored)
 }
 
 func (d *daemon) count() int {
@@ -122,21 +257,37 @@ func (d *daemon) shutdown() error {
 	os.Remove(socketPath(d.configDir, d.name))
 	d.mu.Lock()
 	for _, f := range d.forwards {
-		f.closer.Close()
+		if f.closer != nil {
+			f.closer.Close()
+		}
 	}
 	d.forwards = map[int]*fwd{}
+	tr := d.tr
 	d.mu.Unlock()
-	return d.tr.Close()
+	return tr.Close()
 }
 
 // add allocates a host port (bumping on conflict, up to +20) and starts the
-// forward, mirroring smol_forward_up / ssh_forwards.
-func (d *daemon) add(pref, guest int) (host int, bumped bool, err error) {
+// forward, mirroring smol_forward_up / ssh_forwards. While reconnecting it
+// only records the request (pending=true) so a `ports up` issued during an
+// outage comes up as soon as the transport is back, instead of erroring.
+func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if f, ok := d.forwards[guest]; ok {
-		return f.host, false, nil
+		return f.host, false, f.closer == nil, nil
 	}
+	if d.state == StateReconnecting {
+		d.forwards[guest] = &fwd{host: pref, guest: guest}
+		return pref, false, true, nil
+	}
+	host, bumped, err = d.bind(pref, guest)
+	return host, bumped, false, err
+}
+
+// bind is the port-allocating core of add/restore; d.mu must be held. It
+// records the forward in the map (creating or updating the entry for guest).
+func (d *daemon) bind(pref, guest int) (host int, bumped bool, err error) {
 	h := pref
 	for tries := 0; tries < 20; tries++ {
 		closer, ferr := d.tr.forward(h, guest)
@@ -156,7 +307,9 @@ func (d *daemon) remove(guest int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if f, ok := d.forwards[guest]; ok {
-		f.closer.Close()
+		if f.closer != nil {
+			f.closer.Close()
+		}
 		delete(d.forwards, guest)
 	}
 }
@@ -166,9 +319,17 @@ func (d *daemon) list() []Forward {
 	defer d.mu.Unlock()
 	out := make([]Forward, 0, len(d.forwards))
 	for _, f := range d.forwards {
-		out = append(out, Forward{Host: f.host, Guest: f.guest})
+		out = append(out, Forward{Host: f.host, Guest: f.guest, Pending: f.closer == nil})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Guest < out[j].Guest })
 	return out
+}
+
+// status snapshots the daemon's state for list/ping replies.
+func (d *daemon) status() (state string, since time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.state, d.since
 }
 
 func (d *daemon) serveControl() {
@@ -200,18 +361,20 @@ func (d *daemon) handleConn(conn net.Conn) {
 func (d *daemon) dispatch(req Request) Response {
 	switch req.Op {
 	case OpAdd:
-		host, bumped, err := d.add(req.Host, req.Guest)
+		host, bumped, pending, err := d.add(req.Host, req.Guest)
 		if err != nil {
 			return Response{Err: err.Error()}
 		}
-		return Response{OK: true, Host: host, Bumped: bumped}
+		return Response{OK: true, Host: host, Bumped: bumped, Pending: pending}
 	case OpRemove:
 		d.remove(req.Guest)
 		return Response{OK: true}
 	case OpList:
-		return Response{OK: true, Forwards: d.list()}
+		state, since := d.status()
+		return Response{OK: true, State: state, Since: since, Forwards: d.list()}
 	case OpPing:
-		return Response{OK: true}
+		state, since := d.status()
+		return Response{OK: true, State: state, Since: since}
 	case OpStop:
 		defer d.triggerStop()
 		return Response{OK: true}

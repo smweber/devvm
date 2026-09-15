@@ -40,7 +40,7 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 	}
 
 	pref := freePort(t)
-	host, bumped, err := cl.Add(pref, guest)
+	host, bumped, _, err := cl.Add(pref, guest)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}

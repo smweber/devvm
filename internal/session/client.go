@@ -102,15 +102,17 @@ func (c *Client) request(req Request) (Response, error) {
 }
 
 // Add brings up a forward, returning the actual host port (after any bump).
-func (c *Client) Add(pref, guest int) (host int, bumped bool, err error) {
+// pending reports that the daemon is reconnecting and has only recorded the
+// forward; it comes up, at host if still free, once the transport is back.
+func (c *Client) Add(pref, guest int) (host int, bumped, pending bool, err error) {
 	resp, err := c.request(Request{Op: OpAdd, Host: pref, Guest: guest})
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 	if !resp.OK {
-		return 0, false, errors.New(resp.Err)
+		return 0, false, false, errors.New(resp.Err)
 	}
-	return resp.Host, resp.Bumped, nil
+	return resp.Host, resp.Bumped, resp.Pending, nil
 }
 
 // Remove tears down the forward for a guest port.
@@ -125,16 +127,33 @@ func (c *Client) Remove(guest int) error {
 	return nil
 }
 
-// List returns the live forwards.
-func (c *Client) List() ([]Forward, error) {
+// Status is a daemon snapshot: its connection state, when that state began,
+// and every forward it owns (live, or pending while reconnecting).
+type Status struct {
+	State    string
+	Since    time.Time
+	Forwards []Forward
+}
+
+// Reconnecting reports whether the daemon is between transports.
+func (s Status) Reconnecting() bool { return s.State == StateReconnecting }
+
+// Status returns the daemon's state and forwards.
+func (c *Client) Status() (Status, error) {
 	resp, err := c.request(Request{Op: OpList})
 	if err != nil {
-		return nil, err
+		return Status{}, err
 	}
 	if !resp.OK {
-		return nil, errors.New(resp.Err)
+		return Status{}, errors.New(resp.Err)
 	}
-	return resp.Forwards, nil
+	return Status{State: resp.State, Since: resp.Since, Forwards: resp.Forwards}, nil
+}
+
+// List returns the daemon's forwards (live or pending).
+func (c *Client) List() ([]Forward, error) {
+	st, err := c.Status()
+	return st.Forwards, err
 }
 
 // Stop asks the daemon to exit (reaping all forwards).
