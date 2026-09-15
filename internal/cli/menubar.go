@@ -229,7 +229,9 @@ func (m *menubarInstaller) quit() error {
 // failed: the user should not lose their menu bar item over a bad download.
 func (m *menubarInstaller) reopenAfterFailure(wasRunning bool) {
 	if wasRunning {
-		_ = m.open()
+		if err := m.open(); err != nil {
+			fmt.Fprintf(os.Stderr, "devvm: could not reopen %s.app after the failed install: %v\n", menubarAppName, err)
+		}
 	}
 }
 

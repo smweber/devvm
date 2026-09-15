@@ -67,7 +67,7 @@ func archiveTree(tw *tar.Writer, src string, stderr io.Writer) error {
 		if strings.ContainsAny(name, "\n\r") {
 			// The guest's conflict check prints one path per line; a name with
 			// a newline would corrupt that listing. Nothing legitimate has one.
-			return fmt.Errorf("refusing to archive %q: name contains a newline", p)
+			return fmt.Errorf("refusing to archive %q: name contains a newline or carriage return", p)
 		}
 		hdr.Name = name
 		if info.IsDir() {

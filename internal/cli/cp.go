@@ -272,11 +272,14 @@ for base; do
     for p; do
       t="$target${p#"$root"}"
       if [ -d "$p" ] && [ ! -L "$p" ]; then
-        [ ! -e "$t" ] || [ -d "$t" ] || printf "  %s\n" "$t"
+        # A symlink where a directory lands is a conflict even if it points
+        # at one: -d follows links, and merging through it would write (or,
+        # with -f, delete) outside DEST.
+        if [ -L "$t" ] || { [ -e "$t" ] && [ ! -d "$t" ]; }; then printf "  %s\n" "$t"; fi
       elif [ -e "$t" ] || [ -L "$t" ]; then
         printf "  %s\n" "$t"
       fi
-    done' sh "$stage/files/$base" "$target" {} +)
+    done; exit 0' sh "$stage/files/$base" "$target" {} +)
   [ -z "$found" ] || conflicts="$conflicts$found
 "
 done
@@ -290,7 +293,9 @@ fi
 # paths are re-derived by the same find pass rather than parsed back out of
 # $conflicts: that list is newline-separated and only for display, and a
 # directory name containing a newline would otherwise split into a bogus
-# path resolved against $HOME.
+# path resolved against $HOME. The inner script always exits 0: a failed rm
+# must not abandon a half-cleared DEST under set -e; cp -R reports the real
+# problem (rm's own message is already on stderr).
 if [ -n "$conflicts" ]; then
   for base; do
     if [ "$into" = true ]; then target="$dest/$base"; else target=$dest; fi
@@ -299,11 +304,11 @@ if [ -n "$conflicts" ]; then
       for p; do
         t="$target${p#"$root"}"
         if [ -d "$p" ] && [ ! -L "$p" ]; then
-          [ ! -e "$t" ] || [ -d "$t" ] || rm -rf -- "$t"
+          if [ -L "$t" ] || { [ -e "$t" ] && [ ! -d "$t" ]; }; then rm -rf -- "$t"; fi
         elif [ -e "$t" ] || [ -L "$t" ]; then
           rm -rf -- "$t"
         fi
-      done' sh "$stage/files/$base" "$target" {} +
+      done; exit 0' sh "$stage/files/$base" "$target" {} +
   done
 fi
 for base; do

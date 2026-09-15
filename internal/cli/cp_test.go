@@ -371,3 +371,57 @@ func TestWriteArchiveRejectsNewlineNames(t *testing.T) {
 		t.Fatalf("want newline refusal, got %v", err)
 	}
 }
+
+// A symlink-to-directory already inside DEST must count as a conflict where
+// the archive brings a directory: `-d` follows links, so merging through it
+// would write, and -f delete, outside DEST.
+func TestCopyForceDoesNotFollowDirectorySymlinkInDest(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	writeTree(t, root, "proj/sub/authorized_keys", "proj/real/keepme")
+	victimDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(victimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victimDir, "authorized_keys"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// DEST already has proj/sub -> ~/.ssh and a real proj/real to merge into.
+	if err := os.MkdirAll(filepath.Join(home, "proj", "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "proj", "real", "other"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victimDir, filepath.Join(home, "proj", "sub")); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "payload.tar")
+	if err := writeArchive(archive, []string{filepath.Join(root, "proj")}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	b := &localCopyBackend{home: home}
+	// Without -f it is refused, naming the symlink.
+	err := copyArchive(context.Background(), b, "vm", archive, []string{"proj"}, "~", copyOpts{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("want refusal, got %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(victimDir, "authorized_keys")); string(data) != "keep" {
+		t.Fatalf("refusal touched the victim: %q", data)
+	}
+	// With -f the symlink is replaced by a real directory; the victim survives
+	// and the real directory is merged.
+	if err := copyArchive(context.Background(), b, "vm", archive, []string{"proj"}, "~", copyOpts{force: true}, io.Discard); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(victimDir, "authorized_keys")); string(data) != "keep" {
+		t.Fatalf("-f removed through the symlink: %q", data)
+	}
+	if fi, err := os.Lstat(filepath.Join(home, "proj", "sub")); err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Fatalf("proj/sub should now be a real directory: %v %v", fi, err)
+	}
+	for _, want := range []string{"proj/sub/authorized_keys", "proj/real/keepme", "proj/real/other"} {
+		if _, err := os.Stat(filepath.Join(home, want)); err != nil {
+			t.Errorf("missing %s: %v", want, err)
+		}
+	}
+}
