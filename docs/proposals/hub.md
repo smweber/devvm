@@ -1,8 +1,10 @@
 # Proposal: hubs — reach another host's devvm machines from this one
 
-Status: draft v3, 2026-09-15, revised after two independent reviews. Order of
-work lives in `ROADMAP.md` and nowhere else. Companion
-to `browser-bridge.md`; section 8 explains how the two interact.
+Status: draft v3.1, 2026-09-15, revised after three independent reviews.
+Order of work lives in `ROADMAP.md` and nowhere else. Companion to
+`browser-bridge.md`, whose sections 3 and 4 are the authoritative statement
+of leases, subscriptions, ownership and bind policy; this doc references them
+and adds only what is hub-specific. Section 8 explains how the two interact.
 
 ## Problem
 
@@ -98,13 +100,15 @@ Two consequences the registry code has to absorb:
   it from the display name in one place and nothing else ever splits it.
 - **Enumeration.** `restartDaemons` (`update`), the global `ports list`,
   `gatherRows` (`status`) and completion all walk `config.List`, which sees
-  only `machines/`. They switch to a `config.ListAll` that yields local names
-  plus `HUB/NAME` for every conf under `hubs/`, so a laptop daemon for a hub
-  machine is cycled by `update` and shown by `ports list` like any other.
-  `delete desktop/web` proxies the deregistration, then stops the local daemon
-  and removes `hubs/desktop/web.toml`. `delete desktop` refuses while
-  `hubs/desktop/` is non-empty unless `--force`, which stops those daemons and
-  removes the tree.
+  only `machines/`. They switch to a `config.ListAll` that yields local names,
+  `HUB/NAME` for every conf under `hubs/`, **and `HUB/NAME` for every live
+  `run/HUB@NAME.sock`**. The second source matters because a laptop daemon
+  for a hub machine can exist with no conf at all: a browser open from a
+  proxied `attach` creates a `connection`-owned forward in it and nothing
+  under `hubs/`. `delete desktop/web` proxies the deregistration, then stops
+  the local daemon and removes `hubs/desktop/web.toml` if present. `delete
+  desktop` refuses while any `hubs/desktop/` conf or `run/desktop@*.sock`
+  exists unless `--force`, which stops those daemons and removes the tree.
 
 ### 3. Dispatch lives in `resolve`, not in a root interceptor
 
@@ -116,9 +120,14 @@ already calls `resolve`, so that is the one dispatch point:
 - `resolve` returns a `hubBackend` for `HUB/NAME`.
 - Leaves that must run on the hub (`attach`, `shell`, `exec`, `start`, `stop`,
   `provision`, `deprovision`, `bootstrap`, `delete`, `repos *`, `keys *`,
-  `lockdown`, `create`) call `a.proxy(hub, argv)`, which re-runs the laptop's
-  own argv on the hub with `HUB/` stripped from the name and the persistent
-  `--config-dir` flag removed.
+  `lockdown`, `create`) call `a.proxy(hub, cmd, args)`, which **rebuilds** the
+  remote command line from the parsed cobra command rather than replaying
+  `os.Args`: the command path, the leaf's flags that were explicitly set, and
+  its positionals with `HUB/` stripped from the first. The persistent
+  `--config-dir` is simply never emitted. Replaying raw argv would have to
+  strip `--config-dir` by pattern, and `exec` and `keys add` disable flag
+  parsing precisely so the guest command's own arguments pass through
+  untouched; a guest `--config-dir` after `exec NAME --` must survive.
 - Leaves that run locally (`ports`, `cp-in`, `cp-out`, `status`, `auth`) use
   the backend's small surface (section 4) and the local mechanics below.
 
@@ -137,9 +146,9 @@ not hit `ssh -t`'s noise. The proxied command line is prefixed with
 daemon but never subscribes to browser events; the laptop subscribes instead
 (section 8).
 
-`start desktop/web` proxies and then runs the laptop's own `tunnelUp`, so
-laptop-configured forwards come back alongside the hub's. The hub's `start`
-only knows the hub's conf.
+`start desktop/web` proxies. Once hub forwards exist (section 7) it also runs
+the laptop's own `tunnelUp`, so laptop-configured forwards come back alongside
+the hub's; the hub's `start` only knows the hub's conf.
 
 `create desktop/web …` is the one leaf whose name does not exist yet; it
 proxies the same way, and the hub writes the conf. The huh form runs on the
@@ -232,22 +241,26 @@ laptop transport sees the process die, and it re-runs `__forward` with the
 daemon's existing backoff. If the master dies, the daemon goes `reconnecting`
 and `restore()` re-runs everything.
 
-**Ownership in the hub daemon.** Forwards today are keyed by guest port with no
-owner, and `remove` is unconditional, so a desktop `ports rm` would silently
-kill the laptop's forward. The daemon change is small and is the same one the
-browser bridge needs: a forward has a set of owners (`conf`, or a control
-connection), `add` from a held connection adds that connection as owner,
-`remove` from the CLI drops the `conf` owner, a connection closing drops
-itself, and the forward is torn down when the set is empty. This is the single
-ownership model both proposals share (see section 8); ephemeral TTL forwards in
-the bridge are just a third owner kind.
+**Ownership in the hub daemon** is `browser-bridge.md` section 4, not
+restated here. What it means for hubs: `__forward` adds its forward with its
+own control connection as owner, so a desktop `ports rm` (which drops only
+`conf`) cannot kill it, and a desktop `ports down` drops the `conf` owners
+but leaves the daemon up for the laptop's forwards. The second rule exists
+for this case: if `ports down` stopped the daemon outright, the laptop
+transport would re-run `__forward`, which respawns the daemon, and the two
+would loop. The desktop's `status --plain` shows `-` meanwhile, because
+`up:N` counts only `conf`.
 
-`ports down` on the desktop drops the `conf` owners and stops the daemon only
-when no forward and no holder remains. Today it stops the daemon outright;
-under this design that would make the laptop transport re-run `__forward`,
-which respawns the daemon, so the desktop could never get it down and the two
-would loop. With the rule the daemon stays for the laptop's forwards and the
-desktop's `status --plain` shows `-`, because `up:N` counts only `conf`.
+**One forwarding contract.** A client of the laptop daemon always asks for a
+**guest** port, exactly as it does for a local machine; it never sees or
+names a hub port. `hubTransport.forward(host, guest)` is what runs
+`__forward web GUEST`, reads the hub port the hub chose (which may be bumped
+on the hub; nothing on the laptop cares), and binds `-L host:localhost:hubPort`.
+When `__forward` exits and is re-run, the hub port it prints may differ; the
+transport re-resolves it and re-adds the `-L` before reporting the forward up.
+The same contract serves `ports add desktop/web 3000` and a browser open
+relayed from the hub (section 8): both are `add(guest P, …)` on the laptop
+daemon.
 
 The hub daemon owns the only agent exec into the VM. The laptop never spawns
 one. Both users can hold forwards to the same VM at once.
@@ -260,17 +273,25 @@ started inside a proxied `attach` or `shell`. So every proxied interactive
 leaf (`attach`, `shell`, `auth`) on a hub machine runs as:
 
 ```
-laptop: run `ssh HUB … devvm __subscribe web` over the master. It holds the
-        hub daemon, subscribes, prints one `ready` line once the daemon has
-        acknowledged the subscription, then streams events on stdout and
-        reads reply lines on stdin.
+laptop: run `ssh HUB … devvm __subscribe web` over the master. It subscribes
+        to the hub daemon as a relay (which holds it), prints one `ready` line
+        once the daemon has acknowledged the subscription, then streams
+        events on stdout and reads reply lines on stdin.
 laptop: wait for `ready`, then proxy the leaf with DEVVM_NO_SUBSCRIBE=1 (and
         -t when interactive).
-laptop: on each event, add a `connection`-owned forward in the laptop's own
-        daemon for desktop@web (exact port for a redirect, bump allowed for a
-        direct URL) to the hub-bound port, rewrite the URL for the laptop
-        port, open it, and write the reply back.
+laptop: on each event with a guest port, `add(guest P, …)` on the laptop's
+        own daemon for desktop@web with the same owner and exactness rules a
+        local open would use (direct: this process's connection, bump ok;
+        redirect: ttl, exact). The laptop daemon's hubTransport resolves the
+        hub port itself (section 7). Rewrite the URL for the laptop port if
+        bumped, open it, and write the reply back. An external URL is just
+        opened.
 ```
+
+`__subscribe` registers as a **relay** subscriber, so the hub daemon binds
+nothing for it (`browser-bridge.md` section 1): the exact-port requirement
+for a callback applies on the laptop, where the browser is, and a busy
+desktop port never refuses a laptop login.
 
 Ordering cannot be left to timing. If the proxied process subscribed too, it
 would either be the most recent subscriber (laptop subscribes first) and open
@@ -279,13 +300,22 @@ subscribes second). `DEVVM_NO_SUBSCRIBE=1` makes the proxied process hold
 without subscribing, and the `ready` line guarantees the laptop is subscribed
 before the login can emit anything.
 
-The event carries the original URL, the guest port, the kind (direct or
-redirect) and the hub-bound port, never a URL rewritten for the hub's port:
-the laptop needs the guest port to know what it is forwarding and the kind to
-know whether its own port must be exact. Its reply is what the guest sees, so
-`devvm: opened on host -> …` names the laptop's port. If the laptop's
-`__subscribe` dies mid-session the hub daemon has no subscriber and replies
-"not opened"; the shim prints the URL and the user pastes it.
+The event carries the original URL, the kind (external, direct or redirect)
+and, for the last two, the guest port; never a URL rewritten for the hub. The
+laptop needs the guest port to know what to forward and the kind to know
+whether its own port must be exact. Its reply is what the guest sees, so
+`devvm: opened on host -> …` names the laptop's port.
+
+**Recovery.** `__subscribe` is a process on the master like `__forward`, and
+it dies the same ways: the master drops (laptop sleep) or the hub daemon
+cycles (`update`, `stop` on the desktop). The laptop CLI re-runs it with the
+same 2–30s backoff `__forward` uses, waits for `ready` again, and logs a
+one-line notice in the session. While the laptop is unsubscribed, events go
+to whichever subscriber the hub daemon still has: a desktop `attach` on the
+same VM would open the URL there, or with none, the guest is told "not opened"
+and the shim prints the URL for pasting. On resubscribe the laptop is the most
+recent subscriber again. A login started inside the gap therefore either
+opens on the desktop or prints its URL; neither is silent.
 
 Where a desktop `attach` and a laptop `attach` are both subscribed to the same
 VM, the daemon delivers each event to the **most recent** subscriber only.

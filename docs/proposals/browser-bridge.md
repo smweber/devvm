@@ -1,8 +1,9 @@
 # Proposal: a generic guest→host browser bridge and ad-hoc forwards
 
-Status: draft v2.2, 2026-09-15. Order of work lives in `ROADMAP.md` and
-nowhere else. Revised after two independent reviews and aligned with `hub.md`
-(client-side browser opening, shared forward ownership, exact-port callbacks).
+Status: draft v2.3, 2026-09-15. Order of work lives in `ROADMAP.md` and
+nowhere else. Revised after three independent reviews. **Sections 3 and 4 are
+the authoritative statement of leases, subscriptions, ownership and bind
+policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
 Scope: `internal/auth`, `internal/session`, `cmd/devvm-agent`, `internal/agentrpc`,
 `internal/backend`, `internal/bootstrap`, `internal/cli`.
 
@@ -55,31 +56,43 @@ does what `auth.session.onOpenURL` does today:
 ```
 on open-url request {url}:
   if no subscriber: log the URL; reply {opened: false}; stop
-  if daemon is reconnecting and url (or its redirect_uri) is loopback:
-      reply {err: "forward pending; retry when the link is back"}; stop
-  if url is loopback (host ∈ {localhost,127.0.0.1,::1}) with port P:
-      kind = direct
-      bound = add(guest P, prefer P, bump ok, owner = subscriber's connection)
-  else if url has redirect_uri that is loopback with port P:
-      kind = redirect
-      bound = add(guest P, exact P, owner = ttl)
-      if busy: reply {err: "callback port P is in use on the host"}; stop
-  deliver {url, guest: P, kind, bound} to the most recent subscriber
-  wait for its reply {opened, url, host_port}   // 15s; timeout or subscriber
+  classify:
+      url is loopback (host ∈ {localhost,127.0.0.1,::1}) port P  → kind=direct
+      url has a loopback redirect_uri with port P                 → kind=redirect
+      otherwise                                                   → kind=external
+  if kind != external and the subscriber is local (not a relay):
+      if daemon is reconnecting:
+          reply {err: "forward pending; retry when the link is back"}; stop
+      direct:   bound = add(guest P, prefer P, bump ok, owner = subscriber conn)
+      redirect: bound = add(guest P, exact P,          owner = ttl)
+                if busy: reply {err: "callback port P is in use on the host"}; stop
+  deliver {url, kind, guest: P?, bound?} to the most recent subscriber
+      // guest/bound absent for external; bound absent for a relay subscriber
+  wait for its reply {opened, url, host_port?}  // 15s; timeout or subscriber
   relay the reply to the guest                  // gone => opened=false
 ```
 
 **The daemon never opens a browser itself and never rewrites a URL.** A
-client that holds the daemon (section 3) may also subscribe to events; the
-most recently subscribed client rewrites a bumped direct URL for the port it
-will actually reach and opens it with `hostbrowser.Open` on its own host. For
-a local subscriber that port is `bound`; a laptop subscriber on a hub machine
-first adds its own forward to `bound` and rewrites for that (`hub.md` section
-8). A `redirect_uri` is never rewritten by anyone: the provider needs it
-verbatim, which is why that port must be exact on the host that shows the
-browser and why an occupied port is a refused open rather than a bumped one.
-The subscriber's reply is what the daemon relays to the guest, so success
-means "bound and handed to a browser", not "delivered to someone".
+subscribed client (section 3) rewrites a bumped direct URL for the port it
+will actually reach and opens it with `hostbrowser.Open` on its own host. An
+`external` URL (a normal login page with no loopback callback) is opened as
+is; there is nothing to forward.
+
+**Local versus relay subscribers.** A subscription declares whether the
+browser opens on this host (`local`, the `attach`/`shell`/`auth` process
+here) or on another host through a relay (`hub.md`'s `__subscribe`). For a
+local subscriber the daemon binds before delivering, and `bound` is the port
+the browser will reach. For a relay subscriber the daemon **binds nothing**:
+the relay requests guest port `P` from its own host's daemon, whose hub
+transport resolves an intermediate hub port for itself (`hub.md` section 7).
+Only the host that shows the browser needs the exact callback port, so a busy
+port on the hub never refuses a login that will open on the laptop.
+
+A `redirect_uri` is never rewritten by anyone: the provider needs it verbatim,
+which is why that port must be exact on the host that shows the browser and
+why an occupied port there is a refused open rather than a bumped one. The
+subscriber's reply is what the daemon relays to the guest, so success means
+"bound and handed to a browser", not "delivered to someone".
 
 Locally the subscriber is the `attach`/`shell`/`auth` process on this machine;
 for a hub machine it is the laptop's subscription across ssh (see `hub.md`
@@ -165,17 +178,23 @@ the user takes more than a minute. So:
 
 - New control op `hold`: the client keeps the control connection open; the
   daemon counts open holders. Idle rule becomes `forwards == 0 && holders == 0`,
-  in both `loop()` and `reconnect()`. A held connection may also `subscribe`
-  to events (section 1). `subscribe` is acknowledged: its reply is sent only
-  once the subscription is registered, so a client that waits for the reply
-  knows every later event reaches it. `hub.md`'s `__subscribe` helper prints
-  `ready` on that ack and the laptop starts the login only after it.
-- `DEVVM_NO_SUBSCRIBE=1` makes `attach`/`shell`/`auth` hold without
+  in both `loop()` and `reconnect()`.
+- New control op `subscribe {relay: bool}`: **a subscription implies a hold**,
+  so a subscriber never needs a separate `hold` and there is no "subscribed
+  but not held" state. It is acknowledged: the reply is sent only once the
+  subscription is registered, so a client that waits for the reply knows every
+  later event reaches it. `hub.md`'s `__subscribe` helper prints `ready` on
+  that ack and the laptop starts the login only after it. Events go to the
+  most recently registered subscriber; when it disconnects, the next most
+  recent one, if any, receives them.
+- `DEVVM_NO_SUBSCRIBE=1` makes `attach`/`shell`/`auth` `hold` without
   subscribing. The hub proxy sets it on every proxied command so the laptop's
-  subscription is the only one for that session (`hub.md` section 8).
+  subscription is the only one for that session (`hub.md` section 8). This is
+  the only remaining use of a bare `hold`.
 - `attach`, `shell`, and `auth` dial the daemon (spawning it if needed) and
-  hold for their lifetime. When the interactive session ends the hold drops and
-  the normal idle rule applies.
+  subscribe, which holds, for their lifetime. When the interactive session
+  ends the connection closes, the hold drops, and the normal idle rule
+  applies.
 - The hold also bounds the trust surface (section 7): the guest can only reach
   the host browser while a devvm session is active or forwards are up.
 
@@ -187,6 +206,7 @@ unconditional. Both proposals need ownership, so define it once:
 ```go
 type fwd struct {
     host, guest int
+    exact       bool               // host port may not bump, now or on restore
     closer      io.Closer
     owners      map[owner]struct{} // torn down when empty
 }
@@ -211,20 +231,33 @@ Owners decide lifetime and nothing else. Who drops what:
 - The forward is closed only when no owner remains. "Ephemeral" below means
   "has no `conf` owner".
 
-**Bind policy is a property of the request, not the owner.** `add` takes the
-guest port, a preferred host port, and `exact bool`. Configured forwards and
-direct opens bump as today; a `redirect_uri` callback is exact and fails with
-`errPortBusy` if the port is taken, which the bridge turns into a refused open
-with a reply the guest can read. Today's `ensureCallback` also binds the exact
-port; it just fails silently.
+**Bind policy is a property of the request, kept for the forward's life.**
+`add` takes the guest port, a preferred host port, and `exact bool`, and the
+forward record retains `exact`. Configured forwards and direct opens bump as
+today; a `redirect_uri` callback is exact and fails with `errPortBusy` if the
+port is taken, which the bridge turns into a refused open with a reply the
+guest can read. Today's `ensureCallback` also binds the exact port; it just
+fails silently. **`restore()` honours `exact`**: today it re-binds every
+forward with bumping allowed, which would silently move a callback port that
+another process grabbed during the outage while the browser still targets the
+original. An exact forward whose port is unavailable after a reconnect stays
+pending (visible in `ports list`) and is retried on the next attempt, never
+bumped.
 
-**Every forward is dual-stack.** `auth.ensureCallback` binds both
-`127.0.0.1:P` and `[::1]:P` because macOS resolves `localhost` to `::1`. Both
-transports' `forward` bind only IPv4 today. Rather than track address families
-per request, every forward binds both (smol: two listeners; ssh: two `-L`
-specs), with `::1` best-effort so a host without an IPv6 loopback still works.
-That removes the family axis entirely: reusing an existing forward can never
-hand a callback an IPv4-only bind.
+**Every forward is dual-stack, and "free" means free on both families.**
+`auth.ensureCallback` binds both `127.0.0.1:P` and `[::1]:P` because macOS
+resolves `localhost` to `::1`. Both transports' `forward` bind only IPv4
+today. Every forward now binds both (smol: two listeners; ssh: two `-L`
+specs). The `::1` bind failing because the host has no IPv6 loopback
+(`EADDRNOTAVAIL`, `EAFNOSUPPORT`) is tolerated: the forward is IPv4-only and
+so is everything else on that host. The `::1` bind failing because **another
+process owns `[::1]:P`** (`EADDRINUSE`) counts as the port being busy exactly
+as an IPv4 conflict does: a bump request moves to the next port and an exact
+request fails, since a callback aimed at `::1` would otherwise land on that
+other process while we reported success. The IPv4 listener is closed again
+in that case. With that rule there is no per-request family choice, and
+reusing an existing forward never hands a callback a bind the host's browser
+cannot reach.
 
 Which owner a bridge open gets:
 
@@ -295,8 +328,8 @@ func Authenticate(ctx, b, m, tools, approve) error {
     agentPath := agentbin.Install(...)         // consent gate unchanged (adopt hosts)
     shim := installBrowserShim(...)
     cl := session.Dial(configDir, name)        // spawn daemon if needed
-    release := cl.Hold(); defer release()      // keep the bridge alive across logins
-    cl.Subscribe()                             // unless DEVVM_NO_SUBSCRIBE=1
+    release := cl.Subscribe(); defer release() // implies hold: bridge alive across logins
+                                               // DEVVM_NO_SUBSCRIBE=1: cl.Hold() instead
     for tool := range tools { s.login(tool) }  // BROWSER=shim, as today
 }
 ```
@@ -342,12 +375,13 @@ Ephemerals stay visible in `ports list`. If the menubar later wants to offer
 
 No new verbs. Visible changes:
 
-- `ports list`: ephemeral forwards labelled with owner kind and remaining TTL.
+- `ports list`: ephemeral forwards labelled with owner kind and remaining
+  TTL; an exact forward whose port is taken after a reconnect shows `pending`.
 - `ports add NAME PORT` on an ephemeral forward promotes it in place.
 - `ports rm NAME PORT` can remove a daemon-only `ttl` forward.
 - `ports down` leaves the daemon up while other owners or holders remain.
-- `attach`/`shell`/`auth` keep the daemon alive for their lifetime and
-  subscribe unless `DEVVM_NO_SUBSCRIBE=1`.
+- `attach`/`shell`/`auth` subscribe (which holds) unless
+  `DEVVM_NO_SUBSCRIBE=1`, in which case they only hold.
 - `auth --install-agent` unchanged and remains the only consent path.
 - Guest side: `devvm-open-url URL|PORT` prints what the host did.
 
