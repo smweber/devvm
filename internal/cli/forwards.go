@@ -280,9 +280,10 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 // user deliberately stopped. (The daemon guards its reconnect dials the same
 // way; this catches the initial dial before a daemon exists.)
 //
-// It polls briefly: `devvm start` calls tunnelUp right after `smolvm machine
-// start` returns, and smolvm can still report the box as starting for a
-// moment. Failing there would tell the user to start a VM they just started.
+// With wait > 0 it polls: `devvm start` calls tunnelUp right after `smolvm
+// machine start` returns, and smolvm can still report the box as starting for
+// a moment. Failing there would tell the user to start a VM they just started.
+// `ports add`/`ports up` pass 0 so a deliberately stopped VM answers at once.
 func requireRunningForForwards(m *config.Machine, b backend.Backend, wait time.Duration) error {
 	if m.Backend != config.BackendSmol {
 		return nil

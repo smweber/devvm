@@ -51,9 +51,8 @@ func (a *App) plainSnapshot() string {
 // should still re-run a plain status on demand (e.g. when its menu opens).
 //
 // Returns nil on ctx cancellation and on a write error, so a supervising
-// process sees a clean exit when it is the one that closed the pipe. (With a
-// real stdout pipe Go's default SIGPIPE handling on fd 1 ends the process
-// first, which is equivalent; the write-error path matters for other writers.)
+// process sees a clean exit when it is the one that closed the pipe. (Execute
+// ignores SIGPIPE, so the write error is the only way a dead consumer shows.)
 //
 // If a watched directory is removed or renamed the kernel silently drops its
 // watch (verified on both inotify and kqueue), so it is recreated and

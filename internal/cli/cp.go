@@ -286,11 +286,24 @@ if [ -n "$conflicts" ] && [ "$force" != true ]; then
 fi
 # -f: remove each conflict first so cp -R never writes *through* a
 # pre-existing destination symlink (cp dereferences an existing target). The
-# host side (cp_tar.go) refuses that; this keeps parity in the guest.
+# host side (cp_tar.go) refuses that; this keeps parity in the guest. The
+# paths are re-derived by the same find pass rather than parsed back out of
+# $conflicts: that list is newline-separated and only for display, and a
+# directory name containing a newline would otherwise split into a bogus
+# path resolved against $HOME.
 if [ -n "$conflicts" ]; then
-  printf '%s' "$conflicts" | while IFS= read -r t; do
-    t=${t#  }
-    [ -n "$t" ] && rm -rf -- "$t"
+  for base; do
+    if [ "$into" = true ]; then target="$dest/$base"; else target=$dest; fi
+    find "$stage/files/$base" -exec sh -c '
+      root=$1; target=$2; shift 2
+      for p; do
+        t="$target${p#"$root"}"
+        if [ -d "$p" ] && [ ! -L "$p" ]; then
+          [ ! -e "$t" ] || [ -d "$t" ] || rm -rf -- "$t"
+        elif [ -e "$t" ] || [ -L "$t" ]; then
+          rm -rf -- "$t"
+        fi
+      done' sh "$stage/files/$base" "$target" {} +
   done
 fi
 for base; do

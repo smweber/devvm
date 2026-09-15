@@ -38,7 +38,11 @@ func Dial(configDir, name string) (*Client, error) {
 	// come-up wait must outlast it or a slow host reads as "did not come up"
 	// while the daemon in fact arrives moments later, holds no forwards, and
 	// idles out.
-	deadline := time.Now().Add(time.Duration(backend.SSHConnectTimeout())*time.Second + 10*time.Second)
+	wait := time.Duration(backend.SSHConnectTimeout()) * time.Second
+	if wait > 60*time.Second {
+		wait = 60 * time.Second // an env override must not turn this into a minutes-long hang
+	}
+	deadline := time.Now().Add(wait + 10*time.Second)
 	for time.Now().Before(deadline) {
 		if c.alive() {
 			return c, nil

@@ -64,6 +64,11 @@ func archiveTree(tw *tar.Writer, src string, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if strings.ContainsAny(name, "\n\r") {
+			// The guest's conflict check prints one path per line; a name with
+			// a newline would corrupt that listing. Nothing legitimate has one.
+			return fmt.Errorf("refusing to archive %q: name contains a newline", p)
+		}
 		hdr.Name = name
 		if info.IsDir() {
 			hdr.Name += "/"
@@ -115,10 +120,10 @@ func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 	defer f.Close()
 	var entries []archiveEntry
 	index := map[string]int{}
-	seen := map[string]bool{}  // accepted entries, for hard-link targets
-	named := map[string]bool{} // every entry, accepted or skipped
-	isDir := map[string]bool{}
-	isLink := map[string]bool{} // accepted directories: never valid hard-link targets
+	seen := map[string]bool{}   // accepted entries, for hard-link targets
+	named := map[string]bool{}  // every entry, accepted or skipped
+	isDir := map[string]bool{}  // accepted directories: never valid hard-link targets
+	isLink := map[string]bool{} // accepted symlinks: link(2) semantics on them differ by OS
 	tr := tar.NewReader(f)
 	for {
 		hdr, err := tr.Next()

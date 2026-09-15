@@ -225,6 +225,14 @@ func (m *menubarInstaller) quit() error {
 	return nil
 }
 
+// reopenAfterFailure brings back an app we quit when the install then
+// failed: the user should not lose their menu bar item over a bad download.
+func (m *menubarInstaller) reopenAfterFailure(wasRunning bool) {
+	if wasRunning {
+		_ = m.open()
+	}
+}
+
 func (m *menubarInstaller) open() error {
 	if _, err := m.run("open", "-a", m.appPath()); err != nil {
 		return fmt.Errorf("open %s.app: %w", menubarAppName, err)
@@ -294,7 +302,8 @@ func (m *menubarInstaller) install(ctx context.Context, tag string) (relaunched 
 	hadOld := false
 	if _, err := os.Lstat(m.appPath()); err == nil {
 		if err := os.Rename(m.appPath(), old); err != nil {
-			return wasRunning, fmt.Errorf("move old %s.app aside: %w", menubarAppName, err)
+			m.reopenAfterFailure(wasRunning)
+			return false, fmt.Errorf("move old %s.app aside: %w", menubarAppName, err)
 		}
 		hadOld = true
 	}
@@ -302,7 +311,8 @@ func (m *menubarInstaller) install(ctx context.Context, tag string) (relaunched 
 		if hadOld {
 			_ = os.Rename(old, m.appPath())
 		}
-		return wasRunning, fmt.Errorf("install %s.app: %w", menubarAppName, err)
+		m.reopenAfterFailure(wasRunning)
+		return false, fmt.Errorf("install %s.app: %w", menubarAppName, err)
 	}
 	if hadOld {
 		os.RemoveAll(old)

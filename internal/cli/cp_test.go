@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"fmt"
@@ -298,5 +299,75 @@ func TestWriteArchivePreservesSymlinksAndModes(t *testing.T) {
 	}
 	if target, err := os.Readlink(filepath.Join(guest, "tree/link")); err != nil || target != "sub/file" {
 		t.Fatalf("guest symlink = %q, %v", target, err)
+	}
+}
+
+// A directory name containing a newline used to split the conflict listing
+// into a bogus second path that -f then rm -rf'd relative to $HOME. The
+// removal now re-derives paths from find instead of parsing the listing.
+func TestCopyForceNewlineNameCannotEscape(t *testing.T) {
+	home := t.TempDir()
+	const base = "payload"
+	evil := "x\n.ssh"
+	// Destination already holds the tree (so it is a conflict) and a victim
+	// outside it at the path the split line would name.
+	if err := os.MkdirAll(filepath.Join(home, base, evil), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, base, evil, "authorized_keys"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(home, ".ssh", "authorized_keys")
+	if err := os.MkdirAll(filepath.Dir(victim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// writeArchive refuses such names, so build the hostile archive by hand.
+	archive := filepath.Join(t.TempDir(), "payload.tar")
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	for _, h := range []*tar.Header{
+		{Name: base + "/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: base + "/" + evil + "/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: base + "/" + evil + "/authorized_keys", Typeflag: tar.TypeReg, Mode: 0o644, Size: 3},
+	} {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if h.Typeflag == tar.TypeReg {
+			if _, err := tw.Write([]byte("new")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	b := &localCopyBackend{home: home}
+	if err := copyArchive(context.Background(), b, "vm", archive, []string{base}, "~", copyOpts{force: true}, io.Discard); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if data, err := os.ReadFile(victim); err != nil || string(data) != "keep" {
+		t.Fatalf("-f escaped DEST: %q %v", data, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(home, base, evil, "authorized_keys")); string(data) != "new" {
+		t.Fatalf("conflicting file not replaced: %q", data)
+	}
+}
+
+func TestWriteArchiveRejectsNewlineNames(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a\nb"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := writeArchive(filepath.Join(t.TempDir(), "p.tar"), []string{filepath.Join(root, "a\nb")}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "newline") {
+		t.Fatalf("want newline refusal, got %v", err)
 	}
 }
