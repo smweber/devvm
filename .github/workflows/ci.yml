@@ -1,0 +1,44 @@
+name: ci
+
+# Build and test on every push and pull request. The Go side is
+# VM-independent (see CLAUDE.md), so it runs on Linux. The menu bar app can
+# only be compiled on macOS, and the only other place it is built is the
+# release workflow — a compile error there would leave a release with
+# binaries but no app, so catch it here first. macOS minutes are free on a
+# public repo.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: .go-version
+      - run: go build ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::gofmt"; exit 1; }
+      - run: go test -race ./...
+
+  menubar:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the menu bar app
+        run: |
+          cd contrib/macos
+          ./build.sh ci
+      - name: Verify the bundle
+        run: |
+          app=contrib/macos/dist/DevVM.app
+          test -x "$app/Contents/MacOS/DevVM"
+          lipo -info "$app/Contents/MacOS/DevVM"
+          codesign --verify --verbose "$app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist"
