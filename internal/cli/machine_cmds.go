@@ -194,7 +194,7 @@ func (a *App) runDelete(name string, force bool) error {
 		return err
 	}
 	if m.IsHubMachine() {
-		return a.deleteHubMachine(m)
+		return a.deleteHubMachine(m, b)
 	}
 	if m.IsHub() {
 		return a.deleteHub(m, force)
@@ -245,31 +245,27 @@ func (a *App) runDelete(name string, force bool) error {
 }
 
 // deleteHubMachine is `delete HUB/NAME`: the hub owns the machine's registry
-// entry, so the deregistration proxies to it (roadmap step 2 — the call
-// slots in first, before any local state goes, so a failed remote delete
-// leaves the laptop side intact); then the laptop's own daemon for it is
-// stopped and its [machines.NAME] table dropped from the hub conf.
-func (a *App) deleteHubMachine(m *config.Machine) error {
+// entry, so the deregistration is a proxied `delete NAME` there, first —
+// a failed remote delete leaves the laptop side intact. Then this host's own
+// daemon for it is stopped and its [machines.NAME] table dropped from the
+// hub conf. The one confirmation is the hub's: its delete prompts through
+// the forwarded terminal before destroying a real VM (and refuses with no
+// terminal), so a second prompt here would only ask the same question
+// twice. --force is not forwarded: it is this host's flag for deleting a
+// hub conf that still has tables, and means nothing for a machine on a hub.
+func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	hub, machine := m.Hub, m.HubMachineName()
-	_, recorded := hub.Machines[machine]
-	daemon, derr := session.Existing(a.ConfigDir, m.Name)
-	if !recorded && derr != nil {
-		return fmt.Errorf("nothing to remove for '%s' on this host (its registry entry lives on the hub; deregistering there is not proxied yet)", m.Name)
+	p, ok := b.(backend.Proxier)
+	if !ok {
+		return fmt.Errorf("%s: backend %q cannot proxy", m.Name, b.Kind())
 	}
-	// Confirm before anything changes: once step 2 proxies the delete, the
-	// next line destroys a real VM on the hub.
-	ok, err := confirm(fmt.Sprintf("Delete '%s' (the machine on hub '%s' and this host's forwards for it)?", m.Name, hub.Name))
-	if err != nil {
+	if err := a.runProxied(m, p, []string{"delete", machine}); err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("aborted")
+	if cl, err := session.Existing(a.ConfigDir, m.Name); err == nil {
+		_ = cl.Stop()
 	}
-	// TODO(roadmap step 2): a.proxy(hub, delete, [machine]) goes here.
-	if derr == nil {
-		_ = daemon.Stop()
-	}
-	if recorded {
+	if _, recorded := hub.Machines[machine]; recorded {
 		// Step 6 wraps this read-modify-write in a flock on the hub conf: two
 		// `ports add HUB/a` and `ports add HUB/b` share one file, and Save is
 		// atomic but not serialized.
@@ -277,8 +273,8 @@ func (a *App) deleteHubMachine(m *config.Machine) error {
 		if err := hub.Save(a.ConfigDir); err != nil {
 			return err
 		}
+		fmt.Fprintf(a.Stdout, "devvm: dropped this host's forwards for '%s'\n", m.Name)
 	}
-	fmt.Fprintf(a.Stdout, "devvm: removed '%s' from this host (the hub's registry is untouched)\n", m.Name)
 	return nil
 }
 

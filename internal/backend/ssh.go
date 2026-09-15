@@ -140,6 +140,9 @@ func (b *sshBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error 
 	if o.TTY {
 		host = append(host, "-t")
 	}
+	if o.Quiet {
+		host = append(host, "-o", "LogLevel=ERROR")
+	}
 	host = append(host, b.m.SSHHost, remoteCommand(o, rootWrap(o, argv)))
 	return runHost(ctx, o, host)
 }

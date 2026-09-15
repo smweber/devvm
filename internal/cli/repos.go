@@ -40,20 +40,9 @@ func (a *App) runReposAdd(name string, repos []string, clone bool) error {
 		return err
 	}
 	if len(repos) == 0 {
-		def := normalizeRepo(originRemote())
-		prompt := "Repo (owner/repo or URL): "
-		if def != "" {
-			prompt = fmt.Sprintf("Repo (owner/repo or URL) [%s]: ", def)
-		}
-		in, err := promptTTY(prompt)
+		in, err := promptRepo()
 		if err != nil {
 			return err
-		}
-		if in == "" {
-			in = def
-		}
-		if in == "" {
-			return fmt.Errorf("a repo is required")
 		}
 		repos = []string{in}
 	}
@@ -83,6 +72,27 @@ func (a *App) runReposAdd(name string, repos []string, clone bool) error {
 		return err
 	}
 	return a.cloneRepos(b, added)
+}
+
+// promptRepo asks for one repo on the terminal, prefilling the current
+// directory's git origin. Shared by the local leaf and the hub proxy.
+func promptRepo() (string, error) {
+	def := normalizeRepo(originRemote())
+	prompt := "Repo (owner/repo or URL): "
+	if def != "" {
+		prompt = fmt.Sprintf("Repo (owner/repo or URL) [%s]: ", def)
+	}
+	in, err := promptTTY(prompt)
+	if err != nil {
+		return "", err
+	}
+	if in == "" {
+		in = def
+	}
+	if in == "" {
+		return "", fmt.Errorf("a repo is required")
+	}
+	return in, nil
 }
 
 func (a *App) runReposRm(name, repo string) error {

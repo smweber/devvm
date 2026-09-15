@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -44,13 +45,71 @@ func TestForHub(t *testing.T) {
 		t.Error("Spawn must refuse: the hub daemon owns the only agent exec")
 	}
 	for name, err := range map[string]error{
-		"run":    hb.Run(context.Background(), ExecOpts{}, "true"),
 		"start":  hb.PowerStart(),
-		"attach": hb.Attach(""),
+		"delete": hb.PowerDelete(),
+		"copy":   hb.Copy("a", "b"),
 	} {
 		if !errors.Is(err, ErrHubProxy) {
-			t.Errorf("%s = %v, want ErrHubProxy until the proxy lands", name, err)
+			t.Errorf("%s = %v, want ErrHubProxy (the cli proxies these from the parsed command)", name, err)
 		}
+	}
+}
+
+// fakeSSHLog puts an `ssh` on PATH that records its argv (one line, joined
+// by spaces) and exits 0.
+func fakeSSHLog(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "ssh.log")
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+log+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// hubBackend.Run is a proxied `exec NAME -- argv…` under the login-shell
+// wrapper with DEVVM_NO_SUBSCRIBE=1; root becomes a guest-side sudo (User
+// would sudo the hub's ssh command instead) and guest Env is refused (it
+// would land on the hub process).
+func TestHubBackendRunIsProxiedExec(t *testing.T) {
+	hub := config.NewHub("h", "u@host")
+	rec := &config.Machine{Name: "h/web", Hub: hub, Backend: config.BackendHub, SSHHost: hub.SSHHost}
+	b, err := For(rec, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := fakeSSHLog(t)
+	ctx := context.Background()
+	if err := b.Run(ctx, ExecOpts{BatchMode: true, Stdin: strings.NewReader(""), Login: true}, "sh", "-c", "id; echo $X"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Run(ctx, ExecOpts{User: "root", Stdin: strings.NewReader("")}, "apt-get", "install", "-y", "python3"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(log)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ssh calls = %q", lines)
+	}
+	wantRemote := remoteCommand(ExecOpts{}, LoginShellArgv(ProxyArgv("exec", "web", "--", "sh", "-c", "id; echo $X")...))
+	if !strings.HasSuffix(lines[0], " u@host "+wantRemote) || !strings.Contains(lines[0], "BatchMode=yes") {
+		t.Errorf("exec line = %q\nwant suffix %q", lines[0], wantRemote)
+	}
+	if strings.Contains(lines[0], " -t ") || strings.Contains(lines[0], " sudo ") {
+		t.Errorf("non-tty, non-root exec got -t or sudo: %q", lines[0])
+	}
+	wantRoot := remoteCommand(ExecOpts{}, LoginShellArgv(ProxyArgv("exec", "web", "--", "sudo", "apt-get", "install", "-y", "python3")...))
+	if !strings.HasSuffix(lines[1], " u@host "+wantRoot) {
+		t.Errorf("root exec line = %q\nwant suffix %q", lines[1], wantRoot)
+	}
+	if err := b.Run(ctx, ExecOpts{Env: map[string]string{"BROWSER": "x"}}, "true"); err == nil {
+		t.Error("guest Env must be refused: it would apply to the hub process, not the guest")
+	}
+	// The wrapper's shape: env is the prefix, the assignment is a plain
+	// token (quoted by shellJoin, which is why it is not a bare VAR=1 prefix).
+	if got := ProxyArgv("stop", "web"); !slices.Equal(got, []string{"env", "DEVVM_NO_SUBSCRIBE=1", "devvm", "stop", "web"}) {
+		t.Errorf("ProxyArgv = %q", got)
 	}
 }
 

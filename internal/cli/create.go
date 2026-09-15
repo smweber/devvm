@@ -50,8 +50,10 @@ func (a *App) runCreate(s createSpec) error {
 	if _, _, onHub, err := config.SplitHubName(s.Name); err != nil {
 		return err
 	} else if onHub {
-		// `create HUB/NAME` proxies to the hub, which writes the conf there
-		// (roadmap step 2); nothing about it lives on this host.
+		// `create HUB/NAME` is proxied by createCmd before it gets here (the
+		// hub writes the conf; nothing about it lives on this host), so this
+		// is reachable only from a direct call. The prompt path cannot
+		// produce a HUB/NAME: resolveName validates with ValidName.
 		return fmt.Errorf("create %s: %w", s.Name, backend.ErrHubProxy)
 	}
 	if err := config.ValidName(s.Name); err != nil {

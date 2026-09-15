@@ -221,10 +221,17 @@ func resolvePubkeys(spec []string) ([]string, error) {
 	}
 }
 
+// isInlineKey reports whether s starts an authorized_keys line: a key type
+// first, or options then a key type (`no-pty ssh-ed25519 AAAA… c`) — the
+// hub proxy sends whole lines read from a file, options included, as one
+// token. A path or a GitHub user never has a key type in either slot.
 func isInlineKey(s string) bool {
-	for _, p := range []string{"ssh-", "ecdsa-", "sk-"} {
-		if strings.HasPrefix(s, p) {
-			return true
+	fields := strings.Fields(s)
+	for i := 0; i < len(fields) && i < 2; i++ {
+		for _, p := range []string{"ssh-", "ecdsa-", "sk-"} {
+			if strings.HasPrefix(fields[i], p) {
+				return true
+			}
 		}
 	}
 	return false

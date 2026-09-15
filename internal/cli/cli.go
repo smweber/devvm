@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,13 @@ func Execute() int {
 	app := newApp()
 	root := app.rootCmd()
 	if err := root.Execute(); err != nil {
+		// A proxied command's exit status is the hub's devvm's own, which
+		// already printed its error; pass the status through without a
+		// second line.
+		var pe *proxyExit
+		if errors.As(err, &pe) {
+			return pe.code
+		}
 		// cobra already prints usage errors; print anything else once, plainly.
 		fmt.Fprintln(os.Stderr, "devvm:", err)
 		return 1

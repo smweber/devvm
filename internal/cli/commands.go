@@ -28,12 +28,17 @@ func (a *App) createCmd() *cobra.Command {
 			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)\n" +
 			"  hub               another host running devvm; its machines become NAME/MACHINE",
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		// `create HUB/NAME` is the one proxied leaf whose name exists nowhere
+		// yet: the hub writes the conf, and with no --yes its huh form runs
+		// there through the forwarded terminal. --yes resolves unset fields
+		// from the hub's config.toml, deliberately: its defaults describe its
+		// VMs (hub.md §3).
+		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				s.Name = args[0]
 			}
 			return a.runCreate(s)
-		},
+		}),
 	}
 	f := c.Flags()
 	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged | hub")
@@ -52,7 +57,7 @@ func (a *App) bootstrapCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "bootstrap NAME",
 		Short: "Resume/rerun guest software setup",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runBootstrap(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runBootstrap(args[0]) }),
 	}
 	a.machineArg(c)
 	return c
@@ -63,7 +68,14 @@ func (a *App) shellCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "shell NAME",
 		Short: "Open a raw login shell (no tmux)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runShell(args[0], transport) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if ok, err := hubMachineArg(args); err != nil {
+				return err
+			} else if ok {
+				return a.proxyInteractive(cmd, args, transport)
+			}
+			return a.runShell(args[0], transport)
+		},
 	}
 	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default from conf)")
 	a.machineArg(c)
@@ -75,7 +87,14 @@ func (a *App) attachCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "attach NAME",
 		Short: "Attach to the persistent dev tmux session",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runAttach(args[0], transport) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if ok, err := hubMachineArg(args); err != nil {
+				return err
+			} else if ok {
+				return a.proxyInteractive(cmd, args, transport)
+			}
+			return a.runAttach(args[0], transport)
+		},
 	}
 	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default from conf)")
 	a.machineArg(c)
@@ -88,9 +107,9 @@ func (a *App) execCmd() *cobra.Command {
 		Short:              "Run a command as the dev user",
 		Args:               cobra.MinimumNArgs(2),
 		DisableFlagParsing: true, // pass CMD's own flags through untouched
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			return a.runExec(args[0], args[1:])
-		},
+		}),
 	}
 	return c
 }
@@ -141,10 +160,10 @@ func (a *App) reposCmd() *cobra.Command {
 			"URL (https://, ssh://, git@host:path — cloned via git). With no REPO and\n" +
 			"a terminal it prompts, prefilling from the current directory's git origin.",
 		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			noClone, _ := cmd.Flags().GetBool("no-clone")
 			return a.runReposAdd(args[0], args[1:], !noClone)
-		},
+		}),
 		ValidArgsFunction: a.completeMachines,
 	}
 	add.Flags().Bool("no-clone", false, "record in the conf only; don't clone now")
@@ -153,20 +172,20 @@ func (a *App) reposCmd() *cobra.Command {
 		Use:   "rm NAME REPO",
 		Short: "Remove a repo from the conf (leaves the guest checkout)",
 		Args:  cobra.ExactArgs(2),
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runReposRm(args[0], args[1]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposRm(args[0], args[1]) }),
 	}
 
 	list := &cobra.Command{
 		Use:   "list NAME",
 		Short: "List a machine's configured repos",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runReposList(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposList(args[0]) }),
 	}
 	a.machineArg(list)
 
 	clone := &cobra.Command{
 		Use:   "clone NAME",
 		Short: "Clone all of a machine's configured repos",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runReposClone(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposClone(args[0]) }),
 	}
 	a.machineArg(clone)
 
@@ -224,7 +243,9 @@ func (a *App) startCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "start NAME",
 		Short: "Start the machine (backend-aware)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runStart(args[0]) },
+		// Step 6 adds the laptop's own forwards after a proxied start
+		// (hub.md §3): the hub's start only knows the hub's conf.
+		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runStart(args[0]) }),
 	}
 	a.machineArg(c)
 	return c
@@ -234,7 +255,7 @@ func (a *App) stopCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "stop NAME",
 		Short: "Stop the machine (backend-aware)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) }),
 	}
 	a.machineArg(c)
 	return c
@@ -244,7 +265,7 @@ func (a *App) provisionCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "provision NAME",
 		Short: "Allocate a dormant machine's resource + bootstrap it",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runProvision(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runProvision(args[0]) }),
 	}
 	a.machineArg(c)
 	return c
@@ -255,7 +276,7 @@ func (a *App) deprovisionCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "deprovision NAME",
 		Short: "Destroy the resource but keep the registry entry (rebuild with 'provision')",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDeprovision(args[0], yes) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runDeprovision(args[0], yes) }),
 	}
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	a.machineArg(c)
@@ -330,26 +351,26 @@ func (a *App) keysCmd() *cobra.Command {
 		Short:              "Add a client pubkey (remote machines)",
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: true, // pass --from-github through untouched
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			return a.runAuthorizeKey(args[0], args[1:])
-		},
+		}),
 	}
 	list := &cobra.Command{
 		Use:   "list NAME",
 		Short: "List authorized keys (remote machines)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runKeys(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runKeys(args[0]) }),
 	}
 	a.machineArg(list)
 	rm := &cobra.Command{
 		Use:   "rm NAME PATTERN",
 		Short: "Remove one key by fingerprint, comment, or key-line substring",
 		Args:  cobra.ExactArgs(2),
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runRevokeKey(args[0], args[1]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runRevokeKey(args[0], args[1]) }),
 	}
 	dedupe := &cobra.Command{
 		Use:   "dedupe NAME",
 		Short: "Remove duplicate authorized keys (remote machines)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runCleanupKeys(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runCleanupKeys(args[0]) }),
 	}
 	a.machineArg(dedupe)
 
@@ -361,7 +382,7 @@ func (a *App) lockdownCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "lockdown NAME",
 		Short: "Firewall + sshd hardening + auto-updates (remote machines)",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runLockdown(args[0]) },
+		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runLockdown(args[0]) }),
 	}
 	a.machineArg(c)
 	return c

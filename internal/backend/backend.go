@@ -31,6 +31,7 @@ type State struct {
 type ExecOpts struct {
 	BatchMode bool              // SSH: disable authentication prompts (e.g. completion)
 	TTY       bool              // allocate a pty (interactive shell / login flows)
+	Quiet     bool              // SSH: -o LogLevel=ERROR — drop ssh's own notices ("Shared connection to HOST closed." after a -t run on a ControlMaster)
 	Stream    bool              // smol: use --stream (unbuffered streaming output)
 	Login     bool              // wrap argv in `bash -lc` so the user's env/PATH is present
 	User      string            // guest user; "" -> DefaultUser, or "root"

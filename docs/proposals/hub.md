@@ -139,17 +139,21 @@ Two consequences the registry code has to absorb:
   any `[machines.*]` table or `run/desktop@*.sock` exists unless `--force`,
   which stops those daemons and removes the conf.
 
-### 3. Dispatch lives in `resolve`, not in a root interceptor
+### 3. Dispatch lives in each leaf's `RunE`, with `resolve` as the guard
 
 The first positional cannot be found before cobra parses: `cp-in -r NAME …`
 puts flags first, `exec` and `keys add` disable flag parsing, `status [NAME]`
-is optional, and `defaults`, `hub`, `update` have no machine at all. Every leaf
-already calls `resolve`, so that is the one dispatch point:
+is optional, and `defaults`, `hub`, `update` have no machine at all. So there
+is no root interceptor. Each proxied leaf's `RunE` checks its first positional
+for `HUB/NAME` (one wrapper, `hubOr`), because that is the only place the
+parsed `*cobra.Command` the rebuilt argv needs is in hand; and `resolve`,
+which every leaf calls, refuses a hub machine, so a leaf that is not proxied
+can never act on the hub itself with the machine's record:
 
-- `resolve` returns a `hubBackend` for `HUB/NAME`.
+- `resolveAny` returns a `hubBackend` for `HUB/NAME`; `resolve` refuses it.
 - Leaves that must run on the hub (`attach`, `shell`, `exec`, `start`, `stop`,
   `provision`, `deprovision`, `bootstrap`, `delete`, `repos *`, `keys *`,
-  `lockdown`, `create`) call `a.proxy(hub, cmd, args)`, which **rebuilds** the
+  `lockdown`, `create`) call `a.proxy(cmd, args)`, which **rebuilds** the
   remote command line from the parsed cobra command rather than replaying
   `os.Args`: the command path, the leaf's flags that were explicitly set, and
   its positionals with `HUB/` stripped from the first. The persistent
@@ -158,7 +162,8 @@ already calls `resolve`, so that is the one dispatch point:
   parsing precisely so the guest command's own arguments pass through
   untouched; a guest `--config-dir` after `exec NAME --` must survive.
 - Leaves that run locally (`ports`, `cp-in`, `cp-out`, `status`, `auth`) use
-  the backend's small surface (section 4) and the local mechanics below.
+  the backend's small surface (section 4) and the local mechanics below;
+  until their step lands, `resolve`'s refusal is what they hit.
 
 `proxy` runs:
 

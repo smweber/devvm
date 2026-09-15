@@ -25,11 +25,12 @@ func (a *App) resolve(name string) (*config.Machine, backend.Backend, error) {
 		return nil, nil, err
 	}
 	if m.IsHubMachine() {
-		// Roadmap step 2 replaces this with the proxy dispatch: leaves that run
-		// on the hub call a.proxy(hub, cmd, args) with the rebuilt argv, and the
-		// local leaves (ports, cp, auth) use hubBackend's small surface. Until
-		// then nothing can act on a hub machine, so say so here rather than let
-		// a verb reach the hub itself with the machine's record.
+		// The proxied leaves never get here: their RunE dispatches HUB/NAME
+		// to a.proxy before the local handler runs (proxy.go). So this is the
+		// guard for everything else — ports (laptop-side forwards, step 6),
+		// cp (step 4), auth (step 8), __daemon (never: shared decision 4) —
+		// which would otherwise act on the hub itself with the machine's
+		// record.
 		return nil, nil, fmt.Errorf("%s: %w", name, backend.ErrHubProxy)
 	}
 	return m, b, nil

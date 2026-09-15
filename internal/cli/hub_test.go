@@ -266,25 +266,41 @@ func TestStatusPlainHubRows(t *testing.T) {
 
 func TestDeleteHubMachineDropsTable(t *testing.T) {
 	a := newTestApp(t)
-	fakeSSH(t, "exit 1")
 	a.Stdout = new(bytes.Buffer)
+	pinTTY(t, false)
+	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "api": {"80"}})
-	// A recorded machine reaches the confirmation before anything changes;
-	// with no terminal that is the prompt's error, and the table is intact.
+	// The hub's delete runs first and is the one that confirms (through the
+	// forwarded tty); when it refuses — here, exit 1 — nothing local changes
+	// and its status comes back as the proxied exit.
+	log := fakeSSH(t, "exit 1")
 	err := a.runDelete("h/web", false)
-	if err == nil || !strings.Contains(err.Error(), "terminal") {
-		t.Fatalf("delete h/web without a tty: err = %v, want the prompt's error", err)
+	var pe *proxyExit
+	if !errors.As(err, &pe) || pe.code != 1 {
+		t.Fatalf("delete h/web with the hub refusing: err = %v, want proxyExit 1", err)
 	}
 	h, err := config.Load(a.ConfigDir, "h")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, still := h.Machines["web"]; !still || len(h.Machines) != 2 {
-		t.Errorf("an unconfirmed delete changed the tables: %v", h.Machines)
+		t.Errorf("a refused delete changed the tables: %v", h.Machines)
 	}
-	// Nothing recorded and no daemon: refused before the prompt.
-	err = a.runDelete("h/other", false)
-	if err == nil || !strings.Contains(err.Error(), "nothing to remove") {
+	if lines := sshLines(t, log); len(lines) != 1 || lines[0] != wantSSH(a, false, "delete", "web") {
+		t.Errorf("proxied delete argv:\n%s\nwant\n%s", strings.Join(lines, "\n"), wantSSH(a, false, "delete", "web"))
+	}
+	// With the hub agreeing, the table goes; a machine with no local state
+	// is still proxied (its registry entry is the hub's), and just drops
+	// nothing here.
+	fakeSSH(t, "exit 0")
+	if err := a.runDelete("h/web", false); err != nil {
+		t.Fatalf("delete h/web: %v", err)
+	}
+	h, _ = config.Load(a.ConfigDir, "h")
+	if _, still := h.Machines["web"]; still || len(h.Machines) != 1 {
+		t.Errorf("tables after delete: %v", h.Machines)
+	}
+	if err := a.runDelete("h/other", false); err != nil {
 		t.Errorf("delete of an unrecorded machine: err = %v", err)
 	}
 	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err != nil {

@@ -5,8 +5,9 @@
 # guest argv locally, `machine cp` copies locally, and machine state is a
 # file per name under $FAKESMOL_DIR. It answers exactly the invocations
 # internal/backend/smol.go makes (ls --json, status, create, start, stop,
-# delete, cp, exec) and nothing else. Everything devvm layers on top (the
-# agent exec, yamux forwards, the browser shim, tmux) is real.
+# delete, cp, exec, and exec -d — the detached form ensureTmux uses for the
+# tmux keeper) and nothing else. Everything devvm layers on top (the agent
+# exec, yamux forwards, the browser shim, tmux) is real.
 set -eu
 
 dir="${FAKESMOL_DIR:-$HOME/.local/share/fakesmol}"
@@ -21,13 +22,14 @@ sub="${1:-}"; [ $# -gt 0 ] && shift
 state_of() { cat "$dir/$1.state" 2>/dev/null || echo "not created"; }
 
 # flag parsing shared by every subcommand that takes --name
-name=""; tty=0; envs=""
+name=""; tty=0; envs=""; detached=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --name) name="$2"; shift 2 ;;
         --) shift; break ;;
         -i|--stream|--net|--force|--json) shift ;;
         -it) tty=1; shift ;;
+        -d) detached=1; shift ;;
         -e) envs="$envs $2"; shift 2 ;;
         --image|--cpus|--mem|--storage|--env) shift 2 ;;
         *) break ;;
@@ -80,6 +82,17 @@ case "$sub" in
         # Real smolvm enters the guest as root; devvm's guestArgv drops to
         # the user itself with `sudo -u USER`. Enter as root here too so
         # root-only work (prereqs, /usr/local/bin agent install) behaves.
+        if [ "$detached" = 1 ]; then
+            # -d: return at once and let the command outlive this call with
+            # its stdio on /dev/null, as the real detached exec does (the
+            # tmux keeper must survive `attach` coming and going). setsid
+            # when present (util-linux and busybox both have it) so it also
+            # leaves the caller's session; nohup alone otherwise.
+            run="sudo -n --preserve-env=TERM,SMOLVM_GUEST --"
+            if command -v setsid >/dev/null 2>&1; then run="setsid $run"; fi
+            nohup $run "$@" </dev/null >/dev/null 2>&1 &
+            exit 0
+        fi
         exec sudo -n --preserve-env=TERM,SMOLVM_GUEST -- "$@"
         ;;
     *)
