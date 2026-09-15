@@ -181,13 +181,13 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
         Log.menu.notice("copy out \(self.machine, privacy: .public):\(what, privacy: .public)")
         devvm.run(args) { [machine = self.machine] r in
             if r.ok {
-                Log.menu.notice("copy out of \(what, privacy: .public) from \(machine, privacy: .public) succeeded")
+                Log.menu.notice("copy out of \(what, privacy: .public) from \(self.machine, privacy: .public) succeeded")
                 Notifications.shared.info("Copied \(what)", "from \(machine)")
             } else if r.isOverwriteRefusal {
                 Log.menu.notice("copy out of \(what, privacy: .public) refused: would overwrite locally")
                 Notifications.shared.conflict("Already exists locally", r.lastStderrLine, retryWith: args)
             } else {
-                Log.menu.error("copy out of \(what, privacy: .public) from \(machine, privacy: .public) failed: \(r.lastStderrLine, privacy: .public)")
+                Log.menu.error("copy out of \(what, privacy: .public) from \(self.machine, privacy: .public) failed: \(r.lastStderrLine, privacy: .public)")
                 Notifications.shared.error("Copy from \(machine) failed", r.lastStderrLine)
             }
         }

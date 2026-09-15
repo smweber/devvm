@@ -168,7 +168,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         refresh.run(devvm, ["status", "--plain"], terminatePrevious: true) { [weak self] r in
             guard let self = self, r.ok else { return }
             let machines = parseStatusBlock(r.stdout)
-            Log.status.notice("menu-open refresh: \(StatusWatcher.summary(machines), privacy: .public)")
+            Log.status.notice("menu-open refresh: \(StatusWatcher.summary(self.machines), privacy: .public)")
             self.apply(machines)
         }
         // Ports per live machine, for the "Open localhost:PORT" entries.

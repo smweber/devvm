@@ -188,7 +188,7 @@ final class StatusWatcher {
         // first block arrives immediately, so it says nothing about that).
         if Date().timeIntervalSince(launchedAt) > 10 { backoff = 1 }
         let status = process?.terminationStatus ?? -1
-        Log.status.error("watch child exited with status \(status, privacy: .public) after \(Int(Date().timeIntervalSince(launchedAt)), privacy: .public)s")
+        Log.status.error("watch child exited with status \(status, privacy: .public) after \(Int(Date().timeIntervalSince(self.launchedAt)), privacy: .public)s")
         clearReader()
         process = nil
         scheduleRestart()
