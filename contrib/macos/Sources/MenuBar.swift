@@ -13,7 +13,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private var machines: [Machine] = []
     private var portsByMachine: [String: [Forward]] = [:]
     private var submenus: [String: NSMenu] = [:]
-    private var menuIsOpen = false
+
+    /// AppKit tracks an open menu's item objects; tearing them down while the
+    /// menu is displayed flickers, drops the highlight, and can crash. So a
+    /// rebuild requested while open only refreshes existing rows in place and
+    /// is replayed when the menu closes. Submenus are tracked the same way,
+    /// so a closed submenu can still be refilled while the parent is open.
+    private var openMenus = Set<ObjectIdentifier>()
+    private var rebuildPending = false
+    private var submenuRefillPending = Set<String>()
+    private var headerItem: NSMenuItem?
 
     private let refresh = SingleFlight()
     private var portsLookups: [String: SingleFlight] = [:]
@@ -31,8 +40,11 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     init(devvm: Devvm) {
         self.devvm = devvm
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        dropView = DropTargetView(frame: statusItem.button?.bounds ?? .zero)
+        // Locals only until super.init(): Swift forbids reading self's
+        // properties before then.
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = item
+        dropView = DropTargetView(frame: item.button?.bounds ?? .zero)
         super.init()
 
         statusItem.menu = menu
@@ -40,6 +52,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         if let button = statusItem.button {
             dropView.autoresizingMask = [.width, .height]
             button.addSubview(dropView)
+            dropView.frame = button.bounds // the button may have been sized since init
         }
         dropView.canAccept = { [weak self] in self?.selectedMachine?.isLive ?? false }
         dropView.onDrop = { [weak self] urls in self?.copyIn(urls: urls) }
@@ -61,10 +74,20 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     func apply(_ machines: [Machine]) {
         self.machines = machines
-        // Auto-select when there is exactly one live machine and nothing chosen.
-        if selectedMachine == nil, machines.filter({ $0.isLive }).count == 1 {
+        let names = Set(machines.map { $0.name })
+        // A selected machine that left the registry clears the selection;
+        // drops must never silently re-target another box.
+        if let name = selectedName, !names.contains(name) {
+            selectedName = nil
+        }
+        // Auto-select only when nothing is chosen and exactly one machine is live.
+        if selectedName == nil, machines.filter({ $0.isLive }).count == 1 {
             selectedName = machines.first { $0.isLive }?.name
         }
+        // Per-machine caches follow the registry.
+        portsByMachine = portsByMachine.filter { names.contains($0.key) }
+        portsLookups = portsLookups.filter { names.contains($0.key) }
+        copyOutPanels = copyOutPanels.filter { names.contains($0.key) }
         updateIcon()
         rebuildMenu()
     }
@@ -128,15 +151,17 @@ final class MenuBar: NSObject, NSMenuDelegate {
         return image
     }
 
-    // MARK: Menu
+    // MARK: Menu lifecycle
+
+    private var mainMenuIsOpen: Bool { openMenus.contains(ObjectIdentifier(menu)) }
 
     func menuWillOpen(_ menu: NSMenu) {
+        openMenus.insert(ObjectIdentifier(menu))
         guard menu === self.menu else { return }
-        menuIsOpen = true
         guard devvm.executable != nil else { return }
         // The watch stream only sees devvm-made changes; a VM stopped behind
         // devvm's back shows up here, on demand.
-        refresh.run(devvm, ["status", "--plain"]) { [weak self] r in
+        refresh.run(devvm, ["status", "--plain"], terminatePrevious: true) { [weak self] r in
             guard let self = self, r.ok else { return }
             self.apply(parseStatusBlock(r.stdout))
         }
@@ -147,7 +172,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
             lookup.run(devvm, ["ports", "list", m.name]) { [weak self] r in
                 guard let self = self, r.ok else { return }
                 self.portsByMachine[m.name] = parsePortsList(r.stdout)
-                if let sub = self.submenus[m.name] { self.fillSubmenu(sub, for: m) }
+                self.refillSubmenu(for: m.name)
             }
         }
         devvm.version { [weak self] v in
@@ -164,7 +189,18 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     func menuDidClose(_ menu: NSMenu) {
-        if menu === self.menu { menuIsOpen = false }
+        openMenus.remove(ObjectIdentifier(menu))
+        if menu === self.menu {
+            if rebuildPending {
+                rebuildPending = false
+                rebuildMenu()
+            }
+            return
+        }
+        // A submenu closed; replay a refill that was deferred while it was open.
+        if submenuRefillPending.remove(menu.title) != nil {
+            refillSubmenu(for: menu.title)
+        }
     }
 
     private func item(_ title: String, _ action: Selector?, _ represented: Any? = nil) -> NSMenuItem {
@@ -175,8 +211,14 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     private func rebuildMenu() {
+        if mainMenuIsOpen {
+            rebuildPending = true
+            refreshRowsInPlace()
+            return
+        }
         menu.removeAllItems()
         submenus = [:]
+        headerItem = nil
         guard devvm.executable != nil else {
             menu.addItem(item("devvm not found on PATH", nil))
             menu.addItem(item("Install it, then relaunch DevVM", nil))
@@ -194,20 +236,22 @@ final class MenuBar: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        if let m = selectedMachine {
-            menu.addItem(item("Drop target: \(m.name)  (inbox \(inbox(for: m.name)))", nil))
-        } else {
-            menu.addItem(item("No drop target — pick a running machine", nil))
-        }
+        let header = item(headerTitle(), nil)
+        headerItem = header
+        menu.addItem(header)
         menu.addItem(.separator())
 
         if machines.isEmpty {
             menu.addItem(item("No machines registered", nil))
         }
         for m in machines {
-            let it = item("\(m.glyph) \(m.name) — \(m.stateWords), \(m.forwardsWords)", #selector(selectMachine(_:)), m.name)
+            // No action on the row itself: AppKit routes a click on an item
+            // with a submenu to opening it, never to the action. Selection
+            // lives inside the submenu ("Use as drop target").
+            let it = item(m.rowTitle, nil, m.name)
             it.state = (m.name == selectedName) ? .on : .off
             let sub = NSMenu(title: m.name)
+            sub.delegate = self // so open/close of the submenu is tracked
             fillSubmenu(sub, for: m)
             submenus[m.name] = sub
             it.submenu = sub
@@ -219,11 +263,41 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let login = item("Launch at login", #selector(toggleLaunchAtLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
-        let version = item(cliVersion.map { "devvm \($0) · app \(MenuBar.appVersion)" } ?? "app \(MenuBar.appVersion)", nil)
-        version.isEnabled = false
-        menu.addItem(version)
+        // A nil action leaves the version line disabled (autoenablesItems).
+        menu.addItem(item(cliVersion.map { "devvm \($0) · app \(MenuBar.appVersion)" } ?? "app \(MenuBar.appVersion)", nil))
         menu.addItem(.separator())
         menu.addItem(item("Quit", #selector(quit)))
+    }
+
+    private func headerTitle() -> String {
+        if let m = selectedMachine {
+            return "Drop target: \(m.name)  (inbox \(inbox(for: m.name)))"
+        }
+        return "No drop target — pick a running machine"
+    }
+
+    /// The in-place half of a rebuild: titles, checkmarks, and the header of
+    /// rows that already exist. Rows for machines that appeared or vanished
+    /// wait for the deferred full rebuild.
+    private func refreshRowsInPlace() {
+        headerItem?.title = headerTitle()
+        for it in menu.items {
+            guard let name = it.representedObject as? String, it.submenu != nil,
+                  let m = machines.first(where: { $0.name == name }) else { continue }
+            it.title = m.rowTitle
+            it.state = (m.name == selectedName) ? .on : .off
+        }
+    }
+
+    /// Refills a machine's submenu unless that submenu is the one being
+    /// displayed, in which case the refill waits for it to close.
+    private func refillSubmenu(for name: String) {
+        guard let sub = submenus[name], let m = machines.first(where: { $0.name == name }) else { return }
+        if openMenus.contains(ObjectIdentifier(sub)) {
+            submenuRefillPending.insert(name)
+            return
+        }
+        fillSubmenu(sub, for: m)
     }
 
     private func fillSubmenu(_ sub: NSMenu, for m: Machine) {
@@ -351,11 +425,12 @@ final class MenuBar: NSObject, NSMenuDelegate {
         guard !paths.isEmpty else { return }
         var args = ["cp-in"]
         let anyDir = urls.contains { url in
-            (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
         }
         if anyDir { args.append("-r") }
         let dest = inbox(for: name)
-        args += ["-t", dest, name] + paths
+        // `--` after NAME: a dropped path starting with `-` is a path, not a flag.
+        args += ["-t", dest, name, "--"] + paths
         let what = paths.count == 1 ? (urls[0].lastPathComponent) : "\(paths.count) items"
         devvm.run(args) { r in
             if r.ok {
@@ -402,6 +477,15 @@ final class MenuBar: NSObject, NSMenuDelegate {
         return (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
+    /// The version stamped in the bundle currently on disk, read fresh
+    /// (Bundle.main caches the plist from launch), so a bundle that devvm
+    /// replaced underneath this process can be told apart from the one it
+    /// started from.
+    private static var installedBundleVersion: String? {
+        let plist = (Bundle.main.bundlePath as NSString).appendingPathComponent("Contents/Info.plist")
+        return NSDictionary(contentsOfFile: plist)?["CFBundleShortVersionString"] as? String
+    }
+
     /// The app is built per release and installed by `devvm menubar` at the
     /// CLI's version; a mismatch means one of them moved. This is distinct
     /// from a newer *release* existing (updateAvailable).
@@ -422,14 +506,15 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     /// Passive check at most every six hours, and only when the menu is
-    /// opened: never a timer, never network in the background.
+    /// opened: never a timer, never network in the background. The window
+    /// is stamped before the check, so an offline failure also waits it out.
     private func maybeCheckForUpdates() {
         let last = defaults.object(forKey: Key.lastUpdateCheck) as? Date ?? .distantPast
         guard Date().timeIntervalSince(last) > 6 * 3600 else { return }
         defaults.set(Date(), forKey: Key.lastUpdateCheck)
         devvm.run(["update", "--check", "--plain"]) { [weak self] r in
             guard let self = self, r.ok else { return }
-            let f = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t").map(String.init)
+            let f = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t").map { String($0) }
             self.updateAvailable = (f.count >= 3 && f[2] == "true") ? f[1] : nil
             self.rebuildMenu()
         }
@@ -443,7 +528,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 Notifications.shared.error("Update check failed", r.lastStderrLine)
                 return
             }
-            let f = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t").map(String.init)
+            let f = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t").map { String($0) }
             guard f.count >= 3 else { return }
             self.updateAvailable = f[2] == "true" ? f[1] : nil
             self.rebuildMenu()
@@ -475,14 +560,28 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
     }
 
-    /// `open -n` starts a second instance of this bundle (the freshly updated
-    /// one if devvm replaced it), then this one exits.
+    /// After `devvm update`: if devvm already replaced and relaunched this
+    /// bundle (the version on disk no longer matches the one this process
+    /// started from), the new instance is up and this one just exits.
+    /// Otherwise start a fresh instance of the bundle and exit only once
+    /// that launch is confirmed, so a failed launch never leaves no app.
     static func relaunch() {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-n", Bundle.main.bundlePath]
-        try? p.run()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+        if let onDisk = installedBundleVersion, onDisk != appVersion {
+            NSApp.terminate(nil)
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        let url = URL(fileURLWithPath: Bundle.main.bundlePath)
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    Notifications.shared.error("Relaunch failed", error.localizedDescription)
+                } else {
+                    NSApp.terminate(nil)
+                }
+            }
+        }
     }
 
     // MARK: Launch at login

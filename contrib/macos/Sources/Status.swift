@@ -42,13 +42,17 @@ struct Machine {
         if state == "stopped" || state == "dormant" { return "○" }
         return "◌"
     }
+
+    /// The menu row title; also used to refresh rows in place while the menu
+    /// is open.
+    var rowTitle: String { "\(glyph) \(name) — \(stateWords), \(forwardsWords)" }
 }
 
 /// Parses one blank-line-separated block of tab-separated rows.
 func parseStatusBlock(_ text: String) -> [Machine] {
     var out: [Machine] = []
     for line in text.split(separator: "\n") {
-        let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        let f = line.split(separator: "\t", omittingEmptySubsequences: false).map { String($0) }
         guard f.count >= 3, !f[0].isEmpty else { continue }
         out.append(Machine(name: f[0], backend: f[1], state: f[2], forwards: f.count > 3 ? f[3] : "-"))
     }
@@ -65,6 +69,10 @@ final class StatusWatcher {
 
     private let devvm: Devvm
     private var process: Process?
+    /// The stdout read end, kept so its readabilityHandler can be cleared
+    /// before the Process (and with it the Pipe) is released. Dropping a
+    /// FileHandle while its handler is still armed is a known crash.
+    private var readHandle: FileHandle?
     private var buffer = Data()
     private var backoff: TimeInterval = 1
     private var launchedAt = Date.distantPast
@@ -83,7 +91,8 @@ final class StatusWatcher {
         stopped = true
         restartTimer?.invalidate()
         generation += 1 // orphan any late callbacks
-        process?.terminate()
+        clearReader()
+        if let p = process, p.isRunning { p.terminate() }
         process = nil
     }
 
@@ -91,9 +100,15 @@ final class StatusWatcher {
         restartTimer?.invalidate()
         backoff = 1
         generation += 1
-        process?.terminate()
+        clearReader()
+        if let p = process, p.isRunning { p.terminate() }
         process = nil
         launch()
+    }
+
+    private func clearReader() {
+        readHandle?.readabilityHandler = nil
+        readHandle = nil
     }
 
     private func launch() {
@@ -109,7 +124,8 @@ final class StatusWatcher {
         let out = Pipe()
         p.standardOutput = out
         buffer = Data()
-        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let handle = out.fileHandleForReading
+        handle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty { // EOF
                 handle.readabilityHandler = nil
@@ -123,9 +139,11 @@ final class StatusWatcher {
         do {
             try p.run()
         } catch {
+            handle.readabilityHandler = nil
             scheduleRestart()
             return
         }
+        readHandle = handle
         process = p
         launchedAt = Date()
     }
@@ -138,24 +156,23 @@ final class StatusWatcher {
         while let range = buffer.range(of: StatusWatcher.separator) {
             let block = String(decoding: buffer.subdata(in: buffer.startIndex..<range.lowerBound), as: UTF8.self)
             buffer.removeSubrange(buffer.startIndex..<range.upperBound)
-            deliver(parseStatusBlock(block))
+            onSnapshot?(parseStatusBlock(block))
         }
         // An empty registry is a lone blank line, never followed by a second.
         if buffer == Data("\n".utf8) {
             buffer = Data()
-            deliver([])
+            onSnapshot?([])
         }
-    }
-
-    private func deliver(_ machines: [Machine]) {
-        // A child that stays up long enough to be useful earns a fresh backoff;
-        // one that prints once and dies must not be restarted every second.
-        if Date().timeIntervalSince(launchedAt) > 10 { backoff = 1 }
-        onSnapshot?(machines)
     }
 
     private func exited(gen: Int) {
         guard gen == generation, !stopped else { return }
+        // A child that stayed up long enough to be useful earns a fresh
+        // backoff; one that printed once and died must not be restarted
+        // every second. Judged here, at exit, where the uptime is known (the
+        // first block arrives immediately, so it says nothing about that).
+        if Date().timeIntervalSince(launchedAt) > 10 { backoff = 1 }
+        clearReader()
         process = nil
         scheduleRestart()
     }
@@ -165,9 +182,13 @@ final class StatusWatcher {
         let delay = backoff
         backoff = min(backoff * 2, 30)
         restartTimer?.invalidate()
-        restartTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
             self?.launch()
         }
+        // Common modes, so the restart is not stalled while a menu is being
+        // tracked or an alert is up.
+        RunLoop.main.add(timer, forMode: .common)
+        restartTimer = timer
     }
 }
 
@@ -184,7 +205,7 @@ func parsePortsList(_ text: String) -> [Forward] {
     for raw in text.split(separator: "\n") {
         let line = raw.trimmingCharacters(in: .whitespaces)
         guard line.hasPrefix("guest ") else { continue }
-        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { String($0) }
         // ["guest", "8080", "->", "localhost:8080", "(pending)"?]
         guard parts.count >= 4, let guest = Int(parts[1]), parts[2] == "->",
               parts[3].hasPrefix("localhost:"), let host = Int(parts[3].dropFirst("localhost:".count))

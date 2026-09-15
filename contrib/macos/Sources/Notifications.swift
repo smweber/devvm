@@ -10,12 +10,13 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
 
     private static let conflictCategory = "devvm.conflict"
     private static let replaceAction = "devvm.replace"
+    /// userInfo key carrying the argv to re-run with -f. It rides in the
+    /// notification itself so "Replace" still works after the app relaunched
+    /// (a process-local map would be empty by then).
+    private static let retryKey = "devvm.retry"
 
     private var authorized = false
     private var usable = false
-    /// Retry commands keyed by notification id: the "Replace" action re-runs
-    /// the same cp-in/cp-out with -f.
-    private var retries: [String: [String]] = [:]
 
     func setup() {
         guard Bundle.main.bundleIdentifier != nil else { return } // UNUserNotificationCenter requires a bundle
@@ -26,6 +27,13 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         let category = UNNotificationCategory(identifier: Notifications.conflictCategory, actions: [replace],
                                               intentIdentifiers: [], options: [])
         center.setNotificationCategories([category])
+        // Seed from the stored decision so a result produced before the
+        // (asynchronous, possibly user-gated) request below returns does not
+        // needlessly fall back to a toast on an already-authorized install.
+        center.getNotificationSettings { [weak self] settings in
+            let granted = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+            DispatchQueue.main.async { if granted { self?.authorized = true } }
+        }
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             DispatchQueue.main.async { self?.authorized = granted }
         }
@@ -52,12 +60,11 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        let id = UUID().uuidString
         if let retry = retry {
             content.categoryIdentifier = Notifications.conflictCategory
-            retries[id] = retry
+            content.userInfo = [Notifications.retryKey: retry]
         }
-        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { err in
             if err != nil {
                 DispatchQueue.main.async { Toast.show(title: title, body: body, retry: retry) }
@@ -74,9 +81,8 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        let id = response.notification.request.identifier
-        if response.actionIdentifier == Notifications.replaceAction, let args = retries[id] {
-            retries[id] = nil
+        if response.actionIdentifier == Notifications.replaceAction,
+           let args = response.notification.request.content.userInfo[Notifications.retryKey] as? [String] {
             DispatchQueue.main.async { Notifications.rerunWithForce(args) }
         }
         completionHandler()
@@ -96,7 +102,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
 }
 
 /// Fallback for when notifications are unavailable: a borderless floating
-/// panel near the top-right that fades away after a few seconds.
+/// panel near the top-right that closes itself after a few seconds.
 enum Toast {
     private static var panels: [NSPanel] = []
     private static var actions: [ToastAction] = []

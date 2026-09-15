@@ -18,6 +18,11 @@ final class DropTargetView: NSView {
 
     private var button: NSButton? { superview as? NSButton }
 
+    /// The status bar button accepts the first click even when the app is
+    /// not frontmost (it never is); the overlay must too, or that click is
+    /// swallowed instead of opening the menu.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     // MARK: Clicks pass through to the status bar button.
 
     override func mouseDown(with event: NSEvent) { button?.mouseDown(with: event) }
@@ -26,6 +31,11 @@ final class DropTargetView: NSView {
     override func rightMouseUp(with event: NSEvent) { button?.rightMouseUp(with: event) }
 
     // MARK: Drag destination
+    //
+    // NSView adopts NSDraggingDestination, so these are overrides. If a
+    // toolchain reports "method does not override any method from its
+    // superclass" here, delete the `override` keywords; the signatures are
+    // the protocol's.
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard canAccept(), hasFileURLs(sender) else { return [] }

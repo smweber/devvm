@@ -54,8 +54,15 @@ final class Devvm {
     }
 
     /// Asks the login shell for its PATH by running `env` inside it, so the
-    /// answer is colon-joined regardless of shell (fish included). Bounded to
-    /// five seconds: a hung rc file must not hang the app at launch.
+    /// answer is colon-joined regardless of shell (fish included).
+    ///
+    /// This runs once, synchronously, at launch: nothing else can start until
+    /// devvm is located. It is bounded to five seconds by waiting on a
+    /// background reader rather than reading on this thread — a hung rc file,
+    /// or one that backgrounds a process holding our pipe open (which would
+    /// defeat a plain read-to-EOF forever), must not hang the app with no
+    /// menu bar icon. On timeout the shell is killed and the empty answer
+    /// falls back to the well-known directories.
     private static func loginPath() -> String {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let p = Process()
@@ -66,13 +73,24 @@ final class Devvm {
         let out = Pipe()
         p.standardOutput = out
         do { try p.run() } catch { return "" }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-            if p.isRunning { p.terminate() }
+
+        let box = DataBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.out = out.fileHandleForReading.readDataToEndOfFile()
+            done.signal()
         }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
+        if done.wait(timeout: .now() + 5) == .timedOut {
+            // Kill the shell (and its group, if it leads one) and force EOF on
+            // our end; the reader thread is abandoned, not waited for.
+            kill(p.processIdentifier, SIGKILL)
+            kill(-p.processIdentifier, SIGKILL)
+            try? out.fileHandleForWriting.close()
+            return ""
+        }
         p.waitUntilExit()
         guard p.terminationStatus == 0 else { return "" }
-        let text = String(decoding: data, as: UTF8.self)
+        let text = String(decoding: box.out, as: UTF8.self)
         for line in text.split(separator: "\n") where line.hasPrefix("PATH=") {
             return String(line.dropFirst("PATH=".count))
         }
@@ -113,17 +131,19 @@ final class Devvm {
         p.standardError = err
 
         // Drain both pipes concurrently: a child that fills stderr while we
-        // read stdout to EOF would otherwise deadlock.
+        // read stdout to EOF would otherwise deadlock. The results live in a
+        // reference-typed box because dispatch closures are @Sendable and may
+        // not mutate captured locals.
+        let box = DataBox()
         let group = DispatchGroup()
-        var outData = Data(), errData = Data()
         group.enter()
         DispatchQueue.global().async {
-            outData = out.fileHandleForReading.readDataToEndOfFile()
+            box.out = out.fileHandleForReading.readDataToEndOfFile()
             group.leave()
         }
         group.enter()
         DispatchQueue.global().async {
-            errData = err.fileHandleForReading.readDataToEndOfFile()
+            box.err = err.fileHandleForReading.readDataToEndOfFile()
             group.leave()
         }
         do {
@@ -141,8 +161,8 @@ final class Devvm {
             p.waitUntilExit()
             group.wait()
             let result = CommandResult(status: p.terminationStatus,
-                                       stdout: String(decoding: outData, as: UTF8.self),
-                                       stderr: String(decoding: errData, as: UTF8.self))
+                                       stdout: String(decoding: box.out, as: UTF8.self),
+                                       stderr: String(decoding: box.err, as: UTF8.self))
             DispatchQueue.main.async { completion(result) }
         }
         return p
@@ -152,20 +172,35 @@ final class Devvm {
     func version(completion: @escaping (String?) -> Void) {
         run(["--version"]) { r in
             guard r.ok else { completion(nil); return }
-            completion(r.stdout.split(whereSeparator: { $0 == " " || $0 == "\n" }).last.map(String.init))
+            let words = r.stdout.split(whereSeparator: { $0 == " " || $0 == "\n" })
+            completion(words.last.map { String($0) })
         }
     }
 }
 
-/// At most one in-flight invocation: starting a new one terminates the
-/// previous and drops its result. Used for completion lookups and the
-/// on-menu-open status refresh, where only the latest answer matters.
+/// Mutable pipe output shared between a dispatch closure and its waiter.
+private final class DataBox {
+    var out = Data()
+    var err = Data()
+}
+
+/// At most one *counted* invocation: only the latest one's result is
+/// delivered; earlier ones are dropped when they finish. Used for completion
+/// lookups and the on-menu-open status refresh, where only the latest answer
+/// matters.
+///
+/// By default a new run lets the previous process finish on its own rather
+/// than terminating it: SIGTERM to devvm does not reach the ssh or smolvm
+/// child it spawned, so killing a lookup mid-handshake only orphans the
+/// transport. `terminatePrevious: true` is for cases where the old process
+/// is known to be cheap and self-contained.
 final class SingleFlight {
     private var current: Process?
 
     func run(_ devvm: Devvm, _ args: [String], extraEnv: [String: String] = [:],
+             terminatePrevious: Bool = false,
              completion: @escaping (CommandResult) -> Void) {
-        current?.terminate()
+        if terminatePrevious, let old = current, old.isRunning { old.terminate() }
         var proc: Process?
         proc = devvm.run(args, extraEnv: extraEnv) { [weak self] r in
             guard let self = self, self.current === proc else { return }
@@ -175,8 +210,10 @@ final class SingleFlight {
         current = proc
     }
 
+    /// Drops the in-flight result and terminates the process if it is still
+    /// running (terminating an already-reaped process is undefined).
     func cancel() {
-        current?.terminate()
+        if let old = current, old.isRunning { old.terminate() }
         current = nil
     }
 }

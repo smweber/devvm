@@ -49,7 +49,8 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
         copy.keyEquivalent = "\r"
         copy.frame = NSRect(x: 340, y: 6, width: 84, height: 28)
 
-        [label, field, hint, cancel, copy].forEach(content.addSubview)
+        let views: [NSView] = [label, field, hint, cancel, copy]
+        views.forEach(content.addSubview)
         panel.contentView = content
         panel.initialFirstResponder = field
         panel.center()
@@ -62,7 +63,12 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
     }
 
     @objc private func cancel() {
+        // A pending debounce would otherwise fire after the panel is gone and
+        // start a guest lookup (an ssh handshake) for nothing.
+        debounce?.invalidate()
+        debounce = nil
         lookups.cancel()
+        hint.stringValue = ""
         panel.orderOut(nil)
     }
 
@@ -70,14 +76,18 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
 
     func controlTextDidChange(_ obj: Notification) {
         debounce?.invalidate()
-        debounce = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.15, repeats: false) { [weak self] _ in
             self?.lookup()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        debounce = timer
     }
 
-    /// One in-flight `__complete` at a time: a cold ssh handshake can take
-    /// seconds, and a new keystroke supersedes the old question. The CLI's
-    /// 2s cap is raised for the same reason.
+    /// Only the latest `__complete` answer is used; an older one still in
+    /// flight is left to finish (terminating devvm would orphan the ssh or
+    /// smolvm child doing the actual lookup) and its result is dropped by the
+    /// text-still-matches guard. The CLI's 2s cap is raised because a cold
+    /// ssh handshake can take longer than that.
     private func lookup() {
         let text = field.stringValue
         lookups.run(devvm, ["__complete", "cp-out", machine, text],
@@ -132,7 +142,11 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
     @objc private func copyTapped() {
         let path = field.stringValue.trimmingCharacters(in: .whitespaces)
         guard !path.isEmpty else { return }
+        debounce?.invalidate()
+        debounce = nil
         lookups.cancel()
+        // `--` after NAME: a guest path starting with `-` must not be parsed
+        // as a flag by the CLI.
         if path.hasSuffix("/") {
             let open = NSOpenPanel()
             open.title = "Copy \(machine):\(path) into…"
@@ -143,7 +157,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
             open.allowsMultipleSelection = false
             open.begin { [weak self] response in
                 guard let self = self, response == .OK, let dir = open.url else { return }
-                self.run(["cp-out", "-r", "-t", dir.path, self.machine, path], what: path)
+                self.run(["cp-out", "-r", "-t", dir.path, self.machine, "--", path], what: path)
             }
         } else {
             let save = NSSavePanel()
@@ -153,14 +167,14 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate {
             save.begin { [weak self] response in
                 guard let self = self, response == .OK, let url = save.url else { return }
                 // The save panel already confirmed any overwrite, so -f is right here.
-                self.run(["cp-out", "-f", self.machine, path, url.path], what: path)
+                self.run(["cp-out", "-f", self.machine, "--", path, url.path], what: path)
             }
         }
     }
 
     private func run(_ args: [String], what: String) {
         panel.orderOut(nil)
-        devvm.run(args) { [machine] r in
+        devvm.run(args) { [machine = self.machine] r in
             if r.ok {
                 Notifications.shared.info("Copied \(what)", "from \(machine)")
             } else if r.isOverwriteRefusal {
