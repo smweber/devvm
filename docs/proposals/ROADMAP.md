@@ -1,6 +1,7 @@
 # Roadmap: hubs + browser bridge
 
-Status: 2026-09-15, revised after a sixth review (`status --local` for
+Status: 2026-09-15, **steps 1–4 (Milestone A) implemented and committed**;
+see Progress below. Plan text revised after a sixth review (`status --local` for
 hub listings so hubs never fan out, relay sessions refused while a
 transport is down, `keys add`/`repos add` inputs resolved on the laptop,
 a `flock` on the hub conf from the start, `hostbrowser.Open` reports
@@ -22,6 +23,127 @@ policy lives in `browser-bridge.md` §3–4 only.
 
 Already shipped and assumed here: daemon reconnect, `status --plain --watch`,
 `devvm update`, the macOS menu bar app (`contrib/macos`), v0.1.11.
+
+## Progress
+
+**Milestone A landed 2026-09-15**: steps 1–4 are four commits on `master`
+(`hub backend + HUB/NAME`, `proxy commands on HUB/NAME to the hub`,
+`merged hub listing, cache and watch`, `cp-in/cp-out for hub machines over
+tar stdio`), not yet pushed, no release tagged. Each step went through the
+same loop: implementation, `go build/vet/test` + `gofmt`, an independent
+Opus code review (every step had findings, step 4 a blocker), the fixes, the
+step's live list run from this devvm guest against the real hubs, then one
+`jj commit`. Hub confs `h` (cloud) and `tp` (ThinkPad) exist in this guest's
+`~/.config/devvm`; both hubs run a `dev` cross-build of step 4. Next: step 5.
+
+**Tag `v0.1.13` from step 4 or later, never from an earlier commit.**
+`hubMinVersion` (`internal/cli/hub.go`, pinned by a test) is `v0.1.13`
+because a hub must answer `status --plain --local --watch
+--exit-on-stdin-eof` and the hidden `cp-in --from-tar -`/`cp-out --to-tar -`
+forms, all of which arrived in steps 3–4.
+
+What shipped differently from the plan, per step (the design docs were
+updated where the mechanism changed; this is the short list):
+
+- **1.** `delete HUB` already refuses while `[machines.*]` tables or
+  `run/HUB@*.sock` exist (`--force` overrides); planned for step 6, pulled
+  forward because hand-written tables exist from day one. `transport` is
+  allowed on a hub conf (it steers the interactive hop of a proxied
+  `attach`/`shell`; mosh currently falls back to ssh with a notice).
+  Completion omits hub names for the verbs that refuse them.
+- **2.** Dispatch lives in each proxied leaf's `RunE` (`hubOr` in
+  `internal/cli/proxy.go`), not in `resolve` (which stays the refusal
+  guard), because only `RunE` has the parsed `*cobra.Command` (hub.md §3
+  updated). The prefix is `env DEVVM_NO_SUBSCRIBE=1 devvm …`: `shellJoin`
+  single-quotes every token and a quoted `'VAR=1'` is a command name, not
+  an assignment. **`-t` only when stdin *and* stdout are terminals**: with
+  stdout redirected a remote pty turns `\n` into `\r\n` and merges stderr
+  (`exec h/web -- cat f > out` was corrupted). `-o LogLevel=ERROR` on `-t`
+  runs silences ssh's "Shared connection closed". `delete HUB/NAME`
+  confirms once, on the hub. `keys add` accepts options-prefixed key lines.
+  `contrib/fakesmol/smolvm` learned `machine exec -d` (tmux keeper).
+- **3.** The 5s listing budget *includes* the 1s `cmd.WaitDelay`
+  (`backend.HostWaitDelay`): after the deadline kills ssh, the ControlMaster
+  mux holds the client's stdout for the full drain. A hidden
+  `status --exit-on-stdin-eof` flag makes the hub-side watcher exit when
+  the laptop's dies (otherwise one orphan per laptop watcher restart, alive
+  until its next write). `blockSplitter` is capped at 1 MiB and drops
+  leading blank lines (login banners), so a hub with an *empty* registry
+  reads `unreachable` in `--watch` until it has a machine. Swift `isHub`
+  needs `hub == nil`, not just backend `hub`: machine rows the hub did not
+  list carry backend `hub` too. Ports items stay gated off hub machines in
+  the app until step 6.
+- **4.** Tar completeness is structural (`readTarStream`: the bytes the
+  `tar.Reader` consumed must include the two terminator blocks); the
+  original "last 1024 bytes are zero" sniff accepted a NUL-tailed entry cut
+  at its boundary and would have committed a partial upload. A reader-side
+  diagnosis wins over ssh's death when the laptop gives up first.
+  `-o RequestTTY=no` on every BatchMode run (a `RequestTTY force` in
+  `~/.ssh/config` would CRLF-mangle the stream). No `--quiet`: the hidden
+  forms print nothing; hub stderr passes through verbatim, so hub-side
+  refusals name `web`, not `tp/web`. `hubBackend.Copy` stays refused; the
+  CLI dispatches cp itself.
+
+Known issues found by the live runs and **not** fixed (all pre-existing;
+recorded so they are not rediscovered):
+
+- **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
+  caps `machine exec` streamed stdout at 11534336 bytes ("streaming output
+  exceeded … cap; exec terminated"), and `downloadArchive`
+  (`internal/cli/cp_out.go`) streams the tar over exec stdout. Fails
+  all-or-nothing, locally and proxied alike. Needs a different download
+  path (`machine cp` out of the guest, or chunking) before large `cp-out`
+  works on smol anywhere.
+- **SIGINT during a copy leaks the laptop-side spool** (`defer
+  os.RemoveAll` never runs; the CLI installs no signal handler outside
+  `status --watch`). Five killed 200 MB copies left 610 MB in `$TMPDIR`.
+- `devvm exec` flattens the guest command's exit code to 1 (`Execute`),
+  locally and proxied; `proxyExit` passes codes through for whenever that
+  changes.
+- `keys add` dedup strips the target's *own* `id_*.pub` from its
+  `authorized_keys` (documented behaviour), so a loopback `self` machine
+  breaks its own `ssh localhost`. `keys` verbs are remote-only, so `keys add
+  h/web` against a smol `web` is refused by the hub, not the proxy.
+- `^C` on a `-t` proxied command reports "cannot reach hub" (ssh's 255 is
+  conflated with unreachable by design). The remote huh form can take more
+  than 10s to first paint through a cold ControlMaster.
+- Killing a laptop-side `cp-in` after the archive is fully written does not
+  abort it: with no pty there is no SIGINT propagation and the hub finishes
+  what it received (correct, but "nothing created" only holds for an early
+  kill). Hub and VM staging dirs unwind asynchronously (gone within ~10s).
+
+Lessons that later steps should not relearn:
+
+- **A proxied command's stdin must be an `*os.File`, never an `io.Pipe`.**
+  os/exec's `awaitGoroutines` closes the parent pipes after `WaitDelay` and
+  then still blocks on the stdin copy goroutine, which sits in
+  `io.Pipe.Read` forever; step 3 hit this deadlock. Step 6's `__session`
+  pipe and step 8's relay must follow the pattern in
+  `internal/cli/hublist.go` (`os.Pipe`, write end held for the attempt).
+- On both hubs only the login shell has `~/.local/bin` on `PATH`;
+  `backend.LoginShellArgv` (`sh -c 'exec "${SHELL:-sh}" -lc "$0"' …`) is
+  what makes every proxied command work. A `~/.bash_profile` shadows
+  `~/.profile`, so a banner test must `. ~/.profile` first.
+- Test scaffolding to reuse: `fakeSSH`/`fakeHub`/`fakeHubWith` in
+  `internal/cli` run the *real* remote string through `sh` with `devvm` on a
+  `.profile`-only `PATH` and assert exact ssh argv via `wantSSH`; the cp
+  round trip re-execs the test binary as the hub's `devvm` (`TestMain` in
+  `cp_hub_test.go`); `pinTTYs` fakes the stdin/stdout tty decision;
+  `shortHubTimes` shortens the listing deadlines. `go test -race
+  ./internal/cli` is part of the per-step check now.
+- Live testing: refresh a hub's binary by `scp` to a temp path then `mv`
+  (writing onto the running binary fails with ETXTBSY; the `cp-in -f`
+  one-liner below does not work as written). `script -qec "devvm …"
+  /dev/null <<< y` drives `[y/N]` prompts; the huh form paints unreadably
+  under `script` (0×0 pty), so only its presence can be checked. Testing
+  every step on both hubs paid off once (step 2: `attach`, `keys`, real VM
+  timings needed the ThinkPad; the fake's missing `exec -d` needed cloud);
+  from step 5 on the **ThinkPad is the default hub** and cloud is used only
+  where `calls.log` must show the exact smolvm calls or where the roadmap
+  names `cloud` as the remote-managed target.
+- The ThinkPad VM `web` now has `python3` (guest fixture), `tmux`
+  (`attach`) and a persistent `dev` tmux session. `cp-in` into it runs at
+  about 8.5 MB/s over the LAN.
 
 ## Shared decisions
 
@@ -71,7 +193,7 @@ what `contrib/macos` must change in the same PR, if anything.
 | 2 | Proxy | hub §3 | `a.proxy` builds the remote argv from the parsed command (`$SHELL -lc`, `DEVVM_NO_SUBSCRIBE=1`, `-t` iff TTY, nothing after `--` touched); laptop-side inputs resolved first (`keys add` spec to inline lines, `repos add` origin from the laptop cwd); `attach`/`shell`/`exec`/lifecycle/`repos`/`keys`/`create` proxied | none |
 | 3 | Merged listing + watch | hub §5 | `status --plain --local` (this host only, no hub fan-out); `status` merges per-hub `--plain --local`: state and backend from the hub row, forwards column from the laptop's own daemon for `HUB@NAME`; a row for the hub itself (`hub` group); the listing runs with a 2s connect timeout, `BatchMode=yes` and an overall deadline; cache in `cache/` outside watched dirs, `listMachines` reads it; `--watch` holds one hub pipe per hub, re-spawns it with backoff on EOF, re-reads hub confs on fsnotify; completion for `HUB/` | group rows by `HUB/` prefix; `unreachable` state token; `hub` backend rows |
 | 4 | cp over tar stdio | hub §6 | `cp-in --from-tar -`, `cp-out --to-tar -` (marker line before the stream), laptop-side loops | drop target works for hub machines (no change if it shells out by name) |
-| | **Milestone A** | | Laptop drives desktop VMs: list, attach, create, lifecycle, cp. Zero daemon changes. | |
+| | **Milestone A** — *done 2026-09-15* | | Laptop drives desktop VMs: list, attach, create, lifecycle, cp. Zero daemon changes. | |
 | 5 | Daemon ownership + sessions | bridge §3–4 | owner set and `exact` on `fwd`; `session` connections (long-lived; `id` on every request/event, one reader per side, serialized writes; `add`/`remove` owned by the connection, acked `subscribe`/`unsubscribe`, re-subscribe moves to front; no hub vocabulary yet: `relay` arrives in step 6); the session client in `internal/session` (dial, session, acked subscribe, reconnect with backoff); idle rule `forwards==0 && sessions==0`; `ports rm`/`ports down` per bridge §4; `restartDaemons` cycles every up daemon; `add` takes exact-or-bump, `restore()` honours it, `exact` sticky on reuse, a ticker retries pending exact binds (the same ticker expires `ttl` owners in step 7); every forward dual-stack with `::1` best-effort (ssh: one `localhost:` spec, IPv4 pre-probe decides busy); `up:N` counts `conf` only, never `up:0` | none (`down`/`-` already parsed) |
 | 6 | Hub forwards | hub §7 | `session {relay}` on the daemon (declared at open; the daemon closes relay sessions when its transport dies and refuses new ones until it is back, bridge §3), `__session NAME` (one per hub machine: marker line, then a `session {relay:true}` relayed verbatim, forwards owned by its connection), `hubTransport` on the laptop daemon (one `__session` on its master; guest-port contract; `-L` to `127.0.0.1:hubPort`; a `pending` add reply is a bind failure; up only after hub `add` and `-L` both hold; `dead()` on master or process death; re-resolves the hub port in `restore()`); `start HUB/NAME` brings up laptop-configured forwards after proxying; the hub-conf rewrite under `flock`; `listMachines` also enumerates live `run/HUB@*.sock`; `update` cycles hub-machine daemons | forwards for hub machines appear like any other |
 | | **Milestone B** | | `ports add desktop/web 3000` works from the laptop; both users can hold forwards to one VM. | |
@@ -141,7 +263,9 @@ what only a real smol hub can show.
   forward is unaffected, it targets whatever the hub reports); and nothing
   smolvm-specific is exercised (exec concurrency, boot, `machine cp`
   staging, `-i --stream`). Refresh the hub's binary with
-  `GOOS=linux GOARCH=amd64 go build -o /tmp/devvm ./cmd/devvm && devvm cp-in -f cloud -t /home/dev/.local/bin /tmp/devvm`.
+  `GOOS=linux GOARCH=amd64 go build -o /tmp/devvm ./cmd/devvm`, copy it to
+  a temp path on the hub and `mv` it over `~/.local/bin/devvm` (writing
+  onto the running binary fails with ETXTBSY).
   Its login shell prints nothing before a command (checked), so the
   marker-line tests add an `echo` to `~/.bash_profile` and remove it after.
 - **ThinkPad** (`devvmtest@192.168.1.196`, Linux Mint 22.3, real KVM): the
@@ -165,11 +289,15 @@ what only a real smol hub can show.
   once with `devvm exec web -- sudo apt-get install -y python3`. On
   `cloud` the same command runs on the box itself.
 
-Below, `h` is a hub conf created in step 1's live list. Run each live
-list against both hubs: `--ssh-host dev@2.29.47.196` (`cloud`, fake smol,
-no KVM) and `--ssh-host devvmtest@192.168.1.196` (ThinkPad, real smol).
-Where a hub-side command is named, run it on the hub as that user. Ports
-quoted as `3001` are the fake's bump and read `3000` on the ThinkPad.
+Below, `h` is a hub conf created in step 1's live list. Both hubs are
+registered in this guest: `h` = `dev@2.29.47.196` (`cloud`, fake smol, no
+KVM) and `tp` = `devvmtest@192.168.1.196` (ThinkPad, real smol). Steps 1–4
+were run against both; **from step 5 on, run each live list against the
+ThinkPad by default** and against `cloud` only where an item needs
+`calls.log` to show the exact smolvm calls or names `cloud` as the
+remote-managed target. Where a hub-side command is named, run it on the
+hub as that user. Ports quoted as `3001` are the fake's bump and read
+`3000` on the ThinkPad.
 
 ### Per step
 
@@ -246,13 +374,18 @@ quoted as `3001` are the fake's bump and read `3000` on the ThinkPad.
   the hostile-archive guards still apply to `cp-out`.
 - Live: `devvm cp-in h/web ./f /home/dev/f` then `exec h/web -- cat
   /home/dev/f`; a directory with `-r`; `cp-out h/web /home/dev/f ./` and
-  `cmp`; without `-f` the second `cp-in` refuses; add `echo hello` to the
-  hub's `~/.bash_profile`, `cp-out` is still byte-identical, remove it;
+  `cmp`; without `-f` the second `cp-in` refuses; add `. ~/.profile; echo
+  hello` to the hub's `~/.bash_profile` (a bare `echo` shadows `~/.profile`
+  and loses `~/.local/bin`), `cp-out` is still byte-identical, remove it;
   `cp-in h/web … </dev/null` (the menubar's non-TTY path) prints its `->`
-  lines on the laptop only.
+  lines on the laptop only; a `cp-in` killed while the archive is still
+  streaming creates nothing on the hub (killed after the stream is fully
+  written, the hub finishes the copy: no pty, no SIGINT propagation);
+  large `cp-out` from a real smol VM is blocked by the 11 MiB smolvm
+  streaming cap (Progress, known issues).
 
-*Milestone A is done when every live list above has passed against
-`cloud`.*
+*Milestone A is done: every live list above passed against both hubs on
+2026-09-15.*
 
 **5. Daemon ownership + sessions** (mostly unit; `fakeTransport` binds real
 loopback listeners, so conflicts and dual-stack are real)
