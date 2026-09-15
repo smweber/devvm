@@ -407,8 +407,17 @@ func TestHubCopyRoundTrip(t *testing.T) {
 
 	// A login shell that prints before every command: cp-out is still byte
 	// for byte, cp-in still lands, and none of it reaches the laptop's stdout.
+	// Appended to fakeHubWith's profile (which restates the whole PATH; see
+	// its macOS note) rather than replacing it.
 	profile := filepath.Join(home, ".profile")
-	if err := os.WriteFile(profile, []byte("PATH="+bin+":$PATH\necho hello from .profile\n"), 0o644); err != nil {
+	pf, err := os.OpenFile(profile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pf.WriteString("echo hello from .profile\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Close(); err != nil {
 		t.Fatal(err)
 	}
 	out2 := filepath.Join(t.TempDir(), "out2")
