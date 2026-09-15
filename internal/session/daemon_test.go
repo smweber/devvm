@@ -744,3 +744,73 @@ func (b *blockingTransport) forward(hostPort, guestPort int) (io.Closer, error) 
 	<-b.release
 	return nil, errors.New("bind failed after the wait")
 }
+
+// shutdown tears the transport down (d.tr = nil) without moving the state to
+// reconnecting; a control request already in flight must land as pending,
+// not dereference a nil transport.
+func TestDaemonAddAfterTeardownIsPending(t *testing.T) {
+	d := newTestDaemon(t)
+	d.teardown()
+	host, bumped, pending, err := d.add(freePort(t), 7)
+	if err != nil || !pending || bumped || host == 0 {
+		t.Fatalf("add after teardown = host %d, bumped %v, pending %v, err %v; want pending", host, bumped, pending, err)
+	}
+	if f := d.forwards[7]; f == nil || f.closer != nil {
+		t.Fatalf("forward not recorded as pending: %+v", f)
+	}
+}
+
+// releaseTransport binds for real once released, so two adds racing for the
+// same guest can be caught in the act.
+type releaseTransport struct {
+	*fakeTransport
+	release chan struct{}
+}
+
+func (r *releaseTransport) forward(hostPort, guestPort int) (io.Closer, error) {
+	<-r.release
+	return r.fakeTransport.forward(hostPort, guestPort)
+}
+
+// Two concurrent adds for one guest must bind once: on ssh both closers would
+// carry the same -L spec and the loser's cancel would kill the winner.
+func TestDaemonConcurrentAddBindsOnce(t *testing.T) {
+	d := newTestDaemon(t)
+	tr := &releaseTransport{fakeTransport: newFakeTransport(), release: make(chan struct{})}
+	d.tr = tr
+	pref := freePort(t)
+	type res struct {
+		host    int
+		pending bool
+		err     error
+	}
+	results := make(chan res, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			h, _, p, err := d.add(pref, 1)
+			results <- res{h, p, err}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond) // let both reach the claim
+	close(tr.release)
+	var got []res
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-results:
+			got = append(got, r)
+		case <-time.After(2 * time.Second):
+			t.Fatal("add did not return")
+		}
+	}
+	if n := tr.binds.Load(); n != 1 {
+		t.Fatalf("forward bound %d times, want 1", n)
+	}
+	for _, r := range got {
+		if r.err != nil || r.host != pref {
+			t.Fatalf("add = %+v, want host %d", r, pref)
+		}
+	}
+	if f := d.forwards[1]; f == nil || f.closer == nil || f.binding {
+		t.Fatalf("forward not settled: %+v", f)
+	}
+}

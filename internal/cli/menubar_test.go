@@ -222,6 +222,13 @@ func TestMenubarReplacesRunningApp(t *testing.T) {
 	if f.mac.calledWith("pkill") {
 		t.Errorf("killed an app that quit politely: %v", f.mac.calls)
 	}
+	// The old bundle is moved aside during the swap and cleaned up after.
+	if _, err := os.Lstat(filepath.Join(f.mac.appsDir, "DevVM.app.old")); err == nil {
+		t.Error("DevVM.app.old left behind after a successful install")
+	}
+	if !f.mac.calledWith("pgrep -x -U ") {
+		t.Errorf("pgrep not scoped to this user: %v", f.mac.calls)
+	}
 }
 
 func TestMenubarChecksumMismatchInstallsNothing(t *testing.T) {

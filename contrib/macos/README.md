@@ -39,9 +39,12 @@ cd contrib/macos
 open dist/DevVM.app
 ```
 
-`build.sh` compiles `Sources/*.swift` with `swiftc`, assembles
-`dist/DevVM.app`, stamps the version into `Info.plist`, ad-hoc signs it, and
-zips it to `dist/devvm-menubar.zip` with a `.sha256` beside it.
+`build.sh` compiles `Sources/*.swift` with `swiftc` for both arm64 and
+x86_64 and `lipo`s them into a universal `dist/DevVM.app` (the release runner
+is Apple Silicon, and an arm64-only app cannot launch on an Intel Mac), stamps
+the version into `Info.plist`, ad-hoc signs it, and zips it to
+`dist/devvm-menubar.zip` with a `.sha256` beside it. `DEVVM_APP_ARCH=host
+./build.sh` builds only this machine's slice for faster local iteration.
 
 To install by hand: `ditto dist/DevVM.app ~/Applications/DevVM.app`. The
 supported route once a release exists is `devvm menubar`, which downloads

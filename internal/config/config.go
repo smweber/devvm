@@ -263,7 +263,9 @@ func (m *Machine) Save(configDir string) error {
 // event) never sees a truncated or half-written conf. An existing file keeps
 // its mode (a conf the user chmod'ed to 0600 stays that way); mode applies
 // only to a new file. The data is fsync'ed before the rename so a crash can't
-// leave a zero-length conf behind the new name.
+// leave a zero-length conf behind the new name (the directory entry itself is
+// not fsync'ed: a power loss right after the rename may still show the old
+// conf, which is a complete file either way).
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()

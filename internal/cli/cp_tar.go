@@ -117,6 +117,7 @@ func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 	index := map[string]int{}
 	seen := map[string]bool{}  // accepted entries, for hard-link targets
 	named := map[string]bool{} // every entry, accepted or skipped
+	isDir := map[string]bool{} // accepted directories: never valid hard-link targets
 	tr := tar.NewReader(f)
 	for {
 		hdr, err := tr.Next()
@@ -151,11 +152,19 @@ func readArchive(archive string, stderr io.Writer) ([]archiveEntry, error) {
 			if t, _, _ := strings.Cut(target, "/"); t != top || !seen[target] {
 				return nil, fmt.Errorf("refusing hard link %q -> %q: target is outside the copied tree", hdr.Name, hdr.Linkname)
 			}
+			if isDir[target] {
+				// link(2) refuses directories; the copy fallback would then
+				// fail mid-extraction, breaking all-or-nothing.
+				return nil, fmt.Errorf("refusing hard link %q -> %q: target is a directory", hdr.Name, hdr.Linkname)
+			}
 		default:
 			fmt.Fprintf(stderr, "devvm: skipping %s: unsupported file type\n", hdr.Name)
 			continue
 		}
 		seen[name] = true
+		if hdr.Typeflag == tar.TypeDir {
+			isDir[name] = true
+		}
 		i, ok := index[top]
 		if !ok {
 			i = len(entries)
@@ -211,6 +220,21 @@ func extractArchive(archive string, roots map[string]string, force bool) error {
 		forget(p)
 	}
 	safeParent := func(root, rel string) error {
+		if rel == "" {
+			return nil // the top-level entry itself; nothing below root yet
+		}
+		// root itself first: with -f a pre-existing DEST/<name> symlink would
+		// otherwise be followed by every entry written beneath it.
+		if !safeDirs[root] {
+			info, err := os.Lstat(root)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to write through symlink %s", root)
+			}
+			safeDirs[root] = true
+		}
 		dir := path.Dir(rel)
 		if dir == "." {
 			return nil

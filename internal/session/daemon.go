@@ -44,6 +44,10 @@ var errStopped = errors.New("daemon stopped")
 type fwd struct {
 	host, guest int
 	closer      io.Closer
+	// binding marks a slot claimed by an in-flight add. A second add for the
+	// same guest must not bind again: on ssh both closers would carry the same
+	// -L spec and the loser's `ssh -O cancel` would kill the winner.
+	binding bool
 }
 
 type daemon struct {
@@ -89,7 +93,7 @@ func newDaemon(configDir, name, version string, tr transport, dial func() (trans
 		minBackoff: minReconnectBackoff,
 		maxBackoff: maxReconnectBackoff,
 		idle:       idleTimeout,
-		lateWait:   5 * time.Second,
+		lateWait:   lateWaitFor(),
 		forwards:   map[int]*fwd{},
 		state:      StateUp,
 		since:      time.Now(),
@@ -419,6 +423,9 @@ func (d *daemon) restore(tr transport) bool {
 func (d *daemon) adopt(tr transport, guest, host int, closer io.Closer) bool {
 	d.mu.Lock()
 	f, ok := d.forwards[guest]
+	if ok {
+		f.binding = false
+	}
 	if !ok || f.closer != nil || d.tr != tr {
 		d.mu.Unlock()
 		closer.Close()
@@ -480,26 +487,38 @@ func (d *daemon) shutdown() error {
 // here rather than reported pending forever.
 func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error) {
 	d.mu.Lock()
-	if f, ok := d.forwards[guest]; ok && (f.closer != nil || d.state == StateReconnecting) {
+	if f, ok := d.forwards[guest]; ok && (f.closer != nil || f.binding || d.state == StateReconnecting) {
+		host, pending := f.host, f.closer == nil // read under the lock; adopt writes them
 		d.mu.Unlock()
-		return f.host, false, f.closer == nil, nil
+		return host, false, pending, nil
 	}
-	if d.state == StateReconnecting {
-		d.forwards[guest] = &fwd{host: pref, guest: guest}
+	tr := d.tr
+	// No transport to bind on: reconnecting, or shutdown already tore it
+	// down while this request was in flight. Record it as pending either way
+	// rather than dereferencing nil.
+	if d.state == StateReconnecting || tr == nil {
+		if _, ok := d.forwards[guest]; !ok {
+			d.forwards[guest] = &fwd{host: pref, guest: guest}
+		}
 		d.mu.Unlock()
 		config.TouchChanged(d.configDir)
 		return pref, false, true, nil
 	}
-	tr := d.tr
-	if _, ok := d.forwards[guest]; !ok {
-		d.forwards[guest] = &fwd{host: pref, guest: guest} // claim the slot; bind below
+	f, ok := d.forwards[guest]
+	if !ok {
+		f = &fwd{host: pref, guest: guest} // claim the slot; bind below
+		d.forwards[guest] = f
 	}
+	f.binding = true
 	d.mu.Unlock()
 	host, closer, bumped, err := bind(tr, pref, guest)
 	if err != nil {
 		d.mu.Lock()
-		if f, ok := d.forwards[guest]; ok && f.closer == nil && d.state == StateUp {
-			delete(d.forwards, guest) // an add that never bound isn't remembered
+		if f, ok := d.forwards[guest]; ok {
+			f.binding = false
+			if f.closer == nil && d.state == StateUp {
+				delete(d.forwards, guest) // an add that never bound isn't remembered
+			}
 		}
 		d.mu.Unlock()
 		return 0, false, false, err
@@ -508,14 +527,27 @@ func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error
 		// Removed, or the transport died and the slot is pending again.
 		d.mu.Lock()
 		f, ok := d.forwards[guest]
+		var host int
+		var pending bool
+		if ok {
+			host, pending = f.host, f.closer == nil
+		}
 		d.mu.Unlock()
 		if ok {
-			return f.host, false, f.closer == nil, nil
+			return host, false, pending, nil
 		}
 		return 0, false, false, fmt.Errorf("forward for guest %d was removed while binding", guest)
 	}
 	config.TouchChanged(d.configDir)
 	return host, bumped, false, nil
+}
+
+// lateWaitFor bounds shutdown's wait for a stop-interrupted dial to release
+// its transport. It must outlast the dial itself — an ssh master's connect
+// is bounded by ConnectTimeout — or the orphan it exists to prevent is
+// routine on exactly the sleep/wake path that triggers it.
+func lateWaitFor() time.Duration {
+	return time.Duration(backend.SSHConnectTimeout())*time.Second + 5*time.Second
 }
 
 // errPortExhausted: no host port in the bump range could be bound.
@@ -525,6 +557,9 @@ var errPortExhausted = errors.New("no free host port")
 // state — callers adopt the result under the lock — so the `ssh -O forward`
 // it runs never blocks ping/list.
 func bind(tr transport, pref, guest int) (host int, closer io.Closer, bumped bool, err error) {
+	if tr == nil {
+		return 0, nil, false, errors.New("no transport")
+	}
 	h := pref
 	for tries := 0; tries < 20; tries++ {
 		c, ferr := tr.forward(h, guest)

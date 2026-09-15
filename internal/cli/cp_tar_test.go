@@ -133,6 +133,11 @@ func TestArchiveGuards(t *testing.T) {
 			{name: "proj/f", typ: tar.TypeReg, body: "ok"},
 			{name: "proj/l", typ: tar.TypeSymlink, link: "f"},
 		}, want: map[string]string{"proj/f": "ok"}, wantLink: map[string]string{"proj/l": "f"}},
+		{name: "hard link to a directory", entries: []tarEntry{
+			{name: "proj/", typ: tar.TypeDir},
+			{name: "proj/d/", typ: tar.TypeDir},
+			{name: "proj/h", typ: tar.TypeLink, link: "proj/d"},
+		}, readErr: "target is a directory"},
 		{name: "hard link to a symlink stays a link", entries: []tarEntry{
 			{name: "proj/", typ: tar.TypeDir},
 			{name: "proj/l", typ: tar.TypeSymlink, link: "/etc/passwd"},
@@ -220,5 +225,29 @@ func TestCopyFileKeepsSymlink(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(plain); string(data) != "secret" {
 		t.Fatalf("plain copy = %q", data)
+	}
+}
+
+// A pre-existing DEST/<name> symlink must not be followed with -f when the
+// archive omits the top-level directory header (so the TypeDir check never
+// runs): the root itself is verified before anything is written under it.
+func TestExtractRefusesSymlinkRoot(t *testing.T) {
+	outside := t.TempDir()
+	archive := craftArchive(t, tarEntry{name: "proj/x", typ: tar.TypeReg, body: "evil"})
+	entries, err := readArchive(archive, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dst, "proj")); err != nil {
+		t.Fatal(err)
+	}
+	roots := map[string]string{entries[0].name: filepath.Join(dst, "proj")}
+	err = extractArchive(archive, roots, true)
+	if err == nil || !strings.Contains(err.Error(), "refusing to write through symlink") {
+		t.Fatalf("extractArchive error = %v", err)
+	}
+	if got, _ := os.ReadDir(outside); len(got) != 0 {
+		t.Fatalf("wrote outside the destination: %v", got)
 	}
 }

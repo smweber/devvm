@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -197,8 +198,10 @@ func (m *menubarInstaller) installedVersion() string {
 	return v
 }
 
+// running matches by exact name within this user's processes only; another
+// user's process called DevVM must neither read as "our app" nor be killed.
 func (m *menubarInstaller) running() bool {
-	_, err := m.run("pgrep", "-x", menubarAppName)
+	_, err := m.run("pgrep", "-x", "-U", strconv.Itoa(os.Getuid()), menubarAppName)
 	return err == nil
 }
 
@@ -213,7 +216,7 @@ func (m *menubarInstaller) quit() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if _, err := m.run("pkill", "-x", menubarAppName); err != nil {
+	if _, err := m.run("pkill", "-x", "-U", strconv.Itoa(os.Getuid()), menubarAppName); err != nil {
 		return fmt.Errorf("quit %s.app: %w", menubarAppName, err)
 	}
 	return nil
@@ -277,11 +280,25 @@ func (m *menubarInstaller) install(ctx context.Context, tag string) (wasRunning 
 			return true, err
 		}
 	}
-	if err := os.RemoveAll(m.appPath()); err != nil {
-		return wasRunning, fmt.Errorf("remove old %s.app: %w", menubarAppName, err)
+	// Move the old bundle aside rather than deleting it, so a failed rename
+	// of the new one leaves the previous app in place instead of none.
+	old := m.appPath() + ".old"
+	os.RemoveAll(old) // a leftover from an earlier interrupted install
+	hadOld := false
+	if _, err := os.Lstat(m.appPath()); err == nil {
+		if err := os.Rename(m.appPath(), old); err != nil {
+			return wasRunning, fmt.Errorf("move old %s.app aside: %w", menubarAppName, err)
+		}
+		hadOld = true
 	}
 	if err := os.Rename(newApp, m.appPath()); err != nil {
+		if hadOld {
+			_ = os.Rename(old, m.appPath())
+		}
 		return wasRunning, fmt.Errorf("install %s.app: %w", menubarAppName, err)
+	}
+	if hadOld {
+		os.RemoveAll(old)
 	}
 	return wasRunning, nil
 }

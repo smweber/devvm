@@ -68,18 +68,14 @@ func (a *App) runPort(name, mapping string) error {
 	if err != nil {
 		return err
 	}
+	return a.addPort(m, b, mapping)
+}
+
+// addPort records a mapping in the conf and, if the VM is running, brings the
+// forward up. Recording comes first: adding a port is a conf edit that must
+// work on a stopped box too; only the live bind needs the VM running.
+func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) error {
 	pref, guest, err := parseMapping(mapping)
-	if err != nil {
-		return err
-	}
-	if err := requireRunningForForwards(m, b); err != nil {
-		return err
-	}
-	cl, err := session.Dial(a.ConfigDir, name)
-	if err != nil {
-		return err
-	}
-	host, bumped, pending, err := cl.Add(pref, guest)
 	if err != nil {
 		return err
 	}
@@ -89,7 +85,19 @@ func (a *App) runPort(name, mapping string) error {
 			return err
 		}
 	}
-	a.reportForward(name, host, guest, pref, bumped, pending)
+	if err := requireRunningForForwards(m, b); err != nil {
+		fmt.Fprintf(a.Stdout, "devvm: recorded %s; forwards come up on 'devvm start %s'\n", mapping, m.Name)
+		return nil
+	}
+	cl, err := session.Dial(a.ConfigDir, m.Name)
+	if err != nil {
+		return err
+	}
+	host, bumped, pending, err := cl.Add(pref, guest)
+	if err != nil {
+		return err
+	}
+	a.reportForward(m.Name, host, guest, pref, bumped, pending)
 	return nil
 }
 
@@ -264,16 +272,32 @@ func (a *App) tunnelUp(name string) error {
 // transport would exec into the machine, and smolvm's exec may boot one the
 // user deliberately stopped. (The daemon guards its reconnect dials the same
 // way; this catches the initial dial before a daemon exists.)
+//
+// It polls briefly: `devvm start` calls tunnelUp right after `smolvm machine
+// start` returns, and smolvm can still report the box as starting for a
+// moment. Failing there would tell the user to start a VM they just started.
 func requireRunningForForwards(m *config.Machine, b backend.Backend) error {
 	if m.Backend != config.BackendSmol {
 		return nil
 	}
-	st, err := b.Status()
-	if err != nil || st.Running {
-		return nil
+	deadline := time.Now().Add(runningPollTimeout)
+	for {
+		st, err := b.Status()
+		if err != nil || st.Running {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%s is not running; start it first ('devvm start %s' also brings its forwards up)", m.Name, m.Name)
+		}
+		time.Sleep(runningPollInterval)
 	}
-	return fmt.Errorf("%s is not running; start it first ('devvm start %s' also brings its forwards up)", m.Name, m.Name)
 }
+
+// Poll knobs for requireRunningForForwards (vars so tests can shrink them).
+var (
+	runningPollTimeout  = 10 * time.Second
+	runningPollInterval = 250 * time.Millisecond
+)
 
 // forwardState is the per-forward column value: "up", or "reconnecting" for
 // one the daemon remembers but has not re-bound yet.

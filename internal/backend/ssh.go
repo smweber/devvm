@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/smweber/devvm/internal/config"
 )
@@ -20,15 +22,49 @@ type sshBackend struct {
 
 func (b *sshBackend) Kind() string { return b.m.Backend }
 
-// sshConnectTimeout is the ConnectTimeout seconds for every ssh invocation:
-// DEVVM_SSH_CONNECT_TIMEOUT if it is a positive integer, else 10.
-func sshConnectTimeout() string {
-	if v := os.Getenv("DEVVM_SSH_CONNECT_TIMEOUT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return strconv.Itoa(n)
-		}
+// defaultSSHConnectTimeout bounds ssh's TCP connect and banner exchange.
+const defaultSSHConnectTimeout = 10
+
+var warnConnectTimeoutOnce sync.Once
+
+// SSHConnectTimeout is the ConnectTimeout (whole seconds) for every ssh
+// invocation. DEVVM_SSH_CONNECT_TIMEOUT overrides it, as bare seconds
+// ("30") or a Go duration ("30s", "1m") — the same override pattern as
+// DEVVM_COMPLETE_TIMEOUT. An unparseable value warns once and falls back,
+// rather than silently timing out at the default.
+func SSHConnectTimeout() int {
+	v := os.Getenv("DEVVM_SSH_CONNECT_TIMEOUT")
+	n, err := parseConnectTimeout(v)
+	if err != nil {
+		warnConnectTimeoutOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "devvm: ignoring DEVVM_SSH_CONNECT_TIMEOUT=%q: %v (using %ds)\n", v, err, defaultSSHConnectTimeout)
+		})
+		return defaultSSHConnectTimeout
 	}
-	return "10"
+	return n
+}
+
+// parseConnectTimeout accepts "", bare seconds, or a Go duration (rounded up
+// to whole seconds, ssh's granularity).
+func parseConnectTimeout(v string) (int, error) {
+	if v == "" {
+		return defaultSSHConnectTimeout, nil
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n <= 0 {
+			return 0, fmt.Errorf("must be positive")
+		}
+		return n, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("not seconds or a duration")
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	secs := int((d + time.Second - 1) / time.Second)
+	return secs, nil
 }
 
 // sshFlags builds the shared port/identity/known_hosts options used by ssh,
@@ -42,7 +78,7 @@ func (b *sshBackend) sshFlags() []string {
 	// the banner exchange too, so a host that is slow to answer can be given
 	// longer via DEVVM_SSH_CONNECT_TIMEOUT (seconds), the same override
 	// pattern as DEVVM_COMPLETE_TIMEOUT.
-	f := []string{"-o", "ConnectTimeout=" + sshConnectTimeout()}
+	f := []string{"-o", "ConnectTimeout=" + strconv.Itoa(SSHConnectTimeout())}
 	if b.m.SSHPort != 22 && b.m.SSHPort != 0 {
 		f = append(f, "-o", fmt.Sprintf("Port=%d", b.m.SSHPort))
 	}

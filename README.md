@@ -43,7 +43,9 @@ the ssh transport, is the planned next backend.)
   With shell completion enabled, SOURCE completes local paths and DEST queries
   guest paths for registered machines (two-second timeout, no SSH password
   prompts; `DEVVM_COMPLETE_TIMEOUT=10s` raises it). Directory suggestions end
-  in `/` so you can keep completing inside.
+  in `/` so you can keep completing inside. Every ssh invocation uses a
+  10-second connect timeout; `DEVVM_SSH_CONNECT_TIMEOUT=30` (or `30s`) raises
+  it for slow hosts.
 - `devvm cp-out NAME SOURCE [DEST]` — copy a guest file onto the host; add `-r`
   for directories. SOURCE is relative to the guest user's home unless absolute;
   DEST is a local path, defaulting to the current directory, with the same
