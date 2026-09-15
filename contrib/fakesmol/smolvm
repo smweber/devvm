@@ -1,0 +1,87 @@
+#!/bin/sh
+# fake smolvm for hub testing on a host without /dev/kvm.
+#
+# The "guest" of every machine is this host itself: `machine exec` runs the
+# guest argv locally, `machine cp` copies locally, and machine state is a
+# file per name under $FAKESMOL_DIR. It answers exactly the invocations
+# internal/backend/smol.go makes (ls --json, status, create, start, stop,
+# delete, cp, exec) and nothing else. Everything devvm layers on top (the
+# agent exec, yamux forwards, the browser shim, tmux) is real.
+set -eu
+
+dir="${FAKESMOL_DIR:-$HOME/.local/share/fakesmol}"
+mkdir -p "$dir"
+log="$dir/calls.log"
+printf '%s smolvm' "$(date +%H:%M:%S)" >>"$log"; printf ' %s' "$@" >>"$log"; echo >>"$log"
+
+[ "${1:-}" = "machine" ] || { echo "fake smolvm: only 'machine' is supported" >&2; exit 2; }
+shift
+sub="${1:-}"; [ $# -gt 0 ] && shift
+
+state_of() { cat "$dir/$1.state" 2>/dev/null || echo "not created"; }
+
+# flag parsing shared by every subcommand that takes --name
+name=""; tty=0; envs=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --name) name="$2"; shift 2 ;;
+        --) shift; break ;;
+        -i|--stream|--net|--force|--json) shift ;;
+        -it) tty=1; shift ;;
+        -e) envs="$envs $2"; shift 2 ;;
+        --image|--cpus|--mem|--storage|--env) shift 2 ;;
+        *) break ;;
+    esac
+done
+
+case "$sub" in
+    ls)
+        printf '['
+        first=1
+        for f in "$dir"/*.state; do
+            [ -e "$f" ] || continue
+            n=$(basename "$f" .state)
+            [ $first = 1 ] || printf ','
+            first=0
+            printf '{"name":"%s","state":"%s"}' "$n" "$(cat "$f")"
+        done
+        printf ']\n'
+        ;;
+    status)
+        [ -e "$dir/$name.state" ]
+        ;;
+    create)
+        [ -e "$dir/$name.state" ] && { echo "fake smolvm: $name exists" >&2; exit 1; }
+        echo stopped >"$dir/$name.state"
+        ;;
+    start)
+        [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
+        echo running >"$dir/$name.state"
+        ;;
+    stop)
+        [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
+        echo stopped >"$dir/$name.state"
+        ;;
+    delete)
+        rm -f "$dir/$name.state"
+        ;;
+    cp)
+        # smolvm machine cp SRC NAME:DST — root-owned like the real thing.
+        src="$1"; dst="${2#*:}"
+        sudo cp -a "$src" "$dst"
+        ;;
+    exec)
+        # `smolvm machine exec` boots a stopped VM; devvm relies on that in
+        # places and guards against it in others. Mirror it: exec starts the
+        # machine if it exists, refuses if it does not.
+        [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
+        echo running >"$dir/$name.state"
+        for e in $envs; do export "$e"; done
+        # Real smolvm enters the guest as root; devvm's guestArgv drops to
+        # the user itself with `sudo -u USER`. Enter as root here too so
+        # root-only work (prereqs, /usr/local/bin agent install) behaves.
+        exec sudo -n --preserve-env=TERM,SMOLVM_GUEST -- "$@"
+        ;;
+    *)
+        echo "fake smolvm: unsupported: machine $sub" >&2; exit 2 ;;
+esac

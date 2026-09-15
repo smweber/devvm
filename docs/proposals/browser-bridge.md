@@ -1,7 +1,7 @@
 # Proposal: a generic guest→host browser bridge and ad-hoc forwards
 
-Status: draft v2.4, 2026-09-15. Order of work lives in `ROADMAP.md` and
-nowhere else. Revised after four independent reviews. **Sections 3 and 4 are
+Status: draft v2.5, 2026-09-15. Order of work lives in `ROADMAP.md` and
+nowhere else. Revised after five independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
 Scope: `internal/auth`, `internal/session`, `cmd/devvm-agent`, `internal/agentrpc`,
@@ -78,10 +78,10 @@ will actually reach and opens it with `hostbrowser.Open` on its own host. An
 `external` URL (a normal login page with no loopback callback) is opened as
 is; there is nothing to forward.
 
-**Local versus relay subscribers.** A subscription declares whether the
-browser opens on this host (`local`, the `attach`/`shell`/`auth` process
-here) or the subscriber is **another daemon** reached through a relay
-(`hub.md`'s `__session`, held by the laptop's daemon for that machine). For a
+**Local versus relay subscribers.** A session declares at open (section 3)
+whether the browser opens on this host (`local`, the `attach`/`shell`/`auth`
+process here) or the subscriber is **another daemon** reached through a
+relay (`hub.md`'s `__session`, held by the laptop's daemon for that machine). For a
 local subscriber the daemon binds before delivering, and `bound` is the port
 the browser will reach. For a relay subscriber the daemon **binds nothing**:
 the event is handed up as-is, arrives on the far daemon's `events()` channel
@@ -184,23 +184,60 @@ the user takes more than a minute. So:
 
 - **A long-lived control connection is a session, and a session holds the
   daemon.** Today every control connection is one request and a 30-second
-  read deadline. A client that sends `session` instead keeps the connection
-  open; it may then `subscribe`, and it may `add` forwards owned by that
-  connection (`connection` owners, section 4). The daemon counts open
-  sessions. Idle rule becomes `forwards == 0 && sessions == 0`, in both
+  read deadline. A client that sends `session {relay: bool}` instead keeps
+  the connection open; it may then `subscribe`, and it may `add` forwards
+  owned by that connection (`connection` owners, section 4). `relay` is
+  declared once, at open: it says the far end is another daemon
+  (`hub.md`'s `__session`), not a browser on this host, and both the
+  subscription (section 1) and the transport-loss rule below inherit it.
+  The daemon counts open sessions. Idle rule becomes `forwards == 0 && sessions == 0`, in both
   `loop()` and `reconnect()`. There is no separate `hold` op: holding is what
   a session connection does by existing, subscribed or not. That matters for
   `hub.md`'s `__session`, which can sit connected with no forwards and no
   subscription; if it did not hold, the hub daemon would idle-exit under it
   and the laptop's reconnect would respawn it every 60 seconds.
-- `subscribe {relay: bool}` and `unsubscribe` are messages on a session
-  connection. `subscribe` is acknowledged: the reply is sent only once the
-  subscription is registered, so a client that waits for the reply knows
-  every later event reaches it. Re-sending `subscribe` on an already
+- `subscribe` and `unsubscribe` are messages on a session connection.
+  `subscribe` is acknowledged: the reply is sent only once the subscription
+  is registered, so a client that waits for the reply knows every later
+  event reaches it. A daemon that is itself a relay subscriber upstream (the
+  laptop daemon on a hub, `hub.md` section 8) acknowledges a local
+  `subscribe` only after its own upstream `subscribe` is acknowledged, so
+  the guarantee composes across hops. Re-sending `subscribe` on an already
   subscribed session moves it to the front (the laptop daemon does this on
   every new local subscriber, `hub.md` section 8). Events go to the most
   recently registered subscriber; when it unsubscribes or disconnects, the
   next most recent one, if any, receives them.
+- **Wire shape.** Today's protocol is one request, one reply, one
+  connection, with no correlation. A session connection carries requests,
+  their replies, events and event replies on one pipe, so every request
+  carries an `id` its reply echoes, and every event carries an `id` the
+  subscriber's reply names. Each side runs **one reader for the
+  connection's life** and serializes its writes; a reader never blocks
+  waiting for a reply, because a reply can queue behind an event (the
+  laptop daemon's bridge handler sends `add` on this pipe while it is
+  handling an event, and the answer to that `add` shares the pipe with the
+  event's reply). A reply naming an `id` the daemon no longer holds (the
+  event timed out, or the subscriber that got it is gone) is a late reply
+  and is dropped. `hub.md`'s `__session` relays these lines verbatim and
+  adds nothing of its own.
+- **One session client.** `attach`, `shell`, `auth` and the laptop daemon's
+  hub transport share one client in `internal/session` that owns dial (and
+  spawn), `session`, `subscribe` with its ack, and **reconnect**: when the
+  connection drops (the daemon was cycled by `update` or `stop`, or died)
+  it redials with backoff, opens a new session and re-subscribes, so a held
+  `attach` regains browser support without being reattached. The forwards
+  the old connection owned are gone with it and come back on the next open
+  (section 4). After `update` the reconnecting client is the old binary
+  talking to a new daemon; the session ops are a compatibility surface
+  versioned by a floor like `--plain`, and the daemon's `ping` version is
+  what a client checks before assuming an op exists.
+- **Transport loss closes relay sessions.** When the daemon's transport
+  dies it closes every session opened with `relay: true`, dropping the
+  forwards they own; local sessions and their forwards stay, and
+  `restore()` re-binds those as today. The reason is in `hub.md` section 7:
+  a relay's forwards are intermediate hops whose host port `restore()` may
+  bump, and the far daemon has no way to learn the new port except by
+  re-adding through its own reconnect.
 - `DEVVM_NO_SUBSCRIBE=1` makes `attach`/`shell`/`auth` skip the daemon
   entirely: no dial, no session, no subscription. The hub proxy sets it on
   every proxied command so the laptop's subscription is the only one for that
@@ -243,8 +280,9 @@ Owners decide lifetime and nothing else. Who drops what:
   forward, "left to exit on its own". A daemon holding `connection` forwards
   never exits on its own, so that skip would leave old code running after a
   desktop update. It cycles every daemon that is up; a hub `__session` on the
-  other side reconnects through its own daemon's backoff, and a local
-  `attach`'s direct forward is re-created on the next open.
+  other side reconnects through its own daemon's backoff, a local `attach`
+  reconnects and re-subscribes through the session client (section 3), and
+  its direct forwards are re-created on the next open.
 - A closing connection drops itself; the expiry ticker drops `ttl`.
 - `ports add NAME PORT` on a live forward adds `conf` and touches no other
   owner. A `ttl` left behind expires harmlessly because `conf` keeps the
@@ -262,8 +300,19 @@ fails silently. **`restore()` honours `exact`**: today it re-binds every
 forward with bumping allowed, which would silently move a callback port that
 another process grabbed during the outage while the browser still targets the
 original. An exact forward whose port is unavailable after a reconnect stays
-pending (visible in `ports list`) and is retried on the next attempt, never
-bumped.
+pending (visible in `ports list`) and is never bumped. Today a pending
+forward is re-bound only by a later `add` for the same guest port or by the
+next transport reconnect, so freeing the port would change nothing until one
+of those happened; the daemon's expiry ticker (the one that drops `ttl`
+owners) therefore also retries every pending exact bind while the transport
+is up. A freed callback port comes back within one tick; one that never
+frees expires with its `ttl` owner. **`exact` is sticky**: a request that
+reuses an existing forward (below) and asks for exact sets it for the rest
+of the forward's life, including after the owner that asked has expired.
+Recomputing it per owner would add policy for a distinction nobody sees;
+the cost is that a configured forward that once carried a callback stays
+pending instead of bumping if its port is taken during a later outage, and
+`ports down`/`ports up` clears that.
 
 **Every forward is dual-stack, best-effort on `::1`.** `auth.ensureCallback`
 binds both `127.0.0.1:P` and `[::1]:P` because macOS resolves `localhost` to
@@ -277,8 +326,16 @@ the forward is IPv4-only on that host. Classifying `EADDRINUSE` on `::1` as
 "busy" was considered and dropped; it needs errno inspection on two
 transports and a v4 unbind for a conflict (another process on `[::1]:P` but
 not `127.0.0.1:P`) that the current best-effort code has never hit. With
-that rule there is no per-request family choice, and reusing an existing
-forward never hands a callback a bind the host's browser cannot reach.
+that rule there is no per-request family choice. On ssh, "the IPv4 bind
+decides" is the transport's existing `127.0.0.1` pre-probe before `-O
+forward`, not ssh's own result: OpenSSH reports a `localhost:` spec as bound
+when any one of its addresses bound. The accepted residual case, stated so
+it is not later mistaken for an oversight: another process holds `[::1]:P`
+but not `127.0.0.1:P`, on a host that resolves `localhost` to `::1` first
+(macOS), and the browser's callback reaches that process instead of the
+forward. When nothing listens on `::1` the browser falls back to
+`127.0.0.1`, so an IPv4-only forward, new or reused, is reachable in every
+other case.
 
 Which owner a bridge open gets:
 
@@ -298,7 +355,10 @@ Which owner a bridge open gets:
 owner to the existing forward and returns the existing host port, **unless**
 the request is exact and the existing host port differs (a configured `1455`
 that got bumped to `1456`), in which case it is refused like any busy exact
-bind.
+bind. An exact request that matches the existing host port makes the
+forward exact from then on (sticky, above); without that a callback could
+reuse a bumpable forward and be moved out from under the browser on the
+next reconnect.
 
 **Limits.** Privileged ports (< 1024) are refused; at most 20 live ephemeral
 forwards per machine. `session.Forward` gains `Ephemeral bool` and `Expires`;
@@ -308,8 +368,14 @@ Documented, not fixed: they are ad hoc by definition.
 
 ### 5. `BROWSER` in the guest
 
-The shim (`devvm-open-url`) is installed beside the agent. It becomes
-`BROWSER` wherever devvm can arrange it without writing to an adopt host:
+The shim (`devvm-open-url`) is installed beside the agent **by the same
+`agentbin.Install` call**, one idempotent operation. Today only `auth` writes
+it (`installBrowserShim`), and the smol transport installs the agent alone;
+folding the shim in means a smol daemon that is up has both, which is what
+`hub.md` section 8 relies on for hub VMs, and what `attach` relies on the
+moment it subscribes (step 7), before `bootstrap` installs anything (step
+9). The shim becomes `BROWSER` wherever devvm can arrange it without
+writing to an adopt host:
 
 | Path | smol | remote-managed | remote-unmanaged |
 |---|---|---|---|
@@ -347,10 +413,9 @@ through the hub daemon:
 
 ```go
 func Authenticate(ctx, b, m, tools, approve) error {
-    agentPath := agentbin.Install(...)         // consent gate unchanged (adopt hosts)
-    shim := installBrowserShim(...)
-    cl := session.Dial(configDir, name)        // spawn daemon if needed
-    release := cl.Subscribe(); defer release() // a session: bridge alive across logins
+    agentPath, shim := agentbin.Install(...)   // agent + shim, one op; consent gate unchanged (adopt hosts)
+    cl := session.Dial(configDir, name)        // the session client (section 3): spawn, session, reconnect
+    release := cl.Subscribe(); defer release() // acked; bridge alive across logins
                                                // DEVVM_NO_SUBSCRIBE=1: skip the daemon
     for tool := range tools { s.login(tool) }  // BROWSER=shim, as today
 }
@@ -415,7 +480,9 @@ No new verbs. Visible changes:
 - `ports rm NAME PORT` can remove a daemon-only `ttl` forward.
 - `ports down` leaves the daemon up while other owners or sessions remain.
 - `attach`/`shell`/`auth` open a session and subscribe unless
-  `DEVVM_NO_SUBSCRIBE=1`, in which case they do not touch the daemon.
+  `DEVVM_NO_SUBSCRIBE=1`, in which case they do not touch the daemon. They
+  reconnect and re-subscribe on their own if the daemon is cycled under
+  them.
 - `update` cycles every daemon that is up, including ones holding only
   session-owned forwards.
 - `auth --install-agent` unchanged and remains the only consent path.

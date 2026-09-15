@@ -1,6 +1,6 @@
 # Proposal: hubs — reach another host's devvm machines from this one
 
-Status: draft v3.2, 2026-09-15, revised after four independent reviews.
+Status: draft v3.3, 2026-09-15, revised after five independent reviews.
 Order of work lives in `ROADMAP.md` and nowhere else. Companion to
 `browser-bridge.md`, whose sections 3 and 4 are the authoritative statement
 of leases, subscriptions, ownership and bind policy; this doc references them
@@ -103,6 +103,12 @@ with one slice in it. One hand-editable file per hub, no second registry
 tree, and `config.List` stays truthful with no filtering: it sees `desktop`,
 whose conf validates as a hub. `delete desktop` removes one file.
 
+Two `ports add desktop/…` runs at once race on that one file exactly as two
+`ports add web …` race on `web.toml` today: `Save` is atomic, not
+serialized, so the second read-modify-write can drop the first. Known and
+unchanged by this proposal; a flock around the conf rewrite is a small
+follow-up if it ever bites.
+
 Two consequences the registry code has to absorb:
 
 - **Runtime identifier.** Socket, log and lock paths are `run/NAME.*`
@@ -113,10 +119,15 @@ Two consequences the registry code has to absorb:
   it from the display name in one place and nothing else ever splits it.
 - **Enumeration.** `restartDaemons` (`update`), the global `ports list`,
   `gatherRows` (`status`) and completion all walk `config.List`, which yields
-  hub confs but not the machines on them. They switch to a `config.ListAll`
-  that yields local names, `HUB/NAME` for every `[machines.NAME]` table in a
-  hub conf, `HUB/NAME` for every name in the hub's cached listing (section
-  5), **and `HUB/NAME` for every live `run/HUB@NAME.sock`**. The last source
+  hub confs but not the machines on them. They switch to an application
+  level `listMachines` in `internal/cli` (not `config`, which stays a file
+  reader that never dials a socket or trusts a cache) that unions
+  `config.List` with `HUB/NAME` for every `[machines.NAME]` table in a hub
+  conf, `HUB/NAME` for every name in the hub's cached listing (section 5),
+  **and `HUB/NAME` for every live `run/HUB@NAME.sock`**. Keeping it out of
+  `config` also keeps the stale-cache handling explicit: the cache is a
+  hint for completion and enumeration, and only a live proxied command says
+  whether a machine exists. The last source
   matters because a laptop daemon for a hub machine can exist with no entry
   at all: a browser open from `attach desktop/web` creates a
   `connection`-owned forward in it and writes nothing to the conf. `delete
@@ -208,8 +219,14 @@ and re-trigger. Derived data, but not worth a second XDG directory.
 
 The listing ssh runs with a **short connect timeout** (2s, not the default
 10s): the menu bar app re-runs a plain status every time its menu opens, and a
-desktop that is asleep must not turn that into a ten-second hang. On failure
-the cached rows are rendered with state `unreachable`.
+desktop that is asleep must not turn that into a ten-second hang.
+`ConnectTimeout` bounds only the connect and key exchange, not
+authentication, the login shell, or the remote `devvm status` itself, so
+the listing also runs with `BatchMode=yes` (already an `ExecOpts` field; no
+prompt can hang it) under an **overall deadline** (proposed 5s) that kills
+the ssh. A hub that accepts the connection and then hangs is `unreachable`
+like one that never answers. On failure the cached rows are rendered with
+state `unreachable`.
 
 The hub itself gets a row (`desktop  hub  reachable|unreachable`) in the
 human listing and in `--plain`, so a hub with no machines yet is still
@@ -220,7 +237,12 @@ visible, and `unreachable` has somewhere to land when the listing is empty.
 the watcher exists to avoid. Instead it spawns `ssh HUB … devvm status --plain
 --watch` per hub, holds the pipe, and re-merges whenever either the local
 snapshot or a hub block changes. A hub that is unreachable renders its cached
-rows with state `unreachable`.
+rows with state `unreachable`. When a hub pipe hits EOF (the desktop went
+to sleep, sshd restarted, `devvm` was updated there) the watcher re-spawns
+it with the daemon's 2–30s backoff and shows the cached rows `unreachable`
+meanwhile, so a hub that wakes is picked up without restarting `--watch`;
+it also re-reads the hub confs on the `machines/` fsnotify events it
+already receives, so an added or deleted hub gets or loses its pipe live.
 
 `--plain` gains no column: the hub is encoded in column 1 (`desktop/web`),
 which is what the menubar already keys on. Consumers that want to group by hub
@@ -261,24 +283,37 @@ ssh -o ControlPath=… HUB "$SHELL" -lc 'devvm __session web'
 ```
 
 `__session` on the hub dials (spawning if needed) the hub daemon for `web`
-and holds one long-lived control connection to it. Its stdio is a JSON-lines
-protocol, opened with the marker line from section 6:
+and holds one long-lived control connection to it, opened as `session
+{relay: true}`. Its stdio is that connection's line protocol
+(`browser-bridge.md` section 3: an `id` on every request and event, one
+reader per side, serialized writes) relayed **verbatim** behind the marker
+line from section 6; `__session` adds nothing but the marker and its own
+lifetime:
 
 ```
-laptop → hub:  {"op":"add","guest":3000,"pref":3000,"exact":false}
-hub → laptop:  {"ok":true,"host":3001}          // the hub-loopback port
-laptop → hub:  {"op":"remove","guest":3000}
-laptop → hub:  {"op":"subscribe"} / {"op":"unsubscribe"}     (section 8)
-hub → laptop:  {"event":{…}}                    // subscribed bridge events
-laptop → hub:  {"reply":{…}}                    // the subscriber's answer
+laptop → hub:  {"id":1,"op":"add","guest":3000,"pref":3000,"exact":false}
+hub → laptop:  {"id":1,"ok":true,"host":3001}                 // the hub-loopback port
+hub → laptop:  {"id":1,"ok":true,"host":3000,"pending":true}  // hub daemon reconnecting; see below
+laptop → hub:  {"id":2,"op":"remove","guest":3000}
+laptop → hub:  {"id":3,"op":"subscribe"} / {"op":"unsubscribe"}     (section 8)
+hub → laptop:  {"event":{"id":7,…}}             // subscribed bridge events
+laptop → hub:  {"reply":{"id":7,…}}             // the subscriber's answer
 ```
 
 Every forward `__session` adds is **owned by its control connection**
 (`browser-bridge.md` section 4). `hubTransport.forward(host, guest)` sends
 `add`, reads the hub port the hub chose (which may be bumped on the hub;
-nothing on the laptop cares), and binds a native `-L host:localhost:hubPort`
-on the master. `remove` drops this connection's ownership of one guest port.
-When the process dies, every forward it owned goes with it.
+nothing on the laptop cares), and binds a native `-L host:127.0.0.1:hubPort`
+on the master. `127.0.0.1`, not `localhost`: the hub port is the hub
+daemon's own listener, IPv4 with `::1` best-effort (bridge section 4), and
+naming the family means a stranger on the hub's `[::1]:hubPort` can never
+receive laptop traffic. `remove` drops this connection's ownership of one
+guest port. When the process dies, every forward it owned goes with it.
+
+A `pending` reply (the hub daemon has no transport to the VM right now) is
+not a port the laptop can bind to. The transport returns it to its own
+daemon as a bind failure, so the laptop-side forward stays pending too, and
+it comes up through the invalidation below rather than by polling.
 
 Why one process per machine and not a control socket forwarded over ssh:
 process lifetime is the scope, with nothing to refcount across a second
@@ -297,7 +332,22 @@ desktop), `__session` exits, the laptop daemon goes `reconnecting`, and
 `restore()` re-dials the transport (a fresh `__session`) and re-adds every
 forward with the daemon's existing 2–30s backoff. The hub port a re-added
 forward gets may differ; the transport re-resolves it and re-adds the `-L`
-before reporting the forward up. `restore()` never dials a stopped smol VM
+before reporting the forward up.
+
+**A hub-side reconnect invalidates `__session`.** The hub daemon can lose
+its transport to the VM while the master and `__session` are both alive,
+and its own `restore()` bumps a forward whose host port was taken during
+the outage; the laptop's `-L` would then point at a hub port nothing
+listens on, and the protocol above has no line to say so. Rather than add
+one, the hub daemon **closes every relay session when its transport dies**
+(bridge section 3), so `__session` exits, `dead()` fires, and the same
+reconnect as above re-adds every forward and re-resolves every hub port
+once the hub is back. Three causes, one recovery path: master death, hub
+daemon cycle, hub transport loss. It also shrinks the `pending` reply above
+to the window between the transport dying and the close. On first add and
+in `restore()` alike, a forward is acknowledged up only after the hub's
+`add` succeeded **and** the `-L` is bound; a hub port is never reported
+before both hold. `restore()` never dials a stopped smol VM
 today; the hub side keeps that guard, because `__session` runs `session.Dial`
 on the hub, which refuses to spawn a daemon for a stopped VM, so a desktop
 `stop web` cannot boot-loop the VM through the laptop's reconnect.
@@ -363,17 +413,23 @@ browser is, and a busy desktop port never refuses a laptop login.
 **Ordering.** `session.Dial` returns only once the laptop daemon is
 listening, which is after its transport is up, which is after `__session`
 has been accepted by the hub daemon; and the laptop CLI's own `subscribe` is
-acknowledged before it proxies the leaf. So the laptop is subscribed on the
-hub before the login can emit anything. `DEVVM_NO_SUBSCRIBE=1` keeps the
+acknowledged before it proxies the leaf, where the laptop daemon sends that
+acknowledgment **only after the hub daemon has acknowledged the relayed
+`subscribe`** (bridge section 3). So the laptop is subscribed on the hub
+before the login can emit anything. `DEVVM_NO_SUBSCRIBE=1` keeps the
 proxied process from subscribing on the hub itself (it does not dial the hub
 daemon at all); without it the proxied process would be the most recent
 subscriber and the URL would open on the desktop.
 
 **Recovery** is the laptop daemon's reconnect, nothing new. If the master
-drops (laptop sleep) or the hub daemon cycles (`update`, `stop` on the
-desktop), `__session` dies, the laptop daemon goes `reconnecting`, and
+drops (laptop sleep), the hub daemon cycles (`update`, `stop` on the
+desktop), or the hub daemon loses the VM and closes its relay sessions
+(section 7), `__session` dies, the laptop daemon goes `reconnecting`, and
 `restore()` brings back the forwards and the subscription together. The
 local `attach` never notices beyond a one-line notice in the daemon log.
+If instead the **laptop** daemon is cycled (a laptop `update`), the attach's
+own session client reconnects and re-subscribes (bridge section 3), and
+the laptop daemon's fresh `hubTransport` re-subscribes on the hub for it.
 While the laptop is unsubscribed, events go to whichever subscriber the hub
 daemon still has: a desktop `attach` on the same VM would open the URL there,
 or with none, the guest is told "not opened" and the shim prints the URL for
@@ -387,8 +443,12 @@ That is the one remaining tie-break and it is deliberate (see open questions).
 `auth desktop/web` is thin `auth` (`browser-bridge.md` section 6) pointed at
 the laptop daemon for `desktop@web`; the login commands run through
 `hubBackend.Run`, which is a proxied `exec` with `BROWSER` in its argv. The
-agent and shim are already on a hub VM (the hub's daemon installed them), so
-the install step is skipped for hub machines.
+agent and shim are one install operation (bridge section 5) that the hub's
+smol transport runs before it spawns the agent exec, so a hub VM whose
+daemon is up has both, and `auth desktop/web` skips the install step; the
+laptop never writes to a hub VM. This is not true today: only `auth` writes
+the shim, and the smol transport installs the agent alone, so the shared
+install lands with the bridge step, not with `bootstrap` (roadmap step 9).
 
 This changes the bridge in one way and confirms two:
 
@@ -403,8 +463,8 @@ This changes the bridge in one way and confirms two:
   are smol VMs on the hub, so the hub daemon's smol transport already carries
   events.
 
-Until the bridge lands (roadmap step 7), `auth desktop/web` proxies verbatim
-and opens on the desktop. Usable, and clearly labelled in the output.
+Until thin hub `auth` lands (roadmap step 8), `auth desktop/web` proxies
+verbatim and opens on the desktop. Usable, and clearly labelled in the output.
 
 ### 9. Trust
 
@@ -431,8 +491,8 @@ and opens on the desktop. Usable, and clearly labelled in the output.
 - `start HUB/NAME` also brings up the laptop's own forwards; `delete` drops
   the `[machines.NAME]` table.
 - Hidden: `__session NAME` (one per hub machine, held by the laptop daemon:
-  add/remove owned forwards, subscribe, events out / replies in). Runtime
-  files for a hub machine use `HUB@NAME`.
+  a relay session's line protocol over stdio, verbatim, behind the marker
+  line). Runtime files for a hub machine use `HUB@NAME`.
 - Env: `DEVVM_NO_SUBSCRIBE=1`, set by the proxy on every proxied command.
 
 ## Order of work
