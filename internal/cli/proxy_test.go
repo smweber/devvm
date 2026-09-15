@@ -45,14 +45,19 @@ func fakeHubWith(t *testing.T, a *App, bin, devvmBody string) (sshLog, home stri
 	if err := os.WriteFile(filepath.Join(bin, "devvm"), []byte("#!/bin/sh\n"+devvmBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("PATH="+bin+":$PATH\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/sh")
 	t.Setenv("ENV", "")
 	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
 	sshLog = fakeSSH(t, `sh -c "$last"`)
+	// The profile restates the whole PATH, not just `bin:$PATH`: on macOS
+	// `sh -l` sources /etc/profile, whose path_helper puts the system dirs
+	// first, so a hub-side devvm that itself runs ssh (cp against a remote
+	// `web`) would find /usr/bin/ssh ahead of the fake installed by fakeSSH.
+	profile := "PATH=" + sq(bin+":"+os.Getenv("PATH")) + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
 	return sshLog, home
 }
