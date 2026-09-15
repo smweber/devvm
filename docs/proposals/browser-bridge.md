@@ -1,7 +1,7 @@
 # Proposal: a generic guest→host browser bridge and ad-hoc forwards
 
-Status: draft v2.3, 2026-09-15. Order of work lives in `ROADMAP.md` and
-nowhere else. Revised after three independent reviews. **Sections 3 and 4 are
+Status: draft v2.4, 2026-09-15. Order of work lives in `ROADMAP.md` and
+nowhere else. Revised after four independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
 Scope: `internal/auth`, `internal/session`, `cmd/devvm-agent`, `internal/agentrpc`,
@@ -80,13 +80,17 @@ is; there is nothing to forward.
 
 **Local versus relay subscribers.** A subscription declares whether the
 browser opens on this host (`local`, the `attach`/`shell`/`auth` process
-here) or on another host through a relay (`hub.md`'s `__subscribe`). For a
+here) or the subscriber is **another daemon** reached through a relay
+(`hub.md`'s `__session`, held by the laptop's daemon for that machine). For a
 local subscriber the daemon binds before delivering, and `bound` is the port
 the browser will reach. For a relay subscriber the daemon **binds nothing**:
-the relay requests guest port `P` from its own host's daemon, whose hub
-transport resolves an intermediate hub port for itself (`hub.md` section 7).
-Only the host that shows the browser needs the exact callback port, so a busy
-port on the hub never refuses a login that will open on the laptop.
+the event is handed up as-is, arrives on the far daemon's `events()` channel
+like any transport event, and that daemon runs this same handler, binding on
+its own transport (whose hub side resolves an intermediate hub port for
+itself, `hub.md` section 7) and delivering to its own local subscriber. The
+relay is recursion, not a second code path. Only the host that shows the
+browser needs the exact callback port, so a busy port on the hub never
+refuses a login that will open on the laptop.
 
 A `redirect_uri` is never rewritten by anyone: the provider needs it verbatim,
 which is why that port must be exact on the host that shows the browser and
@@ -95,8 +99,9 @@ subscriber's reply is what the daemon relays to the guest, so success means
 "bound and handed to a browser", not "delivered to someone".
 
 Locally the subscriber is the `attach`/`shell`/`auth` process on this machine;
-for a hub machine it is the laptop's subscription across ssh (see `hub.md`
-section 8). With no subscriber the URL is logged and the guest is told it was not opened. This deliberately
+for a hub machine it is the laptop's daemon across ssh (see `hub.md`
+section 8). With no subscriber the URL is logged and the guest is told it was
+not opened. This deliberately
 regresses today's smol behaviour, where a URL from any guest shell opened on
 the host even with no devvm session running, in exchange for closing the
 unattended-open concern in section 7.
@@ -106,7 +111,8 @@ exclusion**. It skips 1455 today only because `auth` pre-binds that port
 itself before running `codex login`; with the pre-bind gone the exclusion
 would leave codex's callback unbridged. Codex's fixed 1455 becomes just
 another loopback `redirect_uri`, so the `localhost:1455` special case in
-`hostbrowser.Sanitize` goes away too (every forward binds `::1`, section 4).
+`hostbrowser.Sanitize` goes away too (every forward binds `::1` wherever the
+host has an IPv6 loopback, section 4).
 
 **Smol**: the daemon's existing agent exec already carries events; `drainEvents`
 in `transport_smol.go` becomes the bridge handler. No new exec.
@@ -176,27 +182,36 @@ before `Dial`). Without a fix, a `BROWSER` shim in `attach` points at a bridge
 that vanishes a minute later, and thin `auth` would lose its bridge mid-login if
 the user takes more than a minute. So:
 
-- New control op `hold`: the client keeps the control connection open; the
-  daemon counts open holders. Idle rule becomes `forwards == 0 && holders == 0`,
-  in both `loop()` and `reconnect()`.
-- New control op `subscribe {relay: bool}`: **a subscription implies a hold**,
-  so a subscriber never needs a separate `hold` and there is no "subscribed
-  but not held" state. It is acknowledged: the reply is sent only once the
-  subscription is registered, so a client that waits for the reply knows every
-  later event reaches it. `hub.md`'s `__subscribe` helper prints `ready` on
-  that ack and the laptop starts the login only after it. Events go to the
-  most recently registered subscriber; when it disconnects, the next most
-  recent one, if any, receives them.
-- `DEVVM_NO_SUBSCRIBE=1` makes `attach`/`shell`/`auth` `hold` without
-  subscribing. The hub proxy sets it on every proxied command so the laptop's
-  subscription is the only one for that session (`hub.md` section 8). This is
-  the only remaining use of a bare `hold`.
-- `attach`, `shell`, and `auth` dial the daemon (spawning it if needed) and
-  subscribe, which holds, for their lifetime. When the interactive session
-  ends the connection closes, the hold drops, and the normal idle rule
-  applies.
-- The hold also bounds the trust surface (section 7): the guest can only reach
-  the host browser while a devvm session is active or forwards are up.
+- **A long-lived control connection is a session, and a session holds the
+  daemon.** Today every control connection is one request and a 30-second
+  read deadline. A client that sends `session` instead keeps the connection
+  open; it may then `subscribe`, and it may `add` forwards owned by that
+  connection (`connection` owners, section 4). The daemon counts open
+  sessions. Idle rule becomes `forwards == 0 && sessions == 0`, in both
+  `loop()` and `reconnect()`. There is no separate `hold` op: holding is what
+  a session connection does by existing, subscribed or not. That matters for
+  `hub.md`'s `__session`, which can sit connected with no forwards and no
+  subscription; if it did not hold, the hub daemon would idle-exit under it
+  and the laptop's reconnect would respawn it every 60 seconds.
+- `subscribe {relay: bool}` and `unsubscribe` are messages on a session
+  connection. `subscribe` is acknowledged: the reply is sent only once the
+  subscription is registered, so a client that waits for the reply knows
+  every later event reaches it. Re-sending `subscribe` on an already
+  subscribed session moves it to the front (the laptop daemon does this on
+  every new local subscriber, `hub.md` section 8). Events go to the most
+  recently registered subscriber; when it unsubscribes or disconnects, the
+  next most recent one, if any, receives them.
+- `DEVVM_NO_SUBSCRIBE=1` makes `attach`/`shell`/`auth` skip the daemon
+  entirely: no dial, no session, no subscription. The hub proxy sets it on
+  every proxied command so the laptop's subscription is the only one for that
+  session (`hub.md` section 8); the laptop daemon's `__session` already holds
+  the hub daemon, so the proxied process has nothing to hold.
+- `attach`, `shell`, and `auth` dial the daemon (spawning it if needed), open
+  a session, and subscribe for their lifetime. When the interactive session
+  ends the connection closes, the session count drops, and the normal idle
+  rule applies.
+- A session also bounds the trust surface (section 7): the guest can only
+  reach the host browser while a devvm session is active or forwards are up.
 
 ### 4. Ownership, bind policy, and ephemeral forwards
 
@@ -211,7 +226,7 @@ type fwd struct {
     owners      map[owner]struct{} // torn down when empty
 }
 // owner kinds: conf (added by `ports add`/`ports up`), connection (a held
-// control connection; dropped when it closes — hub.md's __forward), ttl
+// session connection; dropped when it closes — hub.md's __session), ttl
 // (the bridge's ephemeral forwards; dropped at expiry).
 ```
 
@@ -222,8 +237,14 @@ Owners decide lifetime and nothing else. Who drops what:
   the conf). It never drops a `connection` owner: that belongs to whoever
   holds the connection.
 - `ports down` drops every `conf` owner and stops the daemon only if no
-  forward and no holder remains. Today it stops the daemon outright; with hub
+  forward and no session remains. Today it stops the daemon outright; with hub
   forwards that would loop (`hub.md` section 7).
+- `update` (`restartDaemons`) today skips a daemon that holds no configured
+  forward, "left to exit on its own". A daemon holding `connection` forwards
+  never exits on its own, so that skip would leave old code running after a
+  desktop update. It cycles every daemon that is up; a hub `__session` on the
+  other side reconnects through its own daemon's backoff, and a local
+  `attach`'s direct forward is re-created on the next open.
 - A closing connection drops itself; the expiry ticker drops `ttl`.
 - `ports add NAME PORT` on a live forward adds `conf` and touches no other
   owner. A `ttl` left behind expires harmlessly because `conf` keeps the
@@ -244,20 +265,20 @@ original. An exact forward whose port is unavailable after a reconnect stays
 pending (visible in `ports list`) and is retried on the next attempt, never
 bumped.
 
-**Every forward is dual-stack, and "free" means free on both families.**
-`auth.ensureCallback` binds both `127.0.0.1:P` and `[::1]:P` because macOS
-resolves `localhost` to `::1`. Both transports' `forward` bind only IPv4
-today. Every forward now binds both (smol: two listeners; ssh: two `-L`
-specs). The `::1` bind failing because the host has no IPv6 loopback
-(`EADDRNOTAVAIL`, `EAFNOSUPPORT`) is tolerated: the forward is IPv4-only and
-so is everything else on that host. The `::1` bind failing because **another
-process owns `[::1]:P`** (`EADDRINUSE`) counts as the port being busy exactly
-as an IPv4 conflict does: a bump request moves to the next port and an exact
-request fails, since a callback aimed at `::1` would otherwise land on that
-other process while we reported success. The IPv4 listener is closed again
-in that case. With that rule there is no per-request family choice, and
-reusing an existing forward never hands a callback a bind the host's browser
-cannot reach.
+**Every forward is dual-stack, best-effort on `::1`.** `auth.ensureCallback`
+binds both `127.0.0.1:P` and `[::1]:P` because macOS resolves `localhost` to
+`::1` first. Both transports' `forward` bind only IPv4 today. Every forward
+now binds both: smol adds a second listener; ssh uses one spec,
+`-L localhost:P:localhost:G`, which OpenSSH binds on every address
+`localhost` resolves to, so there is still one `-O cancel` per forward. The
+IPv4 bind decides busy-or-free exactly as today. A `::1` bind that fails for
+any reason is logged and tolerated, as `ensureCallback` tolerates it now:
+the forward is IPv4-only on that host. Classifying `EADDRINUSE` on `::1` as
+"busy" was considered and dropped; it needs errno inspection on two
+transports and a v4 unbind for a conflict (another process on `[::1]:P` but
+not `127.0.0.1:P`) that the current best-effort code has never hit. With
+that rule there is no per-request family choice, and reusing an existing
+forward never hands a callback a bind the host's browser cannot reach.
 
 Which owner a bridge open gets:
 
@@ -267,10 +288,11 @@ Which owner a bridge open gets:
 - **`redirect_uri` callback**: `ttl`, fixed at creation (proposed 10 minutes)
   and refreshed when a new open names the same port. Callbacks are single-use
   by nature; a session-length owner would pin a well-known port for no
-  reason. The TTL is measured in connected time: it pauses while the daemon
-  is reconnecting, so a long outage does not expire everything on the first
-  tick after `restore()`. TTL rather than last-use because ssh forwards are
-  native `-L` and the daemon never sees their connections.
+  reason. Wall-clock, with no pause while reconnecting: a callback whose
+  bridge was down for ten minutes belongs to a login that is dead anyway, so
+  expiring it on the first tick after `restore()` is the right outcome and
+  saves a clock. TTL rather than last-use because ssh forwards are native
+  `-L` and the daemon never sees their connections.
 
 **Reuse.** A request for a guest port that is already forwarded adds its
 owner to the existing forward and returns the existing host port, **unless**
@@ -328,8 +350,8 @@ func Authenticate(ctx, b, m, tools, approve) error {
     agentPath := agentbin.Install(...)         // consent gate unchanged (adopt hosts)
     shim := installBrowserShim(...)
     cl := session.Dial(configDir, name)        // spawn daemon if needed
-    release := cl.Subscribe(); defer release() // implies hold: bridge alive across logins
-                                               // DEVVM_NO_SUBSCRIBE=1: cl.Hold() instead
+    release := cl.Subscribe(); defer release() // a session: bridge alive across logins
+                                               // DEVVM_NO_SUBSCRIBE=1: skip the daemon
     for tool := range tools { s.login(tool) }  // BROWSER=shim, as today
 }
 ```
@@ -367,9 +389,21 @@ What a forward can *reach* is unchanged; this widens *who* can request one.
 
 `up:N` counts every daemon forward today. If ephemerals count, a machine with
 no configured ports would flicker `-` → `up:1` → `-` on every login, and the
-menubar badge with it. Decision: **N counts configured forwards only.**
-Ephemerals stay visible in `ports list`. If the menubar later wants to offer
-"make persistent", add a fifth `ephemeral:N` token then; not now.
+menubar badge with it. Decision: **N counts configured forwards only, and
+`up:0` is never emitted.** The app renders `up:0` as "0 forwards up", so a
+daemon with zero `conf` forwards reports `down` when the conf lists ports
+(they are configured and not up) and `-` when it lists none, the same two
+tokens a machine with no daemon gets. That keeps the contract's meaning of
+every token and needs no Swift change. Ephemerals stay visible in
+`ports list`. If the menubar later wants to offer "make persistent", add a
+fifth `ephemeral:N` token then; not now.
+
+One visible side effect: `status -v` skips the live-resource probe whenever
+a daemon exists (it must not open a second exec), and with sessions holding
+daemons through every `attach`, that probe will usually be skipped and the
+conf sizes shown instead. Cosmetic; noted so it is not later mistaken for a
+bug. Routing the probe through the daemon's agent channel is a small follow-up
+if it matters.
 
 ## CLI surface
 
@@ -379,9 +413,11 @@ No new verbs. Visible changes:
   TTL; an exact forward whose port is taken after a reconnect shows `pending`.
 - `ports add NAME PORT` on an ephemeral forward promotes it in place.
 - `ports rm NAME PORT` can remove a daemon-only `ttl` forward.
-- `ports down` leaves the daemon up while other owners or holders remain.
-- `attach`/`shell`/`auth` subscribe (which holds) unless
-  `DEVVM_NO_SUBSCRIBE=1`, in which case they only hold.
+- `ports down` leaves the daemon up while other owners or sessions remain.
+- `attach`/`shell`/`auth` open a session and subscribe unless
+  `DEVVM_NO_SUBSCRIBE=1`, in which case they do not touch the daemon.
+- `update` cycles every daemon that is up, including ones holding only
+  session-owned forwards.
 - `auth --install-agent` unchanged and remains the only consent path.
 - Guest side: `devvm-open-url URL|PORT` prints what the host did.
 
@@ -393,7 +429,7 @@ Lives in `ROADMAP.md`, the only place sequencing is written down.
 
 - Ephemeral TTL: 10 minutes proposed for `redirect_uri` callbacks. Direct
   opens are session-owned and carry no TTL, so there is only one knob.
-- Should `start` hold the daemon too, or only interactive commands? Proposed:
+- Should `start` open a session too, or only interactive commands? Proposed:
   no. `start` brings up configured forwards, and those already keep the daemon
   alive.
 - tmux `-e` needs 3.2 (2021). Do we care about older guests? Proposed: fall
