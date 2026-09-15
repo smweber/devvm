@@ -115,9 +115,7 @@ func (b *sshBackend) Copy(hostSrc, guestDst string) error {
 	}
 	args := append([]string{"scp"}, b.sshFlags()...)
 	args = append(args, hostSrc, b.m.SSHHost+":"+guestDst)
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stderr = os.Stderr // surface scp's message, not a bare exit status
-	return cmd.Run()
+	return quietHost(args) // scp's message rides the error, not a bare exit status
 }
 
 func (b *sshBackend) Exists() (bool, error) { return true, nil } // devvm doesn't create ssh hosts

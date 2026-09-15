@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,6 +20,22 @@ func runHost(ctx context.Context, o ExecOpts, hostArgv []string) error {
 	cmd.Stdout = o.Stdout
 	cmd.Stderr = o.Stderr
 	return cmd.Run()
+}
+
+// quietHost runs a host command with its output captured, surfacing it only in
+// the error. Transports print progress meters and temp paths (smolvm's
+// "Uploading …/payload.tar" line, scp's meter) that are noise on success but
+// the only diagnostic on failure.
+func quietHost(hostArgv []string) error {
+	cmd := exec.Command(hostArgv[0], hostArgv[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // captureHost runs a host command and returns its trimmed stdout.

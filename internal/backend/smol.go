@@ -134,12 +134,12 @@ func (b *smolBackend) Status() (State, error) {
 // consequences for callers: a relative guestDst resolves against / (not the
 // login user's home), and anything under a guest tmpfs (/tmp, /run, /dev) is
 // shadowed and never visible inside the machine. Pass absolute, overlay-backed
-// paths only. Files are created as root.
+// paths only. Files are created as root. Output is shown only on failure.
 func (b *smolBackend) Copy(hostSrc, guestDst string) error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return smolCmd("machine", "cp", hostSrc, b.m.Name+":"+guestDst)
+	return quietHost([]string{"smolvm", "machine", "cp", hostSrc, b.m.Name + ":" + guestDst})
 }
 
 func (b *smolBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error {
