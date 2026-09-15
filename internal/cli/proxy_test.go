@@ -23,14 +23,26 @@ import (
 // fake ssh's own argv, one line per call.
 func fakeHub(t *testing.T, a *App) (sshLog, argvLog string) {
 	t.Helper()
-	home, bin := t.TempDir(), t.TempDir()
+	bin := t.TempDir()
 	argvLog = filepath.Join(bin, "argv.log")
-	devvm := "#!/bin/sh\n" +
-		`[ -n "$DEVVM_NO_SUBSCRIBE" ] || { echo 'devvm ran without DEVVM_NO_SUBSCRIBE' >&2; exit 99; }` + "\n" +
+	devvm := `[ -n "$DEVVM_NO_SUBSCRIBE" ] || { echo 'devvm ran without DEVVM_NO_SUBSCRIBE' >&2; exit 99; }` + "\n" +
 		"printf '%s\\0' \"$@\" >> " + argvLog + "; printf '\\1' >> " + argvLog + "\n" +
 		"echo \"fake devvm: $*\"\n" +
 		"exit ${FAKE_DEVVM_EXIT:-0}\n"
-	if err := os.WriteFile(filepath.Join(bin, "devvm"), []byte(devvm), 0o755); err != nil {
+	t.Setenv("FAKE_DEVVM_EXIT", "")
+	sshLog, _ = fakeHubWith(t, a, bin, devvm)
+	return sshLog, argvLog
+}
+
+// fakeHubWith is fakeHub with the hub-side devvm's script body supplied
+// (installed as bin/devvm; bin may hold other fakes the script needs). It
+// returns the fake ssh's log and the hub user's home, whose ~/.profile is
+// what puts bin on the login shell's PATH; a test that wants a login banner
+// appends an echo to it.
+func fakeHubWith(t *testing.T, a *App, bin, devvmBody string) (sshLog, home string) {
+	t.Helper()
+	home = t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "devvm"), []byte("#!/bin/sh\n"+devvmBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("PATH="+bin+":$PATH\n"), 0o644); err != nil {
@@ -39,11 +51,10 @@ func fakeHub(t *testing.T, a *App) (sshLog, argvLog string) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/sh")
 	t.Setenv("ENV", "")
-	t.Setenv("FAKE_DEVVM_EXIT", "")
 	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
 	sshLog = fakeSSH(t, `sh -c "$last"`)
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	return sshLog, argvLog
+	return sshLog, home
 }
 
 // runTree runs argv through the real command tree, as main does.
@@ -100,7 +111,7 @@ func wantSSH(a *App, tty bool, devvmArgv ...string) string {
 	if tty {
 		line += " -t -o LogLevel=ERROR" // Quiet: no "Shared connection … closed." after a pty run
 	} else {
-		line += " -o BatchMode=yes"
+		line += " -o BatchMode=yes -o RequestTTY=no"
 	}
 	inner := append([]string{"env", "DEVVM_NO_SUBSCRIBE=1", "devvm"}, devvmArgv...)
 	q := make([]string, len(inner))
@@ -402,18 +413,14 @@ func TestProxyInteractiveTransport(t *testing.T) {
 }
 
 // The local-only leaves keep refusing hub machines without dialing:
-// ports (step 6), cp (step 4), auth (step 8), __daemon (never).
+// ports (step 6), auth (step 8), __daemon (never). cp proxies since step 4
+// (cp_hub_test.go).
 func TestProxyLeavesLocalOnlyRefused(t *testing.T) {
 	a := newTestApp(t)
 	sshLog, _ := fakeHub(t, a)
-	src := filepath.Join(t.TempDir(), "f")
-	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	for _, argv := range [][]string{
 		{"ports", "add", "h/web", "3000"}, {"ports", "rm", "h/web", "3000"}, {"ports", "list", "h/web"},
 		{"ports", "up", "h/web"}, {"ports", "down", "h/web"},
-		{"cp-in", "h/web", src, "/tmp"}, {"cp-out", "h/web", "/etc/hostname", t.TempDir()},
 		{"auth", "h/web"}, {"__daemon", "h/web"},
 	} {
 		err := runTree(t, a, argv...)

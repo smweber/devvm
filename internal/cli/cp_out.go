@@ -16,7 +16,7 @@ import (
 
 func (a *App) cpOutCmd() *cobra.Command {
 	var o copyOpts
-	var target string
+	var target, toTar string
 	c := &cobra.Command{
 		Use:   "cp-out NAME SOURCE [DEST]",
 		Short: "Copy guest files or directories onto the host",
@@ -33,6 +33,9 @@ func (a *App) cpOutCmd() *cobra.Command {
 			"  devvm cp-out -f myvm notes.txt                # overwrite ./notes.txt",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed(toTarFlag) { // Changed, so `--to-tar=` is refused, not the normal path
+				return a.runCopyOutToTar(cmd.Context(), toTar, args, target, o)
+			}
 			name, srcs, dst, asDir, err := copyArgs(args, target, ".")
 			if err != nil {
 				return err
@@ -42,6 +45,13 @@ func (a *App) cpOutCmd() *cobra.Command {
 				if src == "" {
 					return fmt.Errorf("source must not be empty")
 				}
+			}
+			// HUB/NAME: the same checks and extraction, with each archive
+			// streamed from the hub's hidden form (cp_hub.go).
+			if ok, err := hubMachineArg(args); err != nil {
+				return err
+			} else if ok {
+				return a.runCopyOutHub(cmd.Context(), name, srcs, dst, o)
 			}
 			_, b, err := a.resolveLive(name)
 			if err != nil {
@@ -64,6 +74,10 @@ func (a *App) cpOutCmd() *cobra.Command {
 	c.Flags().BoolVarP(&o.recursive, "recursive", "r", false, "copy directories recursively")
 	c.Flags().BoolVarP(&o.force, "force", "f", false, "overwrite existing host files")
 	c.Flags().StringVarP(&target, "target-directory", "t", "", "host directory to copy every SOURCE into")
+	// Hidden: the hub side of a cp-out from HUB/NAME (cp_hub.go). Takes `-`
+	// only; the archive goes to stdout behind the marker line.
+	c.Flags().StringVar(&toTar, toTarFlag, "", "write the archive to stdout (hub side of cp-out HUB/NAME)")
+	_ = c.Flags().MarkHidden(toTarFlag)
 	c.RegisterFlagCompletionFunc("target-directory", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveFilterDirs
 	})
@@ -76,6 +90,19 @@ func (a *App) cpOutCmd() *cobra.Command {
 // on smol (the concurrency limit is on parallel ones), and it keeps the guest
 // script free of tar -C juggling that differs between implementations.
 func copyOut(ctx context.Context, b backend.Backend, name string, srcs []string, dst string, o copyOpts, stderr io.Writer) error {
+	fetch := func(ctx context.Context, src, archive string) error {
+		return downloadArchive(ctx, b, name, src, archive, o.recursive, stderr)
+	}
+	return copyOutWith(ctx, name, srcs, dst, o, stderr, fetch)
+}
+
+// copyOutWith is copyOut with the per-source download abstracted: fetch
+// writes one guest source's archive to a host file. The local path fetches
+// through the backend (downloadArchive); a hub machine fetches through the
+// proxied `cp-out --to-tar -` (cp_hub.go). Everything after the download —
+// the one-entry check, the conflict pass, extraction — is shared, so both
+// paths have the same guards.
+func copyOutWith(ctx context.Context, name string, srcs []string, dst string, o copyOpts, stderr io.Writer, fetch func(ctx context.Context, src, archive string) error) error {
 	if len(srcs) == 0 || dst == "" {
 		return fmt.Errorf("source and destination must not be empty")
 	}
@@ -96,7 +123,7 @@ func copyOut(ctx context.Context, b backend.Backend, name string, srcs []string,
 	seen := map[string]string{}
 	for i, src := range srcs {
 		archive := filepath.Join(tmp, strconv.Itoa(i)+".tar")
-		if err := downloadArchive(ctx, b, name, src, archive, o.recursive, stderr); err != nil {
+		if err := fetch(ctx, src, archive); err != nil {
 			return err
 		}
 		got, err := readArchive(archive, stderr)

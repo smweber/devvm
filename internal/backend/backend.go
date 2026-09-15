@@ -29,7 +29,7 @@ type State struct {
 // ExecOpts tunes a single guest command. The zero value runs a non-interactive,
 // non-login command as the dev user with stdio wired to the parent process.
 type ExecOpts struct {
-	BatchMode bool              // SSH: disable authentication prompts (e.g. completion)
+	BatchMode bool              // SSH: disable authentication prompts (e.g. completion) and never a pty (RequestTTY=no)
 	TTY       bool              // allocate a pty (interactive shell / login flows)
 	Quiet     bool              // SSH: -o LogLevel=ERROR — drop ssh's own notices ("Shared connection to HOST closed." after a -t run on a ControlMaster)
 	Stream    bool              // smol: use --stream (unbuffered streaming output)

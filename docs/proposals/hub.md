@@ -281,15 +281,17 @@ cp already uses a tar stream as its wire format, but it is not "two flags":
 `copyArchive` derives its base names from the local sources, and `copyOut`
 emits one tar per source. So:
 
-- `cp-in NAME --from-tar - DST`: the hub spools stdin to the staging file and
-  derives bases with `readArchive`. The laptop builds the tar exactly as today
-  and pipes it over `ssh HUB … devvm cp-in desktop/web --from-tar - DST` (no
-  `-t`).
+- `cp-in NAME --from-tar - DST`: the hub spools stdin to a private temp file
+  (refusing a stream that ends before tar's end blocks), derives bases with
+  `readArchive`, and hands it to the normal `copyArchive` staging. The laptop
+  builds the tar exactly as today and pipes it over `ssh HUB … devvm cp-in
+  web --from-tar - DST` (no `-t`): the hub-side argv carries the bare machine
+  name, and the hidden forms refuse a `HUB/NAME`.
 - `cp-out NAME SRC --to-tar -`: single source per invocation; the laptop loops
   sources, streams each tar back, and extracts locally with the same
   `extractArchive` and no-clobber checks as today.
-- The "->" progress lines print on the laptop only; the hub side runs with
-  `--quiet`.
+- The "->" progress lines print on the laptop only; the hidden hub-side
+  forms print nothing (there is no `--quiet` flag).
 - **The stream starts with a marker line.** The hub side runs under the
   user's login shell, and a `.zprofile` or `.bash_profile` that echoes would
   land in front of the tar. The hub prints `devvm-tar-v1\n` before the

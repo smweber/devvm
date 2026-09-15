@@ -18,7 +18,7 @@ import (
 // non-interactive probes later steps make (cp, auth). Power* and Copy stay
 // refused: the cli proxies the lifecycle verbs itself (their remote argv
 // comes from the parsed command, flags included, which a bare PowerStop
-// cannot carry) and cp streams a tar over the proxy (step 4).
+// cannot carry) and cp streams a tar over the proxy (cli's cp_hub.go).
 //
 // What never changes: Spawn refuses. The hub's own daemon holds the one
 // agent exec into the VM (the one-exec rule), so the laptop must never
@@ -30,8 +30,8 @@ type hubBackend struct {
 }
 
 // ErrHubProxy is returned by hub-machine ops that are not implemented yet:
-// laptop-side forwards (ports) land in step 6, cp in step 4 and auth in step
-// 8, so the wording names no mechanism.
+// laptop-side forwards (ports) land in step 6 and auth in step 8, so the
+// wording names no mechanism. Copy returns it for good (see there).
 var ErrHubProxy = errors.New("hub machines are not supported by this command yet")
 
 // Proxier is the hub-machine backend's proxy surface, which the cli's
@@ -125,8 +125,9 @@ func (b *hubBackend) PowerStop() error   { return b.refused("stop") }
 func (b *hubBackend) PowerDelete() error { return b.refused("delete") }
 
 // Copy is never used for hub machines: cp streams a tar over the proxy
-// (roadmap step 4) because the hub's `cp-in` needs the archive, not a path
-// on the hub.
+// (cli's cp_hub.go, hub.md §6) because the hub's `cp-in` needs the archive,
+// the destination and the flags, not a path pair on the hub, so the
+// dispatch lives in the cli's cp leaves rather than behind this interface.
 func (b *hubBackend) Copy(hostSrc, guestDst string) error {
 	return fmt.Errorf("copy to %s: %w", b.m.Name, ErrHubProxy)
 }
@@ -137,7 +138,7 @@ func (b *hubBackend) Copy(hostSrc, guestDst string) error {
 // hub-side ssh command instead. o.Env would likewise land on the hub
 // process, not in the guest, so it is refused rather than misapplied. A
 // smol one-shot exec has no stdin (no -i), so callers that need it use the
-// tar path (step 4), not Run.
+// tar path (cli's cp_hub.go), not Run.
 func (b *hubBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error {
 	if len(o.Env) > 0 {
 		return fmt.Errorf("exec on %s: guest env is not carried through the proxy (put it in argv)", b.m.Name)

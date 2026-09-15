@@ -38,10 +38,11 @@ struct Machine {
     /// devvm does not probe them, so this is "selectable", not "alive"). A
     /// hub itself is neither: nothing is copied to or started on it.
     var isLive: Bool { !isHub && (state == "running" || state == "reachable") }
-    /// Copy in/out and ports work only on machines this Mac reaches
-    /// directly until devvm's hub cp (roadmap step 4) and hub forwards
-    /// (step 6) land; a hub machine is started and stopped through its hub
-    /// already. Drop-target selection is gated on this too.
+    /// Ports work only on machines this Mac reaches directly until devvm's
+    /// hub forwards (roadmap step 6) land. Everything else — start, stop,
+    /// copy in/out, the drop target — goes through the hub by name (`h/web`
+    /// is a machine name to every devvm command), so it is gated on isLive
+    /// alone.
     var isDirect: Bool { hub == nil }
     var isReconnecting: Bool { forwards.hasPrefix("reconnecting") }
     var forwardsUp: Bool { forwards.hasPrefix("up:") && forwardCount > 0 }

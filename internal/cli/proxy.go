@@ -29,7 +29,9 @@ import (
 // Dispatch happens in each proxied leaf's RunE (see commands.go), because
 // that is the only place the parsed *cobra.Command is in hand; `resolve`
 // keeps refusing hub machines, which is the guard for every leaf that is
-// not proxied (ports, cp, auth, __daemon).
+// not proxied (ports, auth, __daemon). cp-in/cp-out dispatch in their own
+// RunE too, but to the tar-over-stdio loops in cp_hub.go rather than here:
+// runProxied's empty stdin cannot carry an archive.
 
 // proxiedStateVerbs are the proxied leaves after which the local change
 // marker is touched, so a `status --watch` on this host re-emits even though

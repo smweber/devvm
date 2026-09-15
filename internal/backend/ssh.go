@@ -146,7 +146,11 @@ func (b *sshBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error 
 	}
 	host := b.baseTimeout(connect)
 	if o.BatchMode {
-		host = append(host, "-o", "BatchMode=yes")
+		// RequestTTY=no with it: a BatchMode run is a non-interactive one
+		// whose stdout may be a byte stream (the hub cp's tar), and a user's
+		// ~/.ssh/config `RequestTTY force` would otherwise give it a pty whose
+		// ONLCR mangles every \n. -t below still wins when asked for.
+		host = append(host, "-o", "BatchMode=yes", "-o", "RequestTTY=no")
 	}
 	if o.TTY {
 		host = append(host, "-t")

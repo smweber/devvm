@@ -60,7 +60,7 @@ func copyTargets(w io.Writer, bases []string, dst string, asDir bool, format str
 
 func (a *App) cpInCmd() *cobra.Command {
 	var o copyOpts
-	var target string
+	var target, fromTar string
 	c := &cobra.Command{
 		Use:   "cp-in NAME SOURCE [DEST]",
 		Short: "Copy local files or directories into a machine",
@@ -77,13 +77,30 @@ func (a *App) cpInCmd() *cobra.Command {
 			"  devvm cp-in -r myvm ./project /home/dev/project\n" +
 			"  devvm cp-in myvm -t docs/ a.png b.png         # several sources\n" +
 			"  devvm cp-in -f myvm ./notes.txt docs/         # overwrite ~/docs/notes.txt",
-		Args: cobra.MinimumNArgs(2),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed(fromTarFlag) { // the hub-side form has no SOURCE: NAME [DEST]
+				return cobra.RangeArgs(1, 2)(cmd, args)
+			}
+			return cobra.MinimumNArgs(2)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed(fromTarFlag) { // Changed, so `--from-tar=` is refused, not the normal path
+				return a.runCopyInFromTar(cmd.Context(), fromTar, args, target, o)
+			}
 			name, srcs, dst, asDir, err := copyArgs(args, target, "~")
 			if err != nil {
 				return err
 			}
 			o.asDir = asDir
+			// HUB/NAME is dispatched here rather than through hubOr: the
+			// laptop keeps the local checks and the archive build and
+			// streams the result to the hub (cp_hub.go), so nothing about
+			// the parsed command is replayed as is.
+			if ok, err := hubMachineArg(args); err != nil {
+				return err
+			} else if ok {
+				return a.runCopyInHub(cmd.Context(), name, srcs, dst, o)
+			}
 			return a.runCopyIn(cmd.Context(), name, srcs, dst, o)
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, incomplete string) ([]string, cobra.ShellCompDirective) {
@@ -101,6 +118,10 @@ func (a *App) cpInCmd() *cobra.Command {
 	c.Flags().BoolVarP(&o.recursive, "recursive", "r", false, "copy directories recursively")
 	c.Flags().BoolVarP(&o.force, "force", "f", false, "overwrite existing guest files")
 	c.Flags().StringVarP(&target, "target-directory", "t", "", "guest directory to copy every SOURCE into")
+	// Hidden: the hub side of a cp-in to HUB/NAME (cp_hub.go). Takes `-`
+	// only; the archive is stdin.
+	c.Flags().StringVar(&fromTar, fromTarFlag, "", "read the archive from stdin (hub side of cp-in HUB/NAME)")
+	_ = c.Flags().MarkHidden(fromTarFlag)
 	c.RegisterFlagCompletionFunc("target-directory", func(cmd *cobra.Command, args []string, incomplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp // NAME not typed yet
@@ -111,38 +132,9 @@ func (a *App) cpInCmd() *cobra.Command {
 }
 
 func (a *App) runCopyIn(ctx context.Context, name string, srcs []string, dst string, o copyOpts) error {
-	if dst == "" {
-		return fmt.Errorf("destination must not be empty")
-	}
-	if len(srcs) > 1 && !o.asDir {
-		return fmt.Errorf("copying several sources needs a destination directory")
-	}
-	var abs, bases []string
-	seen := map[string]string{}
-	for _, src := range srcs {
-		src, err := filepath.Abs(src)
-		if err != nil {
-			return err
-		}
-		info, err := os.Lstat(src)
-		if err != nil {
-			return err
-		}
-		if info.IsDir() && !o.recursive {
-			return fmt.Errorf("%s is a directory; use -r to copy it", src)
-		}
-		if !info.IsDir() && !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("unsupported source file type: %s", src)
-		}
-		if filepath.Dir(src) == src {
-			return fmt.Errorf("copying the filesystem root is not supported")
-		}
-		base := filepath.Base(src)
-		if prev, dup := seen[base]; dup {
-			return fmt.Errorf("%s and %s would both be copied as %s", prev, src, base)
-		}
-		seen[base] = src
-		abs, bases = append(abs, src), append(bases, base)
+	abs, bases, err := copyInSources(srcs, dst, o)
+	if err != nil {
+		return err
 	}
 	_, b, err := a.resolveLive(name)
 	if err != nil {

@@ -56,7 +56,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
         dropView.canAccept = { [weak self] in
             guard let m = self?.selectedMachine else { return false }
-            return m.isLive && m.isDirect
+            return m.isLive
         }
         dropView.onDrop = { [weak self] urls in self?.copyIn(urls: urls) }
         rebuildMenu()
@@ -85,9 +85,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
             selectedName = nil
         }
         // Auto-select only when nothing is chosen and exactly one machine is
-        // live and reached directly (a hub machine cannot take drops yet).
-        if selectedName == nil, machines.filter({ $0.isLive && $0.isDirect }).count == 1,
-           let only = machines.first(where: { $0.isLive && $0.isDirect })?.name {
+        // live (a hub machine takes drops like any other: cp-in by name).
+        if selectedName == nil, machines.filter({ $0.isLive }).count == 1,
+           let only = machines.first(where: { $0.isLive })?.name {
             Log.status.notice("auto-selected \(only, privacy: .public) as the drop target (only live machine)")
             selectedName = only
         }
@@ -111,7 +111,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let style: IconStyle
         if machines.contains(where: { $0.isReconnecting }) {
             style = .badged
-        } else if let m = selectedMachine, m.isLive, m.isDirect {
+        } else if let m = selectedMachine, m.isLive {
             style = .filled
         } else {
             style = .outline
@@ -362,7 +362,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     private func fillSubmenu(_ sub: NSMenu, for m: Machine) {
         sub.removeAllItems()
-        if m.isLive && m.isDirect {
+        if m.isLive {
             sub.addItem(item("Use as drop target", #selector(selectMachine(_:)), m.name))
             sub.addItem(.separator())
         }
@@ -374,6 +374,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         default:
             break
         }
+        // Ports stay gated on isDirect until hub forwards land (step 6).
         if m.isLive && m.isDirect {
             if m.forwards != "-" {
                 sub.addItem(item("Ports up", #selector(portsUp(_:)), m.name))
@@ -385,6 +386,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 let it = item(title, f.pending ? nil : #selector(openPort(_:)), f.host)
                 sub.addItem(it)
             }
+        }
+        // Copy in/out shell out to cp-in/cp-out by name, which take `h/web`
+        // since devvm's hub cp (step 4).
+        if m.isLive {
             sub.addItem(.separator())
             sub.addItem(item("Copy in…", #selector(copyInPanel(_:)), m.name))
             sub.addItem(item("Copy out…", #selector(copyOut(_:)), m.name))
@@ -413,9 +418,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc private func selectMachine(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String,
               let m = machines.first(where: { $0.name == name }) else { return }
-        guard m.isLive, m.isDirect else {
-            Log.menu.notice("select \(name, privacy: .public) refused: not live or on a hub (\(m.state, privacy: .public))")
-            Notifications.shared.info(name, m.isDirect ? "Not running; start it first." : "Machines on a hub cannot take drops yet.")
+        guard m.isLive else {
+            Log.menu.notice("select \(name, privacy: .public) refused: not live (\(m.state, privacy: .public))")
+            Notifications.shared.info(name, "Not running; start it first.")
             return
         }
         Log.menu.notice("drop target set to \(name, privacy: .public)")
