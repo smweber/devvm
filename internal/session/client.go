@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +27,17 @@ type Client struct {
 
 // Dial returns a client, spawning the daemon first if none is running.
 func Dial(configDir, name string) (*Client, error) {
+	return dialCancel(configDir, name, nil)
+}
+
+// errDialCanceled is returned when a dial's come-up wait was abandoned.
+var errDialCanceled = errors.New("dial canceled")
+
+// dialCancel is Dial whose come-up wait gives up as soon as cancel closes
+// (nil never does), so a session being closed is not held for the whole
+// wait by a reconnect in progress. A daemon already spawned carries on and
+// idles out on its own.
+func dialCancel(configDir, name string, cancel <-chan struct{}) (*Client, error) {
 	c := &Client{configDir: configDir, name: name}
 	if c.alive() {
 		return c, nil
@@ -47,7 +59,11 @@ func Dial(configDir, name string) (*Client, error) {
 		if c.alive() {
 			return c, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-cancel:
+			return nil, errDialCanceled
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	return nil, fmt.Errorf("forward daemon for '%s' did not come up (see %s)",
 		name, logPath(configDir, name))
@@ -70,6 +86,13 @@ func (c *Client) alive() bool {
 // spawnDaemon re-execs devvm as a detached `__daemon` process. The daemon
 // resolves the machine itself and owns the transport thereafter.
 func (c *Client) spawnDaemon() error {
+	// An empty name would spawn `__daemon ''`. Under any binary other than
+	// devvm (a scratch tool reusing this package) that re-exec parses as a
+	// fresh run with no machine, dials "" again and recurses into a fork
+	// bomb, which took down a 2 GB test guest twice.
+	if c.name == "" {
+		return errors.New("no machine name for the forward daemon")
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -126,16 +149,55 @@ func (c *Client) Add(pref, guest int) (host int, bumped, pending bool, err error
 	return resp.Host, resp.Bumped, resp.Pending, nil
 }
 
-// Remove tears down the forward for a guest port.
+// Remove drops the conf owner of a guest port's forward (`ports rm` on a
+// configured mapping); the forward goes when no other owner holds it.
 func (c *Client) Remove(guest int) error {
-	resp, err := c.request(Request{Op: OpRemove, Guest: guest})
+	_, err := c.RemoveOwner(guest, OwnerConf)
+	return err
+}
+
+// RemoveOwner drops one owner (OwnerConf or OwnerTTL) of a guest port's
+// forward. left is the forward as it stands afterwards if another owner
+// still holds it, nil if it is gone (or never existed). A daemon older than
+// owners removes the forward outright and reports nothing left.
+func (c *Client) RemoveOwner(guest int, owner string) (left *Forward, err error) {
+	resp, err := c.request(Request{Op: OpRemove, Guest: guest, Owner: owner})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !resp.OK {
-		return errors.New(resp.Err)
+		return nil, errors.New(resp.Err)
 	}
-	return nil
+	if len(resp.Forwards) > 0 {
+		return &resp.Forwards[0], nil
+	}
+	return nil, nil
+}
+
+// DownResult is what `ports down` did: Stopped when nothing else held the
+// daemon, else the forwards other owners keep and the sessions holding it.
+type DownResult struct {
+	Stopped  bool
+	Forwards []Forward
+	Sessions int
+}
+
+// Down drops every conf owner and stops the daemon only if no forward and no
+// session remains (browser-bridge.md §4). A daemon from before `down`
+// existed answers "unknown op"; it predates owners and sessions too, so
+// stopping it outright is exactly the old `ports down`.
+func (c *Client) Down() (DownResult, error) {
+	resp, err := c.request(Request{Op: OpDown})
+	if err != nil {
+		return DownResult{}, err
+	}
+	if !resp.OK {
+		if strings.HasPrefix(resp.Err, "unknown op") {
+			return DownResult{Stopped: true}, c.Stop()
+		}
+		return DownResult{}, errors.New(resp.Err)
+	}
+	return DownResult{Stopped: resp.Stopped, Forwards: resp.Forwards, Sessions: resp.Sessions}, nil
 }
 
 // Status is a daemon snapshot: its connection state, when that state began,
@@ -144,7 +206,21 @@ type Status struct {
 	State    string
 	Since    time.Time
 	Version  string // build the daemon is running; "" from a pre-version daemon
+	Sessions int    // open session connections holding the daemon
 	Forwards []Forward
+}
+
+// ConfCount is how many forwards a conf owner holds: the N of `up:N` in
+// `status --plain` (browser-bridge.md §8), which never counts forwards only
+// a session or a ttl holds.
+func (s Status) ConfCount() int {
+	n := 0
+	for _, f := range s.Forwards {
+		if f.IsConf() {
+			n++
+		}
+	}
+	return n
 }
 
 // Reconnecting reports whether the daemon is between transports.
@@ -159,7 +235,7 @@ func (c *Client) Status() (Status, error) {
 	if !resp.OK {
 		return Status{}, errors.New(resp.Err)
 	}
-	return Status{State: resp.State, Since: resp.Since, Version: resp.Version, Forwards: resp.Forwards}, nil
+	return Status{State: resp.State, Since: resp.Since, Version: resp.Version, Sessions: resp.Sessions, Forwards: resp.Forwards}, nil
 }
 
 // Kick asks a reconnecting daemon to retry now (e.g. after `devvm start`

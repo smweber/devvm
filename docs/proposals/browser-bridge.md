@@ -399,6 +399,17 @@ forwards per machine. `session.Forward` gains `Ephemeral bool` and `Expires`;
 and remaining TTL. `update` and `stop` cycle the daemon and drop ephemerals.
 Documented, not fixed: they are ad hoc by definition.
 
+**As shipped (roadmap step 5).** `ports down` is its own control op,
+`down`, answered with `stopped` or with the forwards and session count that
+keep the daemon up; `stop` still stops outright. `ports rm` on a guest port
+the conf does not list drops a `ttl` owner, or a stale `conf` owner the conf
+no longer names, and refuses a forward only a `connection` holds. The
+retry ticker re-binds every forward pending while the transport is up, not
+only exact ones (a bumpable one tries its own port first). `ports
+list` appends `owner=KINDS` (and `exact`) after the tokens the menubar
+parses. A forward from a daemon older than owners lists none and counts as
+`conf`.
+
 ### 5. `BROWSER` in the guest
 
 The shim (`devvm-open-url`) is installed beside the agent **by the same
@@ -513,6 +524,10 @@ tokens a machine with no daemon gets. That keeps the contract's meaning of
 every token and needs no Swift change. Ephemerals stay visible in
 `ports list`. If the menubar later wants to offer "make persistent", add a
 fifth `ephemeral:N` token then; not now.
+
+As shipped, `reconnecting:N` follows the same rule: N counts `conf` only and
+a zero count reads `down` or `-`, so a daemon held only by sessions never
+shows a reconnect badge for forwards nobody configured.
 
 One visible side effect: `status -v` skips the live-resource probe whenever
 a daemon exists (it must not open a second exec), and with sessions holding

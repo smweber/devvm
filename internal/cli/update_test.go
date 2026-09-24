@@ -464,21 +464,23 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 	}
 
 	res := a.restartDaemons()
-	if reconn.stops != 0 || unconf.stops != 0 || fresh2.stops != 0 {
-		t.Errorf("stopped a daemon that should have been left alone: reconn=%d unconf=%d fresh2=%d", reconn.stops, unconf.stops, fresh2.stops)
+	if reconn.stops != 0 || fresh2.stops != 0 {
+		t.Errorf("stopped a daemon that should have been left alone: reconn=%d fresh2=%d", reconn.stops, fresh2.stops)
 	}
 	// "fresh" was created before Version changed, so it reports the old build
-	// and is cycled like "stuck"; neither ever exits.
-	if stuck.stops != 1 || fresh.stops != 1 {
-		t.Errorf("stops: stuck=%d fresh=%d, want 1 each", stuck.stops, fresh.stops)
+	// and is cycled like "stuck"; neither ever exits. "unconf" holds no
+	// configured forward and is cycled all the same (bridge §4: every up
+	// daemon); it never exits either.
+	if stuck.stops != 1 || fresh.stops != 1 || unconf.stops != 1 {
+		t.Errorf("stops: stuck=%d fresh=%d unconf=%d, want 1 each", stuck.stops, fresh.stops, unconf.stops)
 	}
-	if strings.Join(res.failed, ",") != "fresh,stuck" {
-		t.Errorf("failed = %v, want the two daemons that never exited", res.failed)
+	if strings.Join(res.failed, ",") != "fresh,stuck,unconf" {
+		t.Errorf("failed = %v, want the three daemons that never exited", res.failed)
 	}
-	if len(res.skipped) != 3 || len(res.cycled) != 0 {
+	if len(res.skipped) != 2 || len(res.cycled) != 0 {
 		t.Errorf("skipped = %v cycled = %v", res.skipped, res.cycled)
 	}
-	for _, want := range []string{"reconn: forward daemon is reconnecting", "unconf: forward daemon holds no configured ports", "fresh2: forward daemon already runs v9.9.9"} {
+	for _, want := range []string{"reconn: forward daemon is reconnecting", "fresh2: forward daemon already runs v9.9.9"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

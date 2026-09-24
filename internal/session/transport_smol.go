@@ -76,13 +76,17 @@ func (t *smolTransport) drainEvents() {
 	}
 }
 
+// forward listens on both loopback families (listenLoopback); each accepted
+// connection, from either, becomes one yamux stream on the single exec.
 func (t *smolTransport) forward(hostPort, guestPort int) (io.Closer, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	lns, err := listenLoopback(hostPort)
 	if err != nil {
-		return nil, errPortBusy
+		return nil, err
 	}
-	go t.serve(ln, guestPort)
-	return ln, nil
+	for _, ln := range lns {
+		go t.serve(ln, guestPort)
+	}
+	return listeners(lns), nil
 }
 
 func (t *smolTransport) serve(ln net.Listener, guestPort int) {

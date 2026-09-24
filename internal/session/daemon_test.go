@@ -25,29 +25,33 @@ type fakeTransport struct {
 	binds     atomic.Int32 // forwards bound on this transport instance
 }
 
+// forward uses the real transports' listenLoopback, so the dual-stack rule
+// (IPv4 decides busy, ::1 best-effort) is what the tests exercise.
 func (f *fakeTransport) forward(hostPort, guestPort int) (io.Closer, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	lns, err := listenLoopback(hostPort)
 	if err != nil {
-		return nil, errPortBusy
+		return nil, err
 	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				up, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", guestPort))
+	for _, ln := range lns {
+		go func(ln net.Listener) {
+			for {
+				c, err := ln.Accept()
 				if err != nil {
-					c.Close()
 					return
 				}
-				agentrpc.Splice(c, up)
-			}(c)
-		}
-	}()
+				go func(c net.Conn) {
+					up, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", guestPort))
+					if err != nil {
+						c.Close()
+						return
+					}
+					agentrpc.Splice(c, up)
+				}(c)
+			}
+		}(ln)
+	}
 	f.binds.Add(1)
-	return ln, nil
+	return listeners(lns), nil
 }
 
 func (f *fakeTransport) dead() <-chan struct{} { return f.dc }
@@ -146,7 +150,7 @@ func TestDaemonAddRemoveList(t *testing.T) {
 	d := newTestDaemon(t)
 
 	pref := freePort(t)
-	host, bumped, _, err := d.add(pref, guest)
+	host, bumped, _, err := d.add(pref, guest, false, confOwner)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -171,12 +175,12 @@ func TestDaemonAddRemoveList(t *testing.T) {
 	}
 
 	// Adding the same guest again is idempotent (same host port).
-	host2, _, _, _ := d.add(host, guest)
+	host2, _, _, _ := d.add(host, guest, false, confOwner)
 	if host2 != host {
 		t.Errorf("re-add host = %d, want %d", host2, host)
 	}
 
-	d.remove(guest)
+	d.remove(guest, confOwner)
 	if fs := d.list(); len(fs) != 0 {
 		t.Fatalf("after remove list = %v", fs)
 	}
@@ -194,7 +198,7 @@ func TestDaemonPortBump(t *testing.T) {
 	defer occ.Close()
 	pref := occ.Addr().(*net.TCPAddr).Port
 
-	host, bumped, _, err := d.add(pref, guest)
+	host, bumped, _, err := d.add(pref, guest, false, confOwner)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -247,11 +251,11 @@ func TestDaemonReconnectRestoresForwards(t *testing.T) {
 	}
 
 	pref, pref2 := freePort(t), freePort(t)
-	host, _, _, err := d.add(pref, guest)
+	host, _, _, err := d.add(pref, guest, false, confOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := d.add(pref2, guest2); err != nil {
+	if _, _, _, err := d.add(pref2, guest2, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	done := runLoop(d)
@@ -308,7 +312,7 @@ func TestDaemonReconnectBumpsTakenPort(t *testing.T) {
 	d := newTestDaemon(t)
 	first := d.tr.(*fakeTransport)
 	pref := freePort(t)
-	if _, _, _, err := d.add(pref, guest); err != nil {
+	if _, _, _, err := d.add(pref, guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	// Steal the host port while the link is down.
@@ -355,7 +359,7 @@ func TestDaemonAddWhileReconnecting(t *testing.T) {
 	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
 
 	pref := freePort(t)
-	host, bumped, pending, err := d.add(pref, guest)
+	host, bumped, pending, err := d.add(pref, guest, false, confOwner)
 	if err != nil || host != pref || bumped || !pending {
 		t.Fatalf("add during outage = host %d bumped %v pending %v err %v", host, bumped, pending, err)
 	}
@@ -363,7 +367,7 @@ func TestDaemonAddWhileReconnecting(t *testing.T) {
 		t.Fatal("pending forward must not be bound yet")
 	}
 	// Re-adding the same guest during the outage is idempotent and still pending.
-	if _, _, pending, _ := d.add(pref, guest); !pending {
+	if _, _, pending, _ := d.add(pref, guest, false, confOwner); !pending {
 		t.Error("re-add during outage should report pending")
 	}
 
@@ -382,7 +386,7 @@ func TestDaemonStopWhileReconnecting(t *testing.T) {
 	d := newTestDaemon(t)
 	d.minBackoff, d.maxBackoff = time.Hour, time.Hour // stop must not wait out a backoff
 	first := d.tr.(*fakeTransport)
-	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	done := runLoop(d)
@@ -405,13 +409,13 @@ func TestDaemonRemoveWhileReconnecting(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
 	first := d.tr.(*fakeTransport)
-	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	done := runLoop(d)
 	first.die()
 	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
-	d.remove(guest) // closer is nil; must not panic
+	d.remove(guest, confOwner) // closer is nil; must not panic
 	if fs := d.list(); len(fs) != 0 {
 		t.Fatalf("list after remove = %+v", fs)
 	}
@@ -438,7 +442,7 @@ func TestDaemonRestoreFailureKeepsForwardsPendingAndRetries(t *testing.T) {
 	d := newTestDaemon(t)
 	first := d.tr.(*fakeTransport)
 	pref := freePort(t)
-	if _, _, _, err := d.add(pref, guest); err != nil {
+	if _, _, _, err := d.add(pref, guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	// First dial: a transport whose binds fail. Second: a healthy one.
@@ -475,7 +479,7 @@ func TestDaemonKickRetriesImmediately(t *testing.T) {
 	d := newTestDaemon(t)
 	d.minBackoff, d.maxBackoff = time.Hour, time.Hour
 	first := d.tr.(*fakeTransport)
-	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	second := newFakeTransport()
@@ -499,7 +503,7 @@ func TestDaemonStopInterruptsHangingDial(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
 	first := d.tr.(*fakeTransport)
-	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
@@ -519,7 +523,7 @@ func TestDaemonVMNotRunningWaitsWithoutFailing(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
 	first := d.tr.(*fakeTransport)
-	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	var dials atomic.Int32
@@ -644,7 +648,7 @@ func TestDaemonShutdownWaitsForLateDial(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.ln, d.sockInfo = ln, info
-	if _, _, _, err := d.add(freePort(t), guest); err != nil {
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	done := runLoop(d)
@@ -699,7 +703,7 @@ func TestDaemonAddRebindsForwardPendingAfterExhaustion(t *testing.T) {
 	d := newTestDaemon(t)
 	first := d.tr.(*fakeTransport)
 	pref := freePort(t)
-	if _, _, _, err := d.add(pref, guest); err != nil {
+	if _, _, _, err := d.add(pref, guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	second := &exhaustingTransport{fakeTransport: newFakeTransport()}
@@ -713,7 +717,7 @@ func TestDaemonAddRebindsForwardPendingAfterExhaustion(t *testing.T) {
 		return s == StateUp && len(fs) == 1 && fs[0].Pending
 	})
 	second.busy.Store(false)
-	host, _, pending, err := d.add(pref, guest)
+	host, _, pending, err := d.add(pref, guest, false, confOwner)
 	if err != nil || pending || host != pref {
 		t.Fatalf("add after exhaustion = host %d pending %v err %v; want bound on %d", host, pending, err, pref)
 	}
@@ -731,7 +735,7 @@ func TestDaemonListNotBlockedByBind(t *testing.T) {
 	release := make(chan struct{})
 	d.tr = &blockingTransport{fakeTransport: newFakeTransport(), release: release}
 	added := make(chan struct{})
-	go func() { d.add(freePort(t), 1); close(added) }()
+	go func() { d.add(freePort(t), 1, false, confOwner); close(added) }()
 	time.Sleep(20 * time.Millisecond)
 	listed := make(chan struct{})
 	go func() { d.list(); d.status(); close(listed) }()
@@ -760,7 +764,7 @@ func (b *blockingTransport) forward(hostPort, guestPort int) (io.Closer, error) 
 func TestDaemonAddAfterTeardownIsPending(t *testing.T) {
 	d := newTestDaemon(t)
 	d.teardown()
-	host, bumped, pending, err := d.add(freePort(t), 7)
+	host, bumped, pending, err := d.add(freePort(t), 7, false, confOwner)
 	if err != nil || !pending || bumped || host == 0 {
 		t.Fatalf("add after teardown = host %d, bumped %v, pending %v, err %v; want pending", host, bumped, pending, err)
 	}
@@ -796,7 +800,7 @@ func TestDaemonConcurrentAddBindsOnce(t *testing.T) {
 	results := make(chan res, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			h, _, p, err := d.add(pref, 1)
+			h, _, p, err := d.add(pref, 1, false, confOwner)
 			results <- res{h, p, err}
 		}()
 	}

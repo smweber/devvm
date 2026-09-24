@@ -19,9 +19,18 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// idleTimeout is how long the daemon lingers with zero forwards before exiting
-// (ControlPersist-style), so a `tunnel down` or last `unport` reaps it.
+// idleTimeout is how long the daemon lingers with zero forwards and zero
+// sessions before exiting (ControlPersist-style), so a `ports down` or last
+// `ports rm` reaps it.
 const idleTimeout = 60 * time.Second
+
+// exactRetryInterval is the ticker that re-binds pending exact forwards
+// while the transport is up (browser-bridge.md §4). An exact forward is
+// never bumped, so one whose port was taken during an outage would
+// otherwise stay pending until the next add or reconnect even after the
+// port frees. The same ticker expires `ttl` owners once the bridge creates
+// them (roadmap step 7).
+const exactRetryInterval = 5 * time.Second
 
 // Reconnect backoff bounds. A laptop waking from sleep usually has its link
 // back within a few seconds; a box that is really gone should not be hammered.
@@ -39,15 +48,113 @@ var errVMNotRunning = errors.New("VM is not running")
 // stop mid-attempt.
 var errStopped = errors.New("daemon stopped")
 
+// owner is one holder of a forward (browser-bridge.md §4). conn names the
+// session connection for OwnerConnection and is zero for the other kinds:
+// there is one conf owner (the conf) and one ttl owner (refreshed, not
+// stacked, by a repeat callback) per forward.
+type owner struct {
+	kind string
+	conn uint64
+}
+
+var (
+	confOwner = owner{kind: OwnerConf}
+	ttlOwner  = owner{kind: OwnerTTL}
+)
+
+func connOwner(id uint64) owner { return owner{kind: OwnerConnection, conn: id} }
+
 // fwd is one forward the daemon is responsible for. closer is nil while the
 // transport is down: the forward is remembered and re-bound on reconnect.
 type fwd struct {
 	host, guest int
-	closer      io.Closer
-	// binding marks a slot claimed by an in-flight add. A second add for the
-	// same guest must not bind again: on ssh both closers would carry the same
-	// -L spec and the loser's `ssh -O cancel` would kill the winner.
+	// exact: the host port may never bump, not on add and not on restore.
+	// Sticky: once any request asked for exact it stays for the forward's
+	// life, even after that owner is gone (bridge §4: recomputing it per
+	// owner adds policy nobody sees; `ports down`/`up` clears it).
+	exact  bool
+	closer io.Closer
+	// binding marks a slot claimed by an in-flight bind (an add, restore, or
+	// the retry ticker); exactly one binder holds it at a time. A second add
+	// for the same guest must not bind again: on ssh both closers would carry
+	// the same -L spec and the loser's `ssh -O cancel` would kill the winner.
+	// Nor may it answer before the bind has a result: it would report a port
+	// the forward may never get (a failed or bumped bind). So it waits on
+	// ready, closed when the binder finishes either way, and re-evaluates.
 	binding bool
+	ready   chan struct{}
+	owners  map[owner]struct{} // torn down when empty
+}
+
+// startBinding claims the slot for one binder; d.mu must be held.
+func (f *fwd) startBinding() {
+	f.binding = true
+	f.ready = make(chan struct{})
+}
+
+// finishBinding releases the slot and wakes every add waiting on it; d.mu
+// must be held.
+func (f *fwd) finishBinding() {
+	if f.binding {
+		f.binding = false
+		close(f.ready)
+	}
+}
+
+// settleLocked ends a binder's claim on f and deletes the slot if every
+// owner went while it was binding (remove/dropOwners keep such a slot, see
+// releaseLocked). d.mu must be held.
+func (d *daemon) settleLocked(f *fwd) {
+	f.finishBinding()
+	if d.forwards[f.guest] == f && len(f.owners) == 0 {
+		delete(d.forwards, f.guest)
+	}
+}
+
+// releaseLocked deletes a forward whose last owner just went and returns
+// its closer for the caller to close after unlocking. A slot that is being
+// bound stays in the map, ownerless, until its binder settles it: deleting
+// it would let a new add for the same guest bind at once, and on ssh the
+// first binder's losing adopt would then `-O cancel` the identical -L spec,
+// killing the new forward. A waiter on ready re-evaluates once it settles.
+// d.mu must be held.
+func (d *daemon) releaseLocked(f *fwd) io.Closer {
+	if len(f.owners) > 0 || d.forwards[f.guest] != f || f.binding {
+		return nil
+	}
+	delete(d.forwards, f.guest)
+	return f.closer
+}
+
+func newFwd(host, guest int, exact bool, own owner) *fwd {
+	return &fwd{host: host, guest: guest, exact: exact, owners: map[owner]struct{}{own: {}}}
+}
+
+// addOwner records own, reporting whether it is new.
+func (f *fwd) addOwner(own owner) bool {
+	if _, ok := f.owners[own]; ok {
+		return false
+	}
+	f.owners[own] = struct{}{}
+	return true
+}
+
+// ownerKinds is the forward's owners for the wire: kinds, sorted, deduped.
+func (f *fwd) ownerKinds() []string {
+	seen := map[string]bool{}
+	var out []string
+	for o := range f.owners {
+		if !seen[o.kind] {
+			seen[o.kind] = true
+			out = append(out, o.kind)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (f *fwd) wire() Forward {
+	return Forward{Host: f.host, Guest: f.guest, Pending: f.closer == nil, Exact: f.exact, Owners: f.ownerKinds()}
 }
 
 type daemon struct {
@@ -65,14 +172,22 @@ type daemon struct {
 	late     sync.WaitGroup
 	lateWait time.Duration
 
-	// Backoff/idle knobs live on the struct so tests can shrink them.
-	minBackoff, maxBackoff, idle time.Duration
+	// Backoff/idle/retry knobs live on the struct so tests can shrink them.
+	minBackoff, maxBackoff, idle, retryEvery time.Duration
 
 	mu       sync.Mutex
 	tr       transport
 	forwards map[int]*fwd // keyed by guest port
 	state    string       // StateUp | StateReconnecting
 	since    time.Time    // when state last changed
+
+	// Sessions (browser-bridge.md §3). Every open session holds the daemon;
+	// subs is the subscriber order, most recent first: events go to subs[0]
+	// and fall through to the next when it unsubscribes or disconnects.
+	sessions  map[uint64]*sess
+	subs      []*sess
+	nextConn  uint64
+	nextEvent int64
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -93,8 +208,10 @@ func newDaemon(configDir, name, version string, tr transport, dial func() (trans
 		minBackoff: minReconnectBackoff,
 		maxBackoff: maxReconnectBackoff,
 		idle:       idleTimeout,
+		retryEvery: exactRetryInterval,
 		lateWait:   lateWaitFor(),
 		forwards:   map[int]*fwd{},
+		sessions:   map[uint64]*sess{},
 		state:      StateUp,
 		since:      time.Now(),
 		stop:       make(chan struct{}),
@@ -210,9 +327,16 @@ func listenControl(sock string) (*net.UnixListener, os.FileInfo, error) {
 // the dead channel and reconnect rather than exit. Before this, a laptop sleep
 // long enough to exhaust ssh keepalives killed the daemon and every forward
 // with it, and the user had to run `ports up` after each wake.
+//
+// The idle rule is `forwards == 0 && sessions == 0` (bridge §3): a session
+// with no forwards still holds the daemon, or a held `attach` would lose its
+// bridge a minute in and a hub's `__session` would see its daemon respawn
+// every idle period.
 func (d *daemon) loop() {
 	idle := time.NewTimer(d.idle)
 	defer idle.Stop()
+	retry := time.NewTicker(d.retryEvery)
+	defer retry.Stop()
 	for {
 		select {
 		case <-d.stop:
@@ -224,8 +348,10 @@ func (d *daemon) loop() {
 			}
 			// Restart the idle clock: the reconnect loop ran its own.
 			idle.Reset(d.idle)
+		case <-retry.C:
+			d.retryPending()
 		case <-idle.C:
-			if d.count() == 0 {
+			if d.idleNow() {
 				return
 			}
 			idle.Reset(d.idle)
@@ -304,8 +430,8 @@ func (d *daemon) reconnect() bool {
 		case <-d.stop:
 			return false
 		case <-idle.C:
-			if d.count() == 0 {
-				d.logf("%s: no forwards to restore; exiting", d.name)
+			if d.idleNow() {
+				d.logf("%s: no forwards to restore and no sessions; exiting", d.name)
 				return false
 			}
 			idle.Reset(d.idle)
@@ -384,27 +510,42 @@ func (d *daemon) dialInterruptible() (transport, error) {
 // restore adopts a fresh transport and re-binds every remembered forward at
 // its previous host port, so browser tabs and tool configs pointing at
 // localhost:PORT keep working across the outage. A port taken meanwhile bumps
-// exactly like a first-time add. Returns false if a forward failed for any
-// reason other than port contention: that forward stays pending and the
-// caller retries the whole attempt — a forward is never dropped because one
-// `ssh -O forward` hiccupped right after wake. Port exhaustion is logged and
-// the forward left pending without failing the rest.
+// exactly like a first-time add, unless the forward is exact: that one is
+// never bumped (the browser still targets the original port) and stays
+// pending until the retry ticker finds the port free. Returns false if a
+// forward failed for any reason other than port contention: that forward
+// stays pending and the caller retries the whole attempt — a forward is
+// never dropped because one `ssh -O forward` hiccupped right after wake. Port
+// exhaustion is logged and the forward left pending without failing the rest.
 //
 // Binds run outside d.mu (each is an `ssh -O forward`, bounded only by its
 // timeout against a degraded master), so ping/list/add stay responsive; the
-// loop picks up forwards added while a batch was binding.
+// loop picks up forwards added while a batch was binding. Forwards of every
+// owner kind come back: sessions survive a transport death (only relay
+// sessions, roadmap step 6, will not).
 func (d *daemon) restore(tr transport) bool {
 	d.mu.Lock()
 	d.tr = tr
 	d.mu.Unlock()
 	restored := 0
-	tried := map[int]bool{}
+	tried := map[*fwd]bool{}
+	type job struct {
+		f           *fwd
+		host, guest int
+		exact       bool
+	}
 	for {
 		d.mu.Lock()
-		var batch []fwd
-		for g, f := range d.forwards {
-			if f.closer == nil && !tried[g] {
-				batch = append(batch, *f)
+		var batch []job
+		for _, f := range d.forwards {
+			// A slot some add is still binding (on the dead transport) is
+			// left to it: binding it here too would race its listener for
+			// the same port (on smol the old listener can briefly hold P and
+			// this bind would bump to P+1). That add ends pending, and the
+			// retry ticker binds it once the daemon is up.
+			if f.closer == nil && !f.binding && !tried[f] {
+				f.startBinding()
+				batch = append(batch, job{f, f.host, f.guest, f.exact})
 			}
 		}
 		d.mu.Unlock()
@@ -412,20 +553,28 @@ func (d *daemon) restore(tr transport) bool {
 			break
 		}
 		sort.Slice(batch, func(i, j int) bool { return batch[i].guest < batch[j].guest })
-		for _, f := range batch {
-			tried[f.guest] = true
-			host, closer, bumped, err := bind(tr, f.host, f.guest)
+		for i, j := range batch {
+			tried[j.f] = true
+			host, closer, bumped, err := bind(tr, j.host, j.guest, j.exact)
 			if err != nil {
-				d.logf("%s: forward for guest %d still pending: %v", d.name, f.guest, err)
-				if !errors.Is(err, errPortExhausted) {
+				d.mu.Lock()
+				d.settleLocked(j.f)
+				d.mu.Unlock()
+				d.logf("%s: forward for guest %d still pending: %v", d.name, j.guest, err)
+				if !errors.Is(err, errPortExhausted) && !errors.Is(err, errPortBusy) {
+					d.mu.Lock()
+					for _, rest := range batch[i+1:] {
+						d.settleLocked(rest.f)
+					}
+					d.mu.Unlock()
 					return false
 				}
 				continue
 			}
 			if bumped {
-				d.logf("%s: host port %d taken; guest %d now on localhost:%d", d.name, f.host, f.guest, host)
+				d.logf("%s: host port %d taken; guest %d now on localhost:%d", d.name, j.host, j.guest, host)
 			}
-			if d.adopt(tr, f.guest, host, closer) {
+			if d.adopt(tr, j.f, host, closer, j.exact) {
 				restored++
 			}
 		}
@@ -438,21 +587,65 @@ func (d *daemon) restore(tr transport) bool {
 	return true
 }
 
-// adopt records a forward bound outside the lock. It is dropped (closed) if
-// the guest was removed meanwhile, if another bind already won, or if the
-// transport it was bound on is no longer the current one.
-func (d *daemon) adopt(tr transport, guest, host int, closer io.Closer) bool {
+// retryPending re-binds every forward left pending while the transport is
+// up: an exact one whose port was taken when restore ran (never bumped; a
+// port still taken waits for the next tick), a bumpable one that hit port
+// exhaustion, or one whose add was cut off by a transport death and was
+// skipped by restore because it was mid-bind. A bumpable forward tries its
+// own port first and bumps from there. Binds run outside d.mu.
+func (d *daemon) retryPending() {
 	d.mu.Lock()
-	f, ok := d.forwards[guest]
-	if ok {
-		f.binding = false
+	tr := d.tr
+	if d.state != StateUp || tr == nil {
+		d.mu.Unlock()
+		return
 	}
-	if !ok || f.closer != nil || d.tr != tr {
+	type job struct {
+		f           *fwd
+		host, guest int
+		exact       bool
+	}
+	var batch []job
+	for _, f := range d.forwards {
+		if f.closer == nil && !f.binding {
+			f.startBinding()
+			batch = append(batch, job{f, f.host, f.guest, f.exact})
+		}
+	}
+	d.mu.Unlock()
+	for _, j := range batch {
+		host, closer, _, err := bind(tr, j.host, j.guest, j.exact)
+		if err != nil {
+			d.mu.Lock()
+			d.settleLocked(j.f)
+			d.mu.Unlock()
+			continue
+		}
+		if d.adopt(tr, j.f, host, closer, j.exact) {
+			d.logf("%s: pending forward bound; guest %d on localhost:%d", d.name, j.guest, host)
+			config.TouchChanged(d.configDir)
+		}
+	}
+}
+
+// adopt records a forward bound outside the lock. It is dropped (closed) if
+// the forward was removed meanwhile (or replaced by a new record for the
+// same guest), if another bind already won, or if the transport it was
+// bound on is no longer the current one.
+// It releases the binder's claim on the slot either way, and records exact
+// when the bind that honoured it succeeded.
+func (d *daemon) adopt(tr transport, f *fwd, host int, closer io.Closer, exact bool) bool {
+	d.mu.Lock()
+	d.settleLocked(f)
+	if d.forwards[f.guest] != f || f.closer != nil || d.tr != tr {
 		d.mu.Unlock()
 		closer.Close()
 		return false
 	}
 	f.host, f.closer = host, closer
+	// exact sticks only once a bind honoured it: a refused exact request
+	// must not leave a bumpable forward exact for good.
+	f.exact = f.exact || exact
 	d.mu.Unlock()
 	return true
 }
@@ -460,7 +653,26 @@ func (d *daemon) adopt(tr transport, guest, host int, closer io.Closer) bool {
 func (d *daemon) count() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.forwards)
+	return d.heldLocked()
+}
+
+// heldLocked counts forwards some owner holds: an ownerless slot is only
+// waiting for its binder to settle it. d.mu must be held.
+func (d *daemon) heldLocked() int {
+	n := 0
+	for _, f := range d.forwards {
+		if len(f.owners) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// idleNow is the idle rule: nothing to forward and nobody holding the daemon.
+func (d *daemon) idleNow() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.heldLocked() == 0 && len(d.sessions) == 0
 }
 
 func (d *daemon) triggerStop() {
@@ -490,6 +702,10 @@ func (d *daemon) shutdown() error {
 	case <-time.After(d.lateWait):
 		d.logf("%s: a dial interrupted by stop is still closing; not waiting further", d.name)
 	}
+	// Sessions are closed after the transport is released: a session client
+	// reconnects at once, and the daemon it spawns must not find the old
+	// master or exec still up.
+	d.closeAllSessions()
 	sock := socketPath(d.configDir, d.name)
 	if d.ownsSocket(sock) {
 		os.Remove(sock)
@@ -500,68 +716,123 @@ func (d *daemon) shutdown() error {
 	return nil
 }
 
-// add allocates a host port (bumping on conflict, up to +20) and starts the
-// forward, mirroring smol_forward_up / ssh_forwards. While reconnecting it
-// only records the request (pending=true) so a `ports up` issued during an
-// outage comes up as soon as the transport is back, instead of erroring. A
-// forward left pending while up (port exhaustion during restore) is re-bound
-// here rather than reported pending forever.
-func (d *daemon) add(pref, guest int) (host int, bumped, pending bool, err error) {
-	d.mu.Lock()
-	if f, ok := d.forwards[guest]; ok && (f.closer != nil || f.binding || d.state == StateReconnecting) {
-		// Read under the lock; adopt writes them. A slot another add is
-		// binding right now (while up) is reported as live at the port it
-		// claimed rather than pending: "pending" means "waiting on the
-		// transport" to the CLI, and that binder will adopt it momentarily.
-		host, pending := f.host, f.closer == nil && d.state == StateReconnecting
-		d.mu.Unlock()
-		return host, false, pending, nil
-	}
-	tr := d.tr
-	// No transport to bind on: reconnecting, or shutdown already tore it
-	// down while this request was in flight. Record it as pending either way
-	// rather than dereferencing nil.
-	if d.state == StateReconnecting || tr == nil {
-		if _, ok := d.forwards[guest]; !ok {
-			d.forwards[guest] = &fwd{host: pref, guest: guest}
+// add allocates a host port (bumping on conflict, up to +20, unless exact)
+// and starts the forward, owned by own, mirroring smol_forward_up /
+// ssh_forwards. While reconnecting it only records the request (pending=true)
+// so a `ports up` issued during an outage comes up as soon as the transport
+// is back, instead of erroring. A forward left pending while up (port
+// exhaustion during restore, or an exact port taken) is re-bound here rather
+// than reported pending forever.
+//
+// Reuse (bridge §4): a request for a guest port already forwarded adds its
+// owner to the existing forward and returns its host port, unless the
+// request is exact and that host port differs, which is refused like any
+// busy exact bind. An exact request makes the forward exact from then on,
+// once a bind has honoured it.
+//
+// A slot another bind is working on is never answered from: the answer
+// would be a port that bind may not get (it can fail, or bump). The add
+// waits for that bind to finish, outside d.mu, and starts over: the slot is
+// then bound (reuse, checked against the real port), pending, or gone (this
+// add binds it itself).
+func (d *daemon) add(pref, guest int, exact bool, own owner) (host int, bumped, pending bool, err error) {
+	for {
+		d.mu.Lock()
+		f, ok := d.forwards[guest]
+		if ok && f.binding {
+			ready := f.ready
+			d.mu.Unlock()
+			<-ready
+			continue
 		}
+		if ok && exact && f.host != pref {
+			d.mu.Unlock()
+			return 0, false, false, fmt.Errorf("host port %d unavailable: guest %d is already forwarded on localhost:%d: %w", pref, guest, f.host, errPortBusy)
+		}
+		tr := d.tr
+		// Live (reuse), or no transport to bind on: reconnecting, or shutdown
+		// already tore it down while this request was in flight. Record the
+		// owner either way; a pending forward comes up on restore at the
+		// port it has, and an exact request for it holds (host == pref).
+		if (ok && f.closer != nil) || d.state == StateReconnecting || tr == nil {
+			if !ok {
+				f = newFwd(pref, guest, exact, own)
+				d.forwards[guest] = f
+			} else {
+				f.addOwner(own)
+				if exact {
+					f.exact = true // the port is pref already: honoured, not requested
+				}
+			}
+			host, pending := f.host, f.closer == nil
+			d.mu.Unlock()
+			config.TouchChanged(d.configDir)
+			return host, false, pending, nil
+		}
+		// Bind: a new slot, or one pending while up. An exact forward
+		// re-binds at its own port; a bumpable one pending from exhaustion
+		// tries the new request's preference, as it always has.
+		added := true
+		target, bindExact := pref, exact
+		if !ok {
+			f = newFwd(pref, guest, false, own) // claim the slot; exact once bound
+			d.forwards[guest] = f
+		} else {
+			added = f.addOwner(own)
+			if f.exact {
+				target, bindExact = f.host, true
+			}
+		}
+		f.startBinding()
 		d.mu.Unlock()
-		config.TouchChanged(d.configDir)
-		return pref, false, true, nil
+		return d.bindSlot(tr, f, own, added, target, bindExact)
 	}
-	f, ok := d.forwards[guest]
-	if !ok {
-		f = &fwd{host: pref, guest: guest} // claim the slot; bind below
-		d.forwards[guest] = f
-	}
-	f.binding = true
-	d.mu.Unlock()
-	host, closer, bumped, err := bind(tr, pref, guest)
+}
+
+// bindSlot runs add's bind for a slot it claimed and settles the result.
+func (d *daemon) bindSlot(tr transport, f *fwd, own owner, added bool, target int, exact bool) (host int, bumped, pending bool, err error) {
+	host, closer, bumped, err := bind(tr, target, f.guest, exact)
 	if err != nil {
 		d.mu.Lock()
-		if f, ok := d.forwards[guest]; ok {
-			f.binding = false
-			if f.closer == nil && d.state == StateUp {
-				delete(d.forwards, guest) // an add that never bound isn't remembered
+		d.settleLocked(f) // removed while binding: the slot goes now
+		if d.forwards[f.guest] == f && f.closer == nil && (d.tr != tr || d.state != StateUp) {
+			// The transport died under the bind: the forward is pending like
+			// any other, and restore or the ticker binds it. Not an error.
+			host := f.host
+			d.mu.Unlock()
+			config.TouchChanged(d.configDir)
+			return host, false, true, nil
+		}
+		// An add that never bound isn't remembered: only its own owner goes
+		// (and the forward with it if nobody else holds it). An owner that
+		// was already there stays, still pending, for the ticker.
+		if d.forwards[f.guest] == f && f.closer == nil && added {
+			delete(f.owners, own)
+			if len(f.owners) == 0 {
+				delete(d.forwards, f.guest)
 			}
 		}
 		d.mu.Unlock()
 		return 0, false, false, err
 	}
-	if !d.adopt(tr, guest, host, closer) {
-		// Removed, or the transport died and the slot is pending again.
+	if !d.adopt(tr, f, host, closer, exact) {
+		// The transport died and this slot is pending again, or it was
+		// removed while binding. Only this add's own record answers: a new
+		// record for the same guest (a later add, bound or binding by now)
+		// is someone else's forward.
 		d.mu.Lock()
-		f, ok := d.forwards[guest]
-		var host int
-		var pending bool
+		cur, ok := d.forwards[f.guest]
+		ok = ok && cur == f
+		var h int
+		var p bool
 		if ok {
-			host, pending = f.host, f.closer == nil
+			h, p = cur.host, cur.closer == nil
 		}
 		d.mu.Unlock()
 		if ok {
-			return host, false, pending, nil
+			return h, false, p, nil
 		}
-		return 0, false, false, fmt.Errorf("forward for guest %d was removed while binding", guest)
+		return 0, false, false, fmt.Errorf("forward for guest %d was removed while binding", f.guest)
 	}
 	config.TouchChanged(d.configDir)
 	return host, bumped, false, nil
@@ -580,10 +851,21 @@ var errPortExhausted = errors.New("no free host port")
 
 // bind is the port-allocating core of add/restore. It touches no daemon
 // state — callers adopt the result under the lock — so the `ssh -O forward`
-// it runs never blocks ping/list.
-func bind(tr transport, pref, guest int) (host int, closer io.Closer, bumped bool, err error) {
+// it runs never blocks ping/list. An exact bind tries pref alone and fails
+// with errPortBusy rather than bumping.
+func bind(tr transport, pref, guest int, exact bool) (host int, closer io.Closer, bumped bool, err error) {
 	if tr == nil {
 		return 0, nil, false, errors.New("no transport")
+	}
+	if exact {
+		c, ferr := tr.forward(pref, guest)
+		if errors.Is(ferr, errPortBusy) {
+			return 0, nil, false, fmt.Errorf("host port %d is in use: %w", pref, errPortBusy)
+		}
+		if ferr != nil {
+			return 0, nil, false, ferr
+		}
+		return pref, c, false, nil
 	}
 	h := pref
 	for tries := 0; tries < 20; tries++ {
@@ -599,20 +881,88 @@ func bind(tr transport, pref, guest int) (host int, closer io.Closer, bumped boo
 	return 0, nil, false, fmt.Errorf("%w for guest %d in range %d-%d", errPortExhausted, guest, pref, pref+19)
 }
 
-func (d *daemon) remove(guest int) {
+// remove drops one owner of a guest's forward and closes the forward if no
+// owner remains. It reports whether the forward existed and, if it survives,
+// what it looks like now (so `ports rm` can say who still holds it).
+func (d *daemon) remove(guest int, own owner) (found bool, left *Forward) {
 	d.mu.Lock()
 	f, ok := d.forwards[guest]
-	if ok {
-		delete(d.forwards, guest)
-	}
-	d.mu.Unlock()
 	if !ok {
-		return
+		d.mu.Unlock()
+		return false, nil
 	}
-	if f.closer != nil {
-		f.closer.Close()
+	_, had := f.owners[own]
+	delete(f.owners, own)
+	if len(f.owners) > 0 {
+		w := f.wire()
+		d.mu.Unlock()
+		if had {
+			config.TouchChanged(d.configDir)
+		}
+		return true, &w
+	}
+	closer := d.releaseLocked(f)
+	d.mu.Unlock()
+	if closer != nil {
+		closer.Close()
 	}
 	config.TouchChanged(d.configDir)
+	return true, nil
+}
+
+// dropOwners removes every owner match selects from every forward and
+// closes the forwards left with none. Closes run outside d.mu.
+func (d *daemon) dropOwners(match func(owner) bool) (dropped int) {
+	d.mu.Lock()
+	closers, dropped := d.dropOwnersLocked(match)
+	d.mu.Unlock()
+	closeAll(closers)
+	if dropped > 0 {
+		config.TouchChanged(d.configDir)
+	}
+	return dropped
+}
+
+// dropOwnersLocked is dropOwners' map work; d.mu must be held. The closers
+// it returns are for the caller to close once it has unlocked (each may be
+// an `ssh -O cancel`).
+func (d *daemon) dropOwnersLocked(match func(owner) bool) (closers []io.Closer, dropped int) {
+	for _, f := range d.forwards {
+		for o := range f.owners {
+			if match(o) {
+				delete(f.owners, o)
+				dropped++
+			}
+		}
+		if c := d.releaseLocked(f); c != nil {
+			closers = append(closers, c)
+		}
+	}
+	return closers, dropped
+}
+
+func closeAll(cs []io.Closer) {
+	for _, c := range cs {
+		c.Close()
+	}
+}
+
+// down is `ports down` (bridge §4): drop every conf owner, and stop the
+// daemon only if no forward and no session remains. Stopping outright would
+// pull forwards out from under other owners, and with hub forwards (a
+// laptop's `__session` holding this daemon) it would loop: the far side's
+// reconnect respawns the daemon at once.
+func (d *daemon) down() (stopped bool, left []Forward, sessions int) {
+	d.dropOwners(func(o owner) bool { return o.kind == OwnerConf })
+	d.mu.Lock()
+	stopped = d.heldLocked() == 0 && len(d.sessions) == 0
+	sessions = len(d.sessions)
+	d.mu.Unlock()
+	if stopped {
+		d.triggerStop()
+		return true, nil, 0
+	}
+	return false, d.list(), sessions
 }
 
 func (d *daemon) list() []Forward {
@@ -620,10 +970,18 @@ func (d *daemon) list() []Forward {
 	defer d.mu.Unlock()
 	out := make([]Forward, 0, len(d.forwards))
 	for _, f := range d.forwards {
-		out = append(out, Forward{Host: f.host, Guest: f.guest, Pending: f.closer == nil})
+		if len(f.owners) > 0 { // an ownerless slot mid-bind is on its way out
+			out = append(out, f.wire())
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Guest < out[j].Guest })
 	return out
+}
+
+func (d *daemon) sessionCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.sessions)
 }
 
 // status snapshots the daemon's state for list/ping replies.
@@ -654,9 +1012,11 @@ func (d *daemon) serveControl() {
 
 func (d *daemon) handleConn(conn net.Conn) {
 	defer conn.Close()
-	// A connected-but-silent client must not pin a goroutine forever.
+	// A connected-but-silent client must not pin a goroutine forever. A
+	// session clears this once it is open: it is silent by design.
 	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	line, err := bufio.NewReader(conn).ReadString('\n')
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
 	if err != nil {
 		return
 	}
@@ -665,32 +1025,59 @@ func (d *daemon) handleConn(conn net.Conn) {
 		writeResp(conn, Response{Err: "bad request: " + err.Error()})
 		return
 	}
-	writeResp(conn, d.dispatch(req))
+	if req.Op == OpSession {
+		d.serveSession(conn, br, req)
+		return
+	}
+	resp := d.dispatch(req)
+	resp.ID = req.ID
+	writeResp(conn, resp)
 }
 
+// dispatch answers a one-shot request, and the ops a session shares with
+// one-shot connections. Forwards added here are conf-owned: a one-shot
+// connection closes right after, so it can own nothing (`ports add`/`up`).
 func (d *daemon) dispatch(req Request) Response {
 	switch req.Op {
 	case OpAdd:
-		host, bumped, pending, err := d.add(req.Host, req.Guest)
+		host, bumped, pending, err := d.add(req.Host, req.Guest, req.Exact, confOwner)
 		if err != nil {
 			return Response{Err: err.Error()}
 		}
 		return Response{OK: true, Host: host, Bumped: bumped, Pending: pending}
 	case OpRemove:
-		d.remove(req.Guest)
-		return Response{OK: true}
+		own := confOwner
+		switch req.Owner {
+		case "", OwnerConf:
+		case OwnerTTL:
+			own = ttlOwner
+		case OwnerConnection:
+			return Response{Err: "a connection owner is dropped only by its own session"}
+		default:
+			return Response{Err: "unknown owner: " + req.Owner}
+		}
+		resp := Response{OK: true}
+		if _, left := d.remove(req.Guest, own); left != nil {
+			resp.Forwards = []Forward{*left}
+		}
+		return resp
+	case OpDown:
+		stopped, left, sessions := d.down()
+		return Response{OK: true, Stopped: stopped, Forwards: left, Sessions: sessions}
 	case OpList:
 		state, since := d.status()
-		return Response{OK: true, State: state, Since: since, Version: d.version, Forwards: d.list()}
+		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount(), Forwards: d.list()}
 	case OpPing:
 		state, since := d.status()
-		return Response{OK: true, State: state, Since: since, Version: d.version}
+		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount()}
 	case OpKick:
 		d.requestKick()
 		return Response{OK: true}
 	case OpStop:
 		defer d.triggerStop()
 		return Response{OK: true}
+	case OpSubscribe, OpUnsubscribe:
+		return Response{Err: req.Op + " needs a session connection"}
 	default:
 		return Response{Err: "unknown op: " + req.Op}
 	}

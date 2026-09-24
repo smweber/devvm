@@ -3,7 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -101,6 +103,12 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 	return nil
 }
 
+// runUnport is `ports rm` (browser-bridge.md §4). On a configured mapping
+// it drops the conf entry and the forward's conf owner; the forward itself
+// goes only if no other owner holds it. On a guest port that is not in the
+// conf but has a live daemon-only forward it drops that forward's ttl owner
+// (a bridge callback). It never drops a connection owner: that belongs to
+// whoever holds the session, and goes when the session does.
 func (a *App) runUnport(name, mapping string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	m, _, err := a.resolve(name)
@@ -113,7 +121,7 @@ func (a *App) runUnport(name, mapping string) error {
 	if pref, g, perr := parseMapping(mapping); perr == nil {
 		found, ok := findMapping(m, pref, g)
 		if !ok {
-			return fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
+			return a.unportUnconfigured(name, m, mapping, g)
 		}
 		configured, guest = found, g
 	} else if !m.HasPort(mapping) {
@@ -130,14 +138,88 @@ func (a *App) runUnport(name, mapping string) error {
 	if err := m.Save(a.ConfigDir); err != nil {
 		return err
 	}
-	// Tear down the live forward if a daemon is running.
+	// Drop the live forward's conf owner if a daemon is running.
+	var left *session.Forward
 	if guest != 0 {
 		if cl, derr := session.Existing(a.ConfigDir, name); derr == nil {
-			_ = cl.Remove(guest)
+			left, _ = cl.RemoveOwner(guest, session.OwnerConf)
 		}
 	}
 	fmt.Fprintf(a.Stdout, "devvm: removed forward %s from '%s'\n", configured, name)
+	if left != nil {
+		fmt.Fprintf(a.Stdout, "devvm: localhost:%d stays up: still held by %s\n", left.Host, ownerLabel(*left))
+	}
 	return nil
+}
+
+// unportUnconfigured handles `ports rm` of a guest port the conf does not
+// list: only a live forward with a ttl owner can be removed that way.
+func (a *App) unportUnconfigured(name string, m *config.Machine, mapping string, guest int) error {
+	notConfigured := fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
+	cl, err := session.Existing(a.ConfigDir, name)
+	if err != nil {
+		return notConfigured
+	}
+	fwds, err := cl.List()
+	if err != nil {
+		return notConfigured
+	}
+	for _, f := range fwds {
+		if f.Guest != guest {
+			continue
+		}
+		// A ttl owner (a bridge callback) is what `ports rm` exists to drop
+		// here. A conf owner the conf no longer names (a hand edit, or a
+		// pre-owner daemon, which removes outright) is stale and goes too.
+		// A connection owner is never ours to drop.
+		var drop string
+		switch {
+		case f.HasOwner(session.OwnerTTL):
+			drop = session.OwnerTTL
+		case f.IsConf():
+			drop = session.OwnerConf
+		default:
+			return fmt.Errorf("the forward for guest %d on '%s' is held by %s; it goes when that session ends", guest, name, ownerLabel(f))
+		}
+		left, err := cl.RemoveOwner(guest, drop)
+		if err != nil {
+			return err
+		}
+		if left != nil {
+			fmt.Fprintf(a.Stdout, "devvm: dropped the %s owner of localhost:%d; it stays up: still held by %s\n", drop, left.Host, ownerLabel(*left))
+			return nil
+		}
+		fmt.Fprintf(a.Stdout, "devvm: removed ephemeral forward localhost:%d -> %s:%d\n", f.Host, name, guest)
+		return nil
+	}
+	return notConfigured
+}
+
+// ownerLabel names a forward's owner kinds for humans ("conf+connection").
+func ownerLabel(f session.Forward) string {
+	if len(f.Owners) == 0 {
+		return "conf" // a pre-owner daemon: every forward it held was configured
+	}
+	return strings.Join(f.Owners, "+")
+}
+
+// forwardSuffix is what follows `guest N -> localhost:M` in `ports list` and
+// `status -v`: `(pending)`, then the owner kinds and `exact`. The menubar
+// app parses these lines (contrib/macos/Sources/Status.swift,
+// parsePortsList): it needs the first four tokens and looks for a
+// `(pending)` token anywhere after, so everything added stays after them.
+func forwardSuffix(f session.Forward) string {
+	suffix := ""
+	if f.Pending {
+		suffix += "  (pending)"
+	}
+	if len(f.Owners) > 0 {
+		suffix += "  owner=" + ownerLabel(f)
+	}
+	if f.Exact {
+		suffix += "  exact"
+	}
+	return suffix
 }
 
 // runPortsList shows the machine's configured forwards plus any that are live.
@@ -162,7 +244,7 @@ func (a *App) runPortsList(name string) error {
 // a flat table of every machine's configured mappings and whether each is live,
 // so a box with many forwards is scannable in one place instead of via status.
 func (a *App) runPortsListAll() error {
-	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE")
+	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %-12s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE", "OWNER")
 	any := false
 	for _, name := range a.listMachines() {
 		m, err := config.LoadAny(a.ConfigDir, name)
@@ -183,18 +265,25 @@ func (a *App) runPortsListAll() error {
 			any = true
 			_, guestStr := config.SplitPort(p)
 			guest, _ := strconv.Atoi(guestStr)
-			host, state := "—", "down"
+			host, state, own := "—", "down", "—"
 			if f, ok := live[guest]; ok {
-				host, state = fmt.Sprintf("localhost:%d", f.Host), forwardState(f)
+				host, state, own = fmt.Sprintf("localhost:%d", f.Host), forwardState(f), ownerLabel(f)
 				delete(live, guest) // consumed; leftover live entries are ephemeral
 			}
-			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %s\n", name, p, guest, host, state)
+			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %-12s %s\n", name, p, guest, host, state, own)
 		}
-		// Live forwards with no matching configured mapping (added ad hoc via up).
-		for guest, f := range live {
+		// Live forwards with no matching configured mapping: a session's, or
+		// a bridge callback's (ttl).
+		ephemeral := make([]int, 0, len(live))
+		for guest := range live {
+			ephemeral = append(ephemeral, guest)
+		}
+		sort.Ints(ephemeral)
+		for _, guest := range ephemeral {
 			any = true
-			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %s\n",
-				name, "(ephemeral)", guest, fmt.Sprintf("localhost:%d", f.Host), forwardState(f))
+			f := live[guest]
+			fmt.Fprintf(a.Stdout, "%-16s %-14s %-6d %-16s %-12s %s\n",
+				name, "(ephemeral)", guest, fmt.Sprintf("localhost:%d", f.Host), forwardState(f), ownerLabel(f))
 		}
 	}
 	if !any {
@@ -203,7 +292,10 @@ func (a *App) runPortsListAll() error {
 	return nil
 }
 
-// tunnelDown stops the machine's live forwards, if any daemon is running.
+// tunnelDown is `ports down` (browser-bridge.md §4): it drops every conf
+// owner, and the daemon exits only if no forward and no session remains.
+// With a session holding it (an attach, a hub's __session) the daemon stays
+// and the configured forwards alone go down.
 func (a *App) tunnelDown(name string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
 	if _, _, err := a.resolveLive(name); err != nil {
@@ -217,11 +309,30 @@ func (a *App) tunnelDown(name string) error {
 	if err != nil {
 		return err
 	}
-	if err := cl.Stop(); err != nil {
+	res, err := cl.Down()
+	if err != nil {
 		return err
 	}
-	fmt.Fprintln(a.Stdout, "devvm: forwards stopped")
+	if res.Stopped {
+		fmt.Fprintln(a.Stdout, "devvm: forwards stopped")
+		return nil
+	}
+	var held []string
+	if n := len(res.Forwards); n > 0 {
+		held = append(held, plural(n, "forward", "forwards")+" other owners hold")
+	}
+	if res.Sessions > 0 {
+		held = append(held, plural(res.Sessions, "session", "sessions"))
+	}
+	fmt.Fprintf(a.Stdout, "devvm: configured forwards stopped; the forward daemon stays up for %s\n", strings.Join(held, " and "))
 	return nil
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // tunnelUp brings up every configured forward for the machine (used by
@@ -315,8 +426,9 @@ func forwardState(f session.Forward) string {
 	return session.StateUp
 }
 
-// forwardReport lists a machine's daemon-owned forwards for `ports list`, or
-// nothing if no daemon is running. While the daemon is reconnecting the header
+// forwardReport lists a machine's daemon-owned forwards for `ports list`,
+// each with its owner kinds, and the sessions holding the daemon, or nothing
+// if no daemon is running. While the daemon is reconnecting the header
 // says so (and for how long) and each forward is marked pending, so a stuck
 // reconnect is visible rather than looking like healthy forwards.
 func (a *App) forwardReport(name string) {
@@ -325,19 +437,20 @@ func (a *App) forwardReport(name string) {
 		return
 	}
 	st, err := cl.Status()
-	if err != nil || len(st.Forwards) == 0 {
+	if err != nil {
 		return
 	}
-	if st.Reconnecting() {
-		fmt.Fprintf(a.Stdout, "  forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
-	} else {
-		fmt.Fprintln(a.Stdout, "  forwards:")
-	}
-	for _, f := range st.Forwards {
-		suffix := ""
-		if f.Pending {
-			suffix = "  (pending)"
+	if len(st.Forwards) > 0 {
+		if st.Reconnecting() {
+			fmt.Fprintf(a.Stdout, "  forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
+		} else {
+			fmt.Fprintln(a.Stdout, "  forwards:")
 		}
-		fmt.Fprintf(a.Stdout, "    guest %-5d -> localhost:%d%s\n", f.Guest, f.Host, suffix)
+		for _, f := range st.Forwards {
+			fmt.Fprintf(a.Stdout, "    guest %-5d -> localhost:%d%s\n", f.Guest, f.Host, forwardSuffix(f))
+		}
+	}
+	if st.Sessions > 0 {
+		fmt.Fprintf(a.Stdout, "  sessions: %d holding the forward daemon\n", st.Sessions)
 	}
 }

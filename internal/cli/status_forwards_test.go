@@ -19,9 +19,16 @@ func TestPlainForwards(t *testing.T) {
 		row  statusRow
 		want string
 	}{
-		{"daemon up", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2}}, "up:2"},
-		{"daemon reconnecting", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1}}, "reconnecting:1"},
-		{"daemon idle with nothing configured", statusRow{m: noPorts, fwds: fwdSummary{daemon: true, state: session.StateUp}}, "up:0"},
+		{"daemon up", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2, conf: 2}}, "up:2"},
+		{"daemon reconnecting", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1, conf: 1}}, "reconnecting:1"},
+		// N counts conf owners only (browser-bridge.md §8).
+		{"conf plus session forwards", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 3, conf: 1}}, "up:1"},
+		// up:0 / reconnecting:0 are never emitted: a daemon with no conf
+		// forward reads like no daemon at all.
+		{"daemon idle with nothing configured", statusRow{m: noPorts, fwds: fwdSummary{daemon: true, state: session.StateUp}}, "-"},
+		{"session-only forwards, nothing configured", statusRow{m: noPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2}}, "-"},
+		{"session-only forwards, ports configured", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2}}, "down"},
+		{"reconnecting with no conf forward", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1}}, "down"},
 		{"ports configured, no daemon", statusRow{m: withPorts}, "down"},
 		{"nothing configured", statusRow{m: noPorts}, "-"},
 		{"unregistered smol (no conf)", statusRow{}, "-"},

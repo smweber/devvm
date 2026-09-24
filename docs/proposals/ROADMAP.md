@@ -1,6 +1,7 @@
 # Roadmap: hubs + browser bridge
 
-Status: 2026-09-15, **steps 1–4 (Milestone A) implemented and committed**;
+Status: 2026-09-25, **steps 1–4 (Milestone A, released as v0.1.13) and step 5
+implemented and committed**;
 see Progress below. Plan text revised after a sixth review (`status --local` for
 hub listings so hubs never fan out, relay sessions refused while a
 transport is down, `keys add`/`repos add` inputs resolved on the laptop,
@@ -34,7 +35,13 @@ same loop: implementation, `go build/vet/test` + `gofmt`, an independent
 Opus code review (every step had findings, step 4 a blocker), the fixes, the
 step's live list run from this devvm guest against the real hubs, then one
 `jj commit`. Hub confs `h` (cloud) and `tp` (ThinkPad) exist in this guest's
-`~/.config/devvm`; both hubs run a `dev` cross-build of step 4. Next: step 5.
+`~/.config/devvm`; both hubs run a `dev` cross-build of step 4.
+
+**Step 5 landed 2026-09-25** (one commit, not pushed; Opus implemented and
+reviewed it, two review rounds). Its live list passed on `cloud` (ssh) and on
+the ThinkPad's `web` (real smol, one agent exec throughout); `update`'s
+daemon cycling was checked only through a local `--finish-from`, as no newer
+release exists. The ThinkPad runs the step 5 cross-build. Next: step 6.
 
 **Tag `v0.1.13` from step 4 or later, never from an earlier commit.**
 `hubMinVersion` (`internal/cli/hub.go`, pinned by a test) is `v0.1.13`
@@ -83,9 +90,32 @@ updated where the mechanism changed; this is the short list):
   forms print nothing; hub stderr passes through verbatim, so hub-side
   refusals name `web`, not `tp/web`. `hubBackend.Copy` stays refused; the
   CLI dispatches cp itself.
+- **5.** `ports down` is a new one-shot `down` op (drop every `conf`
+  owner; the reply says `stopped` or which forwards/sessions remain);
+  `stop` stays unconditional for `devvm stop`/`delete`/`update`, and a
+  pre-step-5 daemon's "unknown op" falls back to `stop`. Events are opaque
+  in step 5: `{"event":{"id":N,"data":…}}` / `{"reply":{"id":N,"data":…}}`
+  (step 7 defines `data`). Session requests run in order on one worker per
+  connection so the reader only routes. `reconnecting:N` counts `conf` only
+  too and is never `:0`. `ports rm` on an unconfigured port also drops a
+  stale `conf` owner (conf edited by hand). `update` respawns a daemon
+  only if a live `conf`-owned forward maps a configured port; any other up
+  daemon is stopped and left to its session clients to respawn, so a
+  `ports down` held open by a session stays down. The ticker retries every
+  forward pending while up (bumpable ones from their own port), not only
+  exact ones, and `restore()` skips a slot an add is still binding. An add
+  that finds a slot mid-bind waits for that bind's result before answering.
+  A forward from a pre-owner daemon lists no owners and counts as `conf`.
+  `ttl` owners exist but nothing creates or expires them yet (step 7).
 
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
+
+- The ssh transport notices a dead ControlMaster only on its 30s
+  `checkInterval` (`transport_ssh.go`), so after `ssh -O exit` a forward
+  reads `up` for up to 30s before `reconnecting`.
+- `ports list NAME` prints "no ports configured" above a live list of
+  `connection`-owned forwards (cosmetic).
 
 - **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
   caps `machine exec` streamed stdout at 11534336 bytes ("streaming output
@@ -113,6 +143,13 @@ recorded so they are not rediscovered):
   kill). Hub and VM staging dirs unwind asynchronously (gone within ~10s).
 
 Lessons that later steps should not relearn:
+
+- **A scratch binary that imports `internal/session` must hand
+  `__daemon` to the real devvm.** `spawnDaemon` re-execs
+  `os.Executable()`; under a scratch tool that is the tool itself, which
+  parsed `__daemon` as a fresh run with no name and recursed into a fork
+  bomb that took the 2 GB guest down twice during step 5's live run.
+  `spawnDaemon` now refuses an empty name.
 
 - **A proxied command's stdin must be an `*os.File`, never an `io.Pipe`.**
   os/exec's `awaitGoroutines` closes the parent pipes after `WaitDelay` and

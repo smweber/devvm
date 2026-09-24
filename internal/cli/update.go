@@ -256,15 +256,21 @@ type restartResult struct {
 	cycled, skipped, failed []string
 }
 
-// restartDaemons cycles every running forward daemon through the same paths
-// as `ports down` + `ports up`, so none keeps running the pre-update code.
-// Forwards return on the host ports they had (the daemon re-requests the
-// configured preferred ports; only a port taken meanwhile bumps). Left alone,
-// with a note: a daemon mid-reconnect (its forwards are pending anyway and a
-// stop would race the dial), one holding only forwards that aren't in the
-// conf (an `auth` callback bridge — `ports up` would not bring them back),
-// and one already on this build. Errors are reported per machine and never
-// abort the rest.
+// restartDaemons cycles every forward daemon that is up, so none keeps
+// running the pre-update code (browser-bridge.md §4). One holding
+// configured forwards goes through the same paths as `ports down` + `ports
+// up`; its forwards return on the host ports they had (the daemon
+// re-requests the configured preferred ports; only a port taken meanwhile
+// bumps). "Holding configured forwards" means a live forward a conf owner
+// holds on a guest port the conf lists, not merely a conf with ports: a
+// daemon kept up only by a session after `ports down` must not have those
+// forwards brought back. One holding no configured forward is stopped and
+// not respawned: what holds it (a session, or forwards a session or ttl
+// owned) never lets it exit on its own, a session client reconnects and
+// respawns it on the new binary by itself, and connection-owned forwards
+// come back with the next open that needs them. Left alone, with a note: a daemon
+// mid-reconnect (it is not up; a stop would race the dial) and one already
+// on this build. Errors are reported per machine and never abort the rest.
 func (a *App) restartDaemons() restartResult {
 	var res restartResult
 	for _, name := range a.listMachines() {
@@ -289,10 +295,8 @@ func (a *App) restartDaemons() restartResult {
 		case st.Reconnecting():
 			skip("forward daemon is reconnecting; not restarted, it picks up the new binary next time it is started")
 			continue
-		case !anyConfiguredForward(a.ConfigDir, name, st.Forwards):
-			skip("forward daemon holds no configured ports (idle, or an auth callback); left to exit on its own")
-			continue
 		}
+		configured := anyConfiguredForward(a.ConfigDir, name, st.Forwards)
 		if err := cl.Stop(); err != nil {
 			fmt.Fprintf(a.Stderr, "devvm: %s: stop forwards: %v\n", name, err)
 			res.failed = append(res.failed, name)
@@ -301,6 +305,11 @@ func (a *App) restartDaemons() restartResult {
 		if !session.WaitGone(a.ConfigDir, name, daemonGoneTimeout) {
 			fmt.Fprintf(a.Stderr, "devvm: %s: old forward daemon did not exit within %s\n", name, daemonGoneTimeout)
 			res.failed = append(res.failed, name)
+			continue
+		}
+		if !configured {
+			fmt.Fprintf(a.Stdout, "%s: stopped forward daemon (no configured forwards up; sessions reconnect to a new one on their own)\n", name)
+			res.cycled = append(res.cycled, name)
 			continue
 		}
 		fmt.Fprintf(a.Stdout, "restarting forwards for %s\n", name)
@@ -321,9 +330,10 @@ func (a *App) restartDaemons() restartResult {
 	return res
 }
 
-// anyConfiguredForward reports whether at least one of the daemon's forwards
-// maps a guest port listed in the machine's conf — i.e. whether `ports up`
-// would recreate anything after a stop.
+// anyConfiguredForward reports whether at least one of the daemon's
+// forwards is conf-owned and maps a guest port listed in the machine's conf,
+// i.e. whether `ports up` after a stop recreates what was up, and nothing
+// the user took down.
 func anyConfiguredForward(configDir, name string, fwds []session.Forward) bool {
 	m, err := config.LoadAny(configDir, name)
 	if err != nil {
@@ -336,7 +346,7 @@ func anyConfiguredForward(configDir, name string, fwds []session.Forward) bool {
 		}
 	}
 	for _, f := range fwds {
-		if configured[f.Guest] {
+		if f.IsConf() && configured[f.Guest] {
 			return true
 		}
 	}

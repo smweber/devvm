@@ -48,7 +48,8 @@ type statusRow struct {
 type fwdSummary struct {
 	daemon bool      // a daemon answered
 	state  string    // session.StateUp | session.StateReconnecting
-	n      int       // forwards it owns (live or pending)
+	n      int       // forwards it owns (live or pending), any owner
+	conf   int       // of those, the ones a conf owner holds: --plain's N
 	since  time.Time // when state began
 }
 
@@ -95,9 +96,13 @@ func (a *App) runStatusAll(verbose, local bool) error {
 //	state:    running | stopped | dormant | reachable | unreachable | broken conf | ?
 //	forwards: up:N | reconnecting:N | down | -
 //
-// N is the number of forwards the daemon owns; `down` means ports are
-// configured but no daemon answers (the normal state of a stopped VM, so a UI
-// should only flag it on a running machine); `-` means nothing is configured.
+// N is the number of configured (`conf`-owned) forwards the daemon holds; a
+// forward only a session or a ttl holds is not counted (browser-bridge.md
+// §8: a login's callback would otherwise flicker the menubar badge), and
+// N is never 0: with no conf-owned forward the column reads as if no daemon
+// answered. `down` means ports are configured but none is up (the normal
+// state of a stopped VM, so a UI should only flag it on a running machine);
+// `-` means nothing is configured.
 // `reachable` is what every remote reports (devvm does not probe them), and
 // `?` / `broken conf` mean the backend could not be asked / the conf did not
 // load. Consumers should treat any other token as "unknown", not fail.
@@ -128,8 +133,8 @@ func groupOf(r statusRow) string {
 // plainForwards renders the machine-readable forward column (see runStatusPlain).
 func plainForwards(r statusRow) string {
 	switch {
-	case r.fwds.daemon:
-		return fmt.Sprintf("%s:%d", r.fwds.state, r.fwds.n)
+	case r.fwds.daemon && r.fwds.conf > 0:
+		return fmt.Sprintf("%s:%d", r.fwds.state, r.fwds.conf)
 	case r.m != nil && len(r.m.Ports) > 0:
 		return "down"
 	default:
@@ -196,11 +201,7 @@ func (a *App) renderVerboseDetail(r statusRow) {
 				fmt.Fprintln(a.Stdout, "    forwards:")
 			}
 			for _, f := range st.Forwards {
-				suffix := ""
-				if f.Pending {
-					suffix = "  (pending)"
-				}
-				fmt.Fprintf(a.Stdout, "      localhost:%d -> %s:%d%s\n", f.Host, r.name, f.Guest, suffix)
+				fmt.Fprintf(a.Stdout, "      localhost:%d -> %s:%d%s\n", f.Host, r.name, f.Guest, forwardSuffix(f))
 			}
 		}
 	}
@@ -409,7 +410,7 @@ func (a *App) forwardSummary(name string) fwdSummary {
 	if state == "" {
 		state = session.StateUp // a pre-0.1.11 daemon reports no state; it only ever ran up
 	}
-	return fwdSummary{daemon: true, state: state, n: len(st.Forwards), since: st.Since}
+	return fwdSummary{daemon: true, state: state, n: len(st.Forwards), conf: st.ConfCount(), since: st.Since}
 }
 
 // smolLiveResources reads a running smol VM's actual memory (MiB) and root-fs

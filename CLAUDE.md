@@ -134,8 +134,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (drop target =
 - **Maintain devvm itself** (help group): `update` finds the latest tag via the
   `releases/latest` redirect (no API), verifies against SHA256SUMS, renames over
   the running binary, then re-execs the new one with hidden `--finish-from` to
-  cycle live forward daemons (skipping reconnecting/unconfigured/same-version
-  ones) and bring an installed menu bar app along. `menubar` installs/opens the
+  cycle live forward daemons (skipping reconnecting/same-version ones; one
+  holding no conf-owned forward is stopped, not respawned, so `ports down`
+  sticks and session clients respawn it themselves) and bring an installed
+  menu bar app along. `menubar` installs/opens the
   app at this build's version (`.sha256` sidecar, `ditto` so the ad-hoc
   signature survives). Both need a real version: `-X cli.Version` is stamped by
   install.sh/release.sh from `git describe`; a plain `go build` (or a tagless

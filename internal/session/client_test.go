@@ -20,13 +20,8 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 	if err := os.MkdirAll(config.RuntimeDir(dir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	d := &daemon{
-		configDir: dir,
-		name:      "t",
-		tr:        &fakeTransport{dc: make(chan struct{})},
-		forwards:  map[int]*fwd{},
-		stop:      make(chan struct{}),
-	}
+	d := newDaemon(dir, "t", "test", newFakeTransport(), nil)
+	d.logf = t.Logf
 	ln, _, err := listenControl(socketPath(dir, "t"))
 	if err != nil {
 		t.Fatal(err)
@@ -108,5 +103,17 @@ func TestWaitGone(t *testing.T) {
 	}
 	if WaitGone(dir, "t", 100*time.Millisecond) {
 		t.Fatal("WaitGone true with a socket path still present")
+	}
+}
+
+// An empty name must never reach spawnDaemon's re-exec: under a binary
+// other than devvm, `__daemon ”` recurses into a fork bomb.
+func TestDialRefusesEmptyName(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Dial(dir, ""); err == nil {
+		t.Fatal("Dial with an empty name succeeded")
+	}
+	if _, err := os.Stat(logPath(dir, "")); err == nil {
+		t.Fatal("Dial with an empty name opened a daemon log (it got as far as spawning)")
 	}
 }

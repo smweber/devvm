@@ -97,18 +97,30 @@ func (t *sshTransport) control(op string, extra ...string) error {
 func (t *sshTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 	// Pre-probe bindability so a conflict bumps rather than sinking the request.
 	// Small race window between close and ssh binding, tolerated as the old
-	// probe_free_host_port did.
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	// probe_free_host_port did. This IPv4 probe, not ssh's own result, is
+	// what decides busy: OpenSSH reports a `localhost:` spec as bound when
+	// any one of its addresses bound (browser-bridge.md §4).
+	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", hostPort))
 	if err != nil {
 		return nil, errPortBusy
 	}
 	ln.Close()
 
-	spec := fmt.Sprintf("127.0.0.1:%d:localhost:%d", hostPort, guestPort)
+	// One `localhost:` spec, which OpenSSH binds on every loopback address
+	// localhost resolves to (127.0.0.1 and, where the host has it, ::1,
+	// best-effort), so the forward is dual-stack and there is still exactly
+	// one `-O cancel` per forward.
+	spec := sshForwardSpec(hostPort, guestPort)
 	if err := t.control("forward", "-L", spec); err != nil {
 		return nil, fmt.Errorf("ssh -O forward %s: %w", spec, err)
 	}
 	return &sshForwardCloser{t: t, spec: spec}, nil
+}
+
+// sshForwardSpec is the -L spec for one forward: dual-stack on the host, the
+// guest's localhost (resolved by sshd in the guest) on the far side.
+func sshForwardSpec(hostPort, guestPort int) string {
+	return fmt.Sprintf("localhost:%d:localhost:%d", hostPort, guestPort)
 }
 
 // monitor probes the master until it stops answering (link dropped, keepalives
