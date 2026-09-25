@@ -96,8 +96,9 @@ internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-t
 internal/auth/      login orchestration, URL bridge, callback-as-forward
 internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
-contrib/macos/      Swift menu bar app: a thin shell over the CLI (drop target = cp-in,
-                    list fed by `status --plain --watch`); built only by its build.sh
+contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop shelf,
+                    one tile per live machine = cp-in; menu + shelf fed by
+                    `status --plain --watch`); built only by its build.sh
                     on macOS; release.yml attaches the zip + .sha256 sidecar
 .github/workflows/  ci.yml (Go on ubuntu + Go tests and the Swift build on macos, every
                     push); release.yml (tag push)

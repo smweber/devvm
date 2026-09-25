@@ -7,7 +7,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private let devvm: Devvm
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
-    private let dropView: DropTargetView
+    private let shelf = DropShelf()
     var watcher: StatusWatcher?
 
     private var machines: [Machine] = []
@@ -22,7 +22,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private var openMenus = Set<ObjectIdentifier>()
     private var rebuildPending = false
     private var submenuRefillPending = Set<String>()
-    private var headerItem: NSMenuItem?
+    private var shelfItem: NSMenuItem?
 
     private let refresh = SingleFlight()
     private var portsLookups: [String: SingleFlight] = [:]
@@ -33,7 +33,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private let defaults = UserDefaults.standard
 
     private enum Key {
-        static let selected = "selectedMachine"
+        /// The status item drop target's selection, before the shelf.
+        static let legacySelected = "selectedMachine"
         static let lastUpdateCheck = "lastUpdateCheck"
         static func inbox(_ name: String) -> String { "inbox." + name }
     }
@@ -44,57 +45,32 @@ final class MenuBar: NSObject, NSMenuDelegate {
         // properties before then.
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem = item
-        dropView = DropTargetView(frame: item.button?.bounds ?? .zero)
         super.init()
 
         statusItem.menu = menu
         menu.delegate = self
-        if let button = statusItem.button {
-            dropView.autoresizingMask = [.width, .height]
-            button.addSubview(dropView)
-            dropView.frame = button.bounds // the button may have been sized since init
+        // Drops go to the shelf now; the status item takes none, so the old
+        // "selected drop target" has no meaning left.
+        defaults.removeObject(forKey: Key.legacySelected)
+        shelf.inbox = { [weak self] name in self?.inbox(for: name) ?? "~" }
+        shelf.onDrop = { [weak self] name, urls, done in
+            self?.copyIn(urls: urls, into: name, completion: done)
         }
-        dropView.canAccept = { [weak self] in
-            guard let m = self?.selectedMachine else { return false }
-            return m.isLive
-        }
-        dropView.onDrop = { [weak self] urls in self?.copyIn(urls: urls) }
         rebuildMenu()
         updateIcon()
     }
 
     // MARK: Model
 
-    var selectedName: String? {
-        get { defaults.string(forKey: Key.selected) }
-        set { defaults.set(newValue, forKey: Key.selected) }
-    }
-
-    var selectedMachine: Machine? {
-        guard let name = selectedName else { return nil }
-        return machines.first { $0.name == name }
-    }
-
     func apply(_ machines: [Machine]) {
         self.machines = machines
         let names = Set(machines.map { $0.name })
-        // A selected machine that left the registry clears the selection;
-        // drops must never silently re-target another box.
-        if let name = selectedName, !names.contains(name) {
-            Log.status.notice("drop target \(name, privacy: .public) left the registry; selection cleared")
-            selectedName = nil
-        }
-        // Auto-select only when nothing is chosen and exactly one machine is
-        // live (a hub machine takes drops like any other: cp-in by name).
-        if selectedName == nil, machines.filter({ $0.isLive }).count == 1,
-           let only = machines.first(where: { $0.isLive })?.name {
-            Log.status.notice("auto-selected \(only, privacy: .public) as the drop target (only live machine)")
-            selectedName = only
-        }
         // Per-machine caches follow the registry.
         portsByMachine = portsByMachine.filter { names.contains($0.key) }
         portsLookups = portsLookups.filter { names.contains($0.key) }
         copyOutPanels = copyOutPanels.filter { names.contains($0.key) }
+        // The shelf's tiles follow the same snapshots as the menu.
+        shelf.update(machines)
         updateIcon()
         rebuildMenu()
     }
@@ -109,19 +85,20 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     private func updateIcon() {
         let style: IconStyle
-        if machines.contains(where: { $0.isReconnecting }) {
+        let live = machines.filter { $0.isLive }
+        let reconnecting = machines.contains(where: { $0.isReconnecting })
+        if reconnecting {
             style = .badged
-        } else if let m = selectedMachine, m.isLive {
+        } else if !live.isEmpty {
             style = .filled
         } else {
             style = .outline
         }
         statusItem.button?.image = MenuBar.icon(style)
-        if let m = selectedMachine {
-            statusItem.button?.toolTip = "devvm — drop target: \(m.name) (\(m.stateWords), \(m.forwardsWords))"
-        } else {
-            statusItem.button?.toolTip = "devvm — no drop target selected"
-        }
+        var tip = live.isEmpty ? "devvm — no running machines"
+                               : "devvm — running: " + live.map { $0.name }.joined(separator: ", ")
+        if reconnecting { tip += " (forwards reconnecting)" }
+        statusItem.button?.toolTip = tip
     }
 
     private static var iconCache: [String: NSImage] = [:]
@@ -165,6 +142,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         openMenus.insert(ObjectIdentifier(menu))
         guard menu === self.menu else { return }
+        // The shelf's close button changes its state without telling us.
+        shelfItem?.title = shelfToggleTitle
         guard devvm.executable != nil else { return }
         // The watch stream only sees devvm-made changes; a VM stopped behind
         // devvm's back shows up here, on demand.
@@ -232,7 +211,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
         menu.removeAllItems()
         submenus = [:]
-        headerItem = nil
+        shelfItem = nil
         guard devvm.executable != nil else {
             menu.addItem(item("devvm not found on PATH", nil))
             menu.addItem(item("Install it, then relaunch DevVM", nil))
@@ -250,9 +229,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        let header = item(headerTitle(), nil)
-        headerItem = header
-        menu.addItem(header)
+        let shelfToggle = item(shelfToggleTitle, #selector(toggleShelf))
+        shelfItem = shelfToggle
+        menu.addItem(shelfToggle)
         menu.addItem(.separator())
 
         if machines.isEmpty {
@@ -292,11 +271,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     /// One machine's row with its submenu. No action on the row itself:
     /// AppKit routes a click on an item with a submenu to opening it, never
-    /// to the action. Selection lives inside the submenu ("Use as drop
-    /// target").
+    /// to the action; "Open Drop Shelf" lives inside the submenu.
     private func machineRow(_ m: Machine) -> NSMenuItem {
         let it = item(m.rowTitle, nil, m.name)
-        it.state = (m.name == selectedName) ? .on : .off
         let sub = NSMenu(title: m.name)
         sub.delegate = self // so open/close of the submenu is tracked
         fillSubmenu(sub, for: m)
@@ -325,18 +302,15 @@ final class MenuBar: NSObject, NSMenuDelegate {
         return order.map { (name: $0, header: headers[$0], members: members[$0] ?? []) }
     }
 
-    private func headerTitle() -> String {
-        if let m = selectedMachine {
-            return "Drop target: \(m.name)  (inbox \(inbox(for: m.name)))"
-        }
-        return "No drop target — pick a running machine"
+    private var shelfToggleTitle: String {
+        return shelf.isVisible ? "Hide Drop Shelf" : "Show Drop Shelf"
     }
 
-    /// The in-place half of a rebuild: titles, checkmarks, and the header of
-    /// rows that already exist. Rows for machines that appeared or vanished
-    /// wait for the deferred full rebuild.
+    /// The in-place half of a rebuild: titles of rows that already exist.
+    /// Rows for machines that appeared or vanished wait for the deferred
+    /// full rebuild.
     private func refreshRowsInPlace() {
-        headerItem?.title = headerTitle()
+        shelfItem?.title = shelfToggleTitle
         for it in menu.items {
             guard let name = it.representedObject as? String,
                   let m = machines.first(where: { $0.name == name }) else { continue }
@@ -345,7 +319,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 continue
             }
             it.title = m.rowTitle
-            it.state = (m.name == selectedName) ? .on : .off
         }
     }
 
@@ -363,7 +336,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private func fillSubmenu(_ sub: NSMenu, for m: Machine) {
         sub.removeAllItems()
         if m.isLive {
-            sub.addItem(item("Use as drop target", #selector(selectMachine(_:)), m.name))
+            sub.addItem(item("Open Drop Shelf", #selector(openShelf(_:)), m.name))
             sub.addItem(.separator())
         }
         switch m.state {
@@ -416,18 +389,24 @@ final class MenuBar: NSObject, NSMenuDelegate {
         NSApp.terminate(nil)
     }
 
-    @objc private func selectMachine(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String,
-              let m = machines.first(where: { $0.name == name }) else { return }
-        guard m.isLive else {
-            Log.menu.notice("select \(name, privacy: .public) refused: not live (\(m.state, privacy: .public))")
-            Notifications.shared.info(name, "Not running; start it first.")
-            return
+    // MARK: Drop shelf
+
+    @objc private func toggleShelf() {
+        if shelf.isVisible {
+            Log.menu.notice("Hide Drop Shelf chosen")
+            shelf.hide()
+        } else {
+            Log.menu.notice("Show Drop Shelf chosen")
+            shelf.show()
         }
-        Log.menu.notice("drop target set to \(name, privacy: .public)")
-        selectedName = name
-        updateIcon()
-        rebuildMenu()
+    }
+
+    /// From a machine's submenu: open the shelf and point at its tile.
+    @objc private func openShelf(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        Log.menu.notice("Open Drop Shelf chosen for \(name, privacy: .public)")
+        shelf.show()
+        shelf.highlight(name)
     }
 
     @objc private func startMachine(_ sender: NSMenuItem) {
@@ -488,14 +467,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     // MARK: Copy in
 
-    private func copyIn(urls: [URL]) {
-        guard let m = selectedMachine else {
-            Log.drop.error("dropped \(urls.count, privacy: .public) file(s) but no drop target is selected; ignored")
-            return
-        }
-        copyIn(urls: urls, into: m.name)
-    }
-
     @objc private func copyInPanel(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         Log.menu.notice("Copy in… chosen for \(name, privacy: .public)")
@@ -517,9 +488,14 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     /// One `cp-in -t INBOX` per drop: one invocation, one result, and the
     /// CLI's all-or-nothing overwrite check applies to the whole batch.
-    private func copyIn(urls: [URL], into name: String) {
+    /// `completion` (the shelf tile's progress) gets the result after the
+    /// notification is posted.
+    private func copyIn(urls: [URL], into name: String, completion: ((CommandResult) -> Void)? = nil) {
         let paths = urls.map { $0.path }
-        guard !paths.isEmpty else { return }
+        guard !paths.isEmpty else {
+            completion?(CommandResult(status: 1, stdout: "", stderr: "nothing to copy"))
+            return
+        }
         var args = ["cp-in"]
         let anyDir = urls.contains { url in
             (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
@@ -541,6 +517,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 Log.drop.error("copy of \(what, privacy: .public) to \(name, privacy: .public) failed: \(r.lastStderrLine, privacy: .public)")
                 Notifications.shared.error("Copy to \(name) failed", r.lastStderrLine)
             }
+            completion?(r)
         }
     }
 
@@ -562,7 +539,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         Log.menu.notice("inbox for \(name, privacy: .public) set to \(inbox, privacy: .public)")
         defaults.set(inbox, forKey: Key.inbox(name))
         rebuildMenu()
-        updateIcon()
+        shelf.update(machines) // the tiles' tooltips name the inbox
     }
 
     // MARK: Copy out

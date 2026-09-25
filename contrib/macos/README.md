@@ -7,10 +7,21 @@ terminal; `attach`, `shell`, and `auth` stay in your own tmux.
 
 What it does:
 
-- **Drop files on the icon** to copy them into the selected machine
-  (`devvm cp-in -t <inbox> NAME files…`, `-r` added when a folder is among
-  them). One drop is one invocation and one notification. If a file already
-  exists the notification offers **Replace** (re-runs with `-f`).
+- **Drop shelf**: *Show Drop Shelf* in the menu opens a small floating
+  panel with one tile per running machine (hub machines included); drop
+  files on a tile to copy them into that machine's inbox
+  (`devvm cp-in -t <inbox> NAME -- files…`, `-r` added when a folder is
+  among them). One drop is one invocation and one notification; the tile
+  shows a spinner while it copies, then ✓ or ✗ for a few seconds. If a file
+  already exists the notification offers **Replace** (re-runs with `-f`).
+  The shelf floats above other windows on every Space (and beside
+  full-screen apps) without taking focus from the app you drag out of, can
+  be dragged anywhere, remembers its position across launches, and stays
+  open until you close it or choose *Hide Drop Shelf*. It opens only from
+  the menu: nothing watches your drags. A machine's own submenu has *Open
+  Drop Shelf*, which also flashes that machine's tile. (The status item
+  itself is not a drop target: dragging to the menu bar sets off Mission
+  Control.)
 - **Machine list** with state and forwards, live: the app keeps one
   `status --plain --watch` child and redraws when devvm reports a change.
   No polling. Opening the menu also runs a one-off `status --plain`, which
@@ -21,13 +32,22 @@ What it does:
   (the last listing devvm saw) until it is back; nothing on them can be
   chosen meanwhile. Every action on them is the same `devvm` call with the
   full `HUB/NAME`.
-- **Icon**: a filled box when the selected drop target is running; a badge
-  dot when any machine's forwards are reconnecting (laptop just woke, host
-  unreachable); an outline when there is no usable drop target.
+- **Icon**: a filled box when any machine is running; a badge dot when any
+  machine's forwards are reconnecting (laptop just woke, host unreachable);
+  an outline when nothing is running.
 - **Per machine**: Start / Stop, Ports up / Ports down, open each forwarded
-  port in the browser, Copy in… (file picker), Copy out… (a guest path field
-  with Tab completion backed by `devvm __complete`, then a save panel or
-  folder picker), and the inbox folder for drops (default `~`).
+  port in the browser, Copy in… (file picker), Copy out…, and the inbox
+  folder for drops (default `~`).
+- **Copy out…**: a guest path field with shell-style Tab completion backed
+  by `devvm __complete`. Tab completes a unique match (a directory keeps its
+  `/`), otherwise extends to the matches' common prefix; with nothing left
+  to extend, repeated Tabs cycle through the matches (Shift-Tab backwards),
+  listed under the field as `n of m`. Typing ends the cycle. While cycling,
+  Tab moves to the next candidate; to descend into a directory, type a
+  character (zsh menu-complete behaviour). Confirming the path hides the
+  field and opens a save panel (a file) or folder picker (a path ending in
+  `/`) in front; cancelling that brings the path field back to fix the
+  path, and closing the path window ends it.
 - **Updates**: *Check for updates…* runs `devvm update --check`; updating
   runs `devvm update` and relaunches the app. When the app's version and
   the CLI's differ, a *Reinstall menu bar app* item runs `devvm menubar`.
@@ -121,13 +141,13 @@ The app has no window, so it narrates to the unified log (Console.app, or
 |---|---|
 | `app`    | launch (version, bundle path), the resolved PATH and the `devvm` binary found, SIGTERM, termination |
 | `devvm`  | every CLI invocation with its pid, exit status, and last stderr line |
-| `drop`   | each drag that reaches the icon and why it was accepted or refused, what was dropped, and the copy result |
-| `status` | the `status --plain --watch` child (start, exit, restart delay), every snapshot applied, drop-target selection changes, `ports list` results |
-| `menu`   | every menu action (start, stop, ports, copy in/out, inbox, launch at login, quit) and its outcome; completion lookups at debug level |
+| `drop`   | the shelf shown or hidden, each drag that reaches a tile and why it was accepted or refused, what was dropped, and the copy result |
+| `status` | the `status --plain --watch` child (start, exit, restart delay), every snapshot applied, `ports list` results |
+| `menu`   | every menu action (drop shelf, start, stop, ports, copy in/out, inbox, launch at login, quit) and its outcome; completion lookups at debug level |
 | `notify` | notification authorization, every notification posted, fallbacks to the toast panel, Replace actions |
 | `update` | update checks and their result, Update now / Reinstall, the relaunch path taken |
 
-Live, while you reproduce (drop a file, open the menu):
+Live, while you reproduce (drop a file on the shelf, open the menu):
 
 ```sh
 log stream --predicate 'subsystem == "com.smweber.devvm.menubar"' --level info

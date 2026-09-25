@@ -77,8 +77,9 @@ bar app is installed, `update` brings it to the same version too.
 
 `devvm menubar` installs the DevVM menu bar app into `~/Applications` at your
 CLI's version and opens it (run it again any time to open it). The app is a
-thin shell over the CLI: the status item is a drop target that runs `cp-in`
-for the selected machine, the menu lists machines and their forwards (fed by
+thin shell over the CLI: a floating drop shelf (opened from the menu) has a
+tile per running machine and runs `cp-in` for files dropped on one, the menu
+lists machines and their forwards (fed by
 `status --plain --watch`), and each machine offers start/stop, ports up/down,
 its forwarded ports, and copy in/out. It never spawns a terminal. The zip
 comes from the same release as the binaries, verified against its `.sha256`
