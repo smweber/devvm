@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -22,6 +23,16 @@ import (
 const testMainEnv = "DEVVM_TEST_MAIN"
 
 func TestMain(m *testing.M) {
+	// session.Dial re-execs os.Executable() as `__daemon NAME`, which under
+	// `go test` is this binary: without this, a test that reaches a Dial
+	// (ports on a hub machine, start HUB/NAME) would re-run the whole suite
+	// as the "daemon", which reaches the same Dial again: a fork bomb
+	// (roadmap Lessons). Refuse, so Dial fails fast; tests that want a
+	// daemon serve one on the socket first (serveOwnerDaemon).
+	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
+		fmt.Fprintln(os.Stderr, "devvm: the cli test binary runs no forward daemon")
+		os.Exit(1)
+	}
 	if os.Getenv(testMainEnv) == "1" {
 		os.Exit(Execute())
 	}

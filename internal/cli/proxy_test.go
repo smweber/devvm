@@ -12,6 +12,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/session"
 )
 
 // fakeHub registers hub h (u@h.example) and puts a fake `ssh` on PATH that
@@ -118,13 +119,18 @@ func wantSSH(a *App, tty bool, devvmArgv ...string) string {
 	} else {
 		line += " -o BatchMode=yes -o RequestTTY=no"
 	}
+	return line + " u@h.example " + wantRemote(devvmArgv...)
+}
+
+// wantRemote is the remote half of a proxied ssh line: the login-shell
+// wrapper around `env DEVVM_NO_SUBSCRIBE=1 devvm …`, every token quoted.
+func wantRemote(devvmArgv ...string) string {
 	inner := append([]string{"env", "DEVVM_NO_SUBSCRIBE=1", "devvm"}, devvmArgv...)
 	q := make([]string, len(inner))
 	for i, tok := range inner {
 		q[i] = sq(tok)
 	}
-	remote := sq("sh") + " " + sq("-c") + " " + sq(`exec "${SHELL:-sh}" -lc "$0"`) + " " + sq(strings.Join(q, " "))
-	return line + " u@h.example " + remote
+	return sq("sh") + " " + sq("-c") + " " + sq(`exec "${SHELL:-sh}" -lc "$0"`) + " " + sq(strings.Join(q, " "))
 }
 
 func sshLines(t *testing.T, log string) []string {
@@ -197,8 +203,22 @@ func TestProxyRebuildsArgv(t *testing.T) {
 	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err == nil {
 		t.Error("repos list touched the change marker")
 	}
+	// start HUB/NAME proxies, then brings up this host's configured
+	// forwards for the machine (its [machines.web] table: 3000) on this
+	// host's daemon for h@web (hub.md §3).
+	od := serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{
+		session.OpAdd:  {OK: true, Host: 3000},
+		session.OpList: {OK: true, State: session.StateUp},
+	}, false)
+	os.Remove(argvLog)
 	if err := runTree(t, a, "start", "h/web"); err != nil {
 		t.Fatal(err)
+	}
+	if got := devvmCalls(t, argvLog); len(got) != 1 || !slices.Equal(got[0], []string{"start", "web"}) {
+		t.Errorf("start h/web: devvm on the hub got %q", got)
+	}
+	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 || adds[0].Host != 3000 {
+		t.Errorf("start h/web: laptop forwards = %+v, want one add of 3000", adds)
 	}
 	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err != nil {
 		t.Error("start did not touch the change marker")
@@ -417,16 +437,14 @@ func TestProxyInteractiveTransport(t *testing.T) {
 	}
 }
 
-// The local-only leaves keep refusing hub machines without dialing:
-// ports (step 6), auth (step 8), __daemon (never). cp proxies since step 4
-// (cp_hub_test.go).
+// The local-only leaves keep refusing hub machines without dialing: auth
+// (step 8). cp proxies since step 4 (cp_hub_test.go), ports run here since
+// step 6 (hubforwards_test.go).
 func TestProxyLeavesLocalOnlyRefused(t *testing.T) {
 	a := newTestApp(t)
 	sshLog, _ := fakeHub(t, a)
 	for _, argv := range [][]string{
-		{"ports", "add", "h/web", "3000"}, {"ports", "rm", "h/web", "3000"}, {"ports", "list", "h/web"},
-		{"ports", "up", "h/web"}, {"ports", "down", "h/web"},
-		{"auth", "h/web"}, {"__daemon", "h/web"},
+		{"auth", "h/web"},
 	} {
 		err := runTree(t, a, argv...)
 		if !errors.Is(err, backend.ErrHubProxy) {

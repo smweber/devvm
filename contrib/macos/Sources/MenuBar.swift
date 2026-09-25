@@ -176,7 +176,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
             self.apply(machines)
         }
         // Ports per live machine, for the "Open localhost:PORT" entries.
-        for m in machines where m.isLive && m.isDirect && m.forwardCount > 0 {
+        for m in machines where m.isLive && m.forwardCount > 0 {
             let lookup = portsLookups[m.name] ?? SingleFlight()
             portsLookups[m.name] = lookup
             lookup.run(devvm, ["ports", "list", m.name]) { [weak self] r in
@@ -374,8 +374,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
         default:
             break
         }
-        // Ports stay gated on isDirect until hub forwards land (step 6).
-        if m.isLive && m.isDirect {
+        // Hub machines too: `ports up/down/list h/web` run on this Mac and
+        // forward to its own localhost, like a local machine's (step 6).
+        if m.isLive {
             if m.forwards != "-" {
                 sub.addItem(item("Ports up", #selector(portsUp(_:)), m.name))
                 sub.addItem(item("Ports down", #selector(portsDown(_:)), m.name))

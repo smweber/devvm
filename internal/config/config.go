@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 )
@@ -423,6 +424,16 @@ func Exists(configDir, name string) bool {
 
 // Remove deletes a machine's conf file (idempotent).
 func Remove(configDir, name string) error {
+	// A hub's conf-edit lock goes with it (none for a machine). The conf is
+	// removed while holding that lock and the lock file unlinked before it
+	// is released, so a `ports add HUB/NAME` blocked on it wakes to find no
+	// conf rather than re-creating one mid-delete.
+	if lock, err := os.OpenFile(hubConfLockPath(configDir, name), os.O_RDWR, 0); err == nil {
+		defer lock.Close()
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err == nil {
+			defer os.Remove(hubConfLockPath(configDir, name))
+		}
+	}
 	err := os.Remove(confPath(configDir, name))
 	if os.IsNotExist(err) {
 		return nil

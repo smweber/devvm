@@ -1,6 +1,7 @@
 # Proposal: hubs — reach another host's devvm machines from this one
 
-Status: draft v3.4, 2026-09-15, revised after six independent reviews.
+Status: draft v3.4, 2026-09-15, revised after six independent reviews;
+§2 and §7 updated 2026-09-25 to the mechanism roadmap step 6 shipped.
 Order of work lives in `ROADMAP.md` and nowhere else. Companion to
 `browser-bridge.md`, whose sections 3 and 4 are the authoritative statement
 of leases, subscriptions, ownership and bind policy; this doc references them
@@ -110,7 +111,11 @@ One file for every machine on the hub widens an existing race: today two
 first. The hub-conf rewrite therefore takes a `flock` on the conf for the
 whole read-modify-write from the day `ports add HUB/NAME` ships (roadmap
 step 6); the atomic rename stays, the lock is what prevents the lost update.
-Local per-machine confs keep today's behaviour.
+Local per-machine confs keep today's behaviour. As shipped
+(`config.UpdateHubMachine`), the lock is a sibling file,
+`machines/.HUB.toml.lock`, not the conf: the rename replaces the conf's
+inode, so a flock on the conf itself would not exclude the next writer.
+A table left with no ports is dropped.
 
 Two consequences the registry code has to absorb:
 
@@ -308,25 +313,55 @@ owns a ControlMaster to the hub via the existing `sshTransport` code and,
 over that master, exactly **one** long-lived process per hub machine:
 
 ```
-ssh -o ControlPath=… HUB "$SHELL" -lc 'devvm __session web'
+ssh -o ControlMaster=no -o ControlPath=run/HUB@web.master -o BatchMode=yes -o RequestTTY=no HUB \
+    sh -c 'exec "${SHELL:-sh}" -lc "$0"' 'env DEVVM_NO_SUBSCRIBE=1 devvm __session web'
 ```
 
-`__session` on the hub dials (spawning if needed) the hub daemon for `web`
-and holds one long-lived control connection to it, opened as `session
-{relay: true}`. Its stdio is that connection's line protocol
-(`browser-bridge.md` section 3: an `id` on every request and event, one
-reader per side, serialized writes) relayed **verbatim** behind the marker
-line from section 6; `__session` adds nothing but the marker and its own
-lifetime:
+The master is the laptop daemon's own, one per hub machine
+(`run/HUB@NAME.master`): two daemons for `desktop/a` and `desktop/b` each
+start and `-O exit` their master, so a shared path would let one kill the
+other's `-L`s.
+
+`__session` on the hub refuses a stopped VM (the `ports up` guard), then
+dials (spawning if needed) the hub daemon for `web`, prints the marker
+line `devvm-session-v1` (section 6's reason: a login banner may come
+first), and from then on relays its stdio and that one connection
+**verbatim** in both directions; `__session` adds nothing but the marker
+and its own lifetime. The laptop's `hubTransport` writes the session open
+itself, so the connection's line protocol (`browser-bridge.md` section 3:
+an `id` on every request and event, one reader per side, serialized
+writes) runs end to end between the laptop daemon and the hub daemon:
 
 ```
-laptop → hub:  {"id":1,"op":"add","guest":3000,"pref":3000,"exact":false}
-hub → laptop:  {"id":1,"ok":true,"host":3001}                 // the hub-loopback port
-laptop → hub:  {"id":2,"op":"remove","guest":3000}
-laptop → hub:  {"id":3,"op":"subscribe"} / {"op":"unsubscribe"}     (section 8)
+hub → laptop:  (blank line) devvm-session-v1            // after any login banner
+laptop → hub:  {"id":1,"op":"session","relay":true}
+hub → laptop:  {"id":1,"ok":true,"state":"up","version":"…","relay":true}
+               // or, hub transport down: {"id":1,"ok":false,"err":"relay session refused: …"}, then EOF
+laptop → hub:  {"id":2,"op":"add","host":3000,"guest":3000}   // host = the hub's preference: the guest port
+hub → laptop:  {"id":2,"ok":true,"host":3001}                 // the hub-loopback port
+laptop → hub:  {"id":3,"op":"remove","guest":3000}
+hub → laptop:  {"id":3,"ok":true}
+laptop → hub:  {"id":4,"op":"subscribe"} / {"op":"unsubscribe"}     (section 8, step 8)
 hub → laptop:  {"event":{"id":7,…}}             // subscribed bridge events
 laptop → hub:  {"reply":{"id":7,…}}             // the subscriber's answer
 ```
+
+The hub add is never `exact` (the hub port is an intermediate hop; an
+exact callback port matters only on the laptop, section 8), and this
+host's port is probed before the hub is asked for anything, so a busy
+laptop port bumps without a hub round trip per try.
+
+The open reply echoes `"relay":true`: a hub daemon older than hub
+forwards ignores the request's `relay` and admits a plain session, which
+would never be closed on its transport's death, so a reply without the
+echo is refused by the laptop with the fix to run on the hub (restart that
+daemon). A hub whose devvm has no `__session` is named with the release
+it needs (`session.HubForwardsMinVersion`); the hub floor (section 3)
+stays where listing, cp and proxying need it. Calls on an open relay time
+out after 10s. On teardown the laptop sends no per-forward `remove`: the
+relay's close drops them all on the hub, and the master's exit every
+`-L`. A hub-side refusal of an `add` (no free port there) leaves that
+forward pending on the laptop, retried by the ticker.
 
 Every forward `__session` adds is **owned by its control connection**
 (`browser-bridge.md` section 4). `hubTransport.forward(host, guest)` sends
@@ -349,7 +384,10 @@ the closing below fires only on transport *death*, so a laptop whose first
 forward landed in that window would stay pending for good. A `pending`
 reply can still reach the laptop in the race between the transport dying
 and the close that follows; the transport treats it as a bind failure and
-the close brings the recovery below.
+the close brings the recovery below. As shipped, the transport also
+marks itself dead on that reply, and the laptop daemon records an `add`
+that fails on a dead transport as pending (not failed), so the forward
+comes back with the reconnect.
 
 Why one process per machine and not a control socket forwarded over ssh:
 process lifetime is the scope, with nothing to refcount across a second

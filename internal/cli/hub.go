@@ -13,21 +13,24 @@ import (
 )
 
 // hubMinVersion is the oldest devvm a hub may run. The hub surface is a set of
-// CLI contracts (`status --plain --local`, the cp tar flags, `__session`), so
-// it is versioned like --plain already is: by a floor, not by equality — an
-// exact-match rule would break hub access every time `devvm update` ran on
-// one side first, which the menu bar app makes routine. Any other mismatch is
-// a one-line warning, and `dev` on either side is never refused (the hubs run
-// cross-builds while this lands).
+// CLI contracts (`status --plain --local`, the cp tar flags, the proxied
+// verbs), so it is versioned like --plain already is: by a floor, not by
+// equality — an exact-match rule would break hub access every time `devvm
+// update` ran on one side first, which the menu bar app makes routine. Any
+// other mismatch is a one-line warning, and `dev` on either side is never
+// refused (the hubs run cross-builds while this lands).
 //
 // Hubs are usable only once the hub answers `status --plain --local` (the
-// merged listing, roadmap step 3, which ships in the same tag as this
-// constant): an older hub would answer the listing with "unknown flag" and
-// read as unreachable forever. So this constant must equal the first tag
-// that ships the listing, and no release may be tagged between step 1 and
-// step 3 with hubs enabled. v0.1.13 is the next tag after v0.1.12 on that
-// assumption; if the listing lands in a later tag, bump this and
-// TestHubMinVersionPinned together so the change is deliberate.
+// merged listing, roadmap step 3): an older hub would answer the listing with
+// "unknown flag" and read as unreachable forever. So this constant is the
+// first tag that ships the listing, v0.1.13 (with step 4's cp flags). It is
+// deliberately *not* raised for hub forwards: listing, cp and proxying keep
+// working against a v0.1.13 hub, so forwards are checked per feature
+// instead. `__session` and relay sessions need session.HubForwardsMinVersion
+// (the first tag that ships roadmap step 6), and the laptop's hub transport
+// says so when an older hub refuses `__session` or an older hub daemon
+// answers a relay open without echoing `relay`. Bump this and
+// TestHubMinVersionPinned together, so any change is deliberate.
 const hubMinVersion = "v0.1.13"
 
 // devvmVersionRe matches cobra's `devvm --version` line. Anchored per line

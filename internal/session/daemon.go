@@ -84,6 +84,22 @@ type fwd struct {
 	binding bool
 	ready   chan struct{}
 	owners  map[owner]struct{} // torn down when empty
+	// lastErr is the last bind failure logged for this forward while it is
+	// pending: the ticker retries every few seconds, and logs again only
+	// when the reason changes, so a forward stuck on one error (a hub that
+	// keeps refusing) shows up in the log once per reason, not per tick.
+	lastErr string
+}
+
+// noteBindErr records a pending forward's bind failure and reports whether
+// it differs from the last one logged; d.mu must be held.
+func (f *fwd) noteBindErr(err error) bool {
+	msg := err.Error()
+	if msg == f.lastErr {
+		return false
+	}
+	f.lastErr = msg
+	return true
 }
 
 // startBinding claims the slot for one binder; d.mu must be held.
@@ -368,13 +384,34 @@ func (d *daemon) transport() transport {
 // onDead marks the daemon reconnecting and tears down the dead transport and
 // its forwards. The forwards stay in the map, closer-less, so reconnect()
 // knows what to restore and clients can still see them as pending.
+//
+// Relay sessions are closed here (browser-bridge.md §3, hub.md §7): a
+// relay's forwards are intermediate hops whose host port restore() may
+// bump, and the far daemon learns the new port only by re-adding through
+// its own reconnect, which the close starts. Their forwards are dropped
+// here, in the same critical section that marks the daemon reconnecting,
+// so restore() never re-binds a hop nobody will use; closing the
+// connection then ends the session's reader, and closeSession sweeps up
+// anything its worker added after. Local sessions stay, and restore()
+// re-binds their forwards.
 func (d *daemon) onDead() {
 	d.mu.Lock()
 	n := len(d.forwards)
 	d.setStateLocked(StateReconnecting)
+	relays := d.relaySessionsLocked()
+	closers, _ := d.dropOwnersLocked(func(o owner) bool {
+		return o.kind == OwnerConnection && relays[o.conn] != nil
+	})
 	d.mu.Unlock()
 	config.TouchChanged(d.configDir)
 	d.logf("%s: transport died; reconnecting (%d forwards to restore)", d.name, n)
+	if len(relays) > 0 {
+		d.logf("%s: closing %d relay session(s); they re-add once the transport is back", d.name, len(relays))
+	}
+	for _, s := range relays {
+		s.conn.Close()
+	}
+	closeAll(closers)
 	d.teardown()
 }
 
@@ -385,6 +422,14 @@ func (d *daemon) onDead() {
 // freeze every ping/list/add for as long.
 func (d *daemon) teardown() {
 	d.mu.Lock()
+	// A transport whose own Close drops every forward (the hub relay: the
+	// hub releases whatever the closed connection owned) is told first, so
+	// the per-forward closers below skip the round trips that Close makes
+	// moot. Against a wedged link each would otherwise wait out its timeout
+	// in turn, and stop/update would take N times that.
+	if ta, ok := d.tr.(teardownAware); ok {
+		ta.beginTeardown()
+	}
 	var closers []io.Closer
 	for _, f := range d.forwards {
 		if f.closer != nil {
@@ -521,8 +566,8 @@ func (d *daemon) dialInterruptible() (transport, error) {
 // Binds run outside d.mu (each is an `ssh -O forward`, bounded only by its
 // timeout against a degraded master), so ping/list/add stay responsive; the
 // loop picks up forwards added while a batch was binding. Forwards of every
-// owner kind come back: sessions survive a transport death (only relay
-// sessions, roadmap step 6, will not).
+// owner kind come back: local sessions survive a transport death (relay
+// sessions do not: onDead closes them, and their forwards go with them).
 func (d *daemon) restore(tr transport) bool {
 	d.mu.Lock()
 	d.tr = tr
@@ -559,9 +604,10 @@ func (d *daemon) restore(tr transport) bool {
 			if err != nil {
 				d.mu.Lock()
 				d.settleLocked(j.f)
+				j.f.noteBindErr(err)
 				d.mu.Unlock()
 				d.logf("%s: forward for guest %d still pending: %v", d.name, j.guest, err)
-				if !errors.Is(err, errPortExhausted) && !errors.Is(err, errPortBusy) {
+				if !errors.Is(err, errPortExhausted) && !errors.Is(err, errPortBusy) && !errors.Is(err, errHubRefused) {
 					d.mu.Lock()
 					for _, rest := range batch[i+1:] {
 						d.settleLocked(rest.f)
@@ -618,7 +664,11 @@ func (d *daemon) retryPending() {
 		if err != nil {
 			d.mu.Lock()
 			d.settleLocked(j.f)
+			changed := j.f.noteBindErr(err)
 			d.mu.Unlock()
+			if changed {
+				d.logf("%s: forward for guest %d still pending: %v", d.name, j.guest, err)
+			}
 			continue
 		}
 		if d.adopt(tr, j.f, host, closer, j.exact) {
@@ -642,7 +692,7 @@ func (d *daemon) adopt(tr transport, f *fwd, host int, closer io.Closer, exact b
 		closer.Close()
 		return false
 	}
-	f.host, f.closer = host, closer
+	f.host, f.closer, f.lastErr = host, closer, ""
 	// exact sticks only once a bind honoured it: a refused exact request
 	// must not leave a bumpable forward exact for good.
 	f.exact = f.exact || exact
@@ -795,9 +845,13 @@ func (d *daemon) bindSlot(tr transport, f *fwd, own owner, added bool, target in
 	if err != nil {
 		d.mu.Lock()
 		d.settleLocked(f) // removed while binding: the slot goes now
-		if d.forwards[f.guest] == f && f.closer == nil && (d.tr != tr || d.state != StateUp) {
+		if d.forwards[f.guest] == f && f.closer == nil && (d.tr != tr || d.state != StateUp || transportDead(tr)) {
 			// The transport died under the bind: the forward is pending like
 			// any other, and restore or the ticker binds it. Not an error.
+			// transportDead covers the window before loop() has seen the
+			// death: a hub transport fails an add the moment its __session
+			// goes, or when the hub answers `pending` (hub.md §7), and marks
+			// itself dead in the same breath.
 			host := f.host
 			d.mu.Unlock()
 			config.TouchChanged(d.configDir)
@@ -844,6 +898,16 @@ func (d *daemon) bindSlot(tr transport, f *fwd, own owner, added bool, target in
 // routine on exactly the sleep/wake path that triggers it.
 func lateWaitFor() time.Duration {
 	return time.Duration(backend.SSHConnectTimeout())*time.Second + 5*time.Second
+}
+
+// transportDead reports whether tr's dead channel has fired.
+func transportDead(tr transport) bool {
+	select {
+	case <-tr.dead():
+		return true
+	default:
+		return false
+	}
 }
 
 // errPortExhausted: no host port in the bump range could be bound.

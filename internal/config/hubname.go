@@ -2,7 +2,11 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 )
 
 // Hub machines are named HUB/NAME everywhere a user sees them: the command
@@ -106,4 +110,74 @@ func LoadAny(configDir, name string) (*Machine, error) {
 func (m *Machine) HubMachineName() string {
 	_, machine, _, _ := SplitHubName(m.Name)
 	return machine
+}
+
+// hubConfLockPath is the lock serializing read-modify-writes of a hub's
+// conf. It is a sibling file, not the conf itself: Save replaces the conf by
+// rename, so a flock on the conf would be held on an inode the next writer
+// never opens. A dotfile ending in .lock, so List (which reads *.toml)
+// never sees it and `status --watch` skips it as noise.
+func hubConfLockPath(configDir, hub string) string {
+	return filepath.Join(MachinesDir(configDir), "."+hub+".toml.lock")
+}
+
+// UpdateHubMachine is the one read-modify-write of a hub conf's
+// [machines.NAME] table (hub.md §2): under an exclusive flock it loads the
+// hub conf fresh, hands fn the machine's table (the zero table if there is
+// none), drops the table if fn leaves it empty, and saves. Every machine on
+// a hub shares that one file, and Save is atomic but not serialized, so
+// without the lock `ports add desktop/a` and `ports add desktop/b` racing
+// would drop one of the two edits. fn returning an error aborts the write,
+// and an fn that changes nothing writes nothing.
+// The hub conf as saved is returned.
+func UpdateHubMachine(configDir, hub, machine string, fn func(*HubMachine) error) (*Machine, error) {
+	if err := ValidName(hub); err != nil {
+		return nil, err
+	}
+	if err := ValidName(machine); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(MachinesDir(configDir), 0o755); err != nil {
+		return nil, err
+	}
+	lock, err := os.OpenFile(hubConfLockPath(configDir, hub), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close() // releases the flock
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, fmt.Errorf("lock hub conf %s: %w", hub, err)
+	}
+	h, err := Load(configDir, hub)
+	if err != nil {
+		return nil, err
+	}
+	if !h.IsHub() {
+		return nil, fmt.Errorf("%q is a %s machine, not a hub", hub, h.Backend)
+	}
+	hm := h.Machines[machine]
+	before := slices.Clone(hm.Ports)
+	if err := fn(&hm); err != nil {
+		return nil, err
+	}
+	if slices.Equal(before, hm.Ports) {
+		// Nothing changed: no write, so `status --watch` is not woken for
+		// nothing (a repeat `ports add` of a recorded mapping).
+		return h, nil
+	}
+	if len(hm.Ports) == 0 {
+		delete(h.Machines, machine)
+	} else {
+		if h.Machines == nil {
+			h.Machines = map[string]HubMachine{}
+		}
+		h.Machines[machine] = hm
+	}
+	if len(h.Machines) == 0 {
+		h.Machines = nil
+	}
+	if err := h.Save(configDir); err != nil {
+		return nil, err
+	}
+	return h, nil
 }

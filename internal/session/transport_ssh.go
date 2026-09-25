@@ -110,11 +110,31 @@ func (t *sshTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 	// localhost resolves to (127.0.0.1 and, where the host has it, ::1,
 	// best-effort), so the forward is dual-stack and there is still exactly
 	// one `-O cancel` per forward.
-	spec := sshForwardSpec(hostPort, guestPort)
+	return t.forwardSpec(sshForwardSpec(hostPort, guestPort))
+}
+
+// forwardSpec adds one -L to the master and returns its canceller.
+func (t *sshTransport) forwardSpec(spec string) (io.Closer, error) {
 	if err := t.control("forward", "-L", spec); err != nil {
 		return nil, fmt.Errorf("ssh -O forward %s: %w", spec, err)
 	}
 	return &sshForwardCloser{t: t, spec: spec}, nil
+}
+
+// forwardTo is the hub transport's -L (hubLocal): this host's port, both
+// families, to 127.0.0.1:hubPort on the hub. No pre-probe here: the hub
+// transport probes before it asks the hub for a port at all.
+func (t *sshTransport) forwardTo(hostPort, hubPort int) (io.Closer, error) {
+	return t.forwardSpec(hubForwardSpec(hostPort, hubPort))
+}
+
+// hubForwardSpec is the -L spec for a hub forward: dual-stack on this host
+// like every forward, and on the hub the daemon's own listener named by
+// family. 127.0.0.1, not localhost: the hub daemon binds IPv4 for sure and
+// ::1 only best-effort, so a stranger on the hub's [::1]:hubPort must never
+// receive this host's traffic (hub.md §7).
+func hubForwardSpec(hostPort, hubPort int) string {
+	return fmt.Sprintf("localhost:%d:127.0.0.1:%d", hostPort, hubPort)
 }
 
 // sshForwardSpec is the -L spec for one forward: dual-stack on the host, the

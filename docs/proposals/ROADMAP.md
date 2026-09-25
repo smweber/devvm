@@ -1,7 +1,7 @@
 # Roadmap: hubs + browser bridge
 
-Status: 2026-09-25, **steps 1–4 (Milestone A, released as v0.1.13) and step 5
-implemented and committed**;
+Status: 2026-09-25, **steps 1–4 (Milestone A, released as v0.1.13), 5 and 6
+(Milestone B) implemented and committed**;
 see Progress below. Plan text revised after a sixth review (`status --local` for
 hub listings so hubs never fan out, relay sessions refused while a
 transport is down, `keys add`/`repos add` inputs resolved on the laptop,
@@ -41,7 +41,16 @@ step's live list run from this devvm guest against the real hubs, then one
 reviewed it, two review rounds). Its live list passed on `cloud` (ssh) and on
 the ThinkPad's `web` (real smol, one agent exec throughout); `update`'s
 daemon cycling was checked only through a local `--finish-from`, as no newer
-release exists. The ThinkPad runs the step 5 cross-build. Next: step 6.
+release exists.
+
+**Step 6 landed 2026-09-25 (Milestone B)**, same loop (two review rounds). Its
+live list passed on the ThinkPad (`tp`, real smol) with `cloud` (`h`) for the
+`calls.log` check and the old-hub refusal (a v0.1.13 hub reads "predates hub
+forwards (needs v0.1.14 or newer)"). **The next release must be v0.1.14 or
+later** (`session.HubForwardsMinVersion`, pinned by a test). One agent exec
+served the relay throughout; reconnects took 2–4s after killing the hub
+daemon, the laptop master, or the hub's agent exec. Both hubs run the step 6
+cross-build. Next: step 7.
 
 **Tag `v0.1.13` from step 4 or later, never from an earlier commit.**
 `hubMinVersion` (`internal/cli/hub.go`, pinned by a test) is `v0.1.13`
@@ -107,15 +116,75 @@ updated where the mechanism changed; this is the short list):
   that finds a slot mid-bind waits for that bind's result before answering.
   A forward from a pre-owner daemon lists no owners and counts as `conf`.
   `ttl` owners exist but nothing creates or expires them yet (step 7).
+- **6.** `__session` is a pure pipe: it refuses a stopped VM, dials the
+  daemon, prints `\ndevvm-session-v1\n` (the leading newline keeps a
+  banner without one off the marker), then relays bytes both ways; the
+  laptop's `hubTransport` writes `{"id":1,"op":"session","relay":true}`
+  itself, so the hub's refusal reply reaches it verbatim (hub.md §7 has
+  the exact wire). A daemon that admits a relay echoes `"relay":true`;
+  without the echo (a step-5 hub daemon) or on "unknown op" the laptop
+  refuses and names the hub-side restart, and a hub with no `__session`
+  is named with `session.HubForwardsMinVersion` (`v0.1.14`, pinned by a
+  test); `hubMinVersion` stays `v0.1.13`, forwards are checked per
+  feature. The laptop daemon's master is per hub machine
+  (`run/HUB@NAME.master`); `__session` runs over it with
+  `ControlMaster=no`. Marker and open share one 45s deadline; later calls
+  time out after 10s. Teardown sends no per-forward `remove` or `-O
+  cancel` (the relay's close and the master's exit drop them all), so it
+  stays bounded against a wedged link. A hub-side error on `add` counts
+  as port exhaustion: a first add fails, `restore()` leaves it pending. The hub is asked for the guest port as its
+  preference, never exact, and only after this host's port passed the
+  IPv4 probe. A `pending` reply marks the transport dead, and `add` now
+  records a forward pending (not failed) whenever the bind failed on a
+  dead transport, even before `loop()` has seen the death (general fix,
+  `transportDead`). `onDead` drops relay owners in the critical section
+  that marks the daemon reconnecting, then closes the relays. `session.Dial`
+  fails fast when the spawned daemon exits before listening (it quotes the
+  last line that daemon wrote, never an earlier run's) instead of polling
+  out its deadline, and a hub machine's come-up budget adds the relay's
+  open deadline plus 10s (75s at the defaults). The hub-conf flock is a
+  sibling `machines/.HUB.toml.lock` (the rename replaces the conf's
+  inode); an edit that changes nothing writes nothing, an emptied
+  `[machines.NAME]` table is dropped, `delete HUB/NAME` goes through the
+  same lock, and `delete HUB` removes the conf and unlinks the lock while
+  holding it. `start HUB/NAME` retries the laptop daemon's dial
+  for up to 10s (smolvm on the hub can still say `starting`). `ports add
+  HUB/NAME` whose daemon cannot come up records the mapping and exits
+  non-zero (a stopped hub VM and an unreachable hub look alike from here).
+  `listMachines`'s `run/HUB@*.sock` enumeration had already shipped in
+  step 1; step 6 only adds its test. A laptop `stop HUB/NAME` leaves the
+  laptop daemon `reconnecting` (as a hub-side `stop web` does); `start`
+  kicks it. The cli test binary's `TestMain` refuses `__daemon`, so a
+  test that reaches `session.Dial` fails fast instead of re-running the
+  suite as a "daemon". "The daemon binds nothing for a relay" has no code
+  in step 6: `sess.relay` is recorded for step 7's bridge. Swift: the
+  `isDirect` gate is gone; Ports items and the "Open localhost:PORT"
+  lookups cover hub machines.
 
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
+
+- Step 6: every laptop reconnect writes ssh's "Exit request sent." (and
+  sometimes "Control socket connect … No such file") to `run/HUB@NAME.log`
+  when the per-machine master is torn down; `delete HUB --force` leaves
+  `run/HUB@*.lock`/`.log` behind; a hub `stop`→`start` waits out the laptop's
+  reconnect backoff (up to 30s; hub-side `start` cannot kick the laptop).
+- `create --backend hub` on a locally stamped build with a suffix
+  (`…-dirty-step6`) refuses the hub as older than `hubMinVersion`: the
+  suffix misses `describeRe` and sorts as a prerelease. Real tags are fine.
 
 - The ssh transport notices a dead ControlMaster only on its 30s
   `checkInterval` (`transport_ssh.go`), so after `ssh -O exit` a forward
   reads `up` for up to 30s before `reconnecting`.
 - `ports list NAME` prints "no ports configured" above a live list of
   `connection`-owned forwards (cosmetic).
+- An orphan `__session` on the hub (step 6): when the laptop vanishes
+  without a FIN (lid closed, network gone), nothing tells the hub's
+  `__session` until sshd's TCP keepalive gives up, possibly hours. Until
+  then it holds its relay forwards and keeps the hub daemon up, so a hub
+  `ports down web` answers "stays up" and cannot stop it. The laptop side
+  recovers on its own (keepalives on its master, then a fresh
+  `__session`), leaving the old one alongside.
 
 - **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
   caps `machine exec` streamed stdout at 11534336 bytes ("streaming output
@@ -472,7 +541,9 @@ loopback listeners, so conflicts and dual-stack are real)
   laptop, `curl localhost:3000` on the laptop is 200 and the hub's `ports
   list web` shows the same guest port on `3001` with a `connection` owner
   and no `conf`; `h.toml` has `[machines.web] ports = ["3000"]`;
-  `run/h@web.sock` exists; on the hub `ports rm web 3000` refuses and
+  `run/h@web.sock` exists; on the hub `ports rm web 3000` leaves the
+  `connection`-held forward up (refusing only when the hub conf does not
+  list 3000) and
   `ports down web` leaves the daemon; hub `devvm stop web` puts the laptop
   in `reconnecting` and `calls.log` shows no `machine exec` storm and the
   state file stays `stopped`; hub `start web` brings the laptop's 3000

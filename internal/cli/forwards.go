@@ -32,7 +32,11 @@ func parseMapping(mapping string) (pref, guest int, err error) {
 // findMapping returns the configured mapping equivalent to (pref, guest), so
 // "8080" and "8080:8080" name the same forward.
 func findMapping(m *config.Machine, pref, guest int) (string, bool) {
-	for _, p := range m.Ports {
+	return findMappingIn(m.Ports, pref, guest)
+}
+
+func findMappingIn(ports []string, pref, guest int) (string, bool) {
+	for _, p := range ports {
 		if h, g, err := parseMapping(p); err == nil && h == pref && g == guest {
 			return p, true
 		}
@@ -66,7 +70,7 @@ func sinceHuman(t time.Time) string {
 
 func (a *App) runPort(name, mapping string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolveForwards(name)
 	if err != nil {
 		return err
 	}
@@ -81,9 +85,16 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 	if err != nil {
 		return err
 	}
-	if _, ok := findMapping(m, pref, guest); !ok {
-		m.Ports = append(m.Ports, mapping)
-		if err := m.Save(a.ConfigDir); err != nil {
+	if _, ok := findMapping(m, pref, guest); !ok || m.IsHubMachine() {
+		// A hub machine re-checks under the hub conf's lock: the table read
+		// at resolve may be stale by now. A mapping already there writes
+		// nothing (config.UpdateHubMachine saves only a change).
+		if err := a.editPorts(m, func(ports []string) []string {
+			if _, ok := findMappingIn(ports, pref, guest); ok {
+				return ports
+			}
+			return append(ports, mapping)
+		}); err != nil {
 			return err
 		}
 	}
@@ -93,6 +104,12 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 	}
 	cl, err := session.Dial(a.ConfigDir, m.Name)
 	if err != nil {
+		if m.IsHubMachine() {
+			// Recorded either way; the hub said why it could not forward now
+			// (a stopped VM, an unreachable hub), and `start`/`ports up`
+			// brings it up later.
+			fmt.Fprintf(a.Stdout, "devvm: recorded %s; forwards come up on 'devvm start %s' or 'devvm ports up %s'\n", mapping, m.Name, m.Name)
+		}
 		return err
 	}
 	host, bumped, pending, err := cl.Add(pref, guest)
@@ -111,7 +128,7 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 // whoever holds the session, and goes when the session does.
 func (a *App) runUnport(name, mapping string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, _, err := a.resolve(name)
+	m, _, err := a.resolveForwardsConf(name)
 	if err != nil {
 		return err
 	}
@@ -128,14 +145,15 @@ func (a *App) runUnport(name, mapping string) error {
 		return fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
 	}
 	// Drop the mapping from the conf.
-	kept := m.Ports[:0]
-	for _, p := range m.Ports {
-		if p != configured {
-			kept = append(kept, p)
+	if err := a.editPorts(m, func(ports []string) []string {
+		var kept []string
+		for _, p := range ports {
+			if p != configured {
+				kept = append(kept, p)
+			}
 		}
-	}
-	m.Ports = kept
-	if err := m.Save(a.ConfigDir); err != nil {
+		return kept
+	}); err != nil {
 		return err
 	}
 	// Drop the live forward's conf owner if a daemon is running.
@@ -224,7 +242,7 @@ func forwardSuffix(f session.Forward) string {
 
 // runPortsList shows the machine's configured forwards plus any that are live.
 func (a *App) runPortsList(name string) error {
-	m, _, err := a.resolve(name)
+	m, _, err := a.resolveForwardsConf(name)
 	if err != nil {
 		return err
 	}
@@ -298,7 +316,7 @@ func (a *App) runPortsListAll() error {
 // and the configured forwards alone go down.
 func (a *App) tunnelDown(name string) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	if _, _, err := a.resolveLive(name); err != nil {
+	if _, _, err := a.resolveForwards(name); err != nil {
 		return err
 	}
 	cl, err := session.Existing(a.ConfigDir, name)
@@ -346,7 +364,7 @@ func (a *App) tunnelUp(name string) error { return a.tunnelUpWait(name, 0) }
 // ten seconds on forty `smolvm machine ls` calls.
 func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolveForwards(name)
 	if err != nil {
 		return err
 	}
@@ -357,7 +375,7 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 	if err := requireRunningForForwards(m, b, wait); err != nil {
 		return err
 	}
-	cl, err := session.Dial(a.ConfigDir, name)
+	cl, err := a.dialForwards(m, wait)
 	if err != nil {
 		return err
 	}

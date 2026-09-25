@@ -26,11 +26,12 @@ func (a *App) resolve(name string) (*config.Machine, backend.Backend, error) {
 	}
 	if m.IsHubMachine() {
 		// The proxied leaves never get here: their RunE dispatches HUB/NAME
-		// to a.proxy before the local handler runs (proxy.go), and cp-in/
-		// cp-out to their tar-over-stdio loops (cp_hub.go). So this is the
-		// guard for everything else — ports (laptop-side forwards, step 6),
-		// auth (step 8), __daemon (never: shared decision 4) — which would
-		// otherwise act on the hub itself with the machine's record.
+		// to a.proxy before the local handler runs (proxy.go), cp-in/cp-out
+		// to their tar-over-stdio loops (cp_hub.go), and ports/__daemon
+		// resolve through resolveForwards (hubforwards.go: this host's own
+		// forwards, over a __session, never an agent exec). So this is the
+		// guard for everything else — auth (step 8) — which would otherwise
+		// act on the hub itself with the machine's record.
 		return nil, nil, fmt.Errorf("%s: %w", name, backend.ErrHubProxy)
 	}
 	return m, b, nil

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/smweber/devvm/internal/config"
 )
@@ -23,15 +24,15 @@ import (
 // What never changes: Spawn refuses. The hub's own daemon holds the one
 // agent exec into the VM (the one-exec rule), so the laptop must never
 // spawn a second one; laptop forwards ride a `__session` on the hub
-// (roadmap step 6), not an exec of their own.
+// (HubSessioner, hub.md §7), not an exec of their own.
 type hubBackend struct {
 	m   *config.Machine // the hub-machine record (Name is HUB/NAME, Hub the hub conf)
 	hub *sshBackend     // the ssh hop to the hub; the proxy runs commands over it
 }
 
 // ErrHubProxy is returned by hub-machine ops that are not implemented yet:
-// laptop-side forwards (ports) land in step 6 and auth in step 8, so the
-// wording names no mechanism. Copy returns it for good (see there).
+// auth lands in step 8, so the wording names no mechanism. Copy returns it
+// for good (see there).
 var ErrHubProxy = errors.New("hub machines are not supported by this command yet")
 
 // Proxier is the hub-machine backend's proxy surface, which the cli's
@@ -164,6 +165,48 @@ func (b *hubBackend) Shell(transport string) error {
 
 func (b *hubBackend) Attach(transport string) error {
 	return b.ProxyInteractive(transport, "attach", b.m.HubMachineName())
+}
+
+// SessionCmd is the hidden hub-side command the laptop daemon holds open
+// for one hub machine's forwards (hub.md §7).
+const SessionCmd = "__session"
+
+// HubSessioner is what the laptop daemon's hub transport needs from a hub
+// machine's backend (hub.md §7): a ControlMaster to the hub dedicated to
+// this machine's daemon, and the ssh argv of the one `__session` process
+// that runs over it.
+type HubSessioner interface {
+	SSHConn() SSHConn
+	SessionArgv() []string
+}
+
+// SSHConn is the hub's ssh hop with a master of its own per hub machine:
+// run/HUB@NAME.master, not the hub's run/HUB.master (a laptop daemon for
+// each of desktop/a and desktop/b owns and exits its master on its own, so
+// one path shared between them would let either kill the other's -L).
+func (b *hubBackend) SSHConn() SSHConn {
+	c := b.hub.SSHConn()
+	c.ControlPath = filepath.Join(config.RuntimeDir(b.hub.configDir), config.RuntimeName(b.m.Name)+".master")
+	return c
+}
+
+// SessionArgv is `__session NAME` on the hub over this machine's master,
+// wrapped like every proxied command (login shell, DEVVM_NO_SUBSCRIBE=1).
+// BatchMode because the daemon that runs it is detached (no prompt could
+// be answered) and RequestTTY=no with it: the stream is a line protocol a
+// pty would CRLF-mangle. ControlMaster=no: a mux client of the daemon's
+// own master, which is up before this runs, and never a master itself,
+// whatever a user's `ControlMaster auto`/`ControlPersist` in ~/.ssh/config
+// says (a __session turned master would outlive its daemon's -O exit).
+func (b *hubBackend) SessionArgv() []string {
+	c := b.SSHConn()
+	argv := append([]string{"ssh"}, c.Flags...)
+	argv = append(argv,
+		"-o", "ControlMaster=no", "-o", "ControlPath="+c.ControlPath,
+		"-o", "BatchMode=yes", "-o", "RequestTTY=no",
+		c.Host,
+		remoteCommand(ExecOpts{}, LoginShellArgv(ProxyArgv(SessionCmd, b.m.HubMachineName())...)))
+	return argv
 }
 
 // LoginShellArgv wraps argv so it runs under the remote user's *login* shell:

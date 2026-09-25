@@ -243,9 +243,17 @@ func (a *App) startCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "start NAME",
 		Short: "Start the machine (backend-aware)",
-		// Step 6 adds the laptop's own forwards after a proxied start
-		// (hub.md §3): the hub's start only knows the hub's conf.
-		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runStart(args[0]) }),
+		// A HUB/NAME start is proxied, then brings up this host's own
+		// configured forwards (hub.md §3): the hub's start only knows the
+		// hub's conf.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if ok, err := hubMachineArg(args); err != nil {
+				return err
+			} else if ok {
+				return a.startHubMachine(cmd, args)
+			}
+			return a.runStart(args[0])
+		},
 	}
 	a.machineArg(c)
 	return c

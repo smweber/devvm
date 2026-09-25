@@ -34,6 +34,13 @@ type Request struct {
 	Owner string `json:"owner,omitempty"`
 	// Reply (session): the subscriber's answer to the event with this ID.
 	Reply *EventReply `json:"reply,omitempty"`
+	// Relay (session open only): the far end is another daemon relaying
+	// through `__session` (hub.md §7), not a client on this host. Declared
+	// once, at open, and kept for the session's life: a relay session is
+	// refused while the transport is down and closed when it dies
+	// (browser-bridge.md §3), and the bridge binds nothing for a relay
+	// subscriber (roadmap step 7).
+	Relay bool `json:"relay,omitempty"`
 }
 
 // Forward is one forward the daemon owns: the actual host port and the guest
@@ -105,6 +112,11 @@ type Response struct {
 	Since    time.Time `json:"since,omitempty"`    // when State began (list/ping)
 	Version  string    `json:"version,omitempty"`  // build the daemon runs (list/ping/session)
 	Sessions int       `json:"sessions,omitempty"` // open session connections (list/ping/down)
+	// Relay (session open reply): the daemon admitted the session as a
+	// relay. Echoed so the far side can tell a daemon that knows relays
+	// from one older than hub forwards, which would ignore the request's
+	// Relay and admit a plain local session without its rules.
+	Relay    bool      `json:"relay,omitempty"`
 	Stopped  bool      `json:"stopped,omitempty"`  // down: nothing else held the daemon, so it is exiting
 	Forwards []Forward `json:"forwards,omitempty"` // list; remove/down: what survives
 	// Event (session, daemon to client): a line carrying only this is an

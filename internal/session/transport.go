@@ -21,8 +21,9 @@ var errPortBusy = errors.New("host port busy")
 
 // transport is the backend-specific carrier for a machine's forwards. smol
 // multiplexes them over the agent's yamux session; ssh adds native -L forwards
-// to a dedicated ControlMaster. dead is closed when the underlying channel dies
-// (VM stopped / ssh dropped) so the daemon can shut down.
+// to a dedicated ControlMaster; a hub machine relays through the hub's daemon
+// (hubTransport). dead is closed when the underlying channel dies (VM stopped
+// / ssh dropped / the hub's relay closed) so the daemon can reconnect.
 type transport interface {
 	// forward binds 127.0.0.1:hostPort, and [::1]:hostPort best-effort, and
 	// carries connections to the guest's 127.0.0.1:guestPort. Returns
@@ -31,6 +32,12 @@ type transport interface {
 	forward(hostPort, guestPort int) (io.Closer, error)
 	dead() <-chan struct{}
 	Close() error
+}
+
+// teardownAware is a transport that wants to know its teardown has begun,
+// before the daemon closes its forwards one by one (daemon.teardown).
+type teardownAware interface {
+	beginTeardown()
 }
 
 // newTransport builds the right transport for a resolved machine.
@@ -44,6 +51,15 @@ func newTransport(ctx context.Context, m *config.Machine, b backend.Backend) (tr
 			return nil, fmt.Errorf("remote backend does not expose a connector")
 		}
 		return newSSHTransport(conn.SSHConn())
+	case config.BackendHub:
+		// A machine on a hub: forwards ride one `__session` on the hub, whose
+		// daemon holds the only agent exec (hub.md §7). A hub itself has no
+		// forwards.
+		hs, ok := b.(backend.HubSessioner)
+		if !ok || !m.IsHubMachine() {
+			return nil, fmt.Errorf("%s is a hub, not a machine; forwards go to HUB/NAME", m.Name)
+		}
+		return newHubTransport(m.Name, hs.SSHConn(), hs.SessionArgv())
 	default:
 		return nil, fmt.Errorf("no forward transport for backend %q", m.Backend)
 	}

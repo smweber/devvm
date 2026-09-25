@@ -1,6 +1,7 @@
 # Proposal: a generic guest→host browser bridge and ad-hoc forwards
 
-Status: draft v2.6, 2026-09-15. Order of work lives in `ROADMAP.md` and
+Status: draft v2.6, 2026-09-15 (§3 notes what roadmap step 6 shipped for
+relay sessions, 2026-09-25). Order of work lives in `ROADMAP.md` and
 nowhere else. Revised after six independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
@@ -258,7 +259,15 @@ the user takes more than a minute. So:
   (`hub.md` section 7). The reason is in `hub.md` section 7:
   a relay's forwards are intermediate hops whose host port `restore()` may
   bump, and the far daemon has no way to learn the new port except by
-  re-adding through its own reconnect.
+  re-adding through its own reconnect. As shipped (roadmap step 6): "down"
+  means the daemon is `reconnecting` or has no transport, checked under the
+  same lock in which the transport's death marks it reconnecting, so a
+  relay is either refused at open or closed at death, never left open
+  across an outage; the relays' forwards are dropped in that same critical
+  section (so `restore()` never re-binds a hop nobody will use) before
+  their connections are closed; `restore()` finishing is what re-admits
+  relays. The refusal is `{"id":…,"ok":false,"err":"relay session
+  refused: …"}` and the connection closes.
 - `DEVVM_NO_SUBSCRIBE=1` makes `attach`/`shell`/`auth` skip the daemon
   entirely: no dial, no session, no subscription. The hub proxy sets it on
   every proxied command so the laptop's subscription is the only one for that

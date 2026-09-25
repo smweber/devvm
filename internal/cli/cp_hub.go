@@ -15,6 +15,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/session"
 )
 
 // cp for hub machines (docs/proposals/hub.md §6, roadmap step 4). The
@@ -450,28 +451,16 @@ func receiveTar(r io.Reader, path string) error {
 }
 
 // skipToMarker discards lines until the marker line, refusing a stream
-// that ends first or that exceeds tarMarkerLimit without it. ReadSlice, not
-// ReadString: a junk line longer than the buffer is discarded a bufferful
-// at a time rather than accumulated. The marker cannot be split by that:
-// it is 13 bytes on a line of its own, and bufio compacts before each fill.
+// that ends first or that exceeds tarMarkerLimit without it. The reader is
+// session.SkipToMarker, shared with the hub forwards' `__session` stream.
 func skipToMarker(br *bufio.Reader) error {
-	want := []byte(tarMarker + "\n")
-	for n := 0; ; {
-		line, err := br.ReadSlice('\n')
-		n += len(line)
-		if err == nil && bytes.Equal(line, want) {
-			return nil
-		}
-		switch err {
-		case nil, bufio.ErrBufferFull:
-		case io.EOF:
-			return fmt.Errorf("the hub sent no tar stream (no %q line before the end of output)", tarMarker)
-		default:
-			return err
-		}
-		if n > tarMarkerLimit {
-			return fmt.Errorf("no %q line in the first %d bytes from the hub", tarMarker, tarMarkerLimit)
-		}
+	switch err := session.SkipToMarker(br, tarMarker, tarMarkerLimit); {
+	case errors.Is(err, session.ErrMarkerMissing):
+		return fmt.Errorf("the hub sent no tar stream (no %q line before the end of output)", tarMarker)
+	case errors.Is(err, session.ErrMarkerLimit):
+		return fmt.Errorf("no %q line in the first %d bytes from the hub", tarMarker, tarMarkerLimit)
+	default:
+		return err
 	}
 }
 

@@ -46,7 +46,12 @@ var (
 type sess struct {
 	id   uint64
 	conn net.Conn
-	wmu  sync.Mutex
+	// relay: opened with `session {relay: true}` (hub.md §7), so the far
+	// end is another daemon behind `__session`. Fixed at open. Closed when
+	// the transport dies, never admitted while it is down; step 7's bridge
+	// binds nothing for a relay subscriber.
+	relay bool
+	wmu   sync.Mutex
 	// pending maps an event id to the delivery waiting on its reply;
 	// guarded by the daemon's mu.
 	pending map[int64]chan json.RawMessage
@@ -82,9 +87,16 @@ type eventLine struct {
 // passed on so nothing read past that line is lost.
 func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	_ = conn.SetReadDeadline(time.Time{})
-	s := d.openSession(conn)
+	s, err := d.openSession(conn, open.Relay)
+	if err != nil {
+		// A relay refused while the transport is down: an error reply, then
+		// the close (handleConn's). The far daemon's dial fails and its own
+		// reconnect backoff retries until this one is back (hub.md §7).
+		writeResp(conn, Response{ID: open.ID, Err: err.Error()})
+		return
+	}
 	state, _ := d.status()
-	if s.write(Response{ID: open.ID, OK: true, State: state, Version: d.version}) != nil {
+	if s.write(Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay}) != nil {
 		d.closeSession(s)
 		return
 	}
@@ -166,14 +178,40 @@ func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 	}
 }
 
-func (d *daemon) openSession(conn net.Conn) *sess {
+// errRelayRefused is the answer to `session {relay: true}` while the
+// transport is down (browser-bridge.md §3).
+var errRelayRefused = errors.New("relay session refused: the transport to the machine is down; retry once it is back")
+
+// openSession registers a session. A relay is admitted only while the
+// transport is up, checked under the same lock onDead takes to mark the
+// daemon reconnecting and collect the relays it closes, so a relay is
+// either refused here or closed there, never left open across an outage:
+// a relay admitted mid-outage would get `pending` for every add and never
+// learn when restore() finished (hub.md §7).
+func (d *daemon) openSession(conn net.Conn, relay bool) (*sess, error) {
 	d.mu.Lock()
+	if relay && (d.state != StateUp || d.tr == nil) {
+		d.mu.Unlock()
+		return nil, errRelayRefused
+	}
 	d.nextConn++
-	s := &sess{id: d.nextConn, conn: conn, pending: map[int64]chan json.RawMessage{}, done: make(chan struct{})}
+	s := &sess{id: d.nextConn, conn: conn, relay: relay, pending: map[int64]chan json.RawMessage{}, done: make(chan struct{})}
 	d.sessions[s.id] = s
 	d.mu.Unlock()
 	config.TouchChanged(d.configDir)
-	return s
+	return s, nil
+}
+
+// relaySessionsLocked is every relay session by connection id; d.mu must be
+// held. onDead drops their forwards and closes them when the transport dies.
+func (d *daemon) relaySessionsLocked() map[uint64]*sess {
+	out := map[uint64]*sess{}
+	for id, s := range d.sessions {
+		if s.relay {
+			out[id] = s
+		}
+	}
+	return out
 }
 
 // closeSession forgets a session: its subscription (events fall through to

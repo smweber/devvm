@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -286,7 +287,7 @@ func (s *Session) Close() error {
 // sessConn is one connection of a Session: one reader for its life, writes
 // serialized, replies matched to calls by id.
 type sessConn struct {
-	c       net.Conn
+	c       lineConn
 	br      *bufio.Reader // holds anything read past the session reply
 	wmu     sync.Mutex
 	mu      sync.Mutex
@@ -296,33 +297,52 @@ type sessConn struct {
 	timeout time.Duration
 }
 
+// lineConn is what a session's line protocol runs over: a unix connection
+// to a local daemon, or the stdio of a hub's `__session` (hubTransport),
+// both of which honour deadlines.
+type lineConn interface {
+	io.ReadWriteCloser
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
+
 // openSessConn sends `session` and reads its reply synchronously, before the
 // reader starts: a daemon older than sessions answers without an id
 // ("unknown op"), which no id-matching reader could route.
-func openSessConn(c net.Conn, timeout time.Duration) (*sessConn, error) {
-	sc := &sessConn{c: c, nextID: 1, pending: map[int64]chan Response{}, gone: make(chan struct{}), timeout: timeout}
-	if err := sc.writeLine(Request{ID: 1, Op: OpSession}); err != nil {
-		return nil, err
+func openSessConn(c lineConn, timeout time.Duration) (*sessConn, error) {
+	sc, resp, err := openSessConnOn(c, bufio.NewReader(c), Request{ID: 1, Op: OpSession}, time.Now().Add(timeout), timeout)
+	if err != nil && !resp.OK && strings.HasPrefix(resp.Err, "unknown op") {
+		return nil, fmt.Errorf("forward daemon (%s) predates sessions; restart it with 'devvm ports down' then 'ports up'", resp.Version)
 	}
-	_ = c.SetReadDeadline(time.Now().Add(timeout))
-	br := bufio.NewReader(c)
+	return sc, err
+}
+
+// openSessConnOn is openSessConn over a reader that may already have
+// consumed something (the hub transport's marker line), with the open
+// request given (a relay's carries Relay), the reply awaited until
+// deadline, and callTimeout for every later call. The open reply is
+// returned too, also when the daemon refused the open (resp.Err), so a
+// caller can word the refusal for where that daemon runs.
+func openSessConnOn(c lineConn, br *bufio.Reader, open Request, deadline time.Time, callTimeout time.Duration) (*sessConn, Response, error) {
+	sc := &sessConn{c: c, nextID: open.ID, pending: map[int64]chan Response{}, gone: make(chan struct{}), timeout: callTimeout}
+	if err := sc.writeLine(open); err != nil {
+		return nil, Response{}, err
+	}
+	_ = c.SetReadDeadline(deadline)
 	line, err := br.ReadString('\n')
 	if err != nil {
-		return nil, fmt.Errorf("open session: %w", err)
+		return nil, Response{}, fmt.Errorf("open session: %w", err)
 	}
 	_ = c.SetReadDeadline(time.Time{})
 	var resp Response
 	if err := json.Unmarshal([]byte(line), &resp); err != nil {
-		return nil, fmt.Errorf("open session: %w", err)
+		return nil, Response{}, fmt.Errorf("open session: %w", err)
 	}
 	if !resp.OK {
-		if strings.HasPrefix(resp.Err, "unknown op") {
-			return nil, fmt.Errorf("forward daemon (%s) predates sessions; restart it with 'devvm ports down' then 'ports up'", resp.Version)
-		}
-		return nil, fmt.Errorf("open session: %s", resp.Err)
+		return nil, resp, fmt.Errorf("open session: %s", resp.Err)
 	}
 	sc.br = br
-	return sc, nil
+	return sc, resp, nil
 }
 
 func (sc *sessConn) writeLine(v any) error {

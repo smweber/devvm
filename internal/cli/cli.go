@@ -144,7 +144,8 @@ func (a *App) rootCmd() *cobra.Command {
 		a.updateCmd(),
 		a.menubarCmd(),
 	)...)
-	root.AddCommand(a.daemonCmd()) // hidden; falls under "Additional Commands"
+	root.AddCommand(a.daemonCmd())  // hidden; falls under "Additional Commands"
+	root.AddCommand(a.sessionCmd()) // hidden: the hub side of hub forwards
 	return root
 }
 

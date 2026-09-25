@@ -267,11 +267,12 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	}
 	dropFromHubCache(a.ConfigDir, hub.Name, machine)
 	if _, recorded := hub.Machines[machine]; recorded {
-		// Step 6 wraps this read-modify-write in a flock on the hub conf: two
-		// `ports add HUB/a` and `ports add HUB/b` share one file, and Save is
-		// atomic but not serialized.
-		delete(hub.Machines, machine)
-		if err := hub.Save(a.ConfigDir); err != nil {
+		// Under the hub conf's flock: every machine on the hub shares the
+		// file (config.UpdateHubMachine). An emptied table is dropped.
+		if _, err := config.UpdateHubMachine(a.ConfigDir, hub.Name, machine, func(hm *config.HubMachine) error {
+			hm.Ports = nil
+			return nil
+		}); err != nil {
 			return err
 		}
 		fmt.Fprintf(a.Stdout, "devvm: dropped this host's forwards for '%s'\n", m.Name)

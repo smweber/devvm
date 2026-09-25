@@ -42,19 +42,43 @@ func dialCancel(configDir, name string, cancel <-chan struct{}) (*Client, error)
 	if c.alive() {
 		return c, nil
 	}
-	if err := c.spawnDaemon(); err != nil {
+	logOff := logSize(logPath(configDir, name))
+	exited, err := c.spawnDaemon()
+	if err != nil {
 		return nil, err
 	}
-	// The daemon listens only after its first transport dial succeeds, and
-	// on ssh that dial is bounded by ConnectTimeout (plus auth), so the
-	// come-up wait must outlast it or a slow host reads as "did not come up"
-	// while the daemon in fact arrives moments later, holds no forwards, and
-	// idles out.
-	wait := time.Duration(backend.SSHConnectTimeout()) * time.Second
-	if wait > 60*time.Second {
-		wait = 60 * time.Second // an env override must not turn this into a minutes-long hang
+	return c.waitComeUp(exited, logOff, cancel, time.Now().Add(comeUpWait(name)))
+}
+
+// comeUpWait is how long Dial waits for a spawned daemon to listen. The
+// daemon listens only after its first transport dial succeeds, and on ssh
+// that dial is bounded by ConnectTimeout (plus auth), so the wait must
+// outlast it or a slow host reads as "did not come up" while the daemon in
+// fact arrives moments later, holds no forwards, and idles out. A hub
+// machine's first dial is that ssh master, then `__session` on the hub up
+// to its marker and the relay's open reply, which share one deadline
+// (hubOpenTimeout; the hub's own Dial of its daemon runs inside it), plus
+// slack for the hub's login shell: about 75s at the defaults.
+func comeUpWait(name string) time.Duration {
+	connect := time.Duration(backend.SSHConnectTimeout()) * time.Second
+	if connect > 60*time.Second {
+		connect = 60 * time.Second // an env override must not turn this into a minutes-long hang
 	}
-	deadline := time.Now().Add(wait + 10*time.Second)
+	wait := connect + 10*time.Second
+	if config.RuntimeName(name) != name {
+		wait += hubOpenTimeout + 10*time.Second
+	}
+	return wait
+}
+
+// waitComeUp polls until the spawned daemon answers, cancel closes, the
+// deadline passes, or the daemon exits with an error before listening (a
+// stopped VM, a refused relay, an unreachable host): then it says why at
+// once, quoting what the daemon logged after logOff (so an earlier run's
+// line is never mistaken for this one's). A clean exit is a daemon that
+// found another one already serving the socket; polling goes on for that.
+func (c *Client) waitComeUp(exited <-chan daemonExit, logOff int64, cancel <-chan struct{}, deadline time.Time) (*Client, error) {
+	log := logPath(c.configDir, c.name)
 	for time.Now().Before(deadline) {
 		if c.alive() {
 			return c, nil
@@ -62,11 +86,18 @@ func dialCancel(configDir, name string, cancel <-chan struct{}) (*Client, error)
 		select {
 		case <-cancel:
 			return nil, errDialCanceled
+		case res := <-exited:
+			if res.err != nil {
+				if c.alive() {
+					return c, nil
+				}
+				return nil, fmt.Errorf("forward daemon for '%s' exited: %s (see %s)", c.name, lastLogLine(log, logOff, res.err), log)
+			}
+			exited = nil
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return nil, fmt.Errorf("forward daemon for '%s' did not come up (see %s)",
-		name, logPath(configDir, name))
+	return nil, fmt.Errorf("forward daemon for '%s' did not come up (see %s)", c.name, log)
 }
 
 // Existing returns a client only if a daemon is already running, else ErrNoDaemon.
@@ -85,32 +116,69 @@ func (c *Client) alive() bool {
 
 // spawnDaemon re-execs devvm as a detached `__daemon` process. The daemon
 // resolves the machine itself and owns the transport thereafter.
-func (c *Client) spawnDaemon() error {
+// daemonExit is how a spawned daemon process ended.
+type daemonExit struct{ err error }
+
+// The returned channel yields once, when the spawned process exits (a
+// daemon serving normally never does while the caller waits); Dial uses it
+// to fail fast on a daemon that gave up before listening.
+func (c *Client) spawnDaemon() (<-chan daemonExit, error) {
 	// An empty name would spawn `__daemon ''`. Under any binary other than
 	// devvm (a scratch tool reusing this package) that re-exec parses as a
 	// fresh run with no machine, dials "" again and recurses into a fork
 	// bomb, which took down a 2 GB test guest twice.
 	if c.name == "" {
-		return errors.New("no machine name for the forward daemon")
+		return nil, errors.New("no machine name for the forward daemon")
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := config.EnsureRuntimeDir(c.configDir); err != nil {
-		return err
+		return nil, err
 	}
 	logf, err := os.OpenFile(logPath(c.configDir, c.name),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer logf.Close()
 	cmd := exec.Command(self, "__daemon", c.name, "--config-dir", c.configDir)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from the CLI
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	// Reap it (no zombie while this process lives on, e.g. a __session or
+	// a session client) and report how it ended.
+	exited := make(chan daemonExit, 1)
+	go func() { exited <- daemonExit{cmd.Wait()} }()
+	return exited, nil
+}
+
+// logSize is the log's size now (0 if there is none): where a daemon about
+// to be spawned starts writing.
+func logSize(path string) int64 {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
+// lastLogLine is the last non-empty line a daemon wrote to its log after
+// offset off (where a daemon that exits early prints its error), or
+// fallback's text when it wrote none.
+func lastLogLine(path string, off int64, fallback error) string {
+	data, err := os.ReadFile(path)
+	if err != nil || int64(len(data)) <= off {
+		return fallback.Error()
+	}
+	lines := strings.Split(strings.TrimRight(string(data[off:]), "\n"), "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
+		return strings.TrimPrefix(last, "devvm: ")
+	}
+	return fallback.Error()
 }
 
 func (c *Client) request(req Request) (Response, error) {

@@ -15,7 +15,11 @@ func (a *App) daemonCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, b, err := a.resolve(args[0])
+			// A HUB/NAME daemon is this host's for its own forwards to a hub
+			// machine; its transport is a __session on the hub, never an
+			// agent exec (hub.md §7). resolve refuses hub machines for every
+			// other verb, so they are let through here explicitly.
+			m, b, err := a.resolveForwardsConf(args[0])
 			if err != nil {
 				return err
 			}
