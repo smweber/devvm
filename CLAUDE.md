@@ -129,7 +129,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards` with state ∈ {running, stopped, dormant,
   reachable, broken conf, ?} and forwards ∈ {up:N, reconnecting:N, down, -}; so
-  are the `ports list` line (`guest N -> localhost:M [(pending)]`), `devvm
+  are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact]`; parsers split on whitespace and read only the first four tokens plus `(pending)`), `devvm
   --version` (`devvm version vX.Y.Z`), and `update --check --plain`
   (`current\tlatest\ttrue|false`). Changing any of them means a Swift change.
 - **Maintain devvm itself** (help group): `update` finds the latest tag via the
