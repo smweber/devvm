@@ -83,6 +83,12 @@ func (t *sshTransport) startMaster() error {
 }
 
 // control runs an `ssh -O <op>` against the master, bounded by controlTimeout.
+// ssh's stderr reaches the daemon log for forward and cancel, where it is
+// the diagnosis (a remote refusal, a port in use). exit is best-effort and
+// its stderr only noise: "Exit request sent." on every teardown, and
+// "Control socket connect(…): No such file or directory" when the master
+// is already gone. (check never passes through here: masterAlive keeps its
+// stderr to itself for the same reason.)
 func (t *sshTransport) control(op string, extra ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
 	defer cancel()
@@ -90,7 +96,9 @@ func (t *sshTransport) control(op string, extra ...string) error {
 	args = append(args, extra...)
 	args = append(args, t.conn.Host)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stderr = os.Stderr
+	if op != "exit" {
+		cmd.Stderr = os.Stderr
+	}
 	return cmd.Run()
 }
 

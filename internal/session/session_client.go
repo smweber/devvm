@@ -402,6 +402,11 @@ type replyLine struct {
 
 // call sends one request and waits for the reply with its id.
 func (sc *sessConn) call(req Request) (Response, error) {
+	return sc.callWithin(req, sc.timeout)
+}
+
+// callWithin is call with its own bound on the wait for the reply.
+func (sc *sessConn) callWithin(req Request, timeout time.Duration) (Response, error) {
 	ch := make(chan Response, 1)
 	sc.mu.Lock()
 	select {
@@ -423,7 +428,7 @@ func (sc *sessConn) call(req Request) (Response, error) {
 		drop()
 		return Response{}, err
 	}
-	t := time.NewTimer(sc.timeout)
+	t := time.NewTimer(timeout)
 	defer t.Stop()
 	select {
 	case resp := <-ch:

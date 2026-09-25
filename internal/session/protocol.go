@@ -41,6 +41,14 @@ type Request struct {
 	// (browser-bridge.md §3), and the bridge binds nothing for a relay
 	// subscriber (roadmap step 7).
 	Relay bool `json:"relay,omitempty"`
+	// Heartbeat (session open only, with Relay): the interval, in seconds,
+	// at which the far daemon promises to send something (it pings). The
+	// daemon closes the relay once it has read nothing for heartbeatMisses
+	// intervals (hub.md §7): a laptop that vanished without a FIN (lid
+	// closed, network gone) would otherwise leave its `__session`, and
+	// every forward that owns, alive until sshd's TCP keepalive gives up,
+	// hours later. Ignored on a local session, which may idle for good.
+	Heartbeat int `json:"heartbeat,omitempty"`
 }
 
 // Forward is one forward the daemon owns: the actual host port and the guest
@@ -116,9 +124,13 @@ type Response struct {
 	// relay. Echoed so the far side can tell a daemon that knows relays
 	// from one older than hub forwards, which would ignore the request's
 	// Relay and admit a plain local session without its rules.
-	Relay    bool      `json:"relay,omitempty"`
-	Stopped  bool      `json:"stopped,omitempty"`  // down: nothing else held the daemon, so it is exiting
-	Forwards []Forward `json:"forwards,omitempty"` // list; remove/down: what survives
+	Relay bool `json:"relay,omitempty"`
+	// Heartbeat (session open reply): the interval, in seconds, the daemon
+	// enforces on this relay (the request's, clamped). Absent when it
+	// enforces none: a local session, or a daemon older than heartbeats.
+	Heartbeat int       `json:"heartbeat,omitempty"`
+	Stopped   bool      `json:"stopped,omitempty"`  // down: nothing else held the daemon, so it is exiting
+	Forwards  []Forward `json:"forwards,omitempty"` // list; remove/down: what survives
 	// Event (session, daemon to client): a line carrying only this is an
 	// event for a subscriber, not a reply; the subscriber answers with a
 	// Request whose Reply names Event.ID.
@@ -161,8 +173,8 @@ const (
 )
 
 // Runtime files are keyed by the display name run through config.RuntimeName
-// (HUB/NAME -> HUB@NAME); the three helpers below are the only place a name
-// becomes a path, so the mapping is applied once and nowhere else.
+// (HUB/NAME -> HUB@NAME); the helpers below are the only place in this
+// package a name becomes a path, so the mapping is applied once here.
 
 // socketPath is the daemon's control socket for a machine.
 func socketPath(configDir, name string) string {
@@ -172,6 +184,13 @@ func socketPath(configDir, name string) string {
 // logPath is where a spawned daemon's stderr lands.
 func logPath(configDir, name string) string {
 	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".log")
+}
+
+// masterPath is the daemon's own ssh ControlMaster for a remote or hub
+// machine. The backends build the same path (backend.SSHConn's
+// ControlPath); only Reap needs it here, to clear a stale one on delete.
+func masterPath(configDir, name string) string {
+	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".master")
 }
 
 // lockPath is the startup lock serializing daemon creation for a machine.

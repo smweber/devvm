@@ -518,3 +518,64 @@ func TestProxyReposAddPromptsOnTTY(t *testing.T) {
 		t.Error("an unanswered prompt dialed the hub")
 	}
 }
+
+// stop and deprovision HUB/NAME stop this host's daemon for the machine
+// once the hub has done its part, as a local stop does: left running it
+// would redial a stopped VM's `__session` for good. A hub-side failure
+// leaves the daemon alone.
+func TestHubStopStopsLaptopDaemon(t *testing.T) {
+	a := newTestApp(t)
+	fakeHub(t, a)
+	for _, argv := range [][]string{{"stop", "h/web"}, {"deprovision", "h/web", "--yes"}} {
+		od := serveOwnerDaemon(t, a.ConfigDir, "h/web", nil, true)
+		t.Setenv("FAKE_DEVVM_EXIT", "1")
+		var pe *proxyExit
+		if err := runTree(t, a, argv...); !errors.As(err, &pe) {
+			t.Fatalf("%v with the hub failing: err = %v, want its exit status", argv, err)
+		}
+		if n := len(od.requests(session.OpStop)); n != 0 {
+			t.Errorf("%v failed on the hub but stopped this host's daemon", argv)
+		}
+		t.Setenv("FAKE_DEVVM_EXIT", "")
+		if err := runTree(t, a, argv...); err != nil {
+			t.Fatalf("%v: %v", argv, err)
+		}
+		if n := len(od.requests(session.OpStop)); n != 1 {
+			t.Errorf("%v: this host's daemon got %d stops, want 1", argv, n)
+		}
+	}
+}
+
+// delete HUB/NAME reaps this host's run files for it (log, a stale socket),
+// and only its own. The lock stays: the hub conf still resolves HUB/NAME,
+// so a starter could race an unlinked lock (session.RemoveLock).
+func TestDeleteHubMachineReapsRunFiles(t *testing.T) {
+	a := newTestApp(t)
+	a.Stdout, a.Stderr = new(bytes.Buffer), new(bytes.Buffer)
+	pinTTY(t, false)
+	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
+	writeHub(t, a, "h", nil)
+	fakeSSH(t, "exit 0")
+	if err := config.EnsureRuntimeDir(a.ConfigDir); err != nil {
+		t.Fatal(err)
+	}
+	run := config.RuntimeDir(a.ConfigDir)
+	for _, f := range []string{"h@web.lock", "h@web.log", "h@web.sock", "h@api.lock"} {
+		if err := os.WriteFile(filepath.Join(run, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.runDelete("h/web", false); err != nil {
+		t.Fatalf("delete h/web: %v", err)
+	}
+	for _, f := range []string{"h@web.log", "h@web.sock"} {
+		if _, err := os.Stat(filepath.Join(run, f)); err == nil {
+			t.Errorf("%s survived delete h/web", f)
+		}
+	}
+	for _, f := range []string{"h@web.lock", "h@api.lock"} {
+		if _, err := os.Stat(filepath.Join(run, f)); err != nil {
+			t.Errorf("delete h/web removed %s", f)
+		}
+	}
+}

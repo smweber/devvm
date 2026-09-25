@@ -204,9 +204,11 @@ func (a *App) runDelete(name string, force bool) error {
 	// the normal path so the real cause surfaces (don't silently remove a conf for
 	// a resource we couldn't probe).
 	if ok, exErr := b.Exists(); exErr == nil && !ok {
+		a.reapRunFiles(name)
 		if err := config.Remove(a.ConfigDir, name); err != nil {
 			return err
 		}
+		session.RemoveLock(a.ConfigDir, name) // only now: see RemoveLock
 		fmt.Fprintf(a.Stdout, "devvm: removed registry entry for '%s' (was dormant)\n", name)
 		return nil
 	}
@@ -219,6 +221,7 @@ func (a *App) runDelete(name string, force bool) error {
 		if !ok {
 			return fmt.Errorf("aborted")
 		}
+		a.reapRunFiles(name) // the daemon's exec goes before the VM does
 		if err := b.PowerDelete(); err != nil {
 			return err
 		}
@@ -235,13 +238,24 @@ func (a *App) runDelete(name string, force bool) error {
 				return fmt.Errorf("aborted")
 			}
 		}
+		a.reapRunFiles(name)
 		_ = b.PowerDelete()
 	}
 	if err := config.Remove(a.ConfigDir, name); err != nil {
 		return err
 	}
+	session.RemoveLock(a.ConfigDir, name) // only now: see RemoveLock
 	fmt.Fprintf(a.Stdout, "devvm: removed '%s'\n", name)
 	return nil
+}
+
+// reapRunFiles stops a machine's forward daemon, if one runs, and removes
+// its run files (session.Reap) as its registry entry goes. Failing that is
+// worth a line, not the delete: the leftovers are inert files in run/.
+func (a *App) reapRunFiles(name string) {
+	if err := session.Reap(a.ConfigDir, name, daemonGoneTimeout); err != nil && a.Stderr != nil {
+		fmt.Fprintf(a.Stderr, "devvm: %s: %v\n", name, err)
+	}
 }
 
 // deleteHubMachine is `delete HUB/NAME`: the hub owns the machine's registry
@@ -262,9 +276,7 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	if err := a.runProxied(m, p, []string{"delete", machine}); err != nil {
 		return err
 	}
-	if cl, err := session.Existing(a.ConfigDir, m.Name); err == nil {
-		_ = cl.Stop()
-	}
+	a.reapRunFiles(m.Name)
 	dropFromHubCache(a.ConfigDir, hub.Name, machine)
 	if _, recorded := hub.Machines[machine]; recorded {
 		// Under the hub conf's flock: every machine on the hub shares the
@@ -312,13 +324,19 @@ func (a *App) deleteHub(m *config.Machine, force bool) error {
 	if !ok {
 		return fmt.Errorf("aborted")
 	}
-	for _, display := range live {
-		if cl, err := session.Existing(a.ConfigDir, display); err == nil {
-			_ = cl.Stop()
-		}
+	// Every HUB/NAME with a run file, not only the live sockets: a daemon
+	// killed rather than stopped leaves its socket, and every one that ever
+	// started leaves its lock and log. The hub's own name too (a refused
+	// `__daemon HUB` still took its lock).
+	reaped := append(session.HubRuntimeNames(a.ConfigDir, m.Name), m.Name)
+	for _, display := range reaped {
+		a.reapRunFiles(display)
 	}
 	if err := config.Remove(a.ConfigDir, m.Name); err != nil {
 		return err
+	}
+	for _, display := range reaped {
+		session.RemoveLock(a.ConfigDir, display) // only now: see RemoveLock
 	}
 	removeHubCache(a.ConfigDir, m.Name) // derived from the conf that just went
 	fmt.Fprintf(a.Stdout, "devvm: removed hub '%s'\n", m.Name)

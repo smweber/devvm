@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -35,6 +36,22 @@ const sessionWriteTimeout = 10 * time.Second
 // one running. The reader blocks beyond it, which only a client flooding
 // requests without reading replies can reach.
 const sessionQueue = 64
+
+// Relay heartbeats (hub.md §7). A relay's far end declares an interval at
+// open and pings at it; the daemon closes the relay once it has read nothing
+// for heartbeatMisses intervals. The deadline is on reads, so any line in
+// counts (a request or an event reply, not only a ping), and a ping this
+// daemon answers late (its worker busy with a slow add) cannot trip it: the
+// ping was read on arrival, whatever became of its reply.
+const heartbeatMisses = 3
+
+// maxHeartbeat caps a declared interval (seconds), so a nonsense value
+// cannot overflow the deadline arithmetic; an hour is already useless.
+const maxHeartbeat = 3600
+
+// heartbeatUnit is one unit of the wire's Heartbeat: a second. A var so
+// tests can run the protocol in milliseconds.
+var heartbeatUnit = time.Second
 
 var (
 	errNoSubscriber   = errors.New("no subscriber")
@@ -95,8 +112,16 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 		writeResp(conn, Response{ID: open.ID, Err: err.Error()})
 		return
 	}
+	// Only a relay gets a deadline: a local session (a held attach, auth)
+	// is idle by design, and its client is on this host, where a dead
+	// process closes its socket at once.
+	beat := 0
+	if s.relay && open.Heartbeat > 0 {
+		beat = min(open.Heartbeat, maxHeartbeat)
+	}
+	quiet := time.Duration(heartbeatMisses*beat) * heartbeatUnit
 	state, _ := d.status()
-	if s.write(Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay}) != nil {
+	if s.write(Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay, Heartbeat: beat}) != nil {
 		d.closeSession(s)
 		return
 	}
@@ -118,8 +143,18 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	}()
 
 	for {
+		if quiet > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(quiet))
+		}
 		line, err := br.ReadString('\n')
 		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				// The far daemon went silent: its host is gone without a FIN.
+				// Closing the connection below ends the hub's `__session`
+				// (its Relay sees EOF and exits, so sshd tears down), and
+				// closeSession drops every forward the relay owned.
+				d.logf("%s: relay session %d sent nothing for %s; closing it", d.name, s.id, quiet)
+			}
 			break
 		}
 		var req Request

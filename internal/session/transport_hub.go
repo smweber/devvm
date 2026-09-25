@@ -72,6 +72,22 @@ var hubOpenTimeout = 45 * time.Second
 // the add treats it as the relay's death.
 var hubCallTimeout = 10 * time.Second
 
+// hubHeartbeat is the relay heartbeat this side declares at open, in the
+// wire's unit (heartbeatUnit, a second): a ping every interval, and the
+// hub closes the relay after heartbeatMisses intervals of silence (60s).
+// Without it a laptop gone without a FIN leaves the hub's `__session`, its
+// forwards and its daemon up for as long as sshd's TCP keepalive takes.
+// A var so tests can change it; 0 declares none and never pings.
+var hubHeartbeat = 20
+
+// hubPingMisses is how many intervals a heartbeat ping may wait for its
+// reply before this side calls the relay dead. More than one: a ping queues
+// on the hub behind whatever add it is running, and rides the same ssh
+// connection as every -L, which a bulk transfer can back up. Unanswered
+// that long, the hub is wedged or the link is gone, and the reconnect
+// (the same one a dead master or `__session` starts) is the recovery.
+const hubPingMisses = 2
+
 // HubForwardsMinVersion is the first devvm release whose hub side serves
 // hub forwards (`__session`, relay sessions). It is checked per feature,
 // when a relay is opened, not by the hub floor (the cli's hubMinVersion),
@@ -276,7 +292,7 @@ func openHubTransport(name string, c lineConn, local hubLocal, stop func(), tail
 	// daemon was spawned by an earlier one and never cycled.
 	stale := fmt.Errorf("%s: the forward daemon for %s on hub %s predates hub forwards; restart it there with 'devvm ports down %s' (or 'devvm stop %s' then 'devvm start %s' if a session holds it)",
 		name, machine, hub, machine, machine, machine)
-	sc, resp, err := openSessConnOn(c, br, Request{ID: 1, Op: OpSession, Relay: true}, deadline, hubCallTimeout)
+	sc, resp, err := openSessConnOn(c, br, Request{ID: 1, Op: OpSession, Relay: true, Heartbeat: hubHeartbeat}, deadline, hubCallTimeout)
 	switch {
 	case err != nil && !resp.OK && strings.HasPrefix(resp.Err, "unknown op"):
 		return fail(stale)
@@ -298,7 +314,39 @@ func openHubTransport(name string, c lineConn, local hubLocal, stop func(), tail
 		}
 		t.markDead()
 	}()
+	if hubHeartbeat > 0 {
+		// Pinged whether or not the hub echoed Heartbeat: a hub daemon
+		// that enforces none answers pings all the same, and this side
+		// still learns of a wedged hub or a dead link from the silence.
+		go t.heartbeat(time.Duration(hubHeartbeat) * heartbeatUnit)
+	}
 	return t, nil
+}
+
+// heartbeat pings the hub every interval until the transport is dead. A
+// ping unanswered for hubPingMisses intervals marks it dead, the same path
+// a dead master or `__session` takes. A reply of any kind is an answer.
+func (t *hubTransport) heartbeat(every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-t.deadCh:
+			return
+		case <-tick.C:
+		}
+		resp, err := t.sc.callWithin(Request{Op: OpPing}, hubPingMisses*every)
+		if err == nil || resp.Err != "" {
+			continue
+		}
+		select {
+		case <-t.deadCh: // closed or already dead: the ping failing says nothing new
+		default:
+			transportLogf("%s: hub heartbeat: %v; reconnecting", t.name, err)
+			t.markDead()
+		}
+		return
+	}
 }
 
 func (t *hubTransport) markDead() { t.deadOnce.Do(func() { close(t.deadCh) }) }

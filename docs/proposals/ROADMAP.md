@@ -152,9 +152,23 @@ updated where the mechanism changed; this is the short list):
   HUB/NAME` whose daemon cannot come up records the mapping and exits
   non-zero (a stopped hub VM and an unreachable hub look alike from here).
   `listMachines`'s `run/HUB@*.sock` enumeration had already shipped in
-  step 1; step 6 only adds its test. A laptop `stop HUB/NAME` leaves the
-  laptop daemon `reconnecting` (as a hub-side `stop web` does); `start`
-  kicks it. The cli test binary's `TestMain` refuses `__daemon`, so a
+  step 1; step 6 only adds its test. A laptop `stop HUB/NAME` (and
+  `deprovision HUB/NAME`) stops the laptop daemon once the hub's command
+  succeeds, as a local `stop` does, instead of leaving it redialing a
+  stopped VM's `__session` every 30s; `start HUB/NAME` respawns it. A
+  hub-side `stop web` still leaves the laptop daemon `reconnecting`. **Relay
+  heartbeat** (pre-release fix): the relay open carries `"heartbeat":20`
+  (seconds, echoed), the laptop pings at that interval, and the hub
+  daemon closes a relay it has read nothing from for three intervals
+  (60s), which ends the `__session` and drops its forwards; a ping
+  unanswered for two intervals marks the laptop's transport dead. Local
+  sessions keep no deadline (hub.md §7). `delete` (local, `HUB/NAME`, and
+  every `HUB@*` on `delete HUB`) stops the daemon, waits for it to be
+  gone, then removes its `run/` log and any socket or master nobody
+  answers (`session.Reap`); the lock goes only after the conf does
+  (unlinking a contended flock lets two starters past it), so `HUB/NAME`
+  keeps its empty lock. `ssh -O exit`'s stderr no longer
+  reaches the daemon log. The cli test binary's `TestMain` refuses `__daemon`, so a
   test that reaches `session.Dial` fails fast instead of re-running the
   suite as a "daemon". "The daemon binds nothing for a relay" has no code
   in step 6: `sess.relay` is recorded for step 7's bridge. Swift: the
@@ -164,11 +178,8 @@ updated where the mechanism changed; this is the short list):
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
 
-- Step 6: every laptop reconnect writes ssh's "Exit request sent." (and
-  sometimes "Control socket connect … No such file") to `run/HUB@NAME.log`
-  when the per-machine master is torn down; `delete HUB --force` leaves
-  `run/HUB@*.lock`/`.log` behind; a hub `stop`→`start` waits out the laptop's
-  reconnect backoff (up to 30s; hub-side `start` cannot kick the laptop).
+- Step 6: a hub `stop`→`start` waits out the laptop's reconnect backoff
+  (up to 30s; hub-side `start` cannot kick the laptop).
 - `create --backend hub` on a locally stamped build with a suffix
   (`…-dirty-step6`) refuses the hub as older than `hubMinVersion`: the
   suffix misses `describeRe` and sorts as a prerelease. Real tags are fine.
@@ -178,13 +189,6 @@ recorded so they are not rediscovered):
   reads `up` for up to 30s before `reconnecting`.
 - `ports list NAME` prints "no ports configured" above a live list of
   `connection`-owned forwards (cosmetic).
-- An orphan `__session` on the hub (step 6): when the laptop vanishes
-  without a FIN (lid closed, network gone), nothing tells the hub's
-  `__session` until sshd's TCP keepalive gives up, possibly hours. Until
-  then it holds its relay forwards and keeps the hub daemon up, so a hub
-  `ports down web` answers "stays up" and cannot stop it. The laptop side
-  recovers on its own (keepalives on its master, then a fresh
-  `__session`), leaving the old one alongside.
 
 - **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
   caps `machine exec` streamed stdout at 11534336 bytes ("streaming output

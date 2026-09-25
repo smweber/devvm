@@ -334,8 +334,8 @@ writes) runs end to end between the laptop daemon and the hub daemon:
 
 ```
 hub → laptop:  (blank line) devvm-session-v1            // after any login banner
-laptop → hub:  {"id":1,"op":"session","relay":true}
-hub → laptop:  {"id":1,"ok":true,"state":"up","version":"…","relay":true}
+laptop → hub:  {"id":1,"op":"session","relay":true,"heartbeat":20}
+hub → laptop:  {"id":1,"ok":true,"state":"up","version":"…","relay":true,"heartbeat":20}
                // or, hub transport down: {"id":1,"ok":false,"err":"relay session refused: …"}, then EOF
 laptop → hub:  {"id":2,"op":"add","host":3000,"guest":3000}   // host = the hub's preference: the guest port
 hub → laptop:  {"id":2,"ok":true,"host":3001}                 // the hub-loopback port
@@ -344,7 +344,28 @@ hub → laptop:  {"id":3,"ok":true}
 laptop → hub:  {"id":4,"op":"subscribe"} / {"op":"unsubscribe"}     (section 8, step 8)
 hub → laptop:  {"event":{"id":7,…}}             // subscribed bridge events
 laptop → hub:  {"reply":{"id":7,…}}             // the subscriber's answer
+laptop → hub:  {"id":5,"op":"ping"}             // every heartbeat interval
+hub → laptop:  {"id":5,"ok":true,"state":"up",…}
 ```
+
+**Heartbeat.** `heartbeat` on the open is an interval in seconds (the
+laptop sends 20) at which the far side promises to send something; the
+hub daemon echoes the value it enforces (capped at an hour) and closes the
+relay once it has *read* nothing for three intervals (60s). The laptop
+pings at the interval. Without it, a laptop that vanished without a FIN
+(lid closed, network gone) left the `__session`, its sshd and login shell,
+every forward the relay owned and the hub daemon itself alive until sshd's
+TCP keepalive gave up, around two hours, during which a hub `ports down
+web` could not stop the daemon; every laptop sleep added one more. The
+deadline is on reads, so any line counts, and a ping the hub answers late
+(its one session worker busy with a slow `add`) cannot trip it: the ping
+was read when it arrived. Closing the connection ends `__session`'s relay,
+so it exits and sshd tears the rest down; the session's forwards go with
+it. On the laptop, a ping left unanswered for two intervals marks the
+transport dead, the same reconnect a dead master or `__session` starts.
+Only a relay that declares `heartbeat` gets a deadline: a local session
+(a held `attach`, `auth`) is idle by design and its client is on the
+same host, and a local open's `heartbeat` is ignored and not echoed.
 
 The hub add is never `exact` (the hub port is an intermediate hop; an
 exact callback port matters only on the laptop, section 8), and this

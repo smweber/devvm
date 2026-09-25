@@ -14,6 +14,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/session"
 )
 
 // The hub proxy (docs/proposals/hub.md §3, roadmap step 2). A leaf run
@@ -84,6 +85,34 @@ func (a *App) hubOr(local func(cmd *cobra.Command, args []string) error) func(*c
 			return a.proxy(cmd, args)
 		}
 		return local(cmd, args)
+	}
+}
+
+// hubOrStopForwards is hubOr for the verbs that leave the VM down or gone
+// on the hub (stop, deprovision): once the proxied command succeeds, this
+// host's daemon for HUB/NAME is stopped too, as runStop and runDeprovision
+// stop a local one. Left running it would find `__session` refusing the
+// stopped VM and redial for good, every attempt (up to every 30s) an ssh
+// master, a login shell and a `devvm __session` on the hub. `start
+// HUB/NAME` brings it back (startHubMachine); `delete HUB/NAME` stops it
+// in deleteHubMachine. A proxied failure (a refusal, an aborted prompt)
+// leaves it alone: the VM may still be up.
+func (a *App) hubOrStopForwards(local func(cmd *cobra.Command, args []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if ok, err := hubMachineArg(args); err != nil {
+			return err
+		} else if !ok {
+			return local(cmd, args)
+		}
+		if err := a.proxy(cmd, args); err != nil {
+			return err
+		}
+		if cl, err := session.Existing(a.ConfigDir, args[0]); err == nil && cl.Stop() == nil {
+			// Waited out, so a `start HUB/NAME` right after spawns its
+			// daemon against a released master, not the old one's.
+			_ = session.WaitGone(a.ConfigDir, args[0], daemonGoneTimeout)
+		}
+		return nil
 	}
 }
 

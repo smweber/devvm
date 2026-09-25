@@ -263,7 +263,7 @@ func (a *App) stopCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "stop NAME",
 		Short: "Stop the machine (backend-aware)",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) }),
+		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) }),
 	}
 	a.machineArg(c)
 	return c
@@ -284,7 +284,7 @@ func (a *App) deprovisionCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "deprovision NAME",
 		Short: "Destroy the resource but keep the registry entry (rebuild with 'provision')",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runDeprovision(args[0], yes) }),
+		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runDeprovision(args[0], yes) }),
 	}
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	a.machineArg(c)
