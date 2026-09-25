@@ -480,9 +480,17 @@ func TestHubReconnectPicksUpChangedHubPort(t *testing.T) {
 	echoOK(t, host)
 	old, _ := h.forward(guest)
 
+	// The hub stays down (its re-dial is gated) until heal, so the laptop's
+	// re-dials are all refused and it cannot get past reconnecting; onDead
+	// makes the reconnecting state, the pending forwards and the dropped
+	// relay one atomic change on each side, so what is read below is the
+	// outage and nothing in between.
+	laptopStates := recordStates(l.d)
 	h.kill()
-	waitFor(t, "the laptop to go reconnecting", func() bool { st, _ := l.d.status(); return st == StateReconnecting })
-	waitFor(t, "the hub to drop the relay's forward", func() bool { _, ok := h.forward(guest); return !ok })
+	laptopStates.wait(t, StateReconnecting)
+	if _, ok := h.forward(guest); ok || h.d.sessionCount() != 0 {
+		t.Errorf("hub during the outage still holds the relay or its forward")
+	}
 	hold, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", old.Host))
 	if err != nil {
 		t.Fatalf("hold the old hub port %d: %v", old.Host, err)
@@ -493,11 +501,11 @@ func TestHubReconnectPicksUpChangedHubPort(t *testing.T) {
 	}
 
 	h.heal()
-	waitFor(t, "the laptop to come back up", func() bool {
-		st, _ := l.d.status()
-		fs := l.d.list()
-		return st == StateUp && len(fs) == 1 && !fs[0].Pending
-	})
+	// restore() sets up only once every forward is re-added and bound.
+	laptopStates.wait(t, StateReconnecting, StateUp)
+	if fs := l.d.list(); len(fs) != 1 || fs[0].Pending {
+		t.Fatalf("laptop after the outage = %+v, want its forward bound", fs)
+	}
 	now, ok := h.forward(guest)
 	if !ok || now.Host == old.Host {
 		t.Fatalf("hub forward after the outage = %+v, want a port other than the held %d", now, old.Host)
@@ -522,30 +530,45 @@ func TestRelayRefusedWhileTransportDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	hubStates, laptopStates := recordStates(h.d), recordStates(l.d)
 	h.kill()
-	waitFor(t, "the hub to go reconnecting", func() bool { st, _ := h.d.status(); return st == StateReconnecting })
+	// The hub's re-dial is gated until heal: it stays reconnecting, and
+	// onDead has dropped the killed relay from its sessions in the same
+	// critical section that set the state.
+	hubStates.wait(t, StateReconnecting)
+	if n := h.d.sessionCount(); n != 0 {
+		t.Fatalf("hub sessions right after its transport died = %d, want the relay gone", n)
+	}
+	h.d.mu.Lock()
+	ids := h.d.nextConn
+	h.d.mu.Unlock()
 
 	// A relay dialed by hand now is refused with a reply that says why.
 	_, _, err = dialHub(t, h.dir, newFakeLocal(), "")
 	if err == nil || !strings.Contains(err.Error(), "relay session refused") {
 		t.Fatalf("relay during the hub's outage: err = %v, want refused", err)
 	}
-	if h.d.sessionCount() != 0 {
-		t.Errorf("a refused relay was counted as a session")
-	}
-	// The laptop keeps retrying and stays reconnecting meanwhile.
+	// The laptop keeps retrying, every attempt refused.
 	before := l.dials.Load()
 	waitFor(t, "the laptop to retry", func() bool { return l.dials.Load() >= before+3 })
-	if st, _ := l.d.status(); st != StateReconnecting {
-		t.Errorf("laptop state during the hub outage = %s", st)
+	// Never counted, not even briefly: no refused open (this one or the
+	// laptop's) was ever given a session id.
+	h.d.mu.Lock()
+	idsAfter, n := h.d.nextConn, len(h.d.sessions)
+	h.d.mu.Unlock()
+	if idsAfter != ids || n != 0 {
+		t.Errorf("refused relays were registered: %d session ids handed out, %d sessions", idsAfter-ids, n)
+	}
+	if laptopStates.has(StateUp) {
+		t.Error("the laptop came up while the hub was down")
 	}
 
 	h.heal()
-	waitFor(t, "the laptop to come up after the hub's restore", func() bool {
-		st, _ := l.d.status()
-		fs := l.d.list()
-		return st == StateUp && len(fs) == 1 && !fs[0].Pending
-	})
+	hubStates.wait(t, StateReconnecting, StateUp)
+	laptopStates.wait(t, StateReconnecting, StateUp)
+	if fs := l.d.list(); len(fs) != 1 || fs[0].Pending {
+		t.Fatalf("laptop after the hub's restore = %+v, want its forward bound", fs)
+	}
 	echoOK(t, host)
 }
 

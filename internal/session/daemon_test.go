@@ -95,6 +95,46 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// stateLog records a daemon's state transitions as they happen (the
+// onState hook), so a test asserts on the events rather than sampling
+// d.status(), which a fast reconnect can move past between two samples.
+type stateLog struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+// recordStates installs the recorder; call it before the transition.
+func recordStates(d *daemon) *stateLog {
+	l := &stateLog{}
+	d.mu.Lock()
+	d.onState = func(s string) {
+		l.mu.Lock()
+		l.seen = append(l.seen, s)
+		l.mu.Unlock()
+	}
+	d.mu.Unlock()
+	return l
+}
+
+// has reports whether want occurred, in order (not necessarily adjacent).
+func (l *stateLog) has(want ...string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	i := 0
+	for _, s := range l.seen {
+		if i < len(want) && s == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
+}
+
+// wait blocks until the transitions in want have happened, in order.
+func (l *stateLog) wait(t *testing.T, want ...string) {
+	t.Helper()
+	waitFor(t, fmt.Sprintf("state transitions %v", want), func() bool { return l.has(want...) })
+}
+
 func waitDone(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()
 	select {
@@ -327,10 +367,10 @@ func TestDaemonReconnectBumpsTakenPort(t *testing.T) {
 		}
 		return newFakeTransport(), nil
 	}
+	states := recordStates(d)
 	done := runLoop(d)
 	first.die()
-	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
-	waitFor(t, "state back up", func() bool { s, _ := d.status(); return s == StateUp })
+	states.wait(t, StateReconnecting, StateUp) // the re-dial succeeds at once
 	defer occ.Close()
 	fs := d.list()
 	if len(fs) != 1 || fs[0].Host == pref || fs[0].Host <= pref || fs[0].Host > pref+20 {

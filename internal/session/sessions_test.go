@@ -412,10 +412,10 @@ func TestTransportDeathKeepsSessions(t *testing.T) {
 	if _, _, _, err := s.Add(pref, guest, false); err != nil {
 		t.Fatal(err)
 	}
+	states := recordStates(d)
 	done := runLoop(d)
 	first.die()
-	waitFor(t, "reconnecting", func() bool { st, _ := d.status(); return st == StateReconnecting })
-	waitFor(t, "back up", func() bool { st, _ := d.status(); return st == StateUp })
+	states.wait(t, StateReconnecting, StateUp) // the re-dial succeeds at once
 	fs := d.list()
 	if len(fs) != 1 || fs[0].Pending || fs[0].Host != pref || fmt.Sprint(fs[0].Owners) != "[connection]" {
 		t.Fatalf("after restore: %+v", fs)

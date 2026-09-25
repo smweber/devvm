@@ -205,6 +205,11 @@ type daemon struct {
 	nextConn  uint64
 	nextEvent int64
 
+	// onState, if set (tests only), sees every state change, under d.mu:
+	// a transition too quick to sample (a re-dial that succeeds at once) is
+	// still observed. It must not block or take d.mu.
+	onState func(state string)
+
 	stopOnce sync.Once
 	stop     chan struct{}
 	kick     chan struct{} // OpKick: retry now instead of waiting out the backoff
@@ -396,12 +401,22 @@ func (d *daemon) transport() transport {
 // re-binds their forwards.
 func (d *daemon) onDead() {
 	d.mu.Lock()
-	n := len(d.forwards)
 	d.setStateLocked(StateReconnecting)
+	// One critical section for everything a reader could observe, so no
+	// `list`, `ping` or `down` ever sees the daemon reconnecting with a
+	// forward still reported bound, or a closed relay still counted as a
+	// session (its own goroutine's closeSession runs later and finds it
+	// already gone).
 	relays := d.relaySessionsLocked()
-	closers, _ := d.dropOwnersLocked(func(o owner) bool {
+	for id, rs := range relays {
+		delete(d.sessions, id)
+		d.subs = removeSess(d.subs, rs)
+	}
+	dropped, _ := d.dropOwnersLocked(func(o owner) bool {
 		return o.kind == OwnerConnection && relays[o.conn] != nil
 	})
+	n := len(d.forwards) // after the relay drop: those are not restored
+	closers, tr := d.detachLocked()
 	d.mu.Unlock()
 	config.TouchChanged(d.configDir)
 	d.logf("%s: transport died; reconnecting (%d forwards to restore)", d.name, n)
@@ -411,8 +426,8 @@ func (d *daemon) onDead() {
 	for _, s := range relays {
 		s.conn.Close()
 	}
-	closeAll(closers)
-	d.teardown()
+	closeAll(dropped)
+	closeDetached(closers, tr)
 }
 
 // teardown closes every bound forward and the current transport. It runs
@@ -422,11 +437,20 @@ func (d *daemon) onDead() {
 // freeze every ping/list/add for as long.
 func (d *daemon) teardown() {
 	d.mu.Lock()
+	closers, tr := d.detachLocked()
+	d.mu.Unlock()
+	closeDetached(closers, tr)
+}
+
+// detachLocked takes every bound forward's closer (leaving the forward
+// pending) and the transport (leaving none) for the caller to close after
+// unlocking; d.mu must be held.
+func (d *daemon) detachLocked() ([]io.Closer, transport) {
 	// A transport whose own Close drops every forward (the hub relay: the
 	// hub releases whatever the closed connection owned) is told first, so
-	// the per-forward closers below skip the round trips that Close makes
-	// moot. Against a wedged link each would otherwise wait out its timeout
-	// in turn, and stop/update would take N times that.
+	// the per-forward closers skip the round trips that Close makes moot.
+	// Against a wedged link each would otherwise wait out its timeout in
+	// turn, and stop/update would take N times that.
 	if ta, ok := d.tr.(teardownAware); ok {
 		ta.beginTeardown()
 	}
@@ -439,7 +463,12 @@ func (d *daemon) teardown() {
 	}
 	tr := d.tr
 	d.tr = nil // a bind in flight on the old transport sees this and stays pending
-	d.mu.Unlock()
+	return closers, tr
+}
+
+// closeDetached closes what detachLocked took, outside d.mu: on ssh each
+// close is an `ssh -O` subprocess.
+func closeDetached(closers []io.Closer, tr transport) {
 	for _, c := range closers {
 		c.Close()
 	}
@@ -456,6 +485,9 @@ func (d *daemon) setStateLocked(state string) (changed bool) {
 		return false
 	}
 	d.state, d.since = state, time.Now()
+	if d.onState != nil {
+		d.onState(state)
+	}
 	return true
 }
 
