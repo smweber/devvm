@@ -10,9 +10,13 @@ import (
 // any controlling terminal, so these exercise pure flag > config.toml > compiled
 // resolution without touching huh.
 
+// newTestApp's config dir is short (shortTempDir, under /tmp): tests that
+// serve a daemon socket under run/ would otherwise exceed macOS's 104-byte
+// unix socket path limit whenever the test's name is long, since
+// t.TempDir() there is /var/folders/…/T/TestName…/001.
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	return &App{ConfigDir: t.TempDir()}
+	return &App{ConfigDir: shortTempDir(t)}
 }
 
 func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {

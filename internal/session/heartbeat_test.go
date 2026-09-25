@@ -128,7 +128,7 @@ func TestRelayHeartbeatPingsKeepRelay(t *testing.T) {
 	_, guest := echoServer(t)
 	h := newHubRig(t)
 	l := newLaptopRig(t, h, false)
-	host, _, _, err := l.d.add(freePort(t), guest, false, confOwner)
+	host, _, _, err := l.d.add(farPort(t), guest, false, confOwner) // farPort: see there
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,9 @@ func TestRelayHeartbeatPingsKeepRelay(t *testing.T) {
 // The deadline is on reads: pings the hub reads on time but answers late,
 // its one worker held by a slow bind, do not trip it.
 func TestRelayHeartbeatLateRepliesDoNotTrip(t *testing.T) {
-	fastHeartbeats(t, 100*time.Millisecond)
+	// A 900ms deadline against a ping every 150ms: a 6x margin, so a
+	// stalled runner under -race (macOS CI) does not read as silence.
+	fastHeartbeats(t, 150*time.Millisecond)
 	dir := shortTempDir(t)
 	d := startSockDaemon(t, dir)
 	g := newGateTransport()
@@ -156,11 +158,11 @@ func TestRelayHeartbeatLateRepliesDoNotTrip(t *testing.T) {
 	d.tr = g
 	d.mu.Unlock()
 	l := dialLine(t, dir, "t")
-	l.open(Request{Relay: true, Heartbeat: 2}) // 600ms of silence closes it
+	l.open(Request{Relay: true, Heartbeat: 2}) // 900ms of silence closes it
 	_, guest := echoServer(t)
 	l.send(Request{ID: 2, Op: OpAdd, Host: freePort(t), Guest: guest})
-	<-g.entered              // the worker is in the bind, and stays there
-	for i := 0; i < 9; i++ { // 1.35s: past two deadlines, a ping every quarter of one
+	<-g.entered               // the worker is in the bind, and stays there
+	for i := 0; i < 13; i++ { // 1.95s: past two deadlines, a ping every sixth of one
 		time.Sleep(150 * time.Millisecond)
 		l.send(Request{ID: int64(10 + i), Op: OpPing})
 	}
@@ -172,7 +174,7 @@ func TestRelayHeartbeatLateRepliesDoNotTrip(t *testing.T) {
 	if err != nil || resp.ID != 2 || !resp.OK {
 		t.Fatalf("the add's reply = %+v, %v", resp, err)
 	}
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 13; i++ {
 		if resp, err := l.recv(5 * time.Second); err != nil || resp.ID != int64(10+i) {
 			t.Fatalf("ping %d reply = %+v, %v", i, resp, err)
 		}

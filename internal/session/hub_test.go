@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"os"
 	"strings"
@@ -343,7 +344,7 @@ func TestHubForwardAddRemove(t *testing.T) {
 		}
 		checked.Store(true)
 	}
-	pref := freePort(t)
+	pref := farPort(t)
 	host, _, pending, err := l.d.add(pref, guest, false, confOwner)
 	if err != nil || pending || host != pref {
 		t.Fatalf("laptop add = %d pending=%v err=%v", host, pending, err)
@@ -383,7 +384,7 @@ func TestHubSessionKillDropsItsForwards(t *testing.T) {
 	h := newHubRig(t)
 	l := newLaptopRig(t, h, false)
 	for _, g := range []int{g1, g2} {
-		if _, _, _, err := l.d.add(freePort(t), g, false, confOwner); err != nil {
+		if _, _, _, err := l.d.add(farPort(t), g, false, confOwner); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -407,7 +408,7 @@ func TestHubTransportCloseEndsRelay(t *testing.T) {
 	_, guest := echoServer(t)
 	h := newHubRig(t)
 	l := newLaptopRig(t, h, false)
-	if _, _, _, err := l.d.add(freePort(t), guest, false, confOwner); err != nil {
+	if _, _, _, err := l.d.add(farPort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	l.hubTransport().Close()
@@ -429,11 +430,11 @@ func TestRelayClosedOnTransportDeathLocalSurvives(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { local.Close() })
-	if _, _, _, err := local.Add(freePort(t), gLocal, false); err != nil {
+	if _, _, _, err := local.Add(farPort(t), gLocal, false); err != nil {
 		t.Fatal(err)
 	}
 	l := newLaptopRig(t, h, false)
-	if _, _, _, err := l.d.add(freePort(t), gRelay, false, confOwner); err != nil {
+	if _, _, _, err := l.d.add(farPort(t), gRelay, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	ht := l.hubTransport()
@@ -460,7 +461,7 @@ func TestRelayClosedOnTransportDeathLocalSurvives(t *testing.T) {
 	}
 	// The local session is the same connection, never reconnected: it can
 	// still add.
-	if _, _, _, err := local.Add(freePort(t), gRelay, false); err != nil {
+	if _, _, _, err := local.Add(farPort(t), gRelay, false); err != nil {
 		t.Errorf("local session after the hub's reconnect: %v", err)
 	}
 }
@@ -472,7 +473,7 @@ func TestHubReconnectPicksUpChangedHubPort(t *testing.T) {
 	_, guest := echoServer(t)
 	h := newHubRig(t)
 	l := newLaptopRig(t, h, true)
-	host, _, _, err := l.d.add(freePort(t), guest, false, confOwner)
+	host, _, _, err := l.d.add(farPort(t), guest, false, confOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +518,7 @@ func TestRelayRefusedWhileTransportDown(t *testing.T) {
 	_, guest := echoServer(t)
 	h := newHubRig(t)
 	l := newLaptopRig(t, h, true)
-	host, _, _, err := l.d.add(freePort(t), guest, false, confOwner)
+	host, _, _, err := l.d.add(farPort(t), guest, false, confOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +619,7 @@ func TestHubPendingReplyLeavesLaptopPending(t *testing.T) {
 		return nil, errors.New("no dial in this test")
 	})
 	d.logf = t.Logf
-	pref := freePort(t)
+	pref := farPort(t)
 	host, _, pending, err := d.add(pref, 3000, false, confOwner)
 	if err != nil || !pending || host != pref {
 		t.Fatalf("add on a pending hub = %d pending=%v err=%v, want %d pending", host, pending, err, pref)
@@ -721,7 +722,7 @@ func TestHubTeardownBounded(t *testing.T) {
 	d.logf = t.Logf
 	for i := 0; i < 4; i++ {
 		_, g := echoServer(t)
-		if _, _, p, err := d.add(freePort(t), g, false, confOwner); err != nil || p {
+		if _, _, p, err := d.add(farPort(t), g, false, confOwner); err != nil || p {
 			t.Fatalf("add: %v pending=%v", err, p)
 		}
 	}
@@ -753,7 +754,7 @@ func TestHubForwardCloseRemovesOnHub(t *testing.T) {
 	}
 	defer ht.Close()
 	_, g := echoServer(t)
-	host := freePort(t)
+	host := farPort(t)
 	fc, err := ht.forward(host, g)
 	if err != nil {
 		t.Fatal(err)
@@ -836,7 +837,7 @@ func TestHubAddErrorLeavesRestorePending(t *testing.T) {
 		return n
 	}
 	d.state = StateReconnecting
-	pref := freePort(t)
+	pref := farPort(t)
 	if _, _, pending, err := d.add(pref, 3000, false, confOwner); err != nil || !pending {
 		t.Fatalf("add while reconnecting = pending %v, %v", pending, err)
 	}
@@ -863,7 +864,7 @@ func TestHubAddErrorLeavesRestorePending(t *testing.T) {
 	}
 	// A first add reports the hub's text as is.
 	reason.Store("guest is not listening")
-	_, _, _, err = d.add(freePort(t), 3001, false, confOwner)
+	_, _, _, err = d.add(farPort(t), 3001, false, confOwner)
 	if err == nil || err.Error() != "hub: guest is not listening" || !errors.Is(err, errHubRefused) || errors.Is(err, errPortExhausted) {
 		t.Errorf("a first add on a refusing hub: err = %v", err)
 	}
@@ -918,3 +919,39 @@ func TestComeUpWaitHubMachine(t *testing.T) {
 		t.Errorf("HubForwardsMinVersion = %s: it must be the first tag shipping hub forwards; change this test with it", HubForwardsMinVersion)
 	}
 }
+
+// farPort is a free loopback port from 20000-29999, below every OS's
+// ephemeral range (Linux 32768+, macOS 49152+), for this host's side of a
+// hub forward. The hub rig shares the host: it prefers the guest port,
+// which the echo server holds, and bumps up from it, through ephemeral
+// ports. freePort's answer is an ephemeral port too, and macOS hands them
+// out sequentially, so the laptop's preference was exactly where the hub's
+// bump landed (CI: "laptop add = P+1", "laptop port moved"). A port from
+// this range can never be one of the hub's. Ports handed out are not
+// handed out again in the same run, so two calls before either binds
+// cannot collide.
+func farPort(t *testing.T) int {
+	t.Helper()
+	farMu.Lock()
+	defer farMu.Unlock()
+	for tries := 0; tries < 1000; tries++ {
+		p := 20000 + rand.IntN(10000)
+		if farUsed[p] {
+			continue
+		}
+		ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			continue
+		}
+		ln.Close()
+		farUsed[p] = true
+		return p
+	}
+	t.Fatal("no free port in 20000-29999")
+	return 0
+}
+
+var (
+	farMu   sync.Mutex
+	farUsed = map[int]bool{}
+)
