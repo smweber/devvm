@@ -45,10 +45,14 @@ func serveOwnerDaemon(t *testing.T, configDir, name string, resp map[string]sess
 		t.Fatal(err)
 	}
 	sock := filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".sock")
-	ln, err := net.Listen("unix", sock)
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// One unlink, the explicit one after the close (as the real daemon's
+	// shutdown does): Close's own unlink followed by that Remove could
+	// delete a replacement's socket that appeared in between.
+	ln.SetUnlinkOnClose(false)
 	t.Cleanup(func() { ln.Close() })
 	od := &ownerDaemon{resp: resp}
 	go func() {

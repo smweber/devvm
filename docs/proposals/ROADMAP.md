@@ -1,7 +1,7 @@
 # Roadmap: hubs + browser bridge
 
-Status: 2026-09-25, **steps 1–4 (Milestone A, released as v0.1.13), 5 and 6
-(Milestone B) implemented and committed**;
+Status: 2026-09-27, **steps 1–4 (Milestone A, released as v0.1.13), 5 and 6
+(Milestone B, released as v0.1.14) and step 7 implemented and committed**;
 see Progress below. Plan text revised after a sixth review (`status --local` for
 hub listings so hubs never fan out, relay sessions refused while a
 transport is down, `keys add`/`repos add` inputs resolved on the laptop,
@@ -49,8 +49,26 @@ live list passed on the ThinkPad (`tp`, real smol) with `cloud` (`h`) for the
 forwards (needs v0.1.14 or newer)"). **The next release must be v0.1.14 or
 later** (`session.HubForwardsMinVersion`, pinned by a test). One agent exec
 served the relay throughout; reconnects took 2–4s after killing the hub
-daemon, the laptop master, or the hub's agent exec. Both hubs run the step 6
-cross-build. Next: step 7.
+daemon, the laptop master, or the hub's agent exec. v0.1.14 shipped steps
+5–6 plus the menubar drop shelf and four pre-release fixes from a Fable design
+review (relay heartbeat, `stop HUB/NAME` stops the laptop daemon, quiet
+`-O exit`, `delete` reaps run files).
+
+**Step 7 landed 2026-09-27** (prep refactors from the design review, then the
+bridge; three review rounds). Its live list passed on the ThinkPad driven from
+the hub (fake `xdg-open` first on PATH): direct, redirect (exact 1455, `ttl=`),
+external, no subscriber, no opener, the 10/min rate limit, a killed hub daemon
+mid-attach, a literal `[::1]` URL; exactly one `devvm-agent serve` throughout.
+The ThinkPad runs the step 7 cross-build. **Do not release between step 7 and
+step 8** (thin `auth` removes the second exec). Next: step 8.
+
+**Step 7 implemented 2026-09-26** (working copy, not committed; review and
+the live list pending). It opened with six prep refactors asked for by a
+design review of steps 5–6, each landed and tested on its own: forwards
+close in `transport.Close()` (`teardownAware` gone), owners carry data
+(`ownerInfo`), `restore()` and the ticker share `rebindPending`, the
+`subscriber` hook for step 8, events handled off `loop()`, and hook-counted
+negative tests instead of sleeps. `build.sh` regenerated the agents.
 
 **Tag `v0.1.13` from step 4 or later, never from an earlier commit.**
 `hubMinVersion` (`internal/cli/hub.go`, pinned by a test) is `v0.1.13`
@@ -174,9 +192,61 @@ updated where the mechanism changed; this is the short list):
   in step 6: `sess.relay` is recorded for step 7's bridge. Swift: the
   `isDirect` gate is gone; Ports items and the "Open localhost:PORT"
   lookups cover hub machines.
+- **7.** Prep first (Progress). Every transport's `Close()` drops every
+  forward it carries, so `teardown` is detach plus `Close` and no forward
+  is closed one by one (smol and the test fake track their listeners in a
+  `forwardSet`). `rebindPending(tr, failFast)` also skips a forward only
+  relays hold. The `subscriber` hook (hub §8 has the call rules) is called
+  by nobody's transport yet. The daemon refuses non-http(s) URLs itself;
+  the privileged/reconnecting/bind checks apply to local subscribers only;
+  a loopback URL without a port is its scheme's default and so refused.
+  `deliverTo` names the subscriber the handler chose. The 20-forward cap
+  counts bridge-held forwards (ttl, or a local session's connection) with
+  no conf owner and only when a new forward would be made; the rate limit
+  counts admitted opens. A ttl refresh only ever extends. `ports list`
+  appends `ttl=…` after `owner=`/`exact` (menubar-safe: after the parsed
+  tokens). `attach`/`shell` subscribe only on a running smol machine
+  (remote boxes have no events yet); failure is a one-line notice.
+  `hostbrowser.Sanitize` lost its `localhost:1455` rewrite (a redirect_uri
+  must reach the provider verbatim; forwards bind `::1` too). `auth` keeps
+  its private session but answers the agent and uses the shared install
+  and `session.CallbackPort` (its 1455 pre-bind stays, harmless: the
+  callback bind is idempotent). Wire shapes: bridge §1–2 "As shipped".
+  Two pre-existing cli test flakes fixed on the way: `serveOwnerDaemon`
+  unlinked a socket twice (Close's auto-unlink, then `os.Remove`, which
+  could delete the replacement's), and `TestRestartDaemonsCyclesHubMachineDaemon`
+  raced the refused `__daemon`'s exit against its stand-in (the refusal
+  now waits for a socket the test names, `DEVVM_TEST_DAEMON_WAIT_SOCK`).
+  Review fixes (no blockers): a connection owner is recorded only while its
+  session is registered (a subscriber closing between choice and bind left
+  a forward nobody could drop, pinning the daemon and its exec); the cap is
+  checked in the critical section that creates the forward; agent/shim
+  install paths are shell-quoted; the agent answers the shim itself on a
+  timeout; event bodies and in-flight event streams are bounded; upstream
+  hook calls are ordered (last desired state wins); `restore()` expires
+  lapsed ttl owners first. **Known issue, closed by step 8, no release in
+  between:** every smol `attach`/`shell` now holds the daemon's agent exec,
+  and `auth` on smol still spawns its own `serve --auth`, so `auth` during
+  an attach runs two execs into one VM (the one-exec rule). Step 8's thin
+  `auth` removes the second.
+  Test-rig fixes found under `GOMEMLIMIT` (memory-capped guest): the
+  in-process `__session` relay let its laptop-side `*os.File` become
+  unreachable, and its finalizer's close read as EOF on the hub (the relay
+  goroutine now keeps it alive); test daemons never closed their
+  transports, and the leaked listeners hit the 1024-fd limit, so later
+  binds read as busy (cleanups now stop and tear down); the late-dial
+  tests wait on a signal from the dial instead of sleeping.
 
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
+
+- Step 7: `devvm-open-url` exits 0 even when the open was refused (the reply
+  text says so); the redirect TTL's 10-minute expiry was not live-tested.
+  The host browser is opened by the subscribing `attach`/`shell` process, so
+  its PATH (not the daemon's) decides the opener.
+- The Environments note that a process backgrounded in a detached `exec`
+  "dies with that exec" did not hold on the ThinkPad: the guest `http.server`
+  kept serving with no host-side exec visible.
 
 - Step 6: a hub `stop`→`start` waits out the laptop's reconnect backoff
   (up to 30s; hub-side `start` cannot kick the laptop).

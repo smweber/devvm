@@ -50,10 +50,10 @@ type Proxier interface {
 }
 
 // NoSubscribeEnv is set on every proxied command line (roadmap shared
-// decision 3): a proxied attach/shell/auth must hold the hub daemon but
-// never subscribe to its browser events, because the laptop subscribes
-// through its own relay instead (hub.md §8). It is exported as the
-// contract's name; nothing reads it before step 5's session client.
+// decision 3): a proxied attach/shell/auth must never subscribe to the hub
+// daemon's browser events, because the laptop subscribes through its own
+// relay instead (hub.md §8). attach and shell read it (cli.noSubscribe) and
+// then leave the daemon alone entirely; thin auth follows in step 8.
 const NoSubscribeEnv = "DEVVM_NO_SUBSCRIBE"
 
 // ProxyArgv is the hub-side command line for a proxied devvm argv:

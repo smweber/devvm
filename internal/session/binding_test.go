@@ -47,24 +47,24 @@ func (g *gateTransport) forward(h, gp int) (io.Closer, error) {
 	return g.fakeTransport.forward(h, gp)
 }
 
-type addResult struct {
+type addOutcome struct {
 	host    int
 	pending bool
 	err     error
 }
 
-func addAsync(d *daemon, pref, guest int, exact bool, own owner) <-chan addResult {
-	ch := make(chan addResult, 1)
+func addAsync(d *daemon, pref, guest int, exact bool, own owner) <-chan addOutcome {
+	ch := make(chan addOutcome, 1)
 	go func() {
 		h, _, p, err := d.add(pref, guest, exact, own)
-		ch <- addResult{h, p, err}
+		ch <- addOutcome{h, p, err}
 	}()
 	return ch
 }
 
 // waitBlocked gives a second add time to reach the in-flight slot and wait
 // on it; it must not return while the first bind is held.
-func waitBlocked(t *testing.T, ch <-chan addResult, what string) {
+func waitBlocked(t *testing.T, ch <-chan addOutcome, what string) {
 	t.Helper()
 	select {
 	case r := <-ch:
@@ -73,14 +73,14 @@ func waitBlocked(t *testing.T, ch <-chan addResult, what string) {
 	}
 }
 
-func recv(t *testing.T, ch <-chan addResult) addResult {
+func recv(t *testing.T, ch <-chan addOutcome) addOutcome {
 	t.Helper()
 	select {
 	case r := <-ch:
 		return r
 	case <-time.After(5 * time.Second):
 		t.Fatal("add did not return")
-		return addResult{}
+		return addOutcome{}
 	}
 }
 
@@ -91,6 +91,7 @@ func TestRacingAddsFirstBindFails(t *testing.T) {
 	_, guest := echoServer(t)
 	g := newGateTransport()
 	d := newTestDaemon(t)
+	regSession(d, 7)
 	d.tr = g
 	pref := freePort(t)
 	first := addAsync(d, pref, guest, false, confOwner)
@@ -299,7 +300,7 @@ func TestRestoreSkipsSlotBeingBound(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
 	d.mu.Lock()
-	f := newFwd(freePort(t), guest, false, confOwner)
+	f := newFwd(freePort(t), guest, false, confOwner, ownerInfo{})
 	f.startBinding()
 	d.forwards[guest] = f
 	d.setStateLocked(StateReconnecting)
@@ -438,6 +439,7 @@ func TestRemoveMidBindMakesNewAddWait(t *testing.T) {
 	_, guest := echoServer(t)
 	g := newGateTransport()
 	d := newTestDaemon(t)
+	regSession(d, 1)
 	d.tr = g
 	pref := freePort(t)
 	first := addAsync(d, pref, guest, false, connOwner(1))

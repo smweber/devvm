@@ -34,7 +34,7 @@ func startSockDaemon(t *testing.T, dir string) *daemon {
 	}
 	d.ln, d.sockInfo = ln, info
 	go d.serveControl()
-	t.Cleanup(func() { d.ln.Close(); d.closeAllSessions() })
+	t.Cleanup(func() { d.ln.Close(); d.closeAllSessions(); releaseDaemon(d) })
 	return d
 }
 
@@ -85,6 +85,7 @@ func owners(d *daemon, guest int) []string {
 func TestForwardClosesOnlyWhenLastOwnerDrops(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
+	regSession(d, 7)
 	pref := freePort(t)
 	for _, own := range []owner{confOwner, connOwner(7), ttlOwner} {
 		if host, _, _, err := d.add(pref, guest, false, own); err != nil || host != pref {
@@ -113,6 +114,7 @@ func TestForwardClosesOnlyWhenLastOwnerDrops(t *testing.T) {
 func TestOneShotRemoveOwnerRules(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
+	regSession(d, 3)
 	pref := freePort(t)
 	d.add(pref, guest, false, confOwner)
 	d.add(pref, guest, false, connOwner(3))
@@ -163,10 +165,12 @@ func TestDownWithSessionLeavesDaemon(t *testing.T) {
 	if portOpen(p1) || !portOpen(p2) {
 		t.Fatalf("after down: conf forward open=%v, session forward open=%v", portOpen(p1), portOpen(p2))
 	}
+	// down decides synchronously: a daemon it stops has d.stop closed
+	// before the reply, so checking now is not a race against a timer.
 	select {
-	case <-done:
+	case <-d.stop:
 		t.Fatal("down stopped a daemon a session holds")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 	s.Close()
 	// The session and its owners go in one critical section: once the
@@ -197,12 +201,14 @@ func TestSessionHoldsDaemonPastIdle(t *testing.T) {
 	dir := shortTempDir(t)
 	d := startSockDaemon(t, dir)
 	d.idle = 30 * time.Millisecond
+	held := countIdleChecks(d)
 	s := testSession(t, dir, SessionOptions{})
 	done := runLoop(d)
+	waitFor(t, "three idle checks that found the daemon held", func() bool { return held.Load() >= 3 })
 	select {
 	case <-done:
 		t.Fatal("daemon idled out under an open session")
-	case <-time.After(10 * d.idle):
+	default:
 	}
 	s.Close()
 	waitDone(t, done, "the last session closed")
@@ -216,13 +222,16 @@ func TestReconnectIdleRuleCountsSessions(t *testing.T) {
 	d.idle = 30 * time.Millisecond
 	first := d.tr.(*fakeTransport)
 	s := testSession(t, dir, SessionOptions{})
+	held := countIdleChecks(d)
 	done := runLoop(d)
 	first.die()
 	waitFor(t, "reconnecting", func() bool { st, _ := d.status(); return st == StateReconnecting })
+	from := held.Load()
+	waitFor(t, "three idle checks in reconnect that found the daemon held", func() bool { return held.Load() >= from+3 })
 	select {
 	case <-done:
 		t.Fatal("reconnect idled out under an open session")
-	case <-time.After(10 * d.idle):
+	default:
 	}
 	s.Close()
 	waitDone(t, done, "the session closed while reconnecting")
@@ -483,6 +492,8 @@ func TestRestoreLeavesExactPendingAndTickerRebinds(t *testing.T) {
 	}
 	var occ net.Listener
 	var redialed atomic.Bool
+	var passes atomic.Int32
+	d.onRetry = func() { passes.Add(1) }
 	second := newFakeTransport()
 	d.dial = func() (transport, error) {
 		if occ == nil {
@@ -505,7 +516,10 @@ func TestRestoreLeavesExactPendingAndTickerRebinds(t *testing.T) {
 	if len(fs) != 1 || !fs[0].Pending || fs[0].Host != pref || !fs[0].Exact {
 		t.Fatalf("exact forward after restore with its port held = %+v, want pending on %d", fs, pref)
 	}
-	time.Sleep(5 * d.retryEvery)
+	// Five ticker passes that each saw the port held: counted, not slept
+	// for, so a slow host cannot make this pass without the ticks having run.
+	from := passes.Load()
+	waitFor(t, "five ticker passes with the port held", func() bool { return passes.Load() >= from+5 })
 	if second.binds.Load() != 0 {
 		t.Fatalf("exact forward bound (bumped?) while its port was held: %d binds", second.binds.Load())
 	}
@@ -528,10 +542,16 @@ func TestSessionClientReconnectsAndResubscribes(t *testing.T) {
 	dir := shortTempDir(t)
 	d1 := startSockDaemon(t, dir)
 	reconnected := make(chan struct{}, 1)
+	var failedRedials atomic.Int32
 	s := testSession(t, dir, SessionOptions{
 		OnEvent:     named("me"),
 		OnReconnect: func() { reconnected <- struct{}{} },
-		Logf:        t.Logf,
+		Logf: func(f string, a ...any) {
+			if strings.Contains(f, "reconnect attempt") {
+				failedRedials.Add(1)
+			}
+			t.Logf(f, a...)
+		},
 	})
 	if err := s.Subscribe(); err != nil {
 		t.Fatal(err)
@@ -543,7 +563,9 @@ func TestSessionClientReconnectsAndResubscribes(t *testing.T) {
 	if _, err := os.Stat(socketPath(dir, "t")); !os.IsNotExist(err) {
 		t.Fatalf("socket still there after shutdown: %v", err)
 	}
-	time.Sleep(30 * time.Millisecond) // a few failed redials against no socket
+	// A few redials fail against no socket before a daemon comes back: the
+	// client must keep trying, not give up after the first.
+	waitFor(t, "two failed redials", func() bool { return failedRedials.Load() >= 2 })
 	d2 := startSockDaemon(t, dir)
 	select {
 	case <-reconnected:
@@ -667,4 +689,16 @@ func TestForwardConfCounting(t *testing.T) {
 	if n := st.ConfCount(); n != 3 {
 		t.Fatalf("ConfCount = %d, want 3", n)
 	}
+}
+
+// countIdleChecks counts the idle checks that found the daemon held (the
+// onIdle hook); install it before runLoop.
+func countIdleChecks(d *daemon) *atomic.Int32 {
+	var held atomic.Int32
+	d.onIdle = func(idle bool) {
+		if !idle {
+			held.Add(1)
+		}
+	}
+	return &held
 }

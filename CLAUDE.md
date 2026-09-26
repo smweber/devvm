@@ -66,7 +66,7 @@ ssh has no such limit: its forwards are native `ssh -L` on a ControlMaster; only
 rpc/events ride the agent exec. **`authorized_keys` management is host-side**
 (`internal/keys` over one plain exec — read, process on the host, atomic
 write-back), so `keys` needs no agent and touches nothing on an adopt host but
-`~/.ssh`. The agent is now pulled in only by smol forwards and `auth`.
+`~/.ssh`. The agent is pulled in only on smol (forwards, `auth`, and the browser bridge that `attach`/`shell` subscribe to) and by `auth` on remote boxes.
 
 ## Two binaries, two targets — don't conflate them
 

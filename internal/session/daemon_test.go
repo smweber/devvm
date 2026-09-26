@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,12 +24,22 @@ type fakeTransport struct {
 	closeOnce sync.Once
 	closed    atomic.Bool
 	binds     atomic.Int32 // forwards bound on this transport instance
+	fwds      forwardSet   // as smol's: Close drops every listener
+	// ev is events(): nil (no events) unless a bridge test sets it before
+	// runLoop.
+	ev chan bridgeRequest
 }
+
+func (f *fakeTransport) events() <-chan bridgeRequest { return f.ev }
 
 // forward uses the real transports' listenLoopback, so the dual-stack rule
 // (IPv4 decides busy, ::1 best-effort) is what the tests exercise.
 func (f *fakeTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 	lns, err := listenLoopback(hostPort)
+	if err != nil {
+		return nil, err
+	}
+	c, err := f.fwds.track(listeners(lns))
 	if err != nil {
 		return nil, err
 	}
@@ -51,12 +62,16 @@ func (f *fakeTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 		}(ln)
 	}
 	f.binds.Add(1)
-	return listeners(lns), nil
+	return c, nil
 }
 
 func (f *fakeTransport) dead() <-chan struct{} { return f.dc }
+
+// Close drops every forward bound on it, as the real transports' Close
+// does (transport.Close): the daemon's teardown closes none of them itself.
 func (f *fakeTransport) Close() error {
 	f.closed.Store(true)
+	f.fwds.closeAll()
 	return nil
 }
 
@@ -72,7 +87,16 @@ func newTestDaemon(t *testing.T) *daemon {
 	})
 	d.logf = t.Logf
 	d.minBackoff, d.maxBackoff = 5*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { releaseDaemon(d) })
 	return d
+}
+
+// releaseDaemon stops a test daemon and closes its transport, so the
+// listeners it bound are released: one test binary runs hundreds of these,
+// and with a 1024-fd limit the leaked ones made later binds read as busy.
+func releaseDaemon(d *daemon) {
+	d.triggerStop()
+	d.teardown()
 }
 
 // runLoop runs the supervision loop in the background and returns a channel
@@ -548,11 +572,18 @@ func TestDaemonStopInterruptsHangingDial(t *testing.T) {
 	}
 	release := make(chan struct{})
 	late := newFakeTransport()
-	d.dial = func() (transport, error) { <-release; return late, nil }
+	dialing := make(chan struct{}, 1)
+	d.dial = func() (transport, error) {
+		select {
+		case dialing <- struct{}{}:
+		default:
+		}
+		<-release
+		return late, nil
+	}
 	done := runLoop(d)
 	first.die()
-	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
-	time.Sleep(3 * d.minBackoff) // let the dial start and hang
+	<-dialing // the dial started and hangs: signalled, not slept for
 	d.triggerStop()
 	waitDone(t, done, "stop during a hanging dial")
 	close(release)
@@ -680,7 +711,15 @@ func TestDaemonShutdownWaitsForLateDial(t *testing.T) {
 	first := newFakeTransport()
 	release := make(chan struct{})
 	late := newFakeTransport()
-	d := newDaemon(dir, "t", "test", first, func() (transport, error) { <-release; return late, nil })
+	dialing := make(chan struct{}, 1)
+	d := newDaemon(dir, "t", "test", first, func() (transport, error) {
+		select {
+		case dialing <- struct{}{}:
+		default:
+		}
+		<-release
+		return late, nil
+	})
 	d.logf = t.Logf
 	d.minBackoff, d.maxBackoff = 5*time.Millisecond, 20*time.Millisecond
 	ln, info, err := listenControl(sock)
@@ -693,8 +732,7 @@ func TestDaemonShutdownWaitsForLateDial(t *testing.T) {
 	}
 	done := runLoop(d)
 	first.die()
-	waitFor(t, "reconnecting state", func() bool { s, _ := d.status(); return s == StateReconnecting })
-	time.Sleep(3 * d.minBackoff) // the dial is now hanging on release
+	<-dialing // the dial is now hanging on release
 	d.triggerStop()
 	waitDone(t, done, "stop")
 	shut := make(chan struct{})
@@ -883,4 +921,15 @@ func shortTempDir(t *testing.T) string {
 		dir = resolved
 	}
 	return dir
+}
+
+// regSession registers a bare local session with this id, so a test can add
+// forwards owned by connOwner(id): addWith records a connection owner only
+// while its session is registered.
+func regSession(d *daemon, id uint64) *sess {
+	s := &sess{id: id, conn: nopConn{}, pending: map[int64]chan json.RawMessage{}, done: make(chan struct{})}
+	d.mu.Lock()
+	d.sessions[id] = s
+	d.mu.Unlock()
+	return s
 }

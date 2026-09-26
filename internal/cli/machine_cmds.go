@@ -28,37 +28,42 @@ func (a *App) runExec(name string, argv []string) error {
 
 // runShell opens a raw login shell (no tmux); runAttach joins the dev tmux
 // session. Both dispatch to the backend's Interactive surface, with the
-// transport (ssh|mosh) resolved from the flag or conf for remote machines.
+// transport (ssh|mosh) resolved from the flag or conf for remote machines,
+// and hold the browser bridge (bridgeSession) for as long as they run.
 func (a *App) runShell(name, transport string) error {
-	it, tr, err := a.interactive(name, transport)
+	it, tr, release, err := a.interactive(name, transport)
 	if err != nil {
 		return err
 	}
+	defer release()
 	return it.Shell(tr)
 }
 
 func (a *App) runAttach(name, transport string) error {
-	it, tr, err := a.interactive(name, transport)
+	it, tr, release, err := a.interactive(name, transport)
 	if err != nil {
 		return err
 	}
+	defer release()
 	return it.Attach(tr)
 }
 
-func (a *App) interactive(name, transport string) (backend.Interactive, string, error) {
+func (a *App) interactive(name, transport string) (backend.Interactive, string, func(), error) {
 	m, b, err := a.resolveLive(name)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	it, ok := b.(backend.Interactive)
 	if !ok {
-		return nil, "", fmt.Errorf("backend %q is not interactive", m.Backend)
+		return nil, "", nil, fmt.Errorf("backend %q is not interactive", m.Backend)
 	}
 	tr, err := resolveTransport(m, transport)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return it, tr, nil
+	// Subscribed (acked) before the session starts, so the first URL a
+	// program in it opens already reaches this host.
+	return it, tr, a.bridgeSession(m, b), nil
 }
 
 // resolveTransport picks the interactive transport: an explicit --transport flag

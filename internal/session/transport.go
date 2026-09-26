@@ -28,16 +28,38 @@ type transport interface {
 	// forward binds 127.0.0.1:hostPort, and [::1]:hostPort best-effort, and
 	// carries connections to the guest's 127.0.0.1:guestPort. Returns
 	// errPortBusy if the IPv4 port can't be bound; the IPv4 bind alone
-	// decides busy-or-free (browser-bridge.md §4).
+	// decides busy-or-free (browser-bridge.md §4). The closer drops this one
+	// forward (`ports rm`, an owner's last drop).
 	forward(hostPort, guestPort int) (io.Closer, error)
+	// events carries the guest's open-url requests (browser-bridge.md §1):
+	// the smol agent exec's event streams. nil when the transport has none
+	// (ssh until its agent exec ships; a hub machine until roadmap step 8),
+	// which a select never receives from.
+	events() <-chan bridgeRequest
 	dead() <-chan struct{}
+	// Close drops the transport and every forward bound on it, in one go:
+	// the daemon's teardown closes the transport, never its forwards one by
+	// one. Each transport knows the cheap way: smol closes the listeners it
+	// tracks, ssh's `-O exit` takes every -L with the master, and the hub
+	// relay's close makes the hub drop every add it owned (with the -Ls on
+	// the master going the ssh way). Closing N forwards one at a time
+	// against a wedged link would wait out N timeouts in turn.
 	Close() error
 }
 
-// teardownAware is a transport that wants to know its teardown has begun,
-// before the daemon closes its forwards one by one (daemon.teardown).
-type teardownAware interface {
-	beginTeardown()
+// subscriber is a transport that carries this daemon's subscription to a
+// daemon upstream: the hub transport (roadmap step 8) subscribes on the hub
+// daemon while this one has subscribers, so events from the hub's VM reach
+// this host (hub.md §8). Optional; no transport implements it in step 7.
+//
+// The daemon calls setSubscribed(true) on every local subscribe (each moves
+// the subscriber to the front here, and the re-send moves this host to the
+// front upstream), setSubscribed(false) when the last subscriber leaves, and
+// setSubscribed(true) from restore() on a fresh transport, after its binds
+// and before the daemon reports up, when it still has subscribers. Calls
+// run outside d.mu, serialized, each bounded by upstreamSubscribeTimeout.
+type subscriber interface {
+	setSubscribed(on bool) error
 }
 
 // newTransport builds the right transport for a resolved machine.
@@ -120,4 +142,91 @@ func (ls listeners) Close() error {
 		}
 	}
 	return first
+}
+
+// v6Reporter is a forward's closer that knows whether its [::1] side
+// bound. The bridge needs it for a literal [::1] URL (bridge §4).
+type v6Reporter interface {
+	boundV6() bool
+}
+
+// forwardHasV6 reports whether a forward's [::1] side bound. A closer that
+// cannot tell counts as dual-stack: only a known failure refuses an open.
+func forwardHasV6(c io.Closer) bool {
+	if r, ok := c.(v6Reporter); ok {
+		return r.boundV6()
+	}
+	return true
+}
+
+func (ls listeners) boundV6() bool {
+	for _, l := range ls {
+		if a, ok := l.Addr().(*net.TCPAddr); ok && a.IP.To4() == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// errTransportClosed refuses a bind on a transport that was already closed:
+// its Close could no longer drop the forward.
+var errTransportClosed = errors.New("transport closed")
+
+// forwardSet is a transport's own record of the forwards it holds in this
+// process (smol's listeners), so its Close drops them all. A forward's own
+// closer takes it out of the set; closeAll takes whatever is left.
+type forwardSet struct {
+	mu     sync.Mutex
+	closed bool
+	open   map[*trackedForward]struct{}
+}
+
+// trackedForward is one forward in a forwardSet.
+type trackedForward struct {
+	set  *forwardSet
+	c    io.Closer
+	once sync.Once
+	err  error
+}
+
+// track records c, or closes it and refuses once the set is closed.
+func (s *forwardSet) track(c io.Closer) (io.Closer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		c.Close()
+		return nil, errTransportClosed
+	}
+	if s.open == nil {
+		s.open = map[*trackedForward]struct{}{}
+	}
+	tf := &trackedForward{set: s, c: c}
+	s.open[tf] = struct{}{}
+	return tf, nil
+}
+
+func (tf *trackedForward) boundV6() bool { return forwardHasV6(tf.c) }
+
+func (tf *trackedForward) Close() error {
+	tf.once.Do(func() {
+		tf.set.mu.Lock()
+		delete(tf.set.open, tf)
+		tf.set.mu.Unlock()
+		tf.err = tf.c.Close()
+	})
+	return tf.err
+}
+
+// closeAll closes every forward still open and refuses later ones.
+func (s *forwardSet) closeAll() {
+	s.mu.Lock()
+	s.closed = true
+	open := make([]*trackedForward, 0, len(s.open))
+	for tf := range s.open {
+		open = append(open, tf)
+	}
+	s.mu.Unlock()
+	for _, tf := range open {
+		tf.Close()
+	}
 }

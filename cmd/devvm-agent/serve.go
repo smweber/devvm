@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/smweber/devvm/internal/agentrpc"
 )
@@ -33,7 +35,8 @@ func guestSockPath(name string) string {
 
 // runServe carries every forward (and rpc/events) for one machine over this
 // single exec's stdio, multiplexed with yamux. On ready it also starts a guest
-// unix-socket listener so the open-url shim can push login URLs to the host.
+// unix-socket listener so the open-url shim can push URLs to the host and
+// read back what the host did.
 // --auth selects the auth session's socket (see the socket-name comment).
 func runServe(args []string) {
 	sock := defaultSockName
@@ -73,12 +76,30 @@ func serveURLSocket(g *agentrpc.GuestSession, path string) {
 			if url == "" {
 				return
 			}
-			stream, err := g.OpenEvent()
-			if err != nil {
-				return
-			}
-			defer stream.Close()
-			json.NewEncoder(stream).Encode(agentrpc.Event{Type: agentrpc.EventOpenURL, URL: url})
+			// Request/response (browser-bridge.md §2): the host's reply line
+			// goes back to the shim verbatim, and the shim prints it.
+			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			c.Write(shimReply(g.OpenURL(url, agentrpc.AgentReplyWait)))
 		}(conn)
 	}
+}
+
+// shimReply is the line the agent hands the shim for OpenURL's result: the
+// host's reply verbatim; nothing when the host closed without one (a host
+// older than replies, which opened the URL itself: the shim then says it
+// was sent); otherwise a reply of the agent's own naming why no answer
+// came, so a timeout never reads as "sent to host browser".
+func shimReply(reply []byte, err error) []byte {
+	switch {
+	case err == nil:
+		return reply
+	case errors.Is(err, agentrpc.ErrNoReply):
+		return nil
+	}
+	why := "the host did not answer: " + err.Error()
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		why = "the host did not answer in time"
+	}
+	b, _ := json.Marshal(agentrpc.OpenReply{Err: why})
+	return append(b, '\n')
 }

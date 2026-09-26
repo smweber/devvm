@@ -255,6 +255,10 @@ func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 	// The replacement: what `__daemon h/web` would be, listening as soon as
 	// the old socket is gone (the test binary itself runs no daemon).
 	sock := filepath.Join(config.RuntimeDir(a.ConfigDir), "h@web.sock")
+	// The spawned `__daemon` (this test binary, which refuses) exits within
+	// a millisecond; it waits for the stand-in to listen first, or Dial's
+	// check after the exit races the goroutine below.
+	t.Setenv(testDaemonWaitEnv, sock)
 	next := make(chan *ownerDaemon, 1)
 	go func() {
 		for len(first.requests(session.OpStop)) == 0 {

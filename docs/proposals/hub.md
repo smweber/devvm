@@ -567,6 +567,24 @@ This changes the bridge in one way and confirms two:
 Until thin hub `auth` lands (roadmap step 8), `auth desktop/web` proxies
 verbatim and opens on the desktop. Usable, and clearly labelled in the output.
 
+**Shape fixed in roadmap step 7, for step 8.** The laptop daemon's upstream
+subscription is an optional transport interface, `subscriber
+{setSubscribed(on bool) error}`, which step 8 implements on `hubTransport`
+(`subscribe`/`unsubscribe` down `__session`). The daemon calls it outside
+its lock, serialized, each call bounded (10s): `true` on every local
+`subscribe` (the re-send that moves this host to the front on the hub),
+`false` once when the last local subscriber leaves (unsubscribe or
+disconnect), and `true` from `restore()` on each fresh transport, after its
+binds and before the daemon reports `up`, when subscribers were held
+across the outage. Calls are strictly ordered: one that times out stays
+in flight, the next waits (bounded) for it, and once it returns a re-sync
+sends whatever is wanted by then, so the last desired state wins. The
+local `subscribe` is acked after the upstream call;
+an upstream failure is the ack's error (`subscribed here, but not
+upstream: …`) while the local registration stays for `restore()` to
+re-send. A relay subscriber already receives events unbound from step 7
+on (the hub daemon side of this section).
+
 ### 9. Trust
 
 - The laptop trusts the hub as a host it has a shell on. Proxied commands run

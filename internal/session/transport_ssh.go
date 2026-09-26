@@ -118,22 +118,30 @@ func (t *sshTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 	// localhost resolves to (127.0.0.1 and, where the host has it, ::1,
 	// best-effort), so the forward is dual-stack and there is still exactly
 	// one `-O cancel` per forward.
-	return t.forwardSpec(sshForwardSpec(hostPort, guestPort))
+	return t.forwardSpec(hostPort, sshForwardSpec(hostPort, guestPort))
 }
 
-// forwardSpec adds one -L to the master and returns its canceller.
-func (t *sshTransport) forwardSpec(spec string) (io.Closer, error) {
+// forwardSpec adds one -L to the master and returns its canceller. ssh does
+// not say which families a `localhost:` spec bound, so [::1]:hostPort is
+// probed first: free there means ssh gets it too (the bridge's literal
+// [::1] check, v6Reporter; the same small race the IPv4 probe accepts).
+func (t *sshTransport) forwardSpec(hostPort int, spec string) (io.Closer, error) {
+	v6 := false
+	if ln, err := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", hostPort)); err == nil {
+		ln.Close()
+		v6 = true
+	}
 	if err := t.control("forward", "-L", spec); err != nil {
 		return nil, fmt.Errorf("ssh -O forward %s: %w", spec, err)
 	}
-	return &sshForwardCloser{t: t, spec: spec}, nil
+	return &sshForwardCloser{t: t, spec: spec, v6: v6}, nil
 }
 
 // forwardTo is the hub transport's -L (hubLocal): this host's port, both
 // families, to 127.0.0.1:hubPort on the hub. No pre-probe here: the hub
 // transport probes before it asks the hub for a port at all.
 func (t *sshTransport) forwardTo(hostPort, hubPort int) (io.Closer, error) {
-	return t.forwardSpec(hubForwardSpec(hostPort, hubPort))
+	return t.forwardSpec(hostPort, hubForwardSpec(hostPort, hubPort))
 }
 
 // hubForwardSpec is the -L spec for a hub forward: dual-stack on this host
@@ -186,6 +194,12 @@ func (t *sshTransport) markDead() {
 
 func (t *sshTransport) dead() <-chan struct{} { return t.deadCh }
 
+// events is nil: the ssh transport has no agent exec yet, so no events
+// (browser-bridge.md §1, "Remote": deferred).
+func (t *sshTransport) events() <-chan bridgeRequest { return nil }
+
+// Close exits the master, and every -L on it goes with it: one `ssh -O`,
+// however many forwards (transport.Close).
 func (t *sshTransport) Close() error {
 	t.stopOnce.Do(func() { close(t.stopCh) })
 	// Best-effort master shutdown; ignore errors (it may already be gone).
@@ -197,7 +211,10 @@ func (t *sshTransport) Close() error {
 type sshForwardCloser struct {
 	t    *sshTransport
 	spec string
+	v6   bool
 }
+
+func (c *sshForwardCloser) boundV6() bool { return c.v6 }
 
 func (c *sshForwardCloser) Close() error {
 	return c.t.control("cancel", "-L", c.spec)

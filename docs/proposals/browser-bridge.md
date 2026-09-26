@@ -1,7 +1,8 @@
 # Proposal: a generic guest→host browser bridge and ad-hoc forwards
 
 Status: draft v2.6, 2026-09-15 (§3 notes what roadmap step 6 shipped for
-relay sessions, 2026-09-25). Order of work lives in `ROADMAP.md` and
+relay sessions, 2026-09-25; §1, §2, §4 and §5 note what step 7 shipped,
+2026-09-26). Order of work lives in `ROADMAP.md` and
 nowhere else. Revised after six independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
@@ -169,6 +170,34 @@ type transport interface {
 `bridgeRequest` carries the event plus a reply func, so the daemon's loop can
 select on it alongside `dead()` and the idle timer.
 
+**As shipped (roadmap step 7).** The mechanism is `internal/session/bridge.go`.
+`bridgeRequest` is `{url, reply func(agentrpc.OpenReply)}`; the loop starts
+`handleOpen` on a goroutine of its own per event (it binds and waits on a
+subscriber, and must never stall the loop), and `deliverTo` names the
+subscriber the handler chose, since what it bound depends on whether that
+one is a relay. `events()` is nil on ssh and on `hubTransport` (step 8). The
+handler order, and where it differs from the pseudocode above: a
+non-http(s) URL is refused by the daemon first (`host refused a non-http(s)
+URL`), then the rate limit, then "no subscriber"; the privileged-port,
+reconnecting and bind checks apply to a local subscriber only (a relay's
+far daemon runs them on its own transport). A URL with no explicit port on
+a loopback host is its scheme's default port, so it is refused as
+privileged. The session event's `data` is `{"type":"open-url","url",
+"kind","guest"?,"bound"?}` (`BridgeEvent`); the subscriber's reply `data`
+is an `agentrpc.OpenReply`, `{"opened","url"?,"guest"?,"host_port"?,
+"err"?,"printed"?}`, relayed to the guest as is: `url` is what the host
+opened (a bumped direct URL rewritten by the subscriber), `printed` says
+the URL was printed on the host terminal. Subscriber timeout (15s) and
+disconnect become `opened:false` with the daemon's own `err`. The
+subscriber side is `session.OpenOnHost`, the `OnEvent` of `attach`/`shell`:
+it prints the URL (control characters replaced, lines ending `\r\n` for a
+raw-mode terminal) only when the opener is missing or fails to start, not
+for a refused URL. `hostbrowser.Sanitize` lost its `localhost:1455`
+rewrite. `attach`/`shell` open a session only on a running smol machine:
+remote boxes have no events until the ssh agent exec, and a stopped VM gets
+no daemon; a bridge that cannot be had is a one-line notice, never a failed
+shell.
+
 ### 2. Request/response events
 
 Today an event stream is write-and-close; the guest never learns what the host
@@ -188,6 +217,25 @@ in `ROADMAP.md`. The reply is backwards-compatible: an old agent that closes
 the stream after writing gets its reply discarded. The reply the agent prints
 is whatever the subscriber reported, so on a hub machine it names the
 laptop's port.
+
+**As shipped (roadmap step 7).** The wire, on one yamux event stream:
+guest `event\n{"type":"open-url","url":…}\n`, host one `OpenReply` JSON
+line, then close (`agentrpc.OpenURL`/`ReadEvent`/`WriteReply`). The agent
+waits up to 60s and hands the reply line verbatim to the shim over the
+guest unix socket; the shim waits up to 75s and prints `OpenReply.Message`:
+`devvm: opened on host -> URL` (plus `(guest G, host port bumped to H)`),
+or `devvm: not opened on host (REASON); URL printed there` when the host
+printed it, else `…; open it yourself: URL`. The host's reply write has a
+5s deadline, so an old agent that closed after its event costs nothing; a
+new agent under an old host sees the stream close with no reply and the
+shim keeps the old `devvm: sent to host browser -> URL`. When the host
+does not answer in time, or the stream breaks, the agent writes the shim
+a reply of its own (`the host did not answer in time`), never silence.
+Host side, guest-driven work is bounded before the rate limit applies:
+an event body is read through a 64 KiB limit, and at most 16 event
+streams are in flight per exec (accept to reply); a stream past that is
+closed unread. `auth`'s private
+session answers too (it opens the URL itself, as before).
 
 ### 3. Session leases: keep the daemon alive while something needs the bridge
 
@@ -419,6 +467,34 @@ list` appends `owner=KINDS` (and `exact`) after the tokens the menubar
 parses. A forward from a daemon older than owners lists none and counts as
 `conf`.
 
+**As shipped (roadmap step 7).** Owners carry data (`ownerInfo`): a `ttl`
+owner's wall-clock `expires`, refreshed by a repeat open only when later,
+never shortened (so a session that keeps re-opening its callbacks can
+hold up to the cap, 20 exact ports, indefinitely: each refresh extends,
+none expires while it is repeated; accepted, the cap and the rate limit
+bound it); `Forward` gains `expires` (omitted without a ttl owner)
+and `ports list` appends `ttl=9m42s` after `owner=`/`exact`. The retry
+ticker drops lapsed ttl owners, and `restore()` does too before it
+re-binds anything (a callback that lapsed in the outage never reclaims
+its port). The 20-forward cap counts live forwards
+with no `conf` owner held by a `ttl` owner or a *local* session's
+connection (a relay's forwards are another host's), and applies only when
+the open would create a forward; reusing one is free. It is checked in the
+critical section that creates the forward (`addWith`'s admit), so
+concurrent opens cannot overrun it. A connection owner is recorded only
+while its session is still registered, checked under the same lock: a
+subscriber that closed between the handler choosing it and the bind gets
+no forward (`reasonGone`), for a session's own `add` too. The rate limit is 10
+opens per rolling minute, counting only admitted opens. A literal `[::1]`
+URL whose forward has no `::1` side (per `v6Reporter`: smol's listeners
+know; ssh probes `[::1]:P` before its `-O forward`) is refused, and the
+owner is dropped again only if this open added it (an earlier open's
+owner on that port stays); the reply reads `callback
+address [::1]:P is unavailable on the host` (`address …` for a direct URL).
+Every transport's `Close()` now drops every forward it carries (smol closes
+its tracked listeners, ssh's `-O exit`, the hub relay's close plus `-O
+exit`); teardown closes the transport and never a forward one by one.
+
 ### 5. `BROWSER` in the guest
 
 The shim (`devvm-open-url`) is installed beside the agent **by the same
@@ -457,6 +533,11 @@ Notes:
   version floor). New windows and panes inherit it. A shell already running
   in an existing pane keeps its environment; it needs `export BROWSER=…`
   once, or profile.d on its next login. Documented, not repaired.
+- As shipped (roadmap step 7): `agentbin.Install` returns `Paths{Agent,
+  Shim}` and writes both, each half skipped on a sha256 match (one
+  `sha256sum` probe for both); on an adopt host the consent gate covers
+  a shim-only write too. The smol transport runs it before spawning the
+  agent exec; `auth` uses it and lost `installBrowserShim`.
 - **Managed smol boxes install the agent and shim at `bootstrap`**, not lazily
   at first `auth`. Otherwise profile.d would point at a file that does not
   exist yet and `gh` would fail outright instead of printing the URL.

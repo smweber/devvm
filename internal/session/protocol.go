@@ -66,6 +66,10 @@ type Forward struct {
 	// a daemon older than owners, whose forwards were all configured ones
 	// (see IsConf).
 	Owners []string `json:"owners,omitempty"`
+	// Expires is when the forward's ttl owner lapses (a bridge callback,
+	// browser-bridge.md §4); absent when no ttl owner holds it. A pointer
+	// so omitempty drops it: the go directive's floor predates omitzero.
+	Expires *time.Time `json:"expires,omitempty"`
 }
 
 // IsConf reports whether a conf owner holds the forward. A forward from a
@@ -137,8 +141,9 @@ type Response struct {
 	Event *Event `json:"event,omitempty"`
 }
 
-// Event is something the daemon hands its most recent subscriber. The
-// payload is opaque here: the browser bridge (roadmap step 7) defines it.
+// Event is something the daemon hands its most recent subscriber. Data is
+// a BridgeEvent (the browser bridge, bridge.go); the subscriber's
+// EventReply.Data is an agentrpc.OpenReply, relayed to the guest as is.
 type Event struct {
 	ID   int64           `json:"id"`
 	Data json.RawMessage `json:"data,omitempty"`

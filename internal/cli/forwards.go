@@ -222,7 +222,8 @@ func ownerLabel(f session.Forward) string {
 }
 
 // forwardSuffix is what follows `guest N -> localhost:M` in `ports list` and
-// `status -v`: `(pending)`, then the owner kinds and `exact`. The menubar
+// `status -v`: `(pending)`, then the owner kinds, `exact`, and a bridge
+// callback's remaining `ttl=`. The menubar
 // app parses these lines (contrib/macos/Sources/Status.swift,
 // parsePortsList): it needs the first four tokens and looks for a
 // `(pending)` token anywhere after, so everything added stays after them.
@@ -237,7 +238,19 @@ func forwardSuffix(f session.Forward) string {
 	if f.Exact {
 		suffix += "  exact"
 	}
+	if f.Expires != nil {
+		suffix += "  ttl=" + ttlLeft(time.Until(*f.Expires))
+	}
 	return suffix
+}
+
+// ttlLeft is a ttl owner's remaining time, to the second ("9m42s"); one
+// already due reads "expiring" (the ticker drops it within seconds).
+func ttlLeft(d time.Duration) string {
+	if d <= 0 {
+		return "expiring"
+	}
+	return d.Round(time.Second).String()
 }
 
 // runPortsList shows the machine's configured forwards plus any that are live.

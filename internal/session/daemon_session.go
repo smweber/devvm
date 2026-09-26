@@ -176,6 +176,9 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	close(s.done)
 	d.unsubscribe(s) // later events fall through now, not after the worker drains
 	conn.Close()
+	if err := d.syncUpstream(false); err != nil { // the last subscriber leaving unsubscribes upstream
+		d.logf("%s: upstream unsubscribe: %v", d.name, err)
+	}
 	close(work)
 	<-workerDone
 	d.closeSession(s)
@@ -201,10 +204,20 @@ func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 		}
 		return resp
 	case OpSubscribe:
+		// Acked only after the upstream subscribe (bridge §3), so the ack
+		// still means every later event reaches this session. An upstream
+		// failure is the reply's error; the local registration stays, and
+		// restore() re-subscribes upstream on the next transport.
 		d.subscribe(s)
+		if err := d.syncUpstream(true); err != nil {
+			return Response{Err: "subscribed here, but not upstream: " + err.Error()}
+		}
 		return Response{OK: true}
 	case OpUnsubscribe:
 		d.unsubscribe(s)
+		if err := d.syncUpstream(false); err != nil {
+			d.logf("%s: upstream unsubscribe: %v", d.name, err)
+		}
 		return Response{OK: true}
 	case OpSession:
 		return Response{Err: "already a session"}
@@ -262,7 +275,7 @@ func (d *daemon) closeSession(s *sess) {
 	delete(d.sessions, s.id)
 	d.subs = removeSess(d.subs, s)
 	s.pending = map[int64]chan json.RawMessage{}
-	closers, _ := d.dropOwnersLocked(func(o owner) bool { return o == own })
+	closers, _ := d.dropOwnersLocked(func(o owner, _ ownerInfo) bool { return o == own })
 	d.mu.Unlock()
 	closeAll(closers)
 	config.TouchChanged(d.configDir)
@@ -308,10 +321,7 @@ func removeSess(list []*sess, s *sess) []*sess {
 }
 
 // deliver hands one event to the most recent subscriber and waits for its
-// reply. The subscriber disconnecting, or not answering within timeout, is
-// an error (the bridge turns either into `opened: false`); the event is not
-// re-sent to the next subscriber, which only gets later events. The payload
-// is opaque here; roadmap step 7 defines it.
+// reply (deliverTo).
 func (d *daemon) deliver(data json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	d.mu.Lock()
 	if len(d.subs) == 0 {
@@ -319,6 +329,25 @@ func (d *daemon) deliver(data json.RawMessage, timeout time.Duration) (json.RawM
 		return nil, errNoSubscriber
 	}
 	s := d.subs[0]
+	d.mu.Unlock()
+	return d.deliverTo(s, data, timeout)
+}
+
+// deliverTo hands one event to subscriber s and waits for its reply. The
+// subscriber disconnecting, or not answering within timeout, is an error
+// (the bridge turns either into `opened: false`); the event is not re-sent
+// to the next subscriber, which only gets later events. The bridge picks s
+// itself, because what it bound depends on who s is (a relay binds
+// nothing), and the event must reach that one.
+//
+// It blocks for up to timeout, so it must never run on loop()'s goroutine:
+// every caller (handleOpen) runs on a goroutine of its own per event.
+func (d *daemon) deliverTo(s *sess, data json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+	d.mu.Lock()
+	if d.sessions[s.id] != s {
+		d.mu.Unlock()
+		return nil, errSubscriberGone
+	}
 	d.nextEvent++
 	id := d.nextEvent
 	ch := make(chan json.RawMessage, 1)

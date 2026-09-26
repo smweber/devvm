@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -45,11 +44,6 @@ type hubTransport struct {
 	deadCh    chan struct{}
 	deadOnce  sync.Once
 	closeOnce sync.Once
-	// closing is set when the daemon starts tearing this transport down
-	// (beginTeardown): Close drops the relay and the master, which drops
-	// every forward on both sides at once, so a forward's own close does
-	// nothing that would only wait on the hub or the master.
-	closing atomic.Bool
 }
 
 // hubLocal is the host side of hub forwards: the -L on the master
@@ -353,6 +347,10 @@ func (t *hubTransport) markDead() { t.deadOnce.Do(func() { close(t.deadCh) }) }
 
 func (t *hubTransport) dead() <-chan struct{} { return t.deadCh }
 
+// events is nil until the relay subscribes on the hub (roadmap step 8): the
+// hub daemon, which owns the VM's agent exec, handles its events itself.
+func (t *hubTransport) events() <-chan bridgeRequest { return nil }
+
 // forward is add on the hub, then the -L. This host's port is probed first,
 // before the hub is asked for anything, so a busy port bumps (errPortBusy)
 // without a hub round trip per try; the probe decides busy exactly as the
@@ -397,14 +395,10 @@ func (t *hubTransport) forward(hostPort, guestPort int) (io.Closer, error) {
 }
 
 // removeOnHub drops this relay's ownership of a guest port on the hub.
-// Skipped once the relay is dead: the hub dropped everything it owned when
-// the connection went, and a call would only wait on a gone pipe.
-// Skipped too once teardown has begun: Close drops the relay, and the hub
-// with it every forward the relay owned.
+// Skipped once the relay is dead or closed (Close marks it dead first): the
+// hub dropped everything it owned when the connection went, and a call
+// would only wait on a gone pipe.
 func (t *hubTransport) removeOnHub(guest int) {
-	if t.closing.Load() {
-		return
-	}
 	select {
 	case <-t.deadCh:
 		return
@@ -413,12 +407,10 @@ func (t *hubTransport) removeOnHub(guest int) {
 	_, _ = t.sc.call(Request{Op: OpRemove, Guest: guest})
 }
 
-// beginTeardown is teardownAware: the daemon is about to close every forward
-// and then this transport.
-func (t *hubTransport) beginTeardown() { t.closing.Store(true) }
-
 // Close ends the relay (the hub drops every forward it owned), the process,
-// and the master with every -L on it.
+// and the master with every -L on it (transport.Close): no per-forward
+// remove or `-O cancel`, so it stays bounded against a wedged link whatever
+// the forward count.
 func (t *hubTransport) Close() error {
 	t.closeOnce.Do(func() {
 		t.markDead()
@@ -436,14 +428,12 @@ type hubForward struct {
 	local io.Closer
 }
 
-// Close cancels the -L and drops the hub add: one `ports rm`. During
-// teardown both are skipped; the master's exit and the relay's close drop
-// every -L and every hub forward at once, where N forwards closed one by
-// one against a wedged link would each wait out a timeout.
+// boundV6 is the -L's: the hub side is the hub daemon's own IPv4 listener.
+func (f *hubForward) boundV6() bool { return forwardHasV6(f.local) }
+
+// Close cancels the -L and drops the hub add: one `ports rm`. Teardown
+// never comes here: the transport's Close drops every forward at once.
 func (f *hubForward) Close() error {
-	if f.t.closing.Load() {
-		return nil
-	}
 	err := f.local.Close()
 	f.t.removeOnHub(f.guest)
 	return err

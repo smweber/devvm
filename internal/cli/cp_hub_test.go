@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smweber/devvm/internal/config"
 )
@@ -30,6 +32,17 @@ func TestMain(m *testing.M) {
 	// (roadmap Lessons). Refuse, so Dial fails fast; tests that want a
 	// daemon serve one on the socket first (serveOwnerDaemon).
 	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
+		// A test standing in its own replacement daemon names its socket:
+		// the refusal waits (bounded) for that to listen, as a real
+		// daemon's come-up would, instead of racing it to Dial's check.
+		if sock := os.Getenv(testDaemonWaitEnv); sock != "" {
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+				if c, err := net.Dial("unix", sock); err == nil {
+					c.Close()
+					break
+				}
+			}
+		}
 		fmt.Fprintln(os.Stderr, "devvm: the cli test binary runs no forward daemon")
 		os.Exit(1)
 	}
@@ -38,6 +51,9 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+
+// testDaemonWaitEnv names a socket the refused `__daemon` waits for.
+const testDaemonWaitEnv = "DEVVM_TEST_DAEMON_WAIT_SOCK"
 
 const marker = tarMarker + "\n"
 

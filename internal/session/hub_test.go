@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,6 +74,7 @@ func newHubRig(t *testing.T) *hubRig {
 		<-h.done
 		h.d.ln.Close()
 		h.d.closeAllSessions()
+		releaseDaemon(h.d)
 	})
 	return h
 }
@@ -132,6 +134,12 @@ func startRelay(t *testing.T, hubDir, banner string) (*relay, error) {
 	r := &relay{laptop: pipeConn{r: outR, w: inW}, conn: conn, stdout: outW, stdin: inW, done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
+		// The laptop's ends (r.stdin, r.laptop) must outlive any test that
+		// stops touching them: an unreachable *os.File is closed by its
+		// finalizer, which is EOF to the hub and ends the relay early (seen
+		// under GOMEMLIMIT, where GC runs often). The relay's goroutine
+		// keeps them reachable for as long as the relay runs.
+		defer runtime.KeepAlive(r)
 		if banner != "" {
 			io.WriteString(outW, banner)
 		}

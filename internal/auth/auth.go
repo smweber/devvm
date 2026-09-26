@@ -3,10 +3,10 @@ package auth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
-	"path"
 	"strings"
 	"sync"
 
@@ -16,6 +16,7 @@ import (
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/hostbrowser"
+	fwdsession "github.com/smweber/devvm/internal/session"
 )
 
 // session holds the auth-scoped agent exec + yamux channel and any callback
@@ -36,18 +37,16 @@ type session struct {
 // session. tools is the resolved list (e.g. all -> github,codex,claude). approve
 // gates the agent install on adopt hosts (see agentbin.Install).
 func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, approve func() error) error {
-	agentPath, err := agentbin.Install(ctx, b, m, approve)
+	// Agent and BROWSER shim, one install (agentbin.Install).
+	paths, err := agentbin.Install(ctx, b, m, approve)
 	if err != nil {
 		return err
 	}
-	shim, err := installBrowserShim(ctx, b, m, agentPath)
-	if err != nil {
-		return err
-	}
+	shim := paths.Shim
 	// --auth: listen on the auth session's own guest socket, so this agent and
 	// a forward daemon's agent never steal each other's URL socket.
 	agent, err := b.Spawn(ctx, backend.ExecOpts{User: backend.DefaultUser},
-		agentPath, "serve", "--auth")
+		paths.Agent, "serve", "--auth")
 	if err != nil {
 		return err
 	}
@@ -99,26 +98,36 @@ func (s *session) eventLoop() {
 
 func (s *session) handleStream(stream net.Conn) {
 	defer stream.Close()
-	br := newLineReader(stream)
-	header, err := br.header()
-	if err != nil || header != agentrpc.TypeEvent {
+	ev, err := agentrpc.ReadEvent(stream)
+	if err != nil || ev.Type != agentrpc.EventOpenURL {
 		return
 	}
-	ev, err := br.event()
-	if err != nil {
-		return
-	}
-	if ev.Type == agentrpc.EventOpenURL {
-		s.onOpenURL(ev.URL)
-	}
+	// The agent waits for the answer and the shim prints it in the guest
+	// (browser-bridge.md §2).
+	_ = agentrpc.WriteReply(stream, s.onOpenURL(ev.URL))
 }
 
-func (s *session) onOpenURL(url string) {
-	if port, ok := CallbackPort(url); ok {
+// onOpenURL bridges a callback port (session.CallbackPort, which no longer
+// skips codex's 1455: ensureCallback is idempotent, so the pre-bound port
+// is simply reused) and opens the URL here.
+func (s *session) onOpenURL(url string) agentrpc.OpenReply {
+	if port, ok := fwdsession.CallbackPort(url); ok {
 		s.ensureCallback(port)
 	}
 	fmt.Fprintf(os.Stderr, "devvm: opening on host -> %s\n", url)
-	hostbrowser.Open(url)
+	if err := hostbrowser.Open(url); err != nil {
+		why := err.Error()
+		if errors.Is(err, hostbrowser.ErrNoOpener) {
+			why = "no browser opener"
+		}
+		if errors.Is(err, hostbrowser.ErrRefused) {
+			fmt.Fprintf(os.Stderr, "devvm: %s\n", why)
+			return agentrpc.OpenReply{Err: why}
+		}
+		fmt.Fprintf(os.Stderr, "devvm: could not open a browser (%s); open this URL in your browser: %s\n", why, url)
+		return agentrpc.OpenReply{Err: why, URL: url, Printed: true}
+	}
+	return agentrpc.OpenReply{Opened: true, URL: url}
 }
 
 // ensureCallback binds the host loopback (both families, for macOS localhost->::1)
@@ -232,22 +241,6 @@ func (s *session) codexSupportsDeviceAuth() bool {
 		Stderr: &buf,
 	}, "bash", "-lc", "codex login --help 2>&1")
 	return err == nil && strings.Contains(buf.String(), "--device-auth")
-}
-
-// installBrowserShim writes the $BROWSER wrapper (a tiny script that forwards
-// URLs to the serve agent) next to the agent, and returns its path. It follows
-// the agent's ownership: root-owned beside a managed /usr/local/bin agent, or
-// user-owned in ~/.local/bin on an adopt host.
-func installBrowserShim(ctx context.Context, b backend.Backend, m *config.Machine, agentPath string) (string, error) {
-	shimPath := path.Join(path.Dir(agentPath), "devvm-open-url")
-	script := fmt.Sprintf(
-		`printf '#!/bin/sh\nexec %s open-url "$@"\n' > %s && chmod 0755 %s`,
-		agentPath, shimPath, shimPath)
-	user := ""
-	if m.Managed() {
-		user = "root"
-	}
-	return shimPath, b.Run(ctx, backend.ExecOpts{User: user}, "sh", "-c", script)
 }
 
 // loginTools lists the supported login selectors in the order `all` runs them,
