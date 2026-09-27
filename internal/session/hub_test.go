@@ -40,7 +40,9 @@ type hubRig struct {
 
 func newHubRig(t *testing.T) *hubRig {
 	t.Helper()
-	h := &hubRig{t: t, dir: shortTempDir(t), tr: newFakeTransport(), gate: make(chan struct{})}
+	// The hub's transport carries events, as its smol one would: the hub
+	// daemon echoes Bridge on a relay open only then.
+	h := &hubRig{t: t, dir: shortTempDir(t), tr: newEventTransport(), gate: make(chan struct{})}
 	close(h.gate) // dials allowed until a test says otherwise
 	if err := os.MkdirAll(config.RuntimeDir(h.dir), 0o700); err != nil {
 		t.Fatal(err)
@@ -54,7 +56,7 @@ func newHubRig(t *testing.T) *hubRig {
 		default:
 			return nil, errors.New("hub transport still down (test gate)")
 		}
-		tr := newFakeTransport()
+		tr := newEventTransport()
 		h.mu.Lock()
 		h.tr = tr
 		h.mu.Unlock()

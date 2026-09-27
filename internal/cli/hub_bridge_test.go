@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -355,7 +356,7 @@ func TestHubAttachAdoptsLateBridge(t *testing.T) {
 // lateBridge in isolation: adopted then released closes once; arriving
 // after release closes at once; releasing empty is harmless.
 func TestLateBridgeHolder(t *testing.T) {
-	l, s := &lateBridge{}, newSignalBridge()
+	l, s := newLateBridge(), newSignalBridge()
 	l.adopt(s)
 	select {
 	case <-s.closed:
@@ -364,7 +365,7 @@ func TestLateBridgeHolder(t *testing.T) {
 	}
 	l.release()
 	<-s.closed
-	l, s = &lateBridge{}, newSignalBridge()
+	l, s = newLateBridge(), newSignalBridge()
 	l.release()
 	l.adopt(s)
 	<-s.closed
@@ -407,4 +408,198 @@ func (b *signalBridge) Subscribe() error {
 func (b *signalBridge) Close() error {
 	b.closeOnce.Do(func() { close(b.closed) })
 	return nil
+}
+
+// controlRetries makes the background bridge retries wait on tick (one
+// send per retry) instead of a timer, and reports each retry loop's end
+// on ended.
+func controlRetries(t *testing.T) (tick chan<- time.Time, ended <-chan struct{}) {
+	t.Helper()
+	oldAfter, oldEnded := bridgeRetryAfter, bridgeRetryEnded
+	tc, ec := make(chan time.Time), make(chan struct{}, 8)
+	bridgeRetryAfter = func(time.Duration) <-chan time.Time { return tc }
+	bridgeRetryEnded = func() { ec <- struct{}{} }
+	t.Cleanup(func() { bridgeRetryAfter, bridgeRetryEnded = oldAfter, oldEnded })
+	return tc, ec
+}
+
+// scriptedOpens replaces openBridgeSession with one that answers each open
+// from results in turn (an error, or the session), counting them; gate,
+// when set, holds the first open until the test sends on it.
+func scriptedOpens(t *testing.T, gate <-chan struct{}, results ...any) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	old := openBridgeSession
+	openBridgeSession = func(string, string, session.SessionOptions) (bridgeSub, error) {
+		i := int(n.Add(1)) - 1
+		if i == 0 && gate != nil {
+			<-gate
+		}
+		if i >= len(results) {
+			return nil, errors.New("no more scripted opens")
+		}
+		switch r := results[i].(type) {
+		case error:
+			return nil, r
+		case bridgeSub:
+			return r, nil
+		}
+		t.Errorf("bad scripted open %T", results[i])
+		return nil, errors.New("bad script")
+	}
+	t.Cleanup(func() { openBridgeSession = old })
+	return &n
+}
+
+func hubMachine() *config.Machine {
+	return &config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: config.NewHub("h", "u@h.example")}
+}
+
+// noRetries fails the test if a background retry is ever scheduled.
+func noRetries(t *testing.T) {
+	t.Helper()
+	oldAfter := bridgeRetryAfter
+	bridgeRetryAfter = func(time.Duration) <-chan time.Time {
+		t.Error("a bridge open was retried")
+		return make(chan time.Time)
+	}
+	t.Cleanup(func() { bridgeRetryAfter = oldAfter })
+}
+
+// A cold attach on a stopped VM on a hub: the hub's __session refuses it,
+// so the first open fails at once. The attach is not held up, and the open
+// is not retried into the boot the proxied attach starts: one line says
+// how to get the bridge.
+func TestHubAttachStoppedVMIsANotice(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	noRetries(t)
+	stopped := errors.New("forward daemon for 'h/web' exited: h/web: the hub's __session ended before it started: devvm: web is not running; start it first ('devvm start web' also brings its forwards up)")
+	opens := scriptedOpens(t, nil, stopped, newSignalBridge())
+	a, errBuf := bridgeApp(t)
+	a.bridgeSession(hubMachine(), nil)()
+	if msg := errBuf.String(); !strings.Contains(msg, "browser bridge unavailable: h/web was not running when this session started; re-attach") {
+		t.Fatalf("notice = %q", msg)
+	}
+	if opens.Load() != 1 {
+		t.Fatalf("opened %d times, want 1", opens.Load())
+	}
+}
+
+// Past hubBridgeWait too: a late not-running refusal ends it, no retry.
+func TestHubAttachLateStoppedVMNotRetried(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	noRetries(t)
+	ended := make(chan struct{}, 1)
+	oldEnded, oldWait := bridgeRetryEnded, hubBridgeWait
+	bridgeRetryEnded = func() { ended <- struct{}{} }
+	hubBridgeWait = 20 * time.Millisecond
+	t.Cleanup(func() { bridgeRetryEnded, hubBridgeWait = oldEnded, oldWait })
+	gate := make(chan struct{})
+	opens := scriptedOpens(t, gate, errors.New("h/web: hub: devvm: web is not running; start it first"), newSignalBridge())
+	a, _ := bridgeApp(t)
+	release := a.bridgeSession(hubMachine(), nil)
+	defer release()
+	close(gate)
+	<-ended
+	if opens.Load() != 1 {
+		t.Fatalf("opened %d times, want 1", opens.Load())
+	}
+}
+
+// A transient failure after the attach stopped waiting (a slow hub): the
+// first open that fails past hubBridgeWait is retried, not dropped.
+func TestHubAttachRetriesAfterLateFailure(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	tick, ended := controlRetries(t)
+	old := hubBridgeWait
+	hubBridgeWait = 20 * time.Millisecond
+	t.Cleanup(func() { hubBridgeWait = old })
+	gate := make(chan struct{})
+	s := newSignalBridge()
+	opens := scriptedOpens(t, gate, errors.New("h/web: the hub's __session did not start within 20s"), s)
+	a, errBuf := bridgeApp(t)
+	release := a.bridgeSession(hubMachine(), nil)
+	if !strings.Contains(errBuf.String(), "browser bridge to hub h not up yet; URLs opened before it is will print in the guest") {
+		t.Fatalf("notice = %q", errBuf.String())
+	}
+	close(gate) // the first open fails only now
+	tick <- time.Time{}
+	<-ended
+	if opens.Load() != 2 {
+		t.Fatalf("opened %d times, want 2", opens.Load())
+	}
+	<-s.subscribed
+	release()
+	<-s.closed
+}
+
+// release ends the retries (no open after it), and they give up after
+// bridgeRetryWaits on their own.
+func TestHubAttachRetriesBounded(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	tick, ended := controlRetries(t)
+	down := errors.New("h/web: hub: connection refused")
+	opens := scriptedOpens(t, nil, down, down, down, down)
+	a, _ := bridgeApp(t)
+	release := a.bridgeSession(hubMachine(), nil)
+	release()
+	<-ended
+	if opens.Load() != 1 {
+		t.Fatalf("opened %d times after release, want only the first", opens.Load()-1)
+	}
+
+	oldWaits := bridgeRetryWaits
+	bridgeRetryWaits = []time.Duration{time.Second, time.Second}
+	t.Cleanup(func() { bridgeRetryWaits = oldWaits })
+	opens = scriptedOpens(t, nil, down, down, down, down)
+	release = a.bridgeSession(hubMachine(), nil)
+	defer release()
+	tick <- time.Time{}
+	tick <- time.Time{}
+	<-ended
+	if opens.Load() != 3 {
+		t.Fatalf("opened %d times, want the first and one per retry wait", opens.Load())
+	}
+}
+
+// A refusal no retry cures (a hub too old for browser opens, a machine
+// with no events on its hub) is one line and no retries.
+func TestHubAttachNoRetryWhenRefusedForGood(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	noRetries(t)
+	for _, msg := range []string{
+		"forward daemon for 'h/web' exited: h/web: devvm on hub h predates hub forwards (needs v0.1.14 or newer); run 'devvm update' there",
+		"subscribed here, but not upstream: hub devvm too old for browser opens: the daemon for web on hub h predates v0.1.15",
+		"subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h is not a smol machine there",
+	} {
+		fb := &fakeBridge{subErr: errors.New(msg)}
+		opens := scriptedOpens(t, nil, fb)
+		a, errBuf := bridgeApp(t)
+		a.bridgeSession(hubMachine(), nil)()
+		if !strings.Contains(errBuf.String(), "browser bridge unavailable ("+msg+"); forwards still work") {
+			t.Errorf("notice = %q", errBuf.String())
+		}
+		if opens.Load() != 1 || fb.closed != 1 {
+			t.Errorf("%q: opened %d, closed %d", msg, opens.Load(), fb.closed)
+		}
+	}
+}
+
+// auth HUB/NAME on a machine the hub's daemon says has no browser events
+// (NoEvents): refused as unsupported, before anything runs on the hub.
+func TestHubAuthRefusedWithoutEvents(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	a := newTestApp(t)
+	sshLog, _ := fakeHub(t, a)
+	pinTTY(t, true)
+	var log []string
+	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log,
+		subErr: errors.New("subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h is not a smol machine there")})
+	err := runTree(t, a, "auth", "h/web")
+	if err == nil || err.Error() != "auth h/web: auth on a non-smol hub machine is not supported through the hub yet (its daemon on hub h carries no browser events)" {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
+		t.Error("auth ran on the hub for a machine without events")
+	}
 }

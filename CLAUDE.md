@@ -7,8 +7,10 @@ constraints; read the package docs for the rest.
 
 `devvm` manages persistent dev boxes across three backends: local smolvm microVMs
 (`smol`), a remote host devvm shapes (`remote-managed`), and an existing host it
-adopts hands-off (`remote-unmanaged`). The two `remote-*` backends share one ssh
-transport (`ssh.go`) and differ only in posture: `Managed()` vs adopt. Old confs
+adopts hands-off (`remote-unmanaged`), plus `hub`: another host running devvm,
+whose machines (usually smol VMs) this one reaches as `HUB/NAME` (see Hubs below). The two
+`remote-*` backends share one ssh transport (`ssh.go`) and differ only in
+posture: `Managed()` vs adopt. Old confs
 with `backend = "ssh"` (+ optional `unmanaged`) migrate on load. It is a **host
 CLI** (`cmd/devvm`) plus a **guest agent** (`cmd/devvm-agent`) the host installs
 into a box only when needed (see the agent note below). It began as a ~2,100-line
@@ -68,6 +70,10 @@ rpc/events ride the agent exec. **`authorized_keys` management is host-side**
 write-back), so `keys` needs no agent and touches nothing on an adopt host but
 `~/.ssh`. The agent is pulled in only on smol (forwards, `auth`, and the browser bridge that `attach`/`shell` subscribe to) and by `auth` on remote boxes.
 
+A machine on a hub is the same rule one host removed: **the laptop never owns an
+agent exec for a hub VM**. The hub's daemon holds the one exec; the laptop's
+daemon for it is a client of that daemon over a relay (see Hubs).
+
 ## Two binaries, two targets — don't conflate them
 
 - **`devvm-agent` (guest)** runs *inside* the box, which is **always Linux**
@@ -86,15 +92,20 @@ write-back), so `keys` needs no agent and touches nothing on an adopt host but
 ```
 cmd/devvm/          host CLI entrypoint
 cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
-internal/cli/       cobra command tree + handlers (create's huh form in createform.go)
+internal/cli/       cobra command tree + handlers (create's huh form in createform.go;
+                    hub proxying in proxy.go + hub*.go; attach/shell's bridge in bridge.go)
 internal/config/    TOML machine registry (~/.config/devvm/machines/<name>.toml)
 internal/backend/   Backend interface + smol.go + ssh.go (both remote-* backends)
+                    + hub.go (HUB/NAME: proxy argv, `__session` argv; never spawns)
 internal/session/   per-machine forward daemon (owns the exec) + client + transports
+                    (transport_{smol,ssh,hub}.go); daemon_session.go = sessions and
+                    relays; bridge.go = URL classify/bind/deliver (browser bridge)
 internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
 internal/auth/      login orchestration, URL bridge, callback-as-forward
 internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
+                    + browser.go (smol: agent + shim + /etc/profile.d/devvm.sh)
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop shelf,
                     one tile per live machine = cp-in; menu + shelf fed by
@@ -107,7 +118,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 ## Architecture notes
 
 - **Session daemon**: spawned via the hidden `devvm __daemon NAME` command,
-  detached. Owns the smol agent exec (yamux) or the ssh ControlMaster, allocates
+  detached. Owns the smol agent exec (yamux), the ssh ControlMaster, or (hub
+  machines) a relay to the hub's daemon; allocates
   host ports (bumping on conflict), and idle-exits when it has no forwards.
   When the transport dies (laptop sleep outlives ssh's keepalives) it
   **reconnects instead of exiting**: backoff 2–30s, forwards stay in the map
@@ -129,7 +141,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards` with state ∈ {running, stopped, dormant,
   reachable, broken conf, ?} and forwards ∈ {up:N, reconnecting:N, down, -}; so
-  are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact]`; parsers split on whitespace and read only the first four tokens plus `(pending)`), `devvm
+  are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact] [ttl=9m42s]`,
+  owner kinds `conf`/`connection`/`ttl`; parsers split on whitespace and read only
+  the first four tokens plus `(pending)`, so anything new goes after them), `devvm
   --version` (`devvm version vX.Y.Z`), and `update --check --plain`
   (`current\tlatest\ttrue|false`). Changing any of them means a Swift change.
 - **Maintain devvm itself** (help group): `update` finds the latest tag via the
@@ -175,14 +189,64 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   process on the host, write back atomically (`umask 077` + temp + `mv`, content
   over stdin so nothing is shell-interpolated). No agent, so it works on adopt
   hosts with zero footprint. `internal/keys` preserves options/comments verbatim.
-- **Auth**: the guest pushes `open-url` events over the agent channel; OAuth
-  loopback callbacks are bridged as ordinary forwards (no `nc`/`curl`; codex's
-  `:1455` needs no VM restart).
+- **Hubs** (`docs/proposals/hub.md`): a hub is a conf with `backend = "hub"`,
+  reached like a remote box and never shaped like one (it needs only `devvm` and
+  `smolvm`). Its VMs are addressed `HUB/NAME` and have **no conf of their own**
+  on the laptop: the record is derived from the hub conf (laptop-side state such
+  as ports lives in its `[machines.NAME]` table), so the hub's registry is the
+  only one. Runtime files (daemon socket, log, lock) use `HUB@NAME`, because
+  `run/HUB/NAME.sock` would name a directory; only `config.RuntimeName` and
+  `DisplayName` convert between the forms. Commands **proxy**: the cli rebuilds
+  the leaf's argv with the hub-side name and runs `env DEVVM_NO_SUBSCRIBE=1
+  devvm …` over the hub's ssh. The env var keeps a proxied attach/shell/auth
+  from subscribing on the hub, since the laptop subscribes through its own
+  daemon instead. Forwards: the laptop's daemon for `HUB@NAME` runs one hidden
+  `__session NAME` over its own ControlMaster. That is a **relay** session on the
+  hub daemon: its adds are owned by the connection, it is heartbeated, and it is
+  refused while the hub's transport is down and closed when it dies. The laptop
+  then binds an `ssh -L` to the hub port the hub reports. Browser events cross the
+  same relay while the laptop has a subscriber (the hub daemon binds nothing
+  for a relay; the laptop daemon does), but only if the hub's open reply
+  echoed `Bridge`. `Bridge` means "speaks the relay bridge *and* its transport
+  has events"; `NoEvents` means a current hub whose machine is not smol;
+  neither means a hub too old. A proxied attach waits at most 5s for its bridge,
+  then adopts a late one, retrying transient failures in the background. It
+  never retries into a VM that was not running (`__session` refuses one),
+  locally or on a hub: the daemon's exec startups would overlap the attach's
+  own while it boots the VM, so that session gets a one-line notice and no
+  bridge. Listings fan
+  out as `status --plain --local --watch` on each hub (`--local`, so hubs never
+  chain) and are cached per hub. Minimum hub versions are pinned by tests
+  (`hubMinVersion`, `session.HubForwardsMinVersion`, `HubBridgeMinVersion`).
+- **Browser bridge** (`docs/proposals/browser-bridge.md`): guest programs get
+  `BROWSER` = the `devvm-open-url` shim, which hands the URL to the agent; the
+  agent sends it up the daemon's one exec as an `open-url` event. The **daemon**
+  classifies it (external / direct loopback / OAuth redirect), binds the forward
+  a loopback URL needs (connection-owned, or `ttl`-owned and exact for a
+  redirect), and delivers it to its **most recent subscriber**. That is a session
+  held by `attach`/`shell`/`auth`, which opens the URL on its own host (or prints
+  it there if it has no opener); its answer goes back to the guest. The daemon
+  never opens a browser itself. With no subscriber, the shim prints the URL in the
+  guest. Opens are rate-limited (10/min) and bridge forwards are capped per
+  machine. Remote boxes have no events until the ssh agent exec ships (their
+  transport's `events()` is nil).
+- **Auth**: smol and hub machines use **thin auth** over the daemon's session:
+  ping reads the shim path (nothing installed), subscribe, bind the fixed
+  callback (codex's `:1455`) as an exact session-owned forward, then run the
+  logins with `BROWSER` = the shim. So `auth` during a held attach adds no second
+  agent exec. `auth HUB/NAME` does this on the laptop and proxies `auth NAME` to
+  the hub, whose auth only pings. Remote boxes keep the private `--auth` agent
+  exec (its own guest socket) until the ssh agent exec lands.
 - **Agent install** (`internal/agentbin`): idempotent by sha256, arch-matched,
   `$HOME`-resolved (never hardcode `/home/dev`). Managed boxes get a root-owned
   `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
   install, gated behind explicit consent (`auth --install-agent` or a prompt) so
-  devvm never writes to an adopted box unasked. `Install` returns the path to use.
+  devvm never writes to an adopted box unasked. `Install` returns the paths to use
+  (agent and shim). On smol, `bootstrap` installs agent + shim and writes
+  `/etc/profile.d/devvm.sh` (`bootstrap.Browser`), so profile.d never names a
+  missing file; smol `create`/`bootstrap` **fail** if that install fails. smol
+  `shell`/`attach` also carry `BROWSER` in their exec env (attach copies it
+  into the `dev` tmux session), dropped if the shim is missing.
 - **Root adoption (fresh cloud VMs)**: `bootstrap` on a remote-managed box whose
   ssh login is root first runs `bootstrap.EnsureDevUser` — creates `dev`
   (NOPASSWD sudo, copies root's `authorized_keys`) and rewrites the conf's

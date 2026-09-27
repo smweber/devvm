@@ -104,7 +104,7 @@ type eventLine struct {
 // passed on so nothing read past that line is lost.
 func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	_ = conn.SetReadDeadline(time.Time{})
-	s, err := d.openSession(conn, open.Relay)
+	s, bridge, err := d.openSession(conn, open.Relay)
 	if err != nil {
 		// A relay refused while the transport is down: an error reply, then
 		// the close (handleConn's). The far daemon's dial fails and its own
@@ -123,8 +123,15 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	state, _ := d.status()
 	// Bridge: this daemon delivers browser events to a relay subscriber and
 	// reports its shim (hub.md §8), the capability a laptop checks before it
-	// subscribes upstream. Echoed to every session; only a relay reads it.
-	ack := Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay, Heartbeat: beat, Bridge: true, Shim: d.shimPath()}
+	// subscribes upstream. Only while its transport carries events: an ssh
+	// box on a hub has none, and a laptop told Bridge would subscribe
+	// "successfully" and hear nothing. NoEvents says why Bridge is absent,
+	// so the laptop tells this daemon from one too old to echo Bridge at
+	// all. Echoed to every session; only a relay reads them. bridge was
+	// read under the lock that admitted the session: re-reading it here
+	// could see an onDead in between and call a smol machine NoEvents.
+	ack := Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay, Heartbeat: beat,
+		Bridge: bridge, NoEvents: !bridge, Shim: d.shimPath()}
 	if s.write(ack) != nil {
 		d.closeSession(s)
 		return
@@ -242,19 +249,22 @@ var errRelayRefused = errors.New("relay session refused: the transport to the ma
 // daemon reconnecting and collect the relays it closes, so a relay is
 // either refused here or closed there, never left open across an outage:
 // a relay admitted mid-outage would get `pending` for every add and never
-// learn when restore() finished (hub.md §7).
-func (d *daemon) openSession(conn net.Conn, relay bool) (*sess, error) {
+// learn when restore() finished (hub.md §7). bridge is whether the transport
+// that admitted it carries events (carriesEventsLocked), read under the
+// same lock.
+func (d *daemon) openSession(conn net.Conn, relay bool) (s *sess, bridge bool, err error) {
 	d.mu.Lock()
 	if relay && (d.state != StateUp || d.tr == nil) {
 		d.mu.Unlock()
-		return nil, errRelayRefused
+		return nil, false, errRelayRefused
 	}
+	bridge = d.carriesEventsLocked()
 	d.nextConn++
-	s := &sess{id: d.nextConn, conn: conn, relay: relay, pending: map[int64]chan json.RawMessage{}, done: make(chan struct{})}
+	s = &sess{id: d.nextConn, conn: conn, relay: relay, pending: map[int64]chan json.RawMessage{}, done: make(chan struct{})}
 	d.sessions[s.id] = s
 	d.mu.Unlock()
 	config.TouchChanged(d.configDir)
-	return s, nil
+	return s, bridge, nil
 }
 
 // relaySessionsLocked is every relay session by connection id; d.mu must be

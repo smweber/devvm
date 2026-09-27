@@ -1392,6 +1392,29 @@ func (d *daemon) shimPath() string {
 	return ""
 }
 
+// carriesEvents reports whether the current transport brings the guest's
+// browser events to this daemon: smol's agent exec does, ssh has none
+// (events() nil), and a hub machine's relay does only when its hub daemon
+// echoed Bridge (a hub machine's events come from the hub, or from nowhere).
+// false between transports. Under d.mu, like shimPath.
+func (d *daemon) carriesEvents() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.carriesEventsLocked()
+}
+
+// carriesEventsLocked is carriesEvents with d.mu held: openSession decides
+// a relay's Bridge echo under the same lock that admitted it.
+func (d *daemon) carriesEventsLocked() bool {
+	if d.tr == nil {
+		return false
+	}
+	if h, ok := d.tr.(*hubTransport); ok {
+		return h.bridge
+	}
+	return d.tr.events() != nil
+}
+
 // status snapshots the daemon's state for list/ping replies.
 func (d *daemon) status() (state string, since time.Time) {
 	d.mu.Lock()

@@ -266,7 +266,7 @@ func startHubDaemon(t *testing.T, tr transport) *hubRig {
 // there and changes nothing here (the relay binds nothing: busy hub ports
 // never refuse a laptop login).
 func TestHubEventBindsThroughRelayAndRepliesUpstream(t *testing.T) {
-	tr := &nullBindTransport{fakeTransport: newFakeTransport(), busy: map[int]bool{}}
+	tr := &nullBindTransport{fakeTransport: newEventTransport(), busy: map[int]bool{}}
 	tr.shim = testShim
 	h := startHubDaemon(t, tr)
 	l := newLaptopRig(t, h, true)
@@ -426,8 +426,11 @@ func TestPingReportsShim(t *testing.T) {
 	if shim, err := cl.Shim(); err != nil || shim != testShim {
 		t.Fatalf("one-shot ping shim = %q, %v", shim, err)
 	}
+	d.mu.Lock()
+	d.tr.(*fakeTransport).ev = make(chan bridgeRequest) // a smol transport: it carries events
+	d.mu.Unlock()
 	l := dialLine(t, dir, "t")
-	if open := l.open(Request{Relay: true}); !open.Bridge || open.Shim != testShim {
+	if open := l.open(Request{Relay: true}); !open.Bridge || open.NoEvents || open.Shim != testShim {
 		t.Fatalf("relay open reply = %+v, want the bridge echo and the shim", open)
 	}
 	d.mu.Lock()
@@ -435,6 +438,131 @@ func TestPingReportsShim(t *testing.T) {
 	d.mu.Unlock()
 	if shim, err := cl.Shim(); err != nil || shim != "" {
 		t.Fatalf("no shim: %q, %v", shim, err)
+	}
+}
+
+// The Bridge echo follows the transport: a daemon whose transport carries
+// no browser events (ssh, events() nil) says NoEvents instead, so a laptop
+// never subscribes "successfully" through it and then hears nothing, and
+// can tell it from a hub too old to echo Bridge at all.
+func TestBridgeEchoOnlyWithEvents(t *testing.T) {
+	dir := shortTempDir(t)
+	startSockDaemon(t, dir) // fakeTransport: ev nil, as ssh
+	open := dialLine(t, dir, "t").open(Request{Relay: true})
+	if !open.OK || open.Bridge || !open.NoEvents {
+		t.Fatalf("relay open on a transport without events = %+v, want NoEvents and no Bridge", open)
+	}
+}
+
+// openSession reads the Bridge decision under the lock that admits the
+// relay, and returns it: an onDead after admission cannot turn a smol
+// machine's echo into NoEvents.
+func TestOpenSessionReportsBridgeAtAdmission(t *testing.T) {
+	d := newDaemon(shortTempDir(t), "t", "test", newEventTransport(), func() (transport, error) {
+		return nil, errors.New("no dial in this test")
+	})
+	d.logf = t.Logf
+	t.Cleanup(func() { releaseDaemon(d) })
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	s, bridge, err := d.openSession(a, true)
+	if err != nil || !bridge {
+		t.Fatalf("relay admitted on a transport with events: bridge=%v err=%v", bridge, err)
+	}
+	d.closeSession(s)
+	dropTransport(d) // between transports, as onDead leaves it
+	if _, _, err := d.openSession(b, true); err != errRelayRefused {
+		t.Fatalf("relay while down: %v, want refused", err)
+	}
+	d.mu.Lock()
+	d.tr = newFakeTransport() // ssh-like: no events
+	d.setStateLocked(StateUp)
+	d.mu.Unlock()
+	s, bridge, err = d.openSession(b, true)
+	if err != nil || bridge {
+		t.Fatalf("relay on a transport without events: bridge=%v err=%v", bridge, err)
+	}
+	d.closeSession(s)
+}
+
+// A laptop relay to a current hub daemon whose machine has no events: the
+// local subscribe is refused as such (not as a hub too old), forwards still
+// work, and nothing is sent upstream.
+func TestHubMachineWithoutEvents(t *testing.T) {
+	var mu sync.Mutex
+	var ops []string
+	conn, stop := scriptedHubOpen(t,
+		func(Request) Response {
+			return Response{OK: true, State: StateUp, Version: "test", Relay: true, NoEvents: true}
+		},
+		func(req Request) Response {
+			mu.Lock()
+			ops = append(ops, req.Op)
+			mu.Unlock()
+			if req.Op == OpAdd {
+				return Response{OK: true, Host: req.Guest + 1}
+			}
+			return Response{OK: true}
+		})
+	ht, err := openHubTransport("h/box", conn, newFakeLocal(), stop, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &laptopRig{d: newDaemon(shortTempDir(t), "h/box", "test", ht, func() (transport, error) {
+		return nil, errors.New("no dial in this test")
+	})}
+	l.d.logf = t.Logf
+	t.Cleanup(func() { releaseDaemon(l.d) })
+	if l.d.carriesEvents() {
+		t.Fatal("a laptop daemon on a hub relay without events claims events")
+	}
+	dir := serveLaptop(t, l)
+
+	pref := farPort(t)
+	if host, _, pending, err := l.d.add(pref, pref, false, confOwner); err != nil || pending || host != pref {
+		t.Fatalf("forward = %d pending=%v err=%v; forwards must still work", host, pending, err)
+	}
+	s, err := openSession("h/box", func(<-chan struct{}) (net.Conn, error) {
+		return net.Dial("unix", socketPath(dir, "h/box"))
+	}, SessionOptions{}, 5*time.Millisecond, 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	err = s.Subscribe()
+	if err == nil || !HubNoEvents(err) || !BridgeRefusedForGood(err) || strings.Contains(err.Error(), "too old") {
+		t.Fatalf("subscribe through a hub machine without events = %v", err)
+	}
+	if !strings.Contains(err.Error(), "box on hub h is not a smol machine there") {
+		t.Fatalf("refusal does not name the machine: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, op := range ops {
+		if op == OpSubscribe {
+			t.Fatalf("a subscribe was sent to a hub daemon without events: %v", ops)
+		}
+	}
+}
+
+// BridgeRefusedForGood: what the laptop's attach stops retrying on.
+func TestBridgeRefusedForGood(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("forward daemon for 'h/web' exited: h/web: devvm on hub h predates hub forwards (needs v0.1.14 or newer); run 'devvm update' there"), true},
+		{errors.New("h/web: the forward daemon for web on hub h predates hub forwards; restart it there"), true},
+		{errors.New(NotUpstreamPrefix + errHubTooOld.Error() + ": the daemon for web on hub h predates v0.1.15"), true},
+		{errors.New(NotUpstreamPrefix + errHubNoEvents.Error() + ": box on hub h is not a smol machine there"), true},
+		{errors.New(NotUpstreamPrefix + errUpstreamReconnecting.Error()), false},
+		{errors.New("h/web: hub: web is not running"), false},
+	} {
+		if got := BridgeRefusedForGood(tc.err); got != tc.want {
+			t.Errorf("BridgeRefusedForGood(%v) = %v", tc.err, got)
+		}
 	}
 }
 

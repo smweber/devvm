@@ -146,6 +146,13 @@ type Response struct {
 	// the unreleased step 7 build) is "too old for browser opens", and its
 	// forwards still work.
 	Bridge bool `json:"bridge,omitempty"`
+	// NoEvents (session open reply): the daemon knows the bridge but its
+	// transport carries no browser events (an ssh box: nothing in it can
+	// reach a subscriber until the ssh agent exec ships), which is why
+	// Bridge is absent. Added after Bridge, so its absence together with
+	// Bridge's is still the old-hub tell: a daemon that predates it
+	// predates Bridge too, as both first shipped in v0.1.15.
+	NoEvents bool `json:"no_events,omitempty"`
 	// Shim (ping and session open replies): the guest path of the BROWSER
 	// shim the daemon's transport installed (browser-bridge.md §5, §6), or,
 	// on a laptop daemon for a hub machine, the one the hub reported. Empty

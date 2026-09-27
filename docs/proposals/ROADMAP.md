@@ -1,9 +1,9 @@
 # Roadmap: hubs + browser bridge
 
-Status: 2026-09-27, **steps 1–4 (Milestone A, released as v0.1.13), 5 and 6
-(Milestone B, released as v0.1.14) and step 7 implemented and committed;
-step 8 implemented in the working copy** (review and live list pending);
-see Progress below. Plan text revised after a sixth review (`status --local` for
+Status: 2026-09-29, **all nine steps have landed**: steps 1–4 (Milestone A,
+released as v0.1.13), 5 and 6 (Milestone B, released as v0.1.14), and 7–9
+(Milestone C), committed and shipping as **v0.1.15** after a whole-release
+review and its pre-release fixes; see Progress below. Plan text revised after a sixth review (`status --local` for
 hub listings so hubs never fan out, relay sessions refused while a
 transport is down, `keys add`/`repos add` inputs resolved on the laptop,
 a `flock` on the hub conf from the start, `hostbrowser.Open` reports
@@ -104,8 +104,25 @@ remote-untouched items:
   unset;
 - one agent exec throughout.
 
-**Step 7 implemented 2026-09-26** (working copy, not committed; review and
-the live list pending). It opened with six prep refactors asked for by a
+**v0.1.15 ships steps 7–9** (Milestone C). A whole-release review of those
+steps said ship, after four fixes made on 2026-09-29, unit-tested only (the
+ThinkPad hub was off the network):
+- this header, and `CLAUDE.md` brought up to date for hubs and the bridge;
+- a daemon echoes `Bridge` on a relay open only when its transport carries
+  events, and says `NoEvents` otherwise. So a laptop no longer subscribes
+  "successfully" through a hub's ssh machine and then hears nothing:
+  attach/shell print one line, and `auth HUB/NAME` refuses it as a
+  non-smol hub machine. A hub with no `Bridge` and no `NoEvents` still
+  reads as too old;
+- a proxied attach whose bridge fails for a transient reason (a slow or
+  briefly unreachable hub) retries in the background (about 45s) and adopts
+  the late session; the attach still waits at most 5s. A hub older than hub
+  forwards or than the bridge, or a machine without events, is not retried.
+  Neither is a VM that was not running (the hub's `__session` refuses it,
+  and local smol never dials a stopped VM): `attach`/`shell` print one line
+  saying to re-attach for browser opens (known issue below).
+
+**Step 7 implemented 2026-09-26** (then committed, above). It opened with six prep refactors asked for by a
 design review of steps 5–6, each landed and tested on its own: forwards
 close in `transport.Close()` (`teardownAware` gone), owners carry data
 (`ownerInfo`), `restore()` and the ticker share `rebindPending`, the
@@ -377,6 +394,15 @@ updated where the mechanism changed; this is the short list):
 
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
+
+- **Cold-boot bridge retry deferred until it can be live-tested on real
+  smol** (exec startups overlapping attach setup). An `attach`/`shell` on a
+  stopped VM, local or `HUB/NAME`, gets no bridge for that session, only a
+  one-line notice. Following the boot would spawn the daemon (the agent install one-shots,
+  then the serve exec; on a hub, via the laptop's `__session`) while the
+  attach runs its own tmux execs, and overlapping `smolvm machine exec`
+  startups are what the one-exec rule warns about. Found by the v0.1.15
+  review, not by a live run.
 
 - **A smol guest's clock does not resync after the host suspends.** On the
   ThinkPad, `web`'s clock sat 1.6 days behind the host, so `apt-get update`

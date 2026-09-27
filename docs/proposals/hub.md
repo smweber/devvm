@@ -587,6 +587,12 @@ NAME on hub HUB predates v0.1.15 (update devvm there, then restart that
 daemon …)`, naming `ports down` and, since the relay itself holds the
 daemon, `stop`/`start`, which is the local subscribe's error (`attach`/`shell` print it
 as their one-line notice; forwards are unaffected).
+The echo is only made when the hub daemon's transport carries events: for a
+machine that is not smol there (ssh, no events yet) it echoes
+`"no_events":true` instead, and the hook fails with `no browser events from
+this machine on its hub` (attach/shell: the same one-line notice; `auth`:
+refused as a non-smol hub machine). Without that, a laptop would subscribe
+"successfully" and never hear anything. Neither echo still means too old.
 `session.HubBridgeMinVersion` (`v0.1.15`) is pinned by a test. Third,
 **`auth desktop/web` proxies the `auth` leaf**, not the login commands
 through `hubBackend.Run`: a proxied `exec` gives the guest no terminal
@@ -612,7 +618,12 @@ desktop/web` subscribe through the same code as a local smol attach
 (`bridgeSession`), best-effort, before the leaf is proxied; the attach
 waits at most 5s for it, then goes ahead with a notice while the bridge
 keeps coming up in the background and is adopted once it does (a cold
-start's daemons are paid for either way). The
+start's daemons are paid for either way). A transient failure (a slow or
+briefly unreachable hub) is retried in the background for about 45s; a
+permanent refusal is not, and neither is a VM that was not running. The
+hub's `__session` refuses a stopped VM, and retrying into the boot the proxied attach
+starts would overlap exec startups, so that session gets a one-line notice
+and no bridge (ROADMAP known issue: deferred until it can be live-tested). The
 hub daemon waits 40s (`relaySubscriberWait`) on a relay subscriber, which
 covers the laptop daemon's bind and its own 15s wait, and stays below the
 guest agent's 60s.

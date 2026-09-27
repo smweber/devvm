@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -78,7 +79,6 @@ func TestBridgeSessionSkipped(t *testing.T) {
 		{"DEVVM_NO_SUBSCRIBE=1", "1", &config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{}, 0},
 		{"DEVVM_NO_SUBSCRIBE=0 subscribes", "0", &config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{}, 1},
 		{"remote", "", &config.Machine{Name: "box", Backend: config.BackendRemoteManaged}, &statusBackend{}, 0},
-		{"stopped smol", "", &config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{runningAfter: -1}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(backend.NoSubscribeEnv, tc.env)
@@ -93,6 +93,48 @@ func TestBridgeSessionSkipped(t *testing.T) {
 				t.Fatalf("printed %q", errBuf.String())
 			}
 		})
+	}
+}
+
+// attach on a stopped smol VM (which the attach boots) spawns no daemon
+// for it, now or later: a background open would overlap the attach's own
+// execs while the VM boots. One line says how to get the bridge.
+func TestBridgeSessionStoppedVMIsANotice(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	noRetries(t)
+	var opens atomic.Int32
+	old := openBridgeSession
+	openBridgeSession = func(string, string, session.SessionOptions) (bridgeSub, error) {
+		opens.Add(1)
+		return newSignalBridge(), nil
+	}
+	t.Cleanup(func() { openBridgeSession = old })
+	a, errBuf := bridgeApp(t)
+	a.bridgeSession(&config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{runningAfter: -1})()
+	want := "devvm: browser bridge unavailable: web was not running when this session started; re-attach (or run 'devvm shell web') for browser opens\n"
+	if errBuf.String() != want {
+		t.Fatalf("notice = %q, want %q", errBuf.String(), want)
+	}
+	if opens.Load() != 0 {
+		t.Fatal("a session was opened for a stopped VM")
+	}
+}
+
+// The hub's __session refuses a stopped VM with requireRunningForForwards'
+// own words; vmNotRunning must keep recognizing them.
+func TestVMNotRunningMatchesRefusal(t *testing.T) {
+	shrinkRunningPoll(t)
+	m := &config.Machine{Name: "web", Backend: config.BackendSmol}
+	err := requireRunningForForwards(m, &statusBackend{runningAfter: -1}, 0)
+	if !vmNotRunning(err) {
+		t.Fatalf("vmNotRunning(%v) = false", err)
+	}
+	laptop := errors.New("forward daemon for 'h/web' exited: h/web: the hub's __session ended before it started: devvm: " + err.Error() + " (see run/h@web.log)")
+	if !vmNotRunning(laptop) || !noBridgeRetry(laptop) {
+		t.Fatalf("the hub's refusal as the laptop sees it is not recognized: %v", laptop)
+	}
+	if vmNotRunning(errors.New("h/web: hub: connection refused")) {
+		t.Fatal("a link failure read as a stopped VM")
 	}
 }
 

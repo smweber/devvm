@@ -84,6 +84,14 @@ func (f *fakeTransport) die() { f.closeOnce.Do(func() { close(f.dc) }) }
 
 func newFakeTransport() *fakeTransport { return &fakeTransport{dc: make(chan struct{})} }
 
+// newEventTransport is a fakeTransport whose events() is non-nil, as a smol
+// transport's: its daemon echoes Bridge on a relay open.
+func newEventTransport() *fakeTransport {
+	f := newFakeTransport()
+	f.ev = make(chan bridgeRequest)
+	return f
+}
+
 func newTestDaemon(t *testing.T) *daemon {
 	t.Helper()
 	d := newDaemon(t.TempDir(), "t", "test", newFakeTransport(), func() (transport, error) {

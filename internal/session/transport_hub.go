@@ -46,8 +46,11 @@ type hubTransport struct {
 	// bridge: the hub daemon echoed Bridge on the relay open, so it
 	// delivers browser events to this relay once subscribed (hub.md §8);
 	// shim is the guest's BROWSER shim it reported. Fixed at open.
-	bridge bool
-	shim   string
+	// noEvents: it echoed NoEvents instead, so it is new enough but its
+	// machine carries no browser events (an ssh box on the hub).
+	bridge   bool
+	noEvents bool
+	shim     string
 	// evCh is events(): each browser event the hub daemon delivers on the
 	// relay, handed to this daemon's loop with a reply that answers the
 	// hub (hub.md §8: the same channel a smol transport feeds).
@@ -311,7 +314,7 @@ func openHubTransport(name string, c lineConn, local hubLocal, stop func(), tail
 		return fail(stale)
 	}
 	t := &hubTransport{name: name, sc: sc, local: local, stop: stop, deadCh: make(chan struct{}),
-		bridge: resp.Bridge, shim: resp.Shim, evCh: make(chan bridgeRequest)}
+		bridge: resp.Bridge, noEvents: resp.NoEvents, shim: resp.Shim, evCh: make(chan bridgeRequest)}
 	// Events arrive only once this relay subscribes on the hub
 	// (setSubscribed); each becomes a bridgeRequest for this daemon's loop.
 	go sc.read(t.onEvent)
@@ -387,6 +390,37 @@ const HubBridgeMinVersion = "v0.1.15"
 // so nothing is sent: the local subscriber hears why at once.
 var errHubTooOld = errors.New("hub devvm too old for browser opens")
 
+// errHubNoEvents is the upstream subscribe's answer on a relay whose hub
+// daemon echoed NoEvents: current, but the machine's transport there has
+// no browser events (not smol), so a subscribe could only be acked and
+// never delivered. Permanent for this machine, unlike errHubTooOld's cure.
+var errHubNoEvents = errors.New("no browser events from this machine on its hub")
+
+// BridgeRefusedForGood reports whether a bridge open or subscribe error (as
+// a session client sees it: text, quoted from a daemon's log or across the
+// wire) is one no retry will cure while this hub stays as it is: a hub, or
+// its daemon, older than hub forwards (no `__session`, or no relays), a hub
+// too old for browser opens, or a machine there without browser events. A
+// reconnecting link or a slow hub is not.
+func BridgeRefusedForGood(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, errPredatesHubForwards) || strings.Contains(msg, errHubTooOld.Error()) || HubNoEvents(err)
+}
+
+// errPredatesHubForwards is in both refusals from a hub older than hub
+// forwards (openHubTransport): a devvm there without `__session`, and a
+// daemon there that cannot hold a relay.
+const errPredatesHubForwards = "predates hub forwards"
+
+// HubNoEvents reports whether a subscribe error is errHubNoEvents: the
+// hub's daemon for the machine is current but has no browser events.
+func HubNoEvents(err error) bool {
+	return err != nil && strings.Contains(err.Error(), errHubNoEvents.Error())
+}
+
 // setSubscribed is the subscriber hook (hub.md §8): subscribe or
 // unsubscribe this relay on the hub daemon, acked there before it returns.
 // The daemon calls it outside its lock, serialized and bounded; the
@@ -398,6 +432,9 @@ func (t *hubTransport) setSubscribed(on bool) error {
 			return nil // never subscribed there: nothing to take back
 		}
 		hub, machine, _, _ := config.SplitHubName(t.name)
+		if t.noEvents {
+			return fmt.Errorf("%w: %s on hub %s is not a smol machine there, so URLs opened in it cannot reach this host (they print in the guest)", errHubNoEvents, machine, hub)
+		}
 		// A session holds that daemon (this relay, for one), and `ports
 		// down` stops only a daemon nothing holds: hence stop/start, as
 		// the stale message says.

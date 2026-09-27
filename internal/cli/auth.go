@@ -90,6 +90,11 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 	}
 	defer br.Close()
 	if err := br.Subscribe(); err != nil {
+		if session.HubNoEvents(err) {
+			// The hub's daemon said so itself (NoEvents on the relay open):
+			// its transport there is not smol, so no login URL could come here.
+			return fmt.Errorf("auth %s: auth on a non-smol hub machine is not supported through the hub yet (its daemon on hub %s carries no browser events)", name, m.Hub.Name)
+		}
 		// The daemon's reply leads with where the subscription stopped
 		// (for attach's notice); here the refusal is the whole story.
 		return fmt.Errorf("auth %s: %s", name, strings.TrimPrefix(err.Error(), session.NotUpstreamPrefix))
