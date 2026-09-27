@@ -1,7 +1,8 @@
 # Proposal: hubs — reach another host's devvm machines from this one
 
 Status: draft v3.4, 2026-09-15, revised after six independent reviews;
-§2 and §7 updated 2026-09-25 to the mechanism roadmap step 6 shipped.
+§2 and §7 updated 2026-09-25 to the mechanism roadmap step 6 shipped; §4,
+§7 and §8 updated 2026-09-27 to what step 8 shipped.
 Order of work lives in `ROADMAP.md` and nowhere else. Companion to
 `browser-bridge.md`, whose sections 3 and 4 are the authoritative statement
 of leases, subscriptions, ownership and bind policy; this doc references them
@@ -224,7 +225,8 @@ Implements `backend.Backend` only as far as the local leaves need:
 - `Status()`/`Exists()`: from the cached listing (section 5), refreshed on a
   miss.
 - `Run`: `proxy(hub, ["exec", name, "--", argv…])` for the few non-interactive
-  probes `auth` and `cp` make. Guest stdin is not wired on a smol one-shot exec
+  probes `auth` and `cp` make; `ExecOpts.Env` rides in the guest argv as
+  `env K=V …` (step 8). Guest stdin is not wired on a smol one-shot exec
   (no `-i`), so callers that need stdin use the tar path in section 6, not `Run`.
 - `Spawn`: returns an error. A hub machine never gets a laptop-owned agent
   exec; that is the whole point.
@@ -335,15 +337,18 @@ writes) runs end to end between the laptop daemon and the hub daemon:
 ```
 hub → laptop:  (blank line) devvm-session-v1            // after any login banner
 laptop → hub:  {"id":1,"op":"session","relay":true,"heartbeat":20}
-hub → laptop:  {"id":1,"ok":true,"state":"up","version":"…","relay":true,"heartbeat":20}
+hub → laptop:  {"id":1,"ok":true,"state":"up","version":"…","relay":true,"heartbeat":20,"bridge":true,"shim":"/usr/local/bin/devvm-open-url"}
+               // bridge and shim since step 8 (section 8)
                // or, hub transport down: {"id":1,"ok":false,"err":"relay session refused: …"}, then EOF
 laptop → hub:  {"id":2,"op":"add","host":3000,"guest":3000}   // host = the hub's preference: the guest port
 hub → laptop:  {"id":2,"ok":true,"host":3001}                 // the hub-loopback port
 laptop → hub:  {"id":3,"op":"remove","guest":3000}
 hub → laptop:  {"id":3,"ok":true}
-laptop → hub:  {"id":4,"op":"subscribe"} / {"op":"unsubscribe"}     (section 8, step 8)
-hub → laptop:  {"event":{"id":7,…}}             // subscribed bridge events
-laptop → hub:  {"reply":{"id":7,…}}             // the subscriber's answer
+laptop → hub:  {"id":4,"op":"subscribe"} / {"id":6,"op":"unsubscribe"}   (section 8, step 8)
+hub → laptop:  {"id":4,"ok":true}
+hub → laptop:  {"event":{"id":7,"data":{"type":"open-url","url":"…","kind":"direct","guest":3000}}}
+                                                // unbound: the hub binds nothing for a relay
+laptop → hub:  {"reply":{"id":7,"data":{"opened":true,"url":"…","guest":3000,"host_port":3000}}}
 laptop → hub:  {"id":5,"op":"ping"}             // every heartbeat interval
 hub → laptop:  {"id":5,"ok":true,"state":"up",…}
 ```
@@ -564,8 +569,53 @@ This changes the bridge in one way and confirms two:
   are smol VMs on the hub, so the hub daemon's smol transport already carries
   events.
 
-Until thin hub `auth` lands (roadmap step 8), `auth desktop/web` proxies
-verbatim and opens on the desktop. Usable, and clearly labelled in the output.
+Until thin hub `auth` landed (roadmap step 8), `auth desktop/web` was
+refused on the laptop.
+
+**As shipped (roadmap step 8).** The mechanism above holds with three
+differences. First, `__session` needed no change: it relays bytes
+verbatim, and the hub daemon already treated a relay as a subscriber
+(step 7), so the subscription, the events and their replies ride it as
+they are. Second, the laptop needs to know that the hub daemon does so:
+a v0.1.14 hub daemon acks a `subscribe` and never delivers an event (it
+opened URLs on the hub itself). The hub daemon now echoes `"bridge":true`
+on every session open, with `"shim"`, the BROWSER shim path its smol
+transport installed; `hubTransport` keeps both, reports the shim on the
+laptop daemon's `ping`, and without the echo sends no `subscribe` at all:
+the hook fails with `hub devvm too old for browser opens: the daemon for
+NAME on hub HUB predates v0.1.15 (update devvm there, then restart that
+daemon …)`, naming `ports down` and, since the relay itself holds the
+daemon, `stop`/`start`, which is the local subscribe's error (`attach`/`shell` print it
+as their one-line notice; forwards are unaffected).
+`session.HubBridgeMinVersion` (`v0.1.15`) is pinned by a test. Third,
+**`auth desktop/web` proxies the `auth` leaf**, not the login commands
+through `hubBackend.Run`: a proxied `exec` gives the guest no terminal
+(the hub's `devvm exec` never asks smolvm for `-it`), and every login
+prompts. The laptop dials its daemon for `desktop@web`, subscribes (acked
+after the hub's ack), binds codex's 1455 on that session when codex is
+among the tools, then runs `auth web [TOOL]` on the hub with
+`DEVVM_NO_SUBSCRIBE=1` and a terminal. The hub's thin `auth` neither dials
+nor subscribes under that variable; it reads the shim with a one-shot
+`ping` of the daemon the laptop's relay already holds (never spawning
+one), binds nothing, and runs the logins with a guest terminal and
+`BROWSER` set, so every URL they open is delivered to the relay. A hub too
+old for browser opens is refused before anything runs there (its `auth`
+would spawn a second agent exec), and so is every case where the laptop
+cannot prove the hub daemon is subscribed for it: its own daemon between
+transports refuses the local `subscribe` (`the link to the hub is
+reconnecting`), a ping after the ack must report the shim, and a laptop
+itself under `DEVVM_NO_SUBSCRIBE` is refused outright. `hubBackend.Run`
+does carry `ExecOpts.Env` into the proxied exec's argv now (`env
+BROWSER=… argv…`, keys sorted and validated) instead of refusing it,
+though no production caller passes an env yet. `attach`/`shell
+desktop/web` subscribe through the same code as a local smol attach
+(`bridgeSession`), best-effort, before the leaf is proxied; the attach
+waits at most 5s for it, then goes ahead with a notice while the bridge
+keeps coming up in the background and is adopted once it does (a cold
+start's daemons are paid for either way). The
+hub daemon waits 40s (`relaySubscriberWait`) on a relay subscriber, which
+covers the laptop daemon's bind and its own 15s wait, and stays below the
+guest agent's 60s.
 
 **Shape fixed in roadmap step 7, for step 8.** The laptop daemon's upstream
 subscription is an optional transport interface, `subscriber

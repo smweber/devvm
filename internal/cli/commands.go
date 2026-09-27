@@ -126,6 +126,11 @@ func (a *App) authCmd() *cobra.Command {
 		Args:      cobra.RangeArgs(1, 2),
 		ValidArgs: argChoices,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if ok, err := hubMachineArg(args); err != nil {
+				return err
+			} else if ok {
+				return a.authHubMachine(cmd, args)
+			}
 			tool := "all"
 			if len(args) == 2 {
 				tool = args[1]

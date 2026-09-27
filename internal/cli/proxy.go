@@ -30,7 +30,8 @@ import (
 // Dispatch happens in each proxied leaf's RunE (see commands.go), because
 // that is the only place the parsed *cobra.Command is in hand; `resolve`
 // keeps refusing hub machines, which is the guard for every leaf that is
-// not proxied (auth; ports run on this host, hubforwards.go). cp-in/cp-out
+// not proxied (ports run on this host, hubforwards.go; auth subscribes here
+// and then proxies, authHubMachine). cp-in/cp-out
 // dispatch in their own
 // RunE too, but to the tar-over-stdio loops in cp_hub.go rather than here:
 // runProxied's empty stdin cannot carry an archive.
@@ -199,6 +200,11 @@ func (a *App) proxyInteractive(cmd *cobra.Command, args []string, transport stri
 	if err != nil {
 		return err
 	}
+	// Subscribed here, through this host's daemon for HUB@NAME, before the
+	// leaf runs on the hub with DEVVM_NO_SUBSCRIBE=1 (hub.md §8): a URL the
+	// session opens lands on this host, not the hub's.
+	release := a.bridgeSession(m, nil)
+	defer release()
 	leaf := strings.Fields(cmd.CommandPath())[1:]
 	return a.exitStatus(m, p.ProxyInteractive(tr, append(leaf, m.HubMachineName())...))
 }

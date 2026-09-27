@@ -19,26 +19,180 @@ import (
 	fwdsession "github.com/smweber/devvm/internal/session"
 )
 
-// session holds the auth-scoped agent exec + yamux channel and any callback
-// forwards stood up during login.
+// session is one auth run: the backend the logins run through, the guest
+// path of the BROWSER shim they get, and ensure, which bridges a login's
+// loopback callback port before the login starts (codex's fixed 1455).
+// On a remote backend it also holds the private agent exec, its yamux
+// channel and the callback listeners stood up over it; the thin path (smol)
+// has none of those: its daemon owns the one exec and binds callbacks.
 type session struct {
-	ctx   context.Context
-	b     backend.Backend
+	ctx    context.Context
+	b      backend.Backend
+	shim   string // guest $BROWSER wrapper path (co-located with the agent)
+	ensure func(port int)
+
+	// The private session (remote backends only).
 	agent *backend.Session
 	mux   *yamux.Session
-	shim  string // guest $BROWSER wrapper path (co-located with the agent)
 
 	mu        sync.Mutex
 	callbacks map[int][]net.Listener // guest callback port -> host listeners (v4 and/or v6)
 }
 
+// installAgent is agentbin.Install, a var so a test can prove the thin path
+// never calls it: on smol the daemon's transport is the sole installer
+// (browser-bridge.md §5, §6).
+var installAgent = agentbin.Install
+
+// Bridge is thin auth's hold on the machine's forward daemon
+// (browser-bridge.md §6): a session (*session.Session) whose events open on
+// this host. Ping reads the BROWSER shim path, with the daemon's state and
+// version to explain its absence; Subscribe is acked, so every URL a login
+// opens after it reaches this host; Add binds a callback port owned by the
+// session, gone when it closes.
+type Bridge interface {
+	Ping() (fwdsession.PingInfo, error)
+	Subscribe() error
+	Add(pref, guest int, exact bool) (host int, bumped, pending bool, err error)
+	Close() error
+}
+
+// Options are what Run needs beyond the machine: the consent gate for the
+// remote branch's install, and the thin branch's way to the daemon.
+type Options struct {
+	// Approve gates the agent install on an adopt host (agentbin.Install);
+	// remote branch only.
+	Approve func() error
+	// OpenBridge dials the machine's forward daemon (spawning it if needed)
+	// and opens a session on it, with an OnEvent that opens URLs here.
+	OpenBridge func() (Bridge, error)
+	// NoSubscribe is DEVVM_NO_SUBSCRIBE: another host subscribed for this
+	// run (the laptop proxying `auth HUB/NAME`, hub.md §8), so the daemon
+	// is neither dialed nor subscribed; PingShim, if set, reads the shim
+	// from a daemon that is already up, without holding it.
+	NoSubscribe bool
+	PingShim    func() (string, error)
+	// Version is this devvm's build, to tell a daemon from before thin
+	// auth (another version, no shim) from one that has none to report.
+	Version string
+}
+
+// Thin reports whether auth on m takes the thin path (browser-bridge.md §6):
+// the machine's forward daemon has events, which today means smol. A hub
+// machine is thin too, but its auth runs on the hub (the cli proxies it
+// with this host subscribed), so it never reaches Run here. Remote boxes
+// keep the private session until the ssh agent exec ships.
+func Thin(m *config.Machine) bool { return m.Backend == config.BackendSmol }
+
+// Run logs in the requested tools on m: the thin path where the daemon has
+// events, the private session everywhere else.
+func Run(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, o Options) error {
+	if !Thin(m) {
+		return Authenticate(ctx, b, m, tools, o.Approve)
+	}
+	return authenticateThin(ctx, b, m, tools, o)
+}
+
+// authenticateThin is `auth` on smol (browser-bridge.md §6): no agent exec
+// of its own and no install. The machine's daemon holds the one exec and
+// installed the agent and shim before spawning it; a session on it reports
+// the shim (ping) and, once subscribed, brings every URL a login opens to
+// this host, binding its callback on the way. So `auth` during a held
+// attach adds no second `devvm-agent serve` to the VM (the one-exec rule).
+func authenticateThin(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, o Options) error {
+	s := &session{ctx: ctx, b: b, ensure: func(int) {}}
+	if o.NoSubscribe {
+		// The browser is on the subscribing host, which bound what it
+		// needs; nothing is pre-bound here, on the wrong host.
+		if o.PingShim != nil {
+			if shim, err := o.PingShim(); err == nil {
+				s.shim = shim
+			}
+		}
+		if s.shim == "" {
+			fmt.Fprintf(os.Stderr, "devvm: no forward daemon for '%s' reports a browser shim; login URLs will be printed in the guest\n", m.Name)
+		}
+		return s.runLogins(tools)
+	}
+	br, err := o.OpenBridge()
+	if err != nil {
+		return fmt.Errorf("browser bridge for '%s': %w", m.Name, err)
+	}
+	defer br.Close()
+	info, err := br.Ping()
+	if err != nil {
+		return fmt.Errorf("browser bridge for '%s': %w", m.Name, err)
+	}
+	if info.Shim == "" {
+		return noShimError(m.Name, info, o.Version)
+	}
+	shim := info.Shim
+	if err := br.Subscribe(); err != nil {
+		return fmt.Errorf("browser bridge for '%s': %w", m.Name, err)
+	}
+	s.shim = shim
+	s.ensure = func(port int) { BridgeCallback(br, port) }
+	return s.runLogins(tools)
+}
+
+// noShimError explains a daemon that reports no shim, from the same ping:
+// between transports (the shim comes back with the next one), another build
+// (in practice one from before thin auth: it has the shim, step 7 installs
+// it, but does not say where; a newer one would report it), or neither. Nothing is installed from here.
+func noShimError(name string, info fwdsession.PingInfo, version string) error {
+	switch {
+	case info.State != "" && info.State != fwdsession.StateUp:
+		return fmt.Errorf("the forward daemon for '%s' is %s and reports no browser shim until its transport is back; retry in a moment", name, info.State)
+	case info.Version != version:
+		return fmt.Errorf("the forward daemon for '%s' runs another build of devvm (%s; this is %s) and reports no browser shim; restart it ('devvm ports down %s', and end any attach holding it) and retry", name, orUnknown(info.Version), version, name)
+	default:
+		return fmt.Errorf("the forward daemon for '%s' reports no browser shim; restart it ('devvm ports down %s', and end any attach holding it) and retry", name, name)
+	}
+}
+
+func orUnknown(v string) string {
+	if v == "" {
+		return "(unknown)"
+	}
+	return v
+}
+
+// BridgeCallback binds a login's callback port on this host before the
+// login runs, owned by the auth session (gone when it ends): codex without
+// device auth may never hand its URL to the shim, so the redirect bind the
+// daemon does on an open cannot be relied on. Exact, as every redirect
+// callback: the provider sends the browser to that port verbatim.
+func BridgeCallback(br Bridge, port int) {
+	if _, _, pending, err := br.Add(port, port, true); err != nil {
+		fmt.Fprintf(os.Stderr, "devvm: could not bridge login callback port %d: %v\n", port, err)
+	} else if pending {
+		fmt.Fprintf(os.Stderr, "devvm: login callback port %d is pending (host is reconnecting)\n", port)
+	} else {
+		fmt.Fprintf(os.Stderr, "devvm: bridging login callback on port %d\n", port)
+	}
+}
+
+// CallbackPorts are the fixed callback ports the tools' logins need bound
+// before they run (codex's 1455). A laptop proxying `auth HUB/NAME` binds
+// them on its own session, the way thin auth does locally.
+func CallbackPorts(tools []string) []int {
+	for _, t := range tools {
+		if t == "codex" {
+			return []int{codexFixedPort}
+		}
+	}
+	return nil
+}
+
 // Authenticate logs in the requested tools (github/codex/claude) inside the
-// guest, bridging the host browser and OAuth loopback callbacks over one agent
-// session. tools is the resolved list (e.g. all -> github,codex,claude). approve
-// gates the agent install on adopt hosts (see agentbin.Install).
+// guest over a private agent session: the remote branch (Run), until the
+// ssh agent exec ships. It bridges the host browser and OAuth loopback
+// callbacks itself. tools is the resolved list (e.g. all ->
+// github,codex,claude). approve gates the agent install on adopt hosts
+// (see agentbin.Install).
 func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, approve func() error) error {
 	// Agent and BROWSER shim, one install (agentbin.Install).
-	paths, err := agentbin.Install(ctx, b, m, approve)
+	paths, err := installAgent(ctx, b, m, approve)
 	if err != nil {
 		return err
 	}
@@ -56,10 +210,15 @@ func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, too
 		return err
 	}
 	s := &session{ctx: ctx, b: b, agent: agent, mux: mux, shim: shim, callbacks: map[int][]net.Listener{}}
+	s.ensure = s.ensureCallback
 	defer s.close()
 
 	go s.eventLoop()
+	return s.runLogins(tools)
+}
 
+// runLogins runs each tool's login in order, the shared body of both paths.
+func (s *session) runLogins(tools []string) error {
 	for _, tool := range tools {
 		// Skip tools whose CLI isn't installed — a user is unlikely to have
 		// every service, so a missing one is graceful, not fatal.
@@ -198,7 +357,7 @@ func (s *session) login(tool string) error {
 		if s.codexSupportsDeviceAuth() {
 			return s.interactive(`exec codex login --device-auth`)
 		}
-		s.ensureCallback(codexFixedPort) // route 1455 without restarting the VM
+		s.ensure(codexFixedPort) // route 1455 without restarting the VM
 		return s.interactive(`exec codex login`)
 	case "claude":
 		fmt.Fprintln(os.Stderr, "Claude Code logs in on first launch; use /login if prompted.")
@@ -210,11 +369,11 @@ func (s *session) login(tool string) error {
 
 // interactive runs a login shell command with a tty and the browser shim env.
 func (s *session) interactive(script string) error {
-	return s.b.Run(s.ctx, backend.ExecOpts{
-		TTY:   true,
-		Login: true,
-		Env:   map[string]string{"BROWSER": s.shim},
-	}, "bash", "-lc", script)
+	o := backend.ExecOpts{TTY: true, Login: true}
+	if s.shim != "" { // none known: leave the guest's own BROWSER alone
+		o.Env = map[string]string{"BROWSER": s.shim}
+	}
+	return s.b.Run(s.ctx, o, "bash", "-lc", script)
 }
 
 // installed reports whether tool's guest CLI is on PATH in a login shell (so it

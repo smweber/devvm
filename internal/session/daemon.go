@@ -258,6 +258,16 @@ type daemon struct {
 	upInflight chan struct{}
 	// upTimeout bounds one subscription hook call.
 	upTimeout time.Duration
+	// hubMachine: this daemon serves a machine on a hub (HUB/NAME), so a
+	// local subscribe means nothing until the relay has subscribed
+	// upstream; while there is no transport it is refused (syncUpstream).
+	hubMachine bool
+	// relayReplyWait bounds the wait on a relay subscriber's reply, which
+	// covers the far daemon's own bind and its own subscriber's wait.
+	relayReplyWait time.Duration
+	// onUpstream, if set (tests only), sees each subscription hook call's
+	// outcome once callUpstream has it, before the caller acks anything.
+	onUpstream func(on bool, err error)
 
 	// onState, if set (tests only), sees every state change, under d.mu:
 	// a transition too quick to sample (a re-dial that succeeds at once) is
@@ -280,26 +290,28 @@ type daemon struct {
 func newDaemon(configDir, name, version string, tr transport, dial func() (transport, error)) *daemon {
 	logger := log.New(os.Stderr, "devvm-daemon: ", log.LstdFlags)
 	return &daemon{
-		configDir:  configDir,
-		name:       name,
-		version:    version,
-		tr:         tr,
-		dial:       dial,
-		logf:       logger.Printf,
-		minBackoff: minReconnectBackoff,
-		maxBackoff: maxReconnectBackoff,
-		idle:       idleTimeout,
-		retryEvery: exactRetryInterval,
-		upTimeout:  upstreamSubscribeTimeout,
-		now:        time.Now,
-		replyWait:  subscriberWait,
-		lateWait:   lateWaitFor(),
-		forwards:   map[int]*fwd{},
-		sessions:   map[uint64]*sess{},
-		state:      StateUp,
-		since:      time.Now(),
-		stop:       make(chan struct{}),
-		kick:       make(chan struct{}, 1),
+		configDir:      configDir,
+		name:           name,
+		version:        version,
+		tr:             tr,
+		dial:           dial,
+		logf:           logger.Printf,
+		minBackoff:     minReconnectBackoff,
+		maxBackoff:     maxReconnectBackoff,
+		idle:           idleTimeout,
+		retryEvery:     exactRetryInterval,
+		upTimeout:      upstreamSubscribeTimeout,
+		hubMachine:     isHubName(name),
+		relayReplyWait: relaySubscriberWait,
+		now:            time.Now,
+		replyWait:      subscriberWait,
+		lateWait:       lateWaitFor(),
+		forwards:       map[int]*fwd{},
+		sessions:       map[uint64]*sess{},
+		state:          StateUp,
+		since:          time.Now(),
+		stop:           make(chan struct{}),
+		kick:           make(chan struct{}, 1),
 	}
 }
 
@@ -713,13 +725,20 @@ const upstreamSubscribeTimeout = 10 * time.Second
 // subscriber exists and the last attempt failed, unsubscribed once when
 // none is left, and whatever is wanted when the upstream state is unknown
 // (upDirty: a call timed out). A no-op for a transport without the hook, or
-// with none (reconnecting: restore re-subscribes). Runs outside d.mu.
+// with none (reconnecting: restore re-subscribes), except that a local
+// subscribe on a hub machine's daemon with no transport is refused
+// (errUpstreamReconnecting): its ack would mean nothing upstream, and a
+// caller that trusts it (auth HUB/NAME) could run a command on a hub too
+// old to honour DEVVM_NO_SUBSCRIBE. Runs outside d.mu.
 func (d *daemon) syncUpstream(subscribing bool) error {
 	d.upMu.Lock()
 	defer d.upMu.Unlock()
 	d.mu.Lock()
 	tr, want := d.tr, len(d.subs) > 0
 	d.mu.Unlock()
+	if tr == nil && subscribing && d.hubMachine {
+		return errUpstreamReconnecting
+	}
 	sub, ok := tr.(subscriber)
 	if !ok {
 		return nil
@@ -783,6 +802,9 @@ func (d *daemon) callUpstream(sub subscriber, on bool) error {
 	case <-done:
 		if err == nil {
 			d.upOn, d.upDirty = on, false
+		}
+		if d.onUpstream != nil {
+			d.onUpstream(on, err)
 		}
 		return err
 	case <-t.C:
@@ -1346,6 +1368,30 @@ func (d *daemon) sessionCount() int {
 	return len(d.sessions)
 }
 
+// isHubName reports whether a daemon's machine name is HUB/NAME.
+func isHubName(name string) bool {
+	_, _, ok, _ := config.SplitHubName(name)
+	return ok
+}
+
+// errUpstreamReconnecting refuses a local subscribe on a hub machine's
+// daemon while it has no transport: nothing can be sent upstream, and an
+// ack would promise events the hub will not deliver. The registration
+// stays; restore() subscribes upstream once the relay is back.
+var errUpstreamReconnecting = errors.New("the link to the hub is reconnecting; retry in a moment")
+
+// shimPath is the BROWSER shim the current transport reports (shimReporter),
+// "" when it has none or the daemon is between transports. The call is a
+// field read on the transport, so it runs under d.mu.
+func (d *daemon) shimPath() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if r, ok := d.tr.(shimReporter); ok {
+		return r.shimPath()
+	}
+	return ""
+}
+
 // status snapshots the daemon's state for list/ping replies.
 func (d *daemon) status() (state string, since time.Time) {
 	d.mu.Lock()
@@ -1431,7 +1477,7 @@ func (d *daemon) dispatch(req Request) Response {
 		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount(), Forwards: d.list()}
 	case OpPing:
 		state, since := d.status()
-		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount()}
+		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount(), Shim: d.shimPath()}
 	case OpKick:
 		d.requestKick()
 		return Response{OK: true}

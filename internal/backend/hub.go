@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 
 	"github.com/smweber/devvm/internal/config"
 )
@@ -30,9 +32,9 @@ type hubBackend struct {
 	hub *sshBackend     // the ssh hop to the hub; the proxy runs commands over it
 }
 
-// ErrHubProxy is returned by hub-machine ops that are not implemented yet:
-// auth lands in step 8, so the wording names no mechanism. Copy returns it
-// for good (see there).
+// ErrHubProxy is returned by hub-machine ops the laptop does not serve
+// through the Backend interface: Copy (see there), and any leaf that
+// neither proxies nor runs on this host (resolve's guard).
 var ErrHubProxy = errors.New("hub machines are not supported by this command yet")
 
 // Proxier is the hub-machine backend's proxy surface, which the cli's
@@ -53,7 +55,8 @@ type Proxier interface {
 // decision 3): a proxied attach/shell/auth must never subscribe to the hub
 // daemon's browser events, because the laptop subscribes through its own
 // relay instead (hub.md §8). attach and shell read it (cli.noSubscribe) and
-// then leave the daemon alone entirely; thin auth follows in step 8.
+// then leave the daemon alone entirely; thin auth neither dials nor
+// subscribes under it, and only pings a daemon already up for the shim.
 const NoSubscribeEnv = "DEVVM_NO_SUBSCRIBE"
 
 // ProxyArgv is the hub-side command line for a proxied devvm argv:
@@ -136,20 +139,50 @@ func (b *hubBackend) Copy(hostSrc, guestDst string) error {
 // Run is a proxied `devvm exec NAME -- argv…` (hub.md §4). The hub's exec
 // already runs a login shell as the dev user, so Login is implied; root is
 // asked for with a guest-side sudo, since User would otherwise sudo the
-// hub-side ssh command instead. o.Env would likewise land on the hub
-// process, not in the guest, so it is refused rather than misapplied. A
-// smol one-shot exec has no stdin (no -i), so callers that need it use the
-// tar path (cli's cp_hub.go), not Run.
+// hub-side ssh command instead. o.Env rides in the guest argv as `env
+// K=V … argv…` (roadmap step 8: BROWSER, for a login run on a hub
+// machine): as ExecOpts it would land on the hub-side ssh process, not in
+// the guest. A smol one-shot exec has no stdin (no -i), so callers that
+// need it use the tar path (cli's cp_hub.go), not Run.
 func (b *hubBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error {
-	if len(o.Env) > 0 {
-		return fmt.Errorf("exec on %s: guest env is not carried through the proxy (put it in argv)", b.m.Name)
+	envArgv, err := guestEnvArgv(o.Env)
+	if err != nil {
+		return fmt.Errorf("exec on %s: %w", b.m.Name, err)
 	}
+	argv = append(envArgv, argv...)
 	if o.User == "root" {
 		argv = append([]string{"sudo"}, argv...)
 	}
-	o.User, o.Login = "", false
+	o.User, o.Login, o.Env = "", false, nil
 	remote := append([]string{"exec", b.m.HubMachineName(), "--"}, argv...)
 	return b.Proxy(ctx, o, remote...)
+}
+
+// envNameRe is a portable environment variable name.
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// guestEnvArgv is `env K=V …` for env, keys sorted so the argv is stable,
+// or nothing for no env. Each K=V is one argv token (shellJoin quotes it
+// whole), so a value's spaces, quotes or `$` reach the guest verbatim; a
+// key that is not a plain name is refused rather than re-read by env as
+// something else.
+func guestEnvArgv(env map[string]string) ([]string, error) {
+	if len(env) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		if !envNameRe.MatchString(k) {
+			return nil, fmt.Errorf("guest env name %q is not a valid variable name", k)
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := []string{"env"}
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out, nil
 }
 
 // Spawn always refuses; see the type comment.

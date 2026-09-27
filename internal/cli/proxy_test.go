@@ -396,11 +396,17 @@ func TestProxyPropagatesExitStatus(t *testing.T) {
 }
 
 // attach/shell run with a terminal over the hub conf's transport; the
-// --transport flag is consumed here and never forwarded.
+// --transport flag is consumed here and never forwarded. The laptop's
+// bridge session is stubbed: a real one would fork this binary as
+// `__daemon` (TestMain refuses it, but each attach would still pay a
+// process for nothing).
 func TestProxyInteractiveTransport(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
 	a := newTestApp(t)
 	sshLog, argvLog := fakeHub(t, a)
 	pinTTY(t, true)
+	var log []string
+	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log})
 	if err := runTree(t, a, "attach", "h/web"); err != nil {
 		t.Fatalf("attach: %v\n%s", err, a.Stderr)
 	}
@@ -437,24 +443,13 @@ func TestProxyInteractiveTransport(t *testing.T) {
 	}
 }
 
-// The local-only leaves keep refusing hub machines without dialing: auth
-// (step 8). cp proxies since step 4 (cp_hub_test.go), ports run here since
-// step 6 (hubforwards_test.go).
-func TestProxyLeavesLocalOnlyRefused(t *testing.T) {
+// A bad hub reference fails on the conf alone, never dialing. (auth, the
+// last leaf refused for hub machines, subscribes here and proxies since
+// step 8: hub_bridge_test.go; cp proxies since step 4, cp_hub_test.go;
+// ports run here since step 6, hubforwards_test.go.)
+func TestProxyBadReferenceNeverDials(t *testing.T) {
 	a := newTestApp(t)
 	sshLog, _ := fakeHub(t, a)
-	for _, argv := range [][]string{
-		{"auth", "h/web"},
-	} {
-		err := runTree(t, a, argv...)
-		if !errors.Is(err, backend.ErrHubProxy) {
-			t.Errorf("%v: err = %v, want ErrHubProxy", argv, err)
-		}
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(sshLog)
-		t.Errorf("a refused leaf dialed the hub:\n%s", data)
-	}
 	// An unknown hub, or a malformed reference, fails on the conf alone.
 	for _, argv := range [][]string{{"stop", "nope/web"}, {"exec", "bad name/web", "true"}, {"create", "h/bad name", "--yes"}} {
 		if err := runTree(t, a, argv...); err == nil {

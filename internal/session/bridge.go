@@ -52,18 +52,26 @@ type bridgeRequest struct {
 
 // Bridge limits (browser-bridge.md §4, §7).
 const (
-	callbackTTL      = 10 * time.Minute // a redirect callback's wall-clock lifetime
-	maxEphemeral     = 20               // live bridge forwards per machine
-	openRateLimit    = 10               // opens per openRateWindow per machine
-	openRateWindow   = time.Minute
-	minForwardPort   = 1024 // privileged ports are never bound
-	subscriberWait   = 15 * time.Second
-	reasonPending    = "forward pending (host is reconnecting); retry in a moment"
-	reasonNoSession  = "no devvm session is attached to this machine"
-	reasonNoReply    = "the attached devvm session did not answer in time"
-	reasonGone       = "the attached devvm session went away"
-	reasonRateLimit  = "too many opens (more than 10 a minute)"
-	reasonEphemerals = "too many browser-bridge forwards on this host (20)"
+	callbackTTL    = 10 * time.Minute // a redirect callback's wall-clock lifetime
+	maxEphemeral   = 20               // live bridge forwards per machine
+	openRateLimit  = 10               // opens per openRateWindow per machine
+	openRateWindow = time.Minute
+	minForwardPort = 1024 // privileged ports are never bound
+	subscriberWait = 15 * time.Second
+	// relaySubscriberWait is the wait on a relay subscriber (40s): its far
+	// daemon first binds (a hub add, bounded by hubCallTimeout's 10s, then
+	// the -L) and then waits subscriberWait on its own subscriber, plus
+	// slack for the link. It stays below agentrpc.AgentReplyWait (pinned by
+	// a test), so the guest still hears this daemon's answer, never the
+	// agent's own timeout. Only step-8 laptops subscribe through a relay,
+	// so no older peer depends on the shorter wait.
+	relaySubscriberWait = subscriberWait + 10*time.Second + 15*time.Second
+	reasonPending       = "forward pending (host is reconnecting); retry in a moment"
+	reasonNoSession     = "no devvm session is attached to this machine"
+	reasonNoReply       = "the attached devvm session did not answer in time"
+	reasonGone          = "the attached devvm session went away"
+	reasonRateLimit     = "too many opens (more than 10 a minute)"
+	reasonEphemerals    = "too many browser-bridge forwards on this host (20)"
 )
 
 // classified is a URL as the bridge sees it: its kind, the guest loopback
@@ -210,7 +218,11 @@ func (d *daemon) bridgeOpen(raw string) agentrpc.OpenReply {
 		}
 	}
 	data, _ := json.Marshal(ev)
-	r, err := d.deliverTo(sub, data, d.replyWait)
+	wait := d.replyWait
+	if sub.relay {
+		wait = d.relayReplyWait
+	}
+	r, err := d.deliverTo(sub, data, wait)
 	switch {
 	case errors.Is(err, errReplyTimeout):
 		return agentrpc.OpenReply{Err: reasonNoReply, Guest: ev.Guest, HostPort: ev.Bound}

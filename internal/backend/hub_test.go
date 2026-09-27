@@ -70,8 +70,8 @@ func fakeSSHLog(t *testing.T) string {
 
 // hubBackend.Run is a proxied `exec NAME -- argv…` under the login-shell
 // wrapper with DEVVM_NO_SUBSCRIBE=1; root becomes a guest-side sudo (User
-// would sudo the hub's ssh command instead) and guest Env is refused (it
-// would land on the hub process).
+// would sudo the hub's ssh command instead) and guest Env becomes an `env`
+// prefix in the guest argv (as ExecOpts it would land on the hub process).
 func TestHubBackendRunIsProxiedExec(t *testing.T) {
 	hub := config.NewHub("h", "u@host")
 	rec := &config.Machine{Name: "h/web", Hub: hub, Backend: config.BackendHub, SSHHost: hub.SSHHost}
@@ -103,8 +103,20 @@ func TestHubBackendRunIsProxiedExec(t *testing.T) {
 	if !strings.HasSuffix(lines[1], " u@host "+wantRoot) {
 		t.Errorf("root exec line = %q\nwant suffix %q", lines[1], wantRoot)
 	}
-	if err := b.Run(ctx, ExecOpts{Env: map[string]string{"BROWSER": "x"}}, "true"); err == nil {
-		t.Error("guest Env must be refused: it would apply to the hub process, not the guest")
+	// Guest Env rides in the exec argv (roadmap step 8: BROWSER for a login
+	// on a hub machine), never on the hub-side ssh process: keys sorted,
+	// each K=V one token so a value with spaces or `$` survives.
+	if err := b.Run(ctx, ExecOpts{TTY: true, Env: map[string]string{"BROWSER": "/usr/local/bin/devvm-open-url", "A_B": "x y $z"}}, "bash", "-lc", "gh auth login"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(log)
+	lines = strings.Split(strings.TrimSpace(string(data)), "\n")
+	wantEnv := remoteCommand(ExecOpts{}, LoginShellArgv(ProxyArgv("exec", "web", "--", "env", "A_B=x y $z", "BROWSER=/usr/local/bin/devvm-open-url", "bash", "-lc", "gh auth login")...))
+	if len(lines) != 3 || !strings.HasSuffix(lines[2], " u@host "+wantEnv) || !strings.Contains(lines[2], " -t ") {
+		t.Errorf("env exec line = %q\nwant -t and suffix %q", lines[len(lines)-1], wantEnv)
+	}
+	if err := b.Run(ctx, ExecOpts{Env: map[string]string{"X=Y": "1"}}, "true"); err == nil {
+		t.Error("an env name that is not a plain variable name must be refused")
 	}
 	// The wrapper's shape: env is the prefix, the assignment is a plain
 	// token (quoted by shellJoin, which is why it is not a bare VAR=1 prefix).

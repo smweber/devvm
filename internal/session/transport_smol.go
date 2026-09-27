@@ -23,7 +23,7 @@ type smolTransport struct {
 	mux   *yamux.Session     // yamux client over the exec's stdio
 	fwds  forwardSet         // this transport's listeners; Close drops them all
 	evCh  chan bridgeRequest // the guest's open-url requests (events)
-	paths agentbin.Paths     // what Install put in the guest (step 8: ping reports the shim)
+	paths agentbin.Paths     // what Install put in the guest (ping reports the shim)
 }
 
 func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend) (*smolTransport, error) {
@@ -115,6 +115,10 @@ func serveEventStream(s net.Conn, out chan<- bridgeRequest, done <-chan struct{}
 }
 
 func (t *smolTransport) events() <-chan bridgeRequest { return t.evCh }
+
+// shimPath is the shim this transport installed with the agent; ping
+// reports it to thin `auth` (browser-bridge.md §6).
+func (t *smolTransport) shimPath() string { return t.paths.Shim }
 
 // forward listens on both loopback families (listenLoopback); each accepted
 // connection, from either, becomes one yamux stream on the single exec.

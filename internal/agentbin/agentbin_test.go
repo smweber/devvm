@@ -228,3 +228,14 @@ func TestShimScriptUnchangedForPlainPaths(t *testing.T) {
 		t.Fatalf("shq = %q", got)
 	}
 }
+
+// A machine on a hub is never installed into from here (hub.md §8): the
+// hub's daemon installed agent and shim before its one agent exec. Refused
+// before the backend is touched (a nil one would panic).
+func TestInstallRefusesHubMachine(t *testing.T) {
+	hub := config.NewHub("h", "u@h.example")
+	m := &config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}
+	if _, err := Install(context.Background(), nil, m, nil); !errors.Is(err, ErrHubMachine) {
+		t.Fatalf("Install on a hub machine = %v, want ErrHubMachine", err)
+	}
+}

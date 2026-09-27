@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -118,6 +119,9 @@ func sumsScript(paths ...string) string {
 	return `for f in ` + strings.Join(q, " ") + `; do h=$( { sha256sum < "$f" | cut -d' ' -f1; } 2>/dev/null ); echo "${h:--}"; done`
 }
 
+// ErrHubMachine refuses an install into a machine on a hub.
+var ErrHubMachine = errors.New("a hub machine's agent and shim are installed by its hub, never from here")
+
 // Install copies the correct-arch agent into the guest, and writes the
 // BROWSER shim (devvm-open-url) beside it, as one idempotent operation
 // (browser-bridge.md §5): each half is skipped when the guest already has
@@ -128,7 +132,14 @@ func sumsScript(paths ...string) string {
 // called once, only when something is actually written — returning an error
 // aborts, which is how the caller gates writes to an adopt host behind
 // explicit consent.
+//
+// A machine on a hub is refused before anything runs: the hub's own daemon
+// installed agent and shim before spawning the VM's one agent exec, and
+// this host never writes to a hub VM (hub.md §8, §9).
 func Install(ctx context.Context, b backend.Backend, m *config.Machine, approve func() error) (Paths, error) {
+	if m.IsHubMachine() {
+		return Paths{}, fmt.Errorf("%s: %w", m.Name, ErrHubMachine)
+	}
 	var unameOut bytes.Buffer
 	if err := b.Run(ctx, backend.ExecOpts{Stdout: &unameOut, Stderr: os.Stderr}, "uname", "-s", "-m"); err != nil {
 		return Paths{}, fmt.Errorf("probe guest os/arch: %w", err)

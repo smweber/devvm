@@ -28,9 +28,13 @@ type fakeTransport struct {
 	// ev is events(): nil (no events) unless a bridge test sets it before
 	// runLoop.
 	ev chan bridgeRequest
+	// shim is what shimPath reports (a smol transport's installed shim).
+	shim string
 }
 
 func (f *fakeTransport) events() <-chan bridgeRequest { return f.ev }
+
+func (f *fakeTransport) shimPath() string { return f.shim }
 
 // forward uses the real transports' listenLoopback, so the dual-stack rule
 // (IPv4 decides busy, ::1 best-effort) is what the tests exercise.

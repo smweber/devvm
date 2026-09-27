@@ -32,9 +32,10 @@ type transport interface {
 	// forward (`ports rm`, an owner's last drop).
 	forward(hostPort, guestPort int) (io.Closer, error)
 	// events carries the guest's open-url requests (browser-bridge.md §1):
-	// the smol agent exec's event streams. nil when the transport has none
-	// (ssh until its agent exec ships; a hub machine until roadmap step 8),
-	// which a select never receives from.
+	// the smol agent exec's event streams, or a hub machine's events relayed
+	// by its hub daemon (hubTransport, while subscribed there). nil when
+	// the transport has none (ssh until its agent exec ships), which a
+	// select never receives from.
 	events() <-chan bridgeRequest
 	dead() <-chan struct{}
 	// Close drops the transport and every forward bound on it, in one go:
@@ -50,7 +51,7 @@ type transport interface {
 // subscriber is a transport that carries this daemon's subscription to a
 // daemon upstream: the hub transport (roadmap step 8) subscribes on the hub
 // daemon while this one has subscribers, so events from the hub's VM reach
-// this host (hub.md §8). Optional; no transport implements it in step 7.
+// this host (hub.md §8). Optional; only hubTransport implements it.
 //
 // The daemon calls setSubscribed(true) on every local subscribe (each moves
 // the subscriber to the front here, and the re-send moves this host to the
@@ -60,6 +61,14 @@ type transport interface {
 // run outside d.mu, serialized, each bounded by upstreamSubscribeTimeout.
 type subscriber interface {
 	setSubscribed(on bool) error
+}
+
+// shimReporter is a transport that knows the guest path of the BROWSER shim
+// (browser-bridge.md §5): smol's own install, or a hub machine's as its hub
+// daemon reported it. ping carries it, so thin `auth` never installs
+// anything itself (bridge §6). Optional; ssh has none.
+type shimReporter interface {
+	shimPath() string
 }
 
 // newTransport builds the right transport for a resolved machine.

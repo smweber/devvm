@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/smweber/devvm/internal/agentrpc"
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 )
@@ -40,6 +42,16 @@ type hubTransport struct {
 	sc    *sessConn
 	local hubLocal
 	stop  func() // ends the __session process; idempotent
+
+	// bridge: the hub daemon echoed Bridge on the relay open, so it
+	// delivers browser events to this relay once subscribed (hub.md §8);
+	// shim is the guest's BROWSER shim it reported. Fixed at open.
+	bridge bool
+	shim   string
+	// evCh is events(): each browser event the hub daemon delivers on the
+	// relay, handed to this daemon's loop with a reply that answers the
+	// hub (hub.md §8: the same channel a smol transport feeds).
+	evCh chan bridgeRequest
 
 	deadCh    chan struct{}
 	deadOnce  sync.Once
@@ -298,8 +310,11 @@ func openHubTransport(name string, c lineConn, local hubLocal, stop func(), tail
 		sc.close()
 		return fail(stale)
 	}
-	t := &hubTransport{name: name, sc: sc, local: local, stop: stop, deadCh: make(chan struct{})}
-	go sc.read(nil) // no events until the relay subscribes (roadmap step 8)
+	t := &hubTransport{name: name, sc: sc, local: local, stop: stop, deadCh: make(chan struct{}),
+		bridge: resp.Bridge, shim: resp.Shim, evCh: make(chan bridgeRequest)}
+	// Events arrive only once this relay subscribes on the hub
+	// (setSubscribed); each becomes a bridgeRequest for this daemon's loop.
+	go sc.read(t.onEvent)
 	go func() {
 		select {
 		case <-sc.gone:
@@ -347,9 +362,81 @@ func (t *hubTransport) markDead() { t.deadOnce.Do(func() { close(t.deadCh) }) }
 
 func (t *hubTransport) dead() <-chan struct{} { return t.deadCh }
 
-// events is nil until the relay subscribes on the hub (roadmap step 8): the
-// hub daemon, which owns the VM's agent exec, handles its events itself.
-func (t *hubTransport) events() <-chan bridgeRequest { return nil }
+// events carries the browser events the hub daemon delivers on this relay
+// while it is subscribed there (hub.md §8). The hub daemon, which owns the
+// VM's agent exec, binds nothing for a relay: this daemon's own handler
+// classifies the URL, binds on this transport (a hub add over the relay,
+// then the -L) and delivers to its local subscriber, whose answer goes back
+// up as the relay's reply.
+func (t *hubTransport) events() <-chan bridgeRequest { return t.evCh }
+
+// shimPath is the guest's BROWSER shim as the hub daemon reported it at
+// open; "" from a hub too old for browser opens.
+func (t *hubTransport) shimPath() string { return t.shim }
+
+// HubBridgeMinVersion is the first devvm release whose hub daemon carries
+// browser events across a relay (roadmap step 8): it echoes Bridge on the
+// relay open. Forwards need only HubForwardsMinVersion; a hub between the
+// two keeps them and refuses nothing, but its browser opens never reach
+// this host. It must be the first tag that ships step 8.
+const HubBridgeMinVersion = "v0.1.15"
+
+// errHubTooOld is the upstream subscribe's answer on a relay to a hub
+// daemon without the Bridge echo. A v0.1.14 hub daemon would ack a
+// subscribe and never deliver an event (it opened URLs on the hub itself),
+// so nothing is sent: the local subscriber hears why at once.
+var errHubTooOld = errors.New("hub devvm too old for browser opens")
+
+// setSubscribed is the subscriber hook (hub.md §8): subscribe or
+// unsubscribe this relay on the hub daemon, acked there before it returns.
+// The daemon calls it outside its lock, serialized and bounded; the
+// subscribe is re-sent for every new local subscriber, which moves this
+// host to the front of the hub's order.
+func (t *hubTransport) setSubscribed(on bool) error {
+	if !t.bridge {
+		if !on {
+			return nil // never subscribed there: nothing to take back
+		}
+		hub, machine, _, _ := config.SplitHubName(t.name)
+		// A session holds that daemon (this relay, for one), and `ports
+		// down` stops only a daemon nothing holds: hence stop/start, as
+		// the stale message says.
+		return fmt.Errorf("%w: the daemon for %s on hub %s predates %s (update devvm there, then restart that daemon on the hub with 'devvm ports down %s', or 'devvm stop %s' then 'devvm start %s' if a session holds it)", errHubTooOld, machine, hub, HubBridgeMinVersion, machine, machine, machine)
+	}
+	op := OpUnsubscribe
+	if on {
+		op = OpSubscribe
+	}
+	if _, err := t.sc.call(Request{Op: op}); err != nil {
+		return fmt.Errorf("hub %s: %w", op, err)
+	}
+	return nil
+}
+
+// onEvent is the relay reader's handler for one hub event (sessConn.read
+// runs it on a goroutine of its own and writes what it returns as the
+// reply). The event's URL goes to this daemon's loop as a bridgeRequest,
+// exactly as a smol agent's open-url does, and its reply is the relay's
+// answer. The loop is not waited on past this transport's death: a dead
+// transport's events channel is no longer selected.
+func (t *hubTransport) onEvent(data json.RawMessage) json.RawMessage {
+	reply := func(r agentrpc.OpenReply) json.RawMessage {
+		b, _ := json.Marshal(r)
+		return b
+	}
+	var ev BridgeEvent
+	if err := json.Unmarshal(data, &ev); err != nil || ev.Type != agentrpc.EventOpenURL || ev.URL == "" {
+		return reply(agentrpc.OpenReply{Err: "this devvm does not know that event"})
+	}
+	ch := make(chan agentrpc.OpenReply, 1)
+	req := bridgeRequest{url: ev.URL, reply: func(r agentrpc.OpenReply) { ch <- r }}
+	select {
+	case t.evCh <- req:
+	case <-t.deadCh:
+		return reply(agentrpc.OpenReply{Err: reasonPending, Guest: ev.Guest})
+	}
+	return reply(<-ch) // handleOpen replies exactly once, bounded by its own waits
+}
 
 // forward is add on the hub, then the -L. This host's port is probed first,
 // before the hub is asked for anything, so a busy port bumps (errPortBusy)
@@ -439,4 +526,8 @@ func (f *hubForward) Close() error {
 	return err
 }
 
-var _ transport = (*hubTransport)(nil)
+var (
+	_ transport    = (*hubTransport)(nil)
+	_ subscriber   = (*hubTransport)(nil)
+	_ shimReporter = (*hubTransport)(nil)
+)

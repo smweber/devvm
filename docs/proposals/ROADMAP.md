@@ -1,7 +1,8 @@
 # Roadmap: hubs + browser bridge
 
 Status: 2026-09-27, **steps 1–4 (Milestone A, released as v0.1.13), 5 and 6
-(Milestone B, released as v0.1.14) and step 7 implemented and committed**;
+(Milestone B, released as v0.1.14) and step 7 implemented and committed;
+step 8 implemented in the working copy** (review and live list pending);
 see Progress below. Plan text revised after a sixth review (`status --local` for
 hub listings so hubs never fan out, relay sessions refused while a
 transport is down, `keys add`/`repos add` inputs resolved on the laptop,
@@ -61,6 +62,23 @@ external, no subscriber, no opener, the 10/min rate limit, a killed hub daemon
 mid-attach, a literal `[::1]` URL; exactly one `devvm-agent serve` throughout.
 The ThinkPad runs the step 7 cross-build. **Do not release between step 7 and
 step 8** (thin `auth` removes the second exec). Next: step 8.
+
+**Step 8 landed 2026-09-27 (Milestone C with step 9 still to come)**, one
+commit after two review rounds. Thin `auth` on smol, the laptop daemon's
+upstream subscription through the relay, and the laptop half of
+`attach`/`shell`/`auth HUB/NAME`; see the **8.** bullet below. Its live list
+passed on the ThinkPad (`tp/web`, fake `xdg-open`), with `cloud` for the
+remote-backend `auth`. There was exactly one `devvm-agent serve` exec
+throughout, including cold starts, a killed hub daemon and every `auth`.
+
+A cold `attach tp/web` had the bridge up in 1.65s. With the hub's
+`__session` slowed by 8s, the 5s notice fired and the late bridge was
+adopted. While the relay was reconnecting, `auth tp/web` refused with "the
+link to the hub is reconnecting". The one-exec known issue from step 7 is
+closed, so the release gate above lifts. **The next release must be
+v0.1.15** (`session.HubBridgeMinVersion`, pinned by a test): a laptop reads a
+hub daemon without the step 8 capability echo as "too old for browser opens".
+Both test hubs run step 8 builds stamped v0.1.15. Next: step 9.
 
 **Step 7 implemented 2026-09-26** (working copy, not committed; review and
 the live list pending). It opened with six prep refactors asked for by a
@@ -224,11 +242,7 @@ updated where the mechanism changed; this is the short list):
   install paths are shell-quoted; the agent answers the shim itself on a
   timeout; event bodies and in-flight event streams are bounded; upstream
   hook calls are ordered (last desired state wins); `restore()` expires
-  lapsed ttl owners first. **Known issue, closed by step 8, no release in
-  between:** every smol `attach`/`shell` now holds the daemon's agent exec,
-  and `auth` on smol still spawns its own `serve --auth`, so `auth` during
-  an attach runs two execs into one VM (the one-exec rule). Step 8's thin
-  `auth` removes the second.
+  lapsed ttl owners first.
   Test-rig fixes found under `GOMEMLIMIT` (memory-capped guest): the
   in-process `__session` relay let its laptop-side `*os.File` become
   unreachable, and its finalizer's close read as EOF on the hub (the relay
@@ -236,10 +250,82 @@ updated where the mechanism changed; this is the short list):
   transports, and the leaked listeners hit the 1024-fd limit, so later
   binds read as busy (cleanups now stop and tear down); the late-dial
   tests wait on a signal from the dial instead of sleeping.
+- **8.** The hub side needed **no `__session` change**: `__session` relays
+  bytes verbatim, and the hub daemon already answered `subscribe` on a
+  relay and delivered it events unbound (step 7), so `subscribe`/
+  `unsubscribe`, events and their replies ride the relay as they are. What
+  the hub daemon gained is a **capability echo**: every session open reply
+  now carries `"bridge":true` and `"shim":"…"` (the guest path of the
+  BROWSER shim its transport installed), and `ping` carries `shim`. A
+  laptop whose relay open saw no `bridge` (a v0.1.14 hub, or the unreleased
+  step 7 build) sends nothing upstream and answers a local `subscribe` with
+  `subscribed here, but not upstream: hub devvm too old for browser opens:
+  the daemon for NAME on hub HUB predates v0.1.15 (…)`; forwards are
+  unaffected, `attach`/`shell` print it as their one-line notice, and
+  `auth HUB/NAME` refuses before running anything on the hub (an old hub's
+  `auth` would spawn a second agent exec there). `hubTransport` feeds
+  `events()` from the relay's events (one `bridgeRequest` per event,
+  answered on the relay) and implements the step 7 `subscriber` hook and
+  `shimPath`. **`auth HUB/NAME` proxies the `auth` leaf** rather than
+  running the logins through `hubBackend.Run` as hub §8 planned: a proxied
+  `exec` gives the guest no terminal (the hub's local `exec` never asks
+  smolvm for `-it`), and every login prompts. So the laptop dials its daemon
+  for `HUB@NAME`, subscribes (acked after the hub's ack), binds codex's
+  1455 on that session when codex is among the tools (exact, laptop side;
+  the hub hop is never exact), and proxies `auth NAME [TOOL]` with
+  `DEVVM_NO_SUBSCRIBE=1`; the hub's thin `auth` then neither dials nor
+  subscribes, reads the shim with a one-shot `ping` of the daemon already
+  up (the laptop's relay holds it; never spawned), binds nothing, and runs
+  the logins with a guest terminal. `hubBackend.Run` still carries
+  `ExecOpts.Env` as `env K=V … argv` in the proxied exec (keys sorted,
+  names validated) instead of refusing it, **though nothing in production
+  calls it with an env today** (hub auth proxies the whole leaf; kept,
+  tested, for the next caller). Thin `auth` on smol opens a
+  session (`session.Session.Ping()` reports state, version and shim),
+  refuses a daemon that reports no shim with the reason read from that
+  ping (reconnecting: retry; another build, i.e. one spawned before
+  step 8: restart it), never
+  calls `agentbin.Install` (now a package var in `auth`, so a test counts
+  it) and never spawns an exec; codex's 1455 pre-bind became an exact
+  forward owned by the auth session. `agentbin.Install` refuses a hub
+  machine outright (`ErrHubMachine`). `attach`/`shell HUB/NAME` subscribe
+  best-effort through the same `bridgeSession` as smol (no running check:
+  the hub's `__session` refuses a stopped VM itself); the attach waits at
+  most 5s for it (`hubBridgeWait`): past that it is proxied at once with
+  `browser bridge to hub H not up yet; URLs opened before it is will print
+  in the guest`, and the open carries on in the background, the late
+  session adopted for the rest of the attach (closed by its release, or
+  at once if the attach already ended). A cold start, the first attach
+  after a break, is when a login is most likely, so the bridge it pays
+  for is kept, not thrown away. Review fixes: a hub machine's laptop daemon between
+  transports **refuses** a local `subscribe` (`the link to the hub is
+  reconnecting`) instead of acking one nothing upstream saw, which had let
+  `auth HUB/NAME` proxy to a hub too old to honour `DEVVM_NO_SUBSCRIBE`
+  (a second agent exec there); `auth HUB/NAME` also pings after the ack
+  and refuses without a shim, and refuses outright when this host itself
+  runs under `DEVVM_NO_SUBSCRIBE`. A daemon waits `relaySubscriberWait`
+  (40s: its 15s, the far bind's 10s, the far daemon's 15s) on a relay
+  subscriber, below the agent's 60s, so a slow laptop no longer answers
+  after the guest was told "did not answer in time". A session's refused
+  re-subscribe after a reconnect is logged, not a failed connection (no
+  churn; the daemon re-sends upstream itself). Not done: skipping the
+  spawn for a hub already known to be too old, since nothing on the
+  laptop records a hub's version (the attach never waits on it past 5s,
+  and an old hub answers fast anyway). The too-old refusal names `devvm
+  stop`/`start` on the hub besides `ports down`, since the laptop's own
+  relay is a session holding that daemon.
 
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
 
+- **A killed laptop daemon orphans its ssh ControlMaster** (the daemon has
+  no SIGTERM handler; `signal.Notify` is only in `status_watch.go`). After
+  `kill <__daemon pid>`, its `ssh -M` survives and keeps holding the `-L`
+  ports, and the stale `.sock`/`.master` stay in `run/`. The next daemon's
+  `ssh -M` cannot take that ControlPath and runs as an extra plain
+  connection. A clean `stop` op leaves nothing behind. Cosmetic: cancelling
+  a private-session `auth cloud` logs a yamux "failed to send ping reply"
+  warning and prints both "opening on host" and "opened on host".
 - Step 7: `devvm-open-url` exits 0 even when the open was refused (the reply
   text says so); the redirect TTL's 10-minute expiry was not live-tested.
   The host browser is opened by the subscribing `attach`/`shell` process, so

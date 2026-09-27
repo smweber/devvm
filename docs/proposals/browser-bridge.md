@@ -2,7 +2,7 @@
 
 Status: draft v2.6, 2026-09-15 (§3 notes what roadmap step 6 shipped for
 relay sessions, 2026-09-25; §1, §2, §4 and §5 note what step 7 shipped,
-2026-09-26). Order of work lives in `ROADMAP.md` and
+2026-09-26; §3 and §6 note what step 8 shipped, 2026-09-27). Order of work lives in `ROADMAP.md` and
 nowhere else. Revised after six independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
@@ -175,7 +175,8 @@ select on it alongside `dead()` and the idle timer.
 `handleOpen` on a goroutine of its own per event (it binds and waits on a
 subscriber, and must never stall the loop), and `deliverTo` names the
 subscriber the handler chose, since what it bound depends on whether that
-one is a relay. `events()` is nil on ssh and on `hubTransport` (step 8). The
+one is a relay. `events()` is nil on ssh; on `hubTransport` it carries the
+hub daemon's relayed events from step 8 on (`hub.md` section 8). The
 handler order, and where it differs from the pseudocode above: a
 non-http(s) URL is refused by the daemon first (`host refused a non-http(s)
 URL`), then the rate limit, then "no subscriber"; the privileged-port,
@@ -327,6 +328,16 @@ the user takes more than a minute. So:
   rule applies.
 - A session also bounds the trust surface (section 7): the guest can only
   reach the host browser while a devvm session is active or forwards are up.
+- As shipped (roadmap step 8): every session open reply carries
+  `"bridge":true` (the capability a relaying daemon checks before it
+  subscribes upstream, `hub.md` section 8) and `"shim"`, the guest path of
+  the BROWSER shim the daemon's transport installed (`ping` carries it
+  too). A laptop whose relay open saw no `bridge` answers a local
+  `subscribe` with `subscribed here, but not upstream: hub devvm too old
+  for browser opens: …` and sends nothing upstream. Under
+  `DEVVM_NO_SUBSCRIBE=1` thin `auth` does make one read-only call: a
+  one-shot `ping` of a daemon that is already up, for the shim (never a
+  spawn, a session or a subscription).
 
 ### 4. Ownership, bind policy, and ephemeral forwards
 
@@ -581,6 +592,26 @@ step, not before.
 `auth` keeps: the login table, the `installed` probe, `isSignalExit`, and the
 codex device-auth preference. It drops: its yamux session, event loop, callback
 map, `stream.go`, and `CallbackPort` (moved to the daemon).
+
+**As shipped (roadmap step 8).** `auth.Run` branches on the backend
+(`auth.Thin`: smol) rather than on a daemon probe: remote boxes keep the
+private session, and a hub machine never reaches it. The thin path opens a
+session (`session.OpenSession`, OnEvent `OpenOnHost`), reads the shim with
+`Session.Ping()` (a `ping` on the session: state, version, shim),
+subscribes, and runs the login table with `BROWSER` set to it. A daemon
+that reports no shim is refused with the reason from the same ping
+(reconnecting: retry; another build, in practice one spawned before
+step 8: restart it); nothing is installed in its place. `auth HUB/NAME`
+waits for its bridge in full, since its subscription is the proof that
+nothing on the hub spawns a second exec; `attach`/`shell HUB/NAME` wait
+at most 5s and adopt a bridge that comes up later (`hub.md` §8).
+Codex's fixed 1455 pre-bind stays (codex without device auth may never hand
+its URL to the shim), now as an exact forward owned by the auth session.
+The private session keeps `Authenticate`, its yamux channel, callback
+listeners and `stream.go`; they go with the ssh agent exec. `auth` during a
+held `attach` on smol no longer adds a second `devvm-agent serve`.
+`auth HUB/NAME` subscribes on the laptop and proxies the `auth` leaf to the
+hub (`hub.md` section 8 has why it is not a proxied `exec`).
 
 ### 7. Trust boundary
 

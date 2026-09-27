@@ -121,7 +121,11 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	}
 	quiet := time.Duration(heartbeatMisses*beat) * heartbeatUnit
 	state, _ := d.status()
-	if s.write(Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay, Heartbeat: beat}) != nil {
+	// Bridge: this daemon delivers browser events to a relay subscriber and
+	// reports its shim (hub.md §8), the capability a laptop checks before it
+	// subscribes upstream. Echoed to every session; only a relay reads it.
+	ack := Response{ID: open.ID, OK: true, State: state, Version: d.version, Relay: s.relay, Heartbeat: beat, Bridge: true, Shim: d.shimPath()}
+	if s.write(ack) != nil {
 		d.closeSession(s)
 		return
 	}
@@ -208,9 +212,12 @@ func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 		// still means every later event reaches this session. An upstream
 		// failure is the reply's error; the local registration stays, and
 		// restore() re-subscribes upstream on the next transport.
+		// On a hub machine's daemon between transports that is an error
+		// too (errUpstreamReconnecting): an ack would claim a subscription
+		// the hub never saw.
 		d.subscribe(s)
 		if err := d.syncUpstream(true); err != nil {
-			return Response{Err: "subscribed here, but not upstream: " + err.Error()}
+			return Response{Err: NotUpstreamPrefix + err.Error()}
 		}
 		return Response{OK: true}
 	case OpUnsubscribe:

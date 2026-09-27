@@ -325,6 +325,20 @@ func (c *Client) List() ([]Forward, error) {
 	return st.Forwards, err
 }
 
+// Shim is the BROWSER shim path the daemon reports on ping (Session.Ping),
+// for a caller that must not hold a session: a one-shot ping of a daemon
+// that is already up.
+func (c *Client) Shim() (string, error) {
+	resp, err := c.request(Request{Op: OpPing})
+	if err != nil {
+		return "", err
+	}
+	if !resp.OK {
+		return "", errors.New(resp.Err)
+	}
+	return resp.Shim, nil
+}
+
 // Stop asks the daemon to exit (reaping all forwards).
 func (c *Client) Stop() error {
 	_, err := c.request(Request{Op: OpStop})

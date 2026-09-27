@@ -142,9 +142,13 @@ func (s *Session) connect() error {
 	sub := s.subscribed
 	s.mu.Unlock()
 	if sub {
+		// A re-subscribe the daemon refuses or answers late does not fail
+		// the connection: the daemon has registered it locally by then
+		// (its error is about upstream, which its restore() re-sends), and
+		// tearing a working connection down to retry would only churn. A
+		// connection that died is seen by the supervisor on sc.gone.
 		if _, err := sc.call(Request{Op: OpSubscribe}); err != nil {
-			sc.close()
-			return fmt.Errorf("re-subscribe: %w", err)
+			s.logf("devvm: %s: re-subscribe after reconnect: %v", s.name, err)
 		}
 	}
 	s.mu.Lock()
@@ -236,6 +240,29 @@ func (s *Session) Unsubscribe() error {
 	}
 	_, err := sc.call(Request{Op: OpUnsubscribe})
 	return err
+}
+
+// PingInfo is what a ping says about the daemon: its state, the build it
+// runs, and the guest path of the BROWSER shim its transport installed
+// (for a hub machine, the one the hub reported). Shim is "" when the
+// transport carries no events, while the daemon is between transports, or
+// from a daemon older than the field; State and Version tell those apart.
+type PingInfo struct {
+	State   string
+	Version string
+	Shim    string
+}
+
+// Ping asks the daemon over this session (PingInfo): thin `auth` sets
+// BROWSER to the shim it reports and installs nothing itself
+// (browser-bridge.md §6).
+func (s *Session) Ping() (PingInfo, error) {
+	sc := s.current()
+	if sc == nil {
+		return PingInfo{}, ErrSessionDown
+	}
+	resp, err := sc.call(Request{Op: OpPing})
+	return PingInfo{State: resp.State, Version: resp.Version, Shim: resp.Shim}, err
 }
 
 // Add brings up a forward owned by this session's connection: it lives

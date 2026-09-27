@@ -13,6 +13,12 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
+// NotUpstreamPrefix leads a subscribe refused upstream: the daemon has
+// registered the subscriber locally (restore() re-sends it upstream) but
+// cannot promise events from the far daemon. attach prints it as is; auth
+// HUB/NAME, which refuses on it, strips it.
+const NotUpstreamPrefix = "subscribed here, but not upstream: "
+
 // Request is a control message from a client to the daemon (one JSON line).
 //
 // A connection is either one-shot (one request, one reply, closed: every CLI
@@ -132,9 +138,22 @@ type Response struct {
 	// Heartbeat (session open reply): the interval, in seconds, the daemon
 	// enforces on this relay (the request's, clamped). Absent when it
 	// enforces none: a local session, or a daemon older than heartbeats.
-	Heartbeat int       `json:"heartbeat,omitempty"`
-	Stopped   bool      `json:"stopped,omitempty"`  // down: nothing else held the daemon, so it is exiting
-	Forwards  []Forward `json:"forwards,omitempty"` // list; remove/down: what survives
+	Heartbeat int `json:"heartbeat,omitempty"`
+	// Bridge (session open reply): the daemon speaks the step-8 bridge
+	// across a relay (hub.md §8): it delivers browser events to a relay
+	// subscriber and reports its Shim. The capability echo a laptop checks
+	// before subscribing upstream: a hub daemon without it (v0.1.14, or
+	// the unreleased step 7 build) is "too old for browser opens", and its
+	// forwards still work.
+	Bridge bool `json:"bridge,omitempty"`
+	// Shim (ping and session open replies): the guest path of the BROWSER
+	// shim the daemon's transport installed (browser-bridge.md §5, §6), or,
+	// on a laptop daemon for a hub machine, the one the hub reported. Empty
+	// when the transport carries no events. Thin `auth` reads it here and
+	// installs nothing itself.
+	Shim     string    `json:"shim,omitempty"`
+	Stopped  bool      `json:"stopped,omitempty"`  // down: nothing else held the daemon, so it is exiting
+	Forwards []Forward `json:"forwards,omitempty"` // list; remove/down: what survives
 	// Event (session, daemon to client): a line carrying only this is an
 	// event for a subscriber, not a reply; the subscriber answers with a
 	// Request whose Reply names Event.ID.
