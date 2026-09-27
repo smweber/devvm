@@ -12,6 +12,42 @@ import (
 // tmuxSocket is the guest-side socket for the persistent dev session.
 const tmuxSocket = "/home/" + DefaultUser + "/.devvm/tmux.sock"
 
+// ManagedShimPath is the BROWSER shim (devvm-open-url) on a box devvm owns:
+// agentbin.Install puts it beside the root-owned agent (a test there pins
+// the two together). On smol it is installed by bootstrap and again by the
+// daemon's transport before it spawns the agent exec (browser-bridge.md §5).
+const ManagedShimPath = "/usr/local/bin/devvm-open-url"
+
+// browserEnv is the ExecOpts.Env of smol's shell and attach execs: BROWSER
+// pointed at the shim, so a login tool hands its URL to the daemon's bridge
+// (or, with no daemon answering, the shim prints it). The guest side of
+// each exec drops it again when the shim is not there (a box neither
+// bootstrapped nor served since step 9): a BROWSER naming a missing file
+// makes gh fail outright instead of printing the URL.
+func browserEnv() map[string]string { return map[string]string{"BROWSER": ManagedShimPath} }
+
+// smolShellArgv is Shell's guest command. The outer `bash -c` drops a
+// BROWSER that names no executable (browserEnv), cds home, and execs the
+// real `bash -l`.
+func smolShellArgv() []string {
+	return []string{"bash", "-c", `[ -x "$BROWSER" ] || unset BROWSER; cd "$HOME" 2>/dev/null; exec bash -l`}
+}
+
+// smolAttachArgv is Attach's guest command, run once the dev session exists
+// (ensureTmux). Env on this exec reaches only the tmux client, never a
+// pane: the server is older (the keeper's) and `new-session -e` sets the
+// environment only of a session it creates. So it first copies BROWSER into
+// the dev session's environment, which every new window and pane inherits
+// (a shell already running in an old pane keeps its own; documented), and
+// only then attaches. One exec for both, so the order holds by
+// construction and the attach costs no extra smolvm exec. Skipped when the
+// shim is missing, like smolShellArgv.
+func smolAttachArgv() []string {
+	return []string{"sh", "-c",
+		`[ -x "$BROWSER" ] && tmux -S "$1" set-environment -t dev BROWSER "$BROWSER"; exec tmux -S "$1" attach-session -t dev`,
+		"_", tmuxSocket}
+}
+
 // Shell opens a raw interactive login shell (no tmux). transport is ignored:
 // smol is reached via smolvm exec, never ssh/mosh.
 //
@@ -19,12 +55,13 @@ const tmuxSocket = "/home/" + DefaultUser + "/.devvm/tmux.sock"
 // not chdir home on its own (sudo -H only sets $HOME), so without it the prompt
 // opens in /. The outer `bash -c` just cds and execs the real `bash -l`, so
 // login semantics are unchanged — only the starting directory is fixed.
+// BROWSER rides the exec's Env (browserEnv); the login shell's profile.d
+// leaves it alone (its guard skips a BROWSER already set).
 func (b *smolBackend) Shell(string) error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
-	return b.Run(context.Background(), ExecOpts{TTY: true},
-		"bash", "-c", `cd "$HOME" 2>/dev/null; exec bash -l`)
+	return b.Run(context.Background(), ExecOpts{TTY: true, Env: browserEnv()}, smolShellArgv()...)
 }
 
 // Attach joins the dev tmux session, starting a persistent keeper first if
@@ -32,6 +69,8 @@ func (b *smolBackend) Shell(string) error {
 // children) after tmux detaches, so the tmux server must live in its own
 // detached exec context — otherwise successive `devvm attach` calls can't
 // re-attach. transport is ignored (see Shell). Ports smol_ensure_tmux / smol_shell.
+// The attach exec also puts BROWSER into the session environment first
+// (smolAttachArgv).
 func (b *smolBackend) Attach(string) error {
 	if err := needSmolvm(); err != nil {
 		return err
@@ -42,8 +81,7 @@ func (b *smolBackend) Attach(string) error {
 	if err := b.ensureTmux(); err != nil {
 		return err
 	}
-	return b.Run(context.Background(), ExecOpts{TTY: true, Login: true},
-		"tmux", "-S", tmuxSocket, "attach-session", "-t", "dev")
+	return b.Run(context.Background(), ExecOpts{TTY: true, Login: true, Env: browserEnv()}, smolAttachArgv()...)
 }
 
 func (b *smolBackend) hasSession() bool {

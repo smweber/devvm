@@ -80,6 +80,30 @@ v0.1.15** (`session.HubBridgeMinVersion`, pinned by a test): a laptop reads a
 hub daemon without the step 8 capability echo as "too old for browser opens".
 Both test hubs run step 8 builds stamped v0.1.15. Next: step 9.
 
+**Step 9 landed 2026-09-27 (Milestone C done; the roadmap is complete)**,
+one commit after one review round. The review's only finding was doc
+wording: tmux panes are login shells, so every pane started after
+`bootstrap` has `BROWSER`, and only panes from before it lack it.
+`bootstrap` on a smol box installs the agent and shim and writes a guarded
+`/etc/profile.d/devvm.sh`. Smol `shell`/`attach` carry `BROWSER` in their
+exec `Env`, and `attach` copies it into the `dev` tmux session before
+attaching. Remote backends are untouched. See the **9.** bullet below.
+`cmd/devvm-agent` is unchanged, so `build.sh` was not run. New failure mode:
+smol `create`/`bootstrap` now fail if the agent install fails (before this
+step they did not need the agent).
+
+Its live list passed on the ThinkPad (`web`), with `cloud` for the
+remote-untouched items:
+- profile.d written;
+- `shell`, new tmux windows, and `exec` (every `devvm exec` is a login
+  shell) see the shim;
+- a pre-step-9 pane doesn't;
+- a URL opened through `$BROWSER` from a laptop `attach tp/web` landed on
+  the laptop;
+- with the shim missing, `shell`/`attach` still work and leave `BROWSER`
+  unset;
+- one agent exec throughout.
+
 **Step 7 implemented 2026-09-26** (working copy, not committed; review and
 the live list pending). It opened with six prep refactors asked for by a
 design review of steps 5–6, each landed and tested on its own: forwards
@@ -315,9 +339,51 @@ updated where the mechanism changed; this is the short list):
   stop`/`start` on the hub besides `ports down`, since the laptop's own
   relay is a session holding that daemon.
 
+- **9.** The step lives in `bootstrap.Browser` (`internal/bootstrap/
+  browser.go`), called by `runBootstrap` right after the prereqs and
+  before the hook, so the hook's login shells already see `BROWSER`; it
+  returns at once for anything but smol (remote boxes, and hub machines,
+  whose `bootstrap` is proxied to the hub). It runs `agentbin.Install`
+  (a package var, so a test counts it) with no consent gate (a managed
+  box), then writes the profile as root, staged and renamed, through
+  `printf` arguments (a one-shot smol exec has no stdin), rewritten on
+  every `bootstrap`. The guard is `if [ -z "${BROWSER:-}" ] && [ -x SHIM
+  ]; then export …; fi`: `if` rather than `&&` so sourcing never leaves a
+  false status, `${BROWSER:-}` for `set -u` shells. The shim path is
+  `backend.ManagedShimPath` (the backend cannot import `agentbin`; an
+  `agentbin` test pins the two equal). **The exec `Env` is guarded too**,
+  in the guest half of each exec, because the design's "a stale `BROWSER`
+  is harmless" holds only for a shim that exists (a `BROWSER` naming a
+  missing file makes `gh` fail instead of printing): `shell`'s outer
+  `bash -c` unsets it when the shim is not executable, and `attach` runs
+  `set-environment` only when it is. **`set-environment` rides the attach
+  exec itself** (`sh -c '[ -x "$BROWSER" ] && tmux -S "$1"
+  set-environment -t dev BROWSER "$BROWSER"; exec tmux -S "$1"
+  attach-session -t dev'`), after `ensureTmux` has seen the session: the
+  order holds by construction and the attach costs no extra smolvm exec.
+  tmux takes `set-environment NAME VALUE`, not `NAME=VALUE` as the Testing
+  list writes it. The tmux keeper is not given `BROWSER`: its login shell
+  reads profile.d after bootstrap, and the session environment overrides
+  the global one for every new window anyway. Tests: profile content and
+  guard sourced in `sh -u` (shim present, missing, not executable, a
+  user's `BROWSER`), the write script run against a temp dir (a quote and
+  a `%` in the path), `Browser` on smol vs both remote backends, a fake
+  `smolvm` for attach (the set-environment call is in the attach exec,
+  after the has-session that found the session, with and without the
+  keeper starting it) and shell (`Env`), the two guest snippets run under
+  `sh` with fake `tmux`/`bash`, and a fake `ssh` for remote attach/shell
+  and for `bootstrap`+`attach cloud` through the command tree (no
+  install probe, profile.d, set-environment or `BROWSER`).
+
 Known issues found by the live runs and **not** fixed (all pre-existing;
 recorded so they are not rediscovered):
 
+- **A smol guest's clock does not resync after the host suspends.** On the
+  ThinkPad, `web`'s clock sat 1.6 days behind the host, so `apt-get update`
+  (bootstrap prereqs) failed with "Release file … is not valid yet".
+  `devvm stop`/`start` fixed it. Any smol box on a laptop that sleeps will
+  hit this. Candidate fixes: `bootstrap` enables guest time sync, or
+  `start`/daemon come-up sets the guest clock from the host.
 - **A killed laptop daemon orphans its ssh ControlMaster** (the daemon has
   no SIGTERM handler; `signal.Notify` is only in `status_watch.go`). After
   `kill <__daemon pid>`, its `ssh -M` survives and keeps holding the `-L`
@@ -793,7 +859,7 @@ one-exec claim itself is a ThinkPad check.*
 - Live (on the hub, against `web`): `bootstrap web` installs agent and
   shim and `/etc/profile.d/devvm.sh`; `devvm shell web` then `echo
   $BROWSER`; `attach web`, open a new tmux window, `echo $BROWSER` is set
-  there and unset in a pane that predates the attach; `exec web -- bash
+  there and unset in a pane started before `bootstrap` (or a zsh pane); `exec web -- bash
   -lc 'echo $BROWSER'` (profile.d); `bootstrap cloud` and `attach cloud`
   leave `/etc/profile.d` and the tmux session environment alone.
 

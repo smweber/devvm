@@ -96,6 +96,10 @@ func TestInstallAgentAndShimIdempotent(t *testing.T) {
 	if p.Agent != "/usr/local/bin/devvm-agent" || p.Shim != "/usr/local/bin/devvm-open-url" {
 		t.Fatalf("paths = %+v", p)
 	}
+	// smol's shell/attach Env and profile.d name this path without asking.
+	if p.Shim != backend.ManagedShimPath {
+		t.Fatalf("managed shim %q != backend.ManagedShimPath %q", p.Shim, backend.ManagedShimPath)
+	}
 	want := "copy /home/dev/.devvm-agent.new|install /usr/local/bin/devvm-agent as root|shim /usr/local/bin/devvm-open-url as root"
 	if got := strings.Join(g.writes, "|"); got != want {
 		t.Fatalf("writes = %s\nwant    %s", got, want)

@@ -32,6 +32,20 @@ the ssh transport, is the planned next backend.)
 - `devvm shell NAME` — a raw login shell, no tmux.
 - Both take `--transport ssh|mosh` for remote machines (default from the conf's
   `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
+- **Browser opens (smol).** While `attach`/`shell` is open on a smol machine, a
+  URL a guest program opens through `$BROWSER` opens in the host's browser,
+  and a loopback URL (a dev server, an OAuth callback) gets its forward
+  bound first. `BROWSER` points at `/usr/local/bin/devvm-open-url`, which
+  `bootstrap` installs with the agent; `shell` and `attach` set it, `attach`
+  also in the `dev` tmux session's environment (new windows and panes get
+  it; a shell started before `bootstrap` installed the shim needs `export
+  BROWSER=/usr/local/bin/devvm-open-url` once), and
+  `/etc/profile.d/devvm.sh` sets it for other sh/bash login shells (cron,
+  and every `devvm exec`, which runs under a login shell) unless `BROWSER` is already set or the shim is
+  missing. zsh and fish don't read profile.d: they get it inside `attach`,
+  or set it yourself. When no devvm on the host answers, the shim prints
+  the URL instead. Remote machines are not wired up yet: there `BROWSER` is
+  left alone and only `auth` bridges its own logins.
 - `devvm cp-in NAME SOURCE [DEST]` — copy a local file into a machine; add `-r`
   for directories. DEST is a guest path, relative to the login user's home
   unless absolute, and defaults to the home directory. A DEST ending in `/`

@@ -562,6 +562,15 @@ Notes:
   owned by the daemon's agent. It stays for remote backends until the ssh
   agent exec ships.
 
+**As shipped (roadmap step 9).** `bootstrap.Browser` runs in `bootstrap`
+after the prereqs, on smol only: `agentbin.Install`, then the profile.d
+file written as root. The exec `Env` is guarded in the guest as well
+(`shell` unsets a `BROWSER` whose shim is not executable, `attach` sets the
+session environment only when it is), since only a shim that exists makes
+a stale `BROWSER` harmless. `tmux set-environment -t dev BROWSER "$BROWSER"`
+runs in the attach exec itself, before its `exec tmux attach-session`, so
+the order needs no second exec. Remote backends get neither, as planned.
+
 ### 6. `auth` becomes thin
 
 Where the daemon's transport has events, meaning smol today and hub machines

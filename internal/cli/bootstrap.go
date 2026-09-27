@@ -41,6 +41,12 @@ func (a *App) runBootstrap(name string) error {
 	if err := bootstrap.Prereqs(ctx, b, m); err != nil {
 		return err
 	}
+	// Agent + BROWSER shim + /etc/profile.d/devvm.sh, on smol only (a no-op
+	// elsewhere: remote boxes wait for the ssh agent exec). Before the hook,
+	// so the hook's own login shells already see BROWSER.
+	if err := bootstrap.Browser(ctx, b, m); err != nil {
+		return err
+	}
 	// The bootstrap-hook shapes the OS, so it runs only on boxes devvm owns; adopted
 	// hosts are left untouched.
 	if m.Managed() {
