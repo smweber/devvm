@@ -257,10 +257,15 @@ func (a *App) runConfigCheck() error {
 	if err := checkTemplates(f); err != nil {
 		return err
 	}
-	for _, w := range a.collisions(f) {
+	// One local smol listing for every collision check below.
+	var smols smolMachines
+	if len(f.Entries) > 0 || f.HasProviders() {
+		smols = smolSnapshot()
+	}
+	for _, w := range collisionsIn(f, smols) {
 		fmt.Fprintf(a.Stderr, "devvm: warning: %s\n", w)
 	}
-	for _, w := range a.providerWarnings(f) {
+	for _, w := range a.providerWarnings(f, smols) {
 		fmt.Fprintf(a.Stderr, "devvm: warning: %s\n", w)
 	}
 	if _, err := os.Stat(f.Path); err != nil {
@@ -292,15 +297,16 @@ func checkTemplates(f *config.File) error {
 // (config.md §2): the entry wins for every command. One local listing; no
 // smolvm (a laptop that only reaches remote boxes) means none.
 func (a *App) collisions(f *config.File) []string {
-	if len(f.Entries) == 0 || !backend.SmolAvailable() {
+	if len(f.Entries) == 0 {
 		return nil
 	}
-	list, err := backend.SmolList()
-	if err != nil {
-		return nil
-	}
+	return collisionsIn(f, smolSnapshot())
+}
+
+// collisionsIn is collisions over a listing already taken.
+func collisionsIn(f *config.File, smols smolMachines) []string {
 	var out []string
-	for _, sm := range list {
+	for _, sm := range smols.list {
 		if _, ok := f.Entries[sm.Name]; ok {
 			out = append(out, fmt.Sprintf("[machines.%s] shadows the local smol VM '%s'; rename the entry, or remove the VM with 'smolvm machine rm --name %s'", sm.Name, sm.Name, sm.Name))
 		}
@@ -313,7 +319,7 @@ func (a *App) collisions(f *config.File) []string {
 // (it applies to nothing), and a provider server in the last listing whose
 // name an entry or a local smol VM holds (that one wins for every command,
 // providers.md §2). The listing is the cache, never the API.
-func (a *App) providerWarnings(f *config.File) []string {
+func (a *App) providerWarnings(f *config.File, smols smolMachines) []string {
 	var out []string
 	if !f.HasProviders() {
 		for _, name := range sortedNames(f.Templates) {
@@ -326,7 +332,7 @@ func (a *App) providerWarnings(f *config.File) []string {
 	cached := a.providerCachedNames(f)
 	for _, pn := range sortedNames(cached) {
 		for _, n := range cached[pn] {
-			if owner := localOwner(f, n); owner != "" {
+			if owner := localOwner(f, smols, n); owner != "" {
 				out = append(out, fmt.Sprintf("%s shadows the %s server '%s' (from its last listing); rename one of them", owner, providerTitle(pn), n))
 			}
 		}
@@ -667,7 +673,12 @@ func (a *App) runConfigRm(name string, force bool) error {
 		// Only once the name no longer resolves (see RemoveLock): an entry
 		// may have shadowed a local smol VM of the same name, which
 		// resolves now and keeps its lock.
-		if _, _, err := a.resolveAny(n); err != nil {
+		// Local sources only (a provider server from the cache): an rm
+		// never dials the API.
+		restore := a.cachedProviders()
+		_, _, err := a.resolveAny(n)
+		restore()
+		if err != nil {
 			session.RemoveLock(a.Paths, n)
 		}
 	}

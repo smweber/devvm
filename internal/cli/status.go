@@ -326,11 +326,11 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 	}
 	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
 	for _, r := range rows {
-		state := r.state
-		if verbose && r.m != nil && r.m.IsProvider() && state == "stopped" {
-			state = "stopped (billing)" // providers.md §3: a stopped server still bills
+		note := rowNote(r)
+		if verbose && r.m != nil && r.m.IsProvider() && r.state == provider.StateStopped {
+			note = "  (stopped, still billed)" + note // providers.md §3: a stopped server still bills
 		}
-		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s%s\n", r.name, state, hostW, r.host, fwdsCount(r.fwds), rowNote(r))
+		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s%s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds), note)
 		if verbose {
 			a.renderVerboseDetail(r)
 		}

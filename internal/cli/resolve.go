@@ -142,7 +142,7 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 		}
 		// Last, the providers (providers.md §2): one API call each, only
 		// now that every local source has missed.
-		pm, hint, err := a.providerLookup(f, name, a.providerCacheFirst)
+		pm, hint, err := a.providerLookup(f, name, a.providerMode)
 		if err != nil {
 			return nil, nil, err
 		}

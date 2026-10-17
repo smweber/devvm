@@ -33,9 +33,9 @@ type App struct {
 	// place of the real one (tests: the fake, so every API call is
 	// counted). nil is the real client (providers.go).
 	providerAPI func(name, token string) (provider.Provider, error)
-	// providerCacheFirst makes resolve's provider source read the last
-	// listing before the API: the forward daemon's mode (daemonCmd).
-	providerCacheFirst bool
+	// providerMode is how resolve's provider source may answer: the API
+	// (the zero value) or the last listing only (cachedProviders).
+	providerMode providerMode
 }
 
 func (a *App) stdin() io.Reader {

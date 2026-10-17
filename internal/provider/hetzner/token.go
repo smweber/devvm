@@ -32,7 +32,7 @@ func Token(p config.Paths) (string, error) {
 	}
 	path := provider.TokenPath(p, "hetzner")
 	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
-		fmt.Fprintf(Warn, "devvm: warning: %s is readable by others (mode %04o); run: chmod 600 %s\n", path, fi.Mode().Perm(), path)
+		fmt.Fprintf(Warn, "devvm: warning: permissions too open (%04o) on %s; run: chmod 600 %s\n", fi.Mode().Perm(), path, path)
 	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

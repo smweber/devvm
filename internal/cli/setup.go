@@ -470,19 +470,13 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 			ignored = append(ignored, "fail2ban")
 		}
 	}
-	if !m.IsProvider() {
+	if !m.IsProvider() && t.Name != config.DefaultTemplate {
 		// Placement is create-time and a provider's; nothing else has one.
-		if t.ServerType != "" {
-			ignored = append(ignored, "server_type")
-		}
-		if t.Location != "" {
-			ignored = append(ignored, "location")
-		}
-		if t.Image != "" {
-			ignored = append(ignored, "image")
-		}
-		if t.IPv4 != nil {
-			ignored = append(ignored, "ipv4")
+		// Named only when the chosen template's own table sets it: one a
+		// shared [templates.default] carries for provider boxes is not a
+		// mistake on every smol or remote setup.
+		if named, _, err := config.TemplateLayers(a.Paths, t.Name); err == nil {
+			ignored = append(ignored, named.ProviderFields()...)
 		}
 	}
 	if len(ignored) > 0 {

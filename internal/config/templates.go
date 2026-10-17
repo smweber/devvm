@@ -179,7 +179,14 @@ func (t Template) Spec() TemplateSpec {
 	repos, ports := slices.Clone(t.Repos), slices.Clone(t.Ports)
 	gh, files := slices.Clone(t.AuthorizedKeysGithub), slices.Clone(t.AuthorizedKeys)
 	harden, f2b := t.Harden, t.Fail2ban
-	st, loc, img := t.ServerType, t.Location, t.Image
+	// Placement only where a layer set it: an empty field stays unset, so
+	// the provider table and built-ins still apply under it.
+	opt := func(v string) *string {
+		if v == "" {
+			return nil
+		}
+		return &v
+	}
 	var ipv4 *bool
 	if t.IPv4 != nil {
 		v := *t.IPv4
@@ -188,7 +195,7 @@ func (t Template) Spec() TemplateSpec {
 	return TemplateSpec{User: &user, Hook: &hook, Memory: &mem, Disk: &disk,
 		Repos: &repos, Ports: &ports, AuthorizedKeysGithub: &gh, AuthorizedKeys: &files,
 		Harden: &harden, Fail2ban: &f2b,
-		ServerType: &st, Location: &loc, Image: &img, IPv4: ipv4}
+		ServerType: opt(t.ServerType), Location: opt(t.Location), Image: opt(t.Image), IPv4: ipv4}
 }
 
 // LoadTemplates reads every `[templates.*]` table of devvm.toml (LoadFile:

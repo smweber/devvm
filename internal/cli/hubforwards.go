@@ -47,9 +47,17 @@ func (a *App) runSession(name string) error {
 	} else if ok {
 		return fmt.Errorf("%s is the hub side of hub forwards and takes a machine on this host, not %s (hubs do not chain)", backend.SessionCmd, name)
 	}
+	// Local sources only: a laptop's stale forward retries this on every
+	// reconnect backoff, and none of those may cost an API call.
+	defer a.cachedProviders()()
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
+	}
+	if m.IsProvider() {
+		// providers.md §6: HUB/NAME never addresses a provider server; the
+		// laptop reaches one directly, with its own token.
+		return fmt.Errorf("'%s' is a %s server: a hub does not relay one (reach it directly as '%s')", name, providerTitle(m.Backend), name)
 	}
 	if err := requireRunningForForwards(m, b, 0); err != nil {
 		return err

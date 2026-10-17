@@ -13,6 +13,7 @@ import (
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/provider/fake"
+	"github.com/smweber/devvm/internal/provider/hetzner"
 )
 
 const providersTOML = "[providers.hetzner]\nlocation = \"fsn1\"\n"
@@ -130,28 +131,138 @@ func TestProviderResolveNeedsTable(t *testing.T) {
 	}
 }
 
-// The daemon resolves a provider box from the last listing, not the API.
-func TestProviderDaemonCacheFirst(t *testing.T) {
+// The daemon resolves a provider box from the last listing only: never the
+// API, never the token, and a cache miss is an error naming the refresh. A
+// live lookup merges its answer into that listing first.
+func TestProviderDaemonCacheOnly(t *testing.T) {
 	a := newTestApp(t)
 	p := withFakeHetzner(t, a, "", false)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
+	addServer(t, p, "late", "5.5.5.5", provider.StateRunning, true)
 	a.providerRound(context.Background())
-	a.providerCacheFirst = true
+	if err := p.Delete(context.Background(), mustServer(t, p, "late").ID); err != nil {
+		t.Fatal(err)
+	}
+	addServer(t, p, "fresh", "6.6.6.6", provider.StateRunning, true)
+	// A live lookup of a new name adds its row; of a vanished one drops it.
+	if _, _, err := a.resolveAny("fresh"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.resolveAny("late"); err == nil {
+		t.Fatal("late resolved after its server went")
+	}
+	c := readProviderCache(a.Paths, "hetzner")
+	names := map[string]bool{}
+	for _, s := range c.servers {
+		names[s.Name] = true
+	}
+	if !names["box"] || !names["fresh"] || names["late"] || c.fetched.IsZero() {
+		t.Fatalf("merged cache = %+v", c)
+	}
+	before, _ := os.ReadFile(providerCachePath(a.Paths, "hetzner"))
+	if !strings.Contains(string(before), "fetched=") {
+		t.Fatal("a merge lost fetched")
+	}
+
+	// The daemon: a token file it would warn about proves it never reads it.
+	if err := os.Chmod(provider.TokenPath(a.Paths, "hetzner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var warn bytes.Buffer
+	old := hetzner.Warn
+	hetzner.Warn = &warn
+	t.Cleanup(func() { hetzner.Warn = old })
+	gets, lists := p.CallCount("Get"), p.CallCount("List")
+	restore := a.cachedProviders()
+	m, _, err := a.resolveAny("fresh")
+	if err != nil || m.SSHHost != "dev@6.6.6.6" || !m.Managed() {
+		t.Fatalf("fresh = %+v, %v", m, err)
+	}
+	_, _, err = a.resolveAny("uncached")
+	restore()
+	if err == nil || !strings.Contains(err.Error(), "no cached hetzner server uncached; run 'devvm status'") {
+		t.Fatalf("cache miss: %v", err)
+	}
+	if err := runTree(t, a, "__daemon", "uncached"); err == nil || !strings.Contains(err.Error(), "no cached hetzner server") {
+		t.Fatalf("__daemon miss: %v", err)
+	}
+	if p.CallCount("Get") != gets || p.CallCount("List") != lists {
+		t.Fatal("the daemon path dialled the API")
+	}
+	if warn.Len() != 0 {
+		t.Fatalf("the daemon path read the token: %q", warn.String())
+	}
+}
+
+func mustServer(t *testing.T, p *fake.Provider, name string) *provider.Server {
+	t.Helper()
+	s, err := p.Get(context.Background(), name)
+	if err != nil || s == nil {
+		t.Fatalf("server %s: %v", name, err)
+	}
+	return s
+}
+
+// __session, config rm and guest-path completion read local sources only:
+// zero API calls whatever the name.
+func TestProviderLocalOnlyPaths(t *testing.T) {
+	a := newTestApp(t)
+	fakeSSH(t, "exit 255")
+	p := withFakeHetzner(t, a, "\n[machines.web]\nbackend = \"remote\"\nhost = \"w\"\n", false)
+	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
+	a.providerRound(context.Background())
 	gets := p.CallCount("Get")
-	m, _, err := a.resolveAny("box")
-	if err != nil || m.SSHHost != "dev@3.3.3.3" || !m.Managed() {
-		t.Fatalf("box = %+v, %v", m, err)
+	if err := runTree(t, a, "__session", "box"); err == nil || !strings.Contains(err.Error(), "a hub does not relay one") {
+		t.Errorf("__session box: %v", err)
+	}
+	if err := runTree(t, a, "__session", "gone"); err == nil {
+		t.Error("__session gone resolved")
+	}
+	a.completeCopyGuestPath(context.Background(), "box", "/tm")
+	a.completeCopyGuestPath(context.Background(), "gone", "/tm")
+	if err := runTree(t, a, "config", "rm", "web"); err != nil {
+		t.Fatal(err)
 	}
 	if p.CallCount("Get") != gets {
-		t.Fatal("cache-first lookup dialled the API")
+		t.Fatalf("Get = %d, want %d: a local-only path dialled the API", p.CallCount("Get"), gets)
 	}
-	// A name the cache lacks falls back to one Get.
-	addServer(t, p, "late", "5.5.5.5", provider.StateRunning, true)
-	if m, _, err := a.resolveAny("late"); err != nil || m.SSHHost != "dev@5.5.5.5" {
-		t.Fatalf("late = %+v, %v", m, err)
+}
+
+// An entry that is a hub's own row is marked shadowed by a cached server too.
+func TestProviderShadowsHubRow(t *testing.T) {
+	a := newTestApp(t)
+	fakeSSH(t, "exit 255")
+	p := withFakeHetzner(t, a, "\n[machines.hubx]\nbackend = \"hub\"\nhost = \"h\"\n", false)
+	addServer(t, p, "hubx", "7.7.7.7", provider.StateRunning, true)
+	if err := runTree(t, a, "status", "--plain"); err != nil {
+		t.Fatal(err)
 	}
-	if p.CallCount("Get") != gets+1 {
-		t.Fatal("cache miss must ask the API once")
+	out := a.Stdout.(*bytes.Buffer).String()
+	if !strings.Contains(out, "hubx\thub\tunreachable\t-\tshadowed\t") || strings.Contains(out, "hubx\thetzner") {
+		t.Errorf("--plain:\n%s", out)
+	}
+}
+
+// shell and exec reach an unmanaged server through the tree (as its own
+// login: no user@), and a server with no public address is refused.
+func TestProviderUnmanagedShellExec(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeSSH(t, "exit 0")
+	p := withFakeHetzner(t, a, "", false)
+	addServer(t, p, "prod", "4.4.4.4", provider.StateRunning, false)
+	addServer(t, p, "dark", "", provider.StateRunning, true)
+	if err := runTree(t, a, "exec", "prod", "true"); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if err := runTree(t, a, "shell", "prod"); err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	data, _ := os.ReadFile(log)
+	if strings.Count(string(data), " 4.4.4.4 ") < 1 || strings.Contains(string(data), "@4.4.4.4") {
+		t.Errorf("ssh calls:\n%s", data)
+	}
+	if err := runTree(t, a, "exec", "dark", "true"); err == nil || !strings.Contains(err.Error(), "no public address") {
+		t.Errorf("dark: %v", err)
 	}
 }
 
@@ -258,7 +369,7 @@ func TestProviderStatusRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = a.Stdout.(*bytes.Buffer).String()
-	for _, want := range []string{"hetzner: listing failed, cached ", "ago (hetzner: GET /servers: 503", "server: cx23 in nbg1, 3.3.3.3", "stopped (billing)", "contact: none recorded yet", "(shadows a hetzner server of the same name)"} {
+	for _, want := range []string{"hetzner: listing failed, cached ", "ago (hetzner: GET /servers: 503", "server: cx23 in nbg1, 3.3.3.3", "(stopped, still billed)", "contact: none recorded yet", "(shadows a hetzner server of the same name)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("-v lacks %q:\n%s", want, out)
 		}
@@ -419,10 +530,18 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 	if got := w.String(); !strings.Contains(got, "ignoring memory (not applicable to a Hetzner server)") {
 		t.Errorf("provider: %q", got)
 	}
-	w.Reset()
+	// On a remote box: placement the chosen template sets is named, what
+	// it only inherits from default is not.
+	writeDevvmTOML(t, a, "[templates.default]\nlocation = \"fsn1\"\n\n[templates.big]\nserver_type = \"cx43\"\nipv4 = false\n")
 	v := false
-	a.warnIgnored(config.NewRemote("r", true, "dev@h"), config.Template{Name: "big", User: "dev", ServerType: "cx43", IPv4: &v}, setupOpts{})
-	if got := w.String(); !strings.Contains(got, "ignoring server_type, ipv4 (not applicable to a remote box)") {
-		t.Errorf("remote: %q", got)
+	for _, tc := range []struct{ tmpl, want string }{
+		{"big", "ignoring server_type, ipv4 (not applicable to a remote box)"},
+		{config.DefaultTemplate, ""},
+	} {
+		w.Reset()
+		a.warnIgnored(config.NewRemote("r", true, "dev@h"), config.Template{Name: tc.tmpl, User: "dev", ServerType: "cx43", Location: "fsn1", IPv4: &v}, setupOpts{})
+		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
+			t.Errorf("remote, %s: %q", tc.tmpl, got)
+		}
 	}
 }

@@ -342,9 +342,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
             sub.addItem(.separator())
         }
         switch m.state {
-        case "running":
+        case "running" where !m.isProvider:
             sub.addItem(item("Stop", #selector(stopMachine(_:)), m.name))
-        case "stopped":
+        case "stopped" where !m.isProvider:
             sub.addItem(item("Start", #selector(startMachine(_:)), m.name))
         default:
             break
@@ -377,6 +377,11 @@ final class MenuBar: NSObject, NSMenuDelegate {
             // Same next step as the CLI's refusals (backend.AdoptHint).
             sub.addItem(item("Not created by devvm: hand it over with 'devvm setup --adopt \(m.name)',", nil))
             sub.addItem(item("or remove it with 'smolvm machine rm --name \(m.label)' and 'devvm create \(m.name)'", nil))
+        }
+        if m.isUnlabelled {
+            if !sub.items.isEmpty { sub.addItem(.separator()) }
+            // Same rule as the CLI's refusal: devvm never promotes one.
+            sub.addItem(item("Not made by devvm (no devvm=true label): shell and exec only", nil))
         }
         if sub.items.isEmpty {
             let note: String

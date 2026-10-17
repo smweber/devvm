@@ -20,9 +20,10 @@ func (a *App) daemonCmd() *cobra.Command {
 			// agent exec (hub.md §7). resolve refuses hub machines for every
 			// other verb, so they are let through here explicitly.
 			// A provider server's address comes from the last listing
-			// first (providers.go: providerLookup), so the daemon's start
-			// needs neither the API nor the token when a status has run.
-			a.providerCacheFirst = true
+			// only (providers.md §8): the daemon never calls the API and
+			// never reads the token. The CLI that needed it just merged
+			// its lookup into that listing.
+			defer a.cachedProviders()()
 			m, b, err := a.resolveForwards(args[0])
 			if err != nil {
 				return err

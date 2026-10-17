@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/provider/hetzner"
@@ -27,7 +27,8 @@ import (
 // file's `[providers.*]` tables, this host's token, and the cache.
 //
 // Every API call is in this file: Get in providerLookup (resolve, only
-// after every earlier source missed), List in listProvider (the live round
+// after every earlier source missed, and never in providerCached mode: the
+// daemon, __session, completion, config rm), List in listProvider (the live round
 // of a one-shot `status` or a watcher's refresh), and List in the token
 // command's validation. Nothing on the snapshot path dials: a --watch
 // snapshot reads the cache file and nothing else.
@@ -90,30 +91,60 @@ func providerRecord(f *config.File, providerName string, s provider.Server) *con
 	})
 }
 
+// providerMode is how resolve's provider source may answer.
+type providerMode int
+
+const (
+	// providerLive: the API (one Get per provider), its answer merged into
+	// the cache. The default: a human typed the command.
+	providerLive providerMode = iota
+	// providerCached: the last listing only, never the API and never the
+	// token. For what runs unattended or must stay instant: the forward
+	// daemon (providers.md §8: it never calls the API), the hub-side
+	// __session, completion, and config rm's "does the name still
+	// resolve" check.
+	providerCached
+)
+
+// cachedProviders switches resolve's provider source to the cache until the
+// returned func restores it (defer it).
+func (a *App) cachedProviders() func() {
+	old := a.providerMode
+	a.providerMode = providerCached
+	return func() { a.providerMode = old }
+}
+
 // providerLookup is resolve's last source: each configured provider in
-// name order, one Get each, first match wins. It runs only after the entry
-// and smol sources missed, so a name either of them knows never dials the
-// API. A provider with no token is skipped, and named in the returned hint
-// for the caller's "unknown machine" error (so the hint shows only when
-// nothing matched). An API error stops the search: a provider that cannot
-// answer must not let the name read as unknown.
+// name order, first match wins. It runs only after the entry and smol
+// sources missed, so a name either of them knows never dials the API.
 //
-// cacheFirst is the daemon's mode: the server's row from the last listing
-// (cache/provider-NAME.list), falling back to the API only when the cache
-// has no such row, so a forward daemon spawned or restarted after any
-// `status` needs neither the network nor the token to find its address.
-// The daemon then keeps that record for its lifetime (the ssh backend has
-// no Refresher), so its reconnects never ask the API either.
-func (a *App) providerLookup(f *config.File, name string, cacheFirst bool) (*config.Machine, string, error) {
-	var hints []string
-	for _, pn := range f.ProviderNames() {
-		if cacheFirst {
+// Live (the default), it is one Get per provider with a token. A provider
+// with no token is skipped and named in the returned hint for the caller's
+// "unknown machine" error (so the hint shows only when nothing matched). An
+// API error stops the search: a provider that cannot answer must not let
+// the name read as unknown. Each answer is merged into the cache (a found
+// row replaced, a vanished one dropped), so the daemon spawned right after
+// finds what this command found.
+//
+// Cached, it reads the last listing and nothing else; a miss with a
+// provider configured is an error naming the refresh, since the server may
+// exist and the cache (derived data) may just be gone.
+func (a *App) providerLookup(f *config.File, name string, mode providerMode) (*config.Machine, string, error) {
+	if mode == providerCached {
+		for _, pn := range f.ProviderNames() {
 			for _, s := range readProviderCache(a.Paths, pn).servers {
 				if s.Name == name {
 					return providerRecord(f, pn, s), "", nil
 				}
 			}
 		}
+		if f.HasProviders() {
+			return nil, "", fmt.Errorf("no cached %s server %s; run 'devvm status' to list the provider", strings.Join(f.ProviderNames(), "/"), name)
+		}
+		return nil, "", nil
+	}
+	var hints []string
+	for _, pn := range f.ProviderNames() {
 		cl, err := a.providerClient(pn)
 		if errNoToken(err) {
 			hints = append(hints, fmt.Sprintf("%s servers were not searched: no token (run 'devvm providers token %s')", providerTitle(pn), pn))
@@ -128,11 +159,60 @@ func (a *App) providerLookup(f *config.File, name string, cacheFirst bool) (*con
 		if err != nil {
 			return nil, "", fmt.Errorf("%s: looking up %q: %w", pn, name, err)
 		}
+		_ = a.mergeProviderRow(pn, name, s) // derived data; a failed merge is not a failed lookup
 		if s != nil {
 			return providerRecord(f, pn, *s), "", nil
 		}
 	}
 	return nil, strings.Join(hints, "; "), nil
+}
+
+// mergeProviderRow puts one Get's answer into the cache: s replaces the
+// row named name (appended if new), nil drops it. fetched, attempted and
+// error are the last listing's and are left alone: one row is not a listing.
+func (a *App) mergeProviderRow(providerName, name string, s *provider.Server) error {
+	unlock, err := lockProviderCache(a.Paths, providerName)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	c := readProviderCache(a.Paths, providerName)
+	kept := c.servers[:0]
+	found := false
+	for _, o := range c.servers {
+		switch {
+		case o.Name != name:
+			kept = append(kept, o)
+		case s != nil && !found:
+			kept, found = append(kept, *s), true
+		}
+	}
+	if s != nil && !found {
+		kept = append(kept, *s)
+	}
+	if s == nil && len(kept) == len(c.servers) {
+		return nil // nothing to drop: leave the file as it is
+	}
+	c.servers = kept
+	return writeProviderCache(a.Paths, providerName, c)
+}
+
+// lockProviderCache serialises the cache's two read-modify-write writers
+// (a round's listing and a lookup's merge) across processes, so a merge
+// never resurrects rows a round just replaced or loses one it just added.
+func lockProviderCache(p config.Paths, name string) (func(), error) {
+	if err := os.MkdirAll(p.CacheDir(), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(p.CacheDir(), "provider-"+name+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() { f.Close() }, nil // closing drops the lock
 }
 
 // providerUnmanagedErr is the one refusal for a provider server without the
@@ -156,11 +236,14 @@ func providerLifecycleErr(m *config.Machine, verb string) error {
 // (providers.md §2). `config check` warns with it, and step 3's `create
 // --backend hetzner` refuses with it. A file that does not parse is the
 // caller's to refuse first.
-func localOwner(f *config.File, name string) string {
+//
+// smols is one local listing the caller took (smolSnapshot), so a check
+// over many names costs one `smolvm machine ls`, not one per name.
+func localOwner(f *config.File, smols smolMachines, name string) string {
 	if _, ok := f.Entry(name); ok {
 		return fmt.Sprintf("the entry [machines.%s] in %s", name, f.Path)
 	}
-	if backend.SmolExists(name) {
+	if _, ok := smols.byName[name]; ok {
 		return fmt.Sprintf("the local smol VM '%s'", name)
 	}
 	return ""
@@ -327,13 +410,20 @@ func writeProviderCache(p config.Paths, name string, c providerCache) error {
 // deadline) keeps the cached rows and records why, so the snapshot shows
 // the last known state with its age and `status -v` can say what went wrong.
 func (a *App) listProvider(ctx context.Context, name string) {
-	c := readProviderCache(a.Paths, name)
 	cl, err := a.providerClient(name)
 	var servers []provider.Server
 	if err == nil {
 		servers, err = cl.List(ctx)
 	}
 	now := time.Now()
+	// Read under the lock, after the (slow) List, so a lookup's merge in
+	// between is not lost.
+	unlock, lerr := lockProviderCache(a.Paths, name)
+	if lerr != nil {
+		return
+	}
+	defer unlock()
+	c := readProviderCache(a.Paths, name)
 	switch {
 	case err == nil:
 		c = providerCache{servers: servers, fetched: now, attempted: now}

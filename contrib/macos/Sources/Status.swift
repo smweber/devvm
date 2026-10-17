@@ -30,6 +30,15 @@ struct Machine {
     /// remote host is `unmanaged` too and does all of those.
     var needsAdopt: Bool { backend == "smol" && managed == "unmanaged" }
 
+    /// A cloud provider's server (backend `hetzner`), discovered from its
+    /// API. Start/stop/delete on one come later in the CLI, so the app
+    /// offers none yet.
+    var isProvider: Bool { backend == "hetzner" }
+    /// A provider server without devvm's `devvm=true` label: someone's
+    /// server in the project, which devvm never promotes. The CLI allows
+    /// status, shell and exec only, so no copies, ports or drop shelf.
+    var isUnlabelled: Bool { isProvider && managed == "unmanaged" }
+
     /// A hub's own row: a host machines live on, not a machine. Never a
     /// drop target, never started or stopped. The backend alone does not
     /// say: a `HUB/NAME` row also carries backend `hub` when the hub did not
@@ -67,7 +76,7 @@ struct Machine {
         !isHub && (state == "running" || state == "reachable" || (state == "?" && backend != "smol" && backend != "hub"))
     }
     /// Live and devvm may copy into it and forward its ports.
-    var isUsable: Bool { isLive && !needsAdopt }
+    var isUsable: Bool { isLive && !needsAdopt && !isUnlabelled }
     var isReconnecting: Bool { forwards.hasPrefix("reconnecting") }
     var forwardsUp: Bool { forwards.hasPrefix("up:") && forwardCount > 0 }
     var forwardCount: Int {
@@ -77,7 +86,7 @@ struct Machine {
 
     var stateWords: String {
         switch state {
-        case "running", "stopped", "reachable", "unreachable": return state
+        case "running", "stopped", "reachable", "unreachable", "starting", "stopping": return state
         // Only from a hub older than the dormant state's removal: a VM it
         // has a conf for but no disk, off like a stopped one.
         case "dormant": return "stopped (no VM)"
@@ -99,7 +108,7 @@ struct Machine {
     /// (which `unreachable` is: the hub did not say). A remote box at `?` is
     /// selectable (isLive) but unverified, so it is dotted, not filled.
     var glyph: String {
-        if state == "?" { return "◌" }
+        if state == "?" || state == "starting" || state == "stopping" { return "◌" } // a provider server between power states
         if isLive { return "●" }
         if state == "stopped" || state == "dormant" { return "○" } // dormant: an old hub's word
         return "◌"

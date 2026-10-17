@@ -412,7 +412,7 @@ func TestTokenModeWarning(t *testing.T) {
 			t.Fatalf("0644: %q, %v", tok, err)
 		}
 	}
-	if n := strings.Count(warn.String(), "readable by others"); n != 2 {
+	if n := strings.Count(warn.String(), "permissions too open (0644)"); n != 2 {
 		t.Fatalf("want a warning per read, got %q", warn.String())
 	}
 	if strings.Contains(warn.String(), "secret-token") {

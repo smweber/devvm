@@ -14,6 +14,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider/hetzner"
 )
 
 // ErrNoDaemon is returned by Existing when no daemon is running for a machine.
@@ -199,6 +200,7 @@ func (c *Client) spawnDaemon() (<-chan daemonExit, error) {
 	cmd := exec.Command(self, "__daemon", c.name, "--config-dir", c.paths.Config, "--state-dir", c.paths.State)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
+	cmd.Env = daemonEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from the CLI
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -419,4 +421,19 @@ func WaitGone(p config.Paths, name string, timeout time.Duration) bool {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// daemonEnv is the spawning CLI's environment minus the provider token
+// (providers.md §8): the daemon never calls a provider's API, so it must
+// never hold the credential either, not even in /proc/PID/environ for its
+// lifetime.
+func daemonEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, hetzner.TokenEnv+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
