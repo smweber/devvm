@@ -191,8 +191,8 @@ destroys the VM (smol). Rebuilding a box is `delete` then `create
 **Managed and unmanaged smol VMs.** Symmetry with remote boxes: a smol VM
 devvm did not create is treated like an adopted box. A discovered VM is
 **unmanaged by default**. Exactly two things make it managed: devvm `create`,
-or an explicit `setup NAME` (the user handing it over, the same consent gate
-as `auth --install-agent` on an adopted box). There is therefore no code path
+or an explicit `setup --adopt NAME` (the user handing it over, a harder gate
+than `auth --install-agent`; §3). There is therefore no code path
 that installs anything into a VM the user did not give devvm.
 
 The managed bit is host state, `$XDG_STATE_HOME/devvm/managed/NAME`,
@@ -219,7 +219,7 @@ assumed. An unmanaged smol VM supports:
 - `status`, `start`, `stop`;
 - `shell` and `exec`, run as smolvm's own default user over plain `machine
   exec`, with no `BROWSER`, no tmux and nothing installed;
-- `setup`, which promotes it (§3);
+- `setup --adopt`, which promotes it (§3);
 - `delete` **refuses** and points at `smolvm machine rm`, as it refuses on a
   config entry and points at `config rm`. devvm destroys only what it made.
 
@@ -269,15 +269,20 @@ smol) → hook → repos → keys → harden → seed saved forwards (§5).
   a future Hetzner backend) allocates with the template's sizes (flags
   override), writes the managed marker, then runs `setup`. Day to day you
   type only `create`.
-- **`devvm setup NAME [--template T]`** on a discovered smol VM is the
-  handover, and it asks: on a TTY it prints what it is about to do (install
-  prereqs and the agent as root, run the `T` hook, add keys, clone repos,
-  treat `NAME` as managed from now on) and waits for `y`; without a TTY it
-  refuses unless `--yes`. Then it writes the marker and shapes the VM. On a
-  `remote` entry with `managed = true` it shapes without asking (writing
-  `managed = true` was the consent); on an already managed smol VM it
-  re-runs without asking (the idempotent path); on an unmanaged remote entry
-  it refuses, as `bootstrap` does today.
+- **`devvm setup --adopt NAME [--template T]`** on a discovered smol VM is
+  the handover, and it is deliberately hard: it requires the `--adopt` flag
+  (plain `setup NAME` on an unmanaged VM refuses and names the flag), then on
+  a TTY prints what it is about to do (install prereqs and the agent as root,
+  run the `T` hook, add keys, clone repos, treat `NAME` as managed from now
+  on) and waits for the user to **type the VM's name**, not `y`; without a
+  TTY it refuses, and **`--yes` does not apply** to adoption. Then it writes
+  the marker and shapes the VM. On a `remote` entry with `managed = true` it
+  shapes without asking (writing `managed = true` was the consent); on an
+  already managed smol VM it re-runs without asking (the idempotent path);
+  on an unmanaged remote entry it refuses, as `bootstrap` does today, and
+  `--adopt` is not accepted there: the file is the consent. (A provider
+  backend, `providers.md`, goes further: its servers are never promoted by
+  devvm at all; the user sets the label in the provider's tools.)
 - **Root-only cloud VMs.** `setup` on a managed remote entry tries
   `USER@host` first. On *permission denied* (a stderr match, BatchMode on;
   exit 255 alone can't tell it from unreachable) it tries `root@host`; if
@@ -546,7 +551,7 @@ not a silent no-op today), and the lifecycle verbs need no additions
 ## CLI surface after
 
 - **Lifecycle:** `create NAME [--template T] [--memory] [--disk]`, `setup
-  NAME [--template T]`, `start`, `stop`, `delete`.
+  [--adopt] NAME [--template T]`, `start`, `stop`, `delete`.
 - **Connect:** `attach`, `shell`, `exec`, `auth`.
 - **Connect, kept unchanged:** `cp-in`, `cp-out`, `lockdown` (adopt hosts,
   with its confirm).
@@ -573,7 +578,7 @@ until step 5.
    entries; `provision`/`deprovision`/dormant removed; `status -v` sizes from
    the snapshot. The fifth `--plain` column and the Swift change land here.
 4. **`setup` and templates** (§3): `bootstrap` → `setup` with the fixed
-   order and the handover prompt; `[templates.*]` from the new file read
+   order and the `--adopt` handover (typed name, no `--yes`); `[templates.*]` from the new file read
    alongside the old confs; `EnsureUser(name)`; root adoption in `setup`;
    explicit flags on the proxied form (`hubMinVersion` bump).
 5. **New loader and the `config` noun** (§1, §4): `devvm.toml` replaces
@@ -603,7 +608,11 @@ None open. Answered, recorded so they aren't reopened:
 constraints a future provider backend (`hetzner`) puts on this redesign:
 reach predicates as methods, discovery as an ordered source list, `Managed`
 settled per source, `create --backend`, a bounded ssh wait in `setup`, and
-`delete` clearing `known_hosts`. No step changes scope.
+`delete` clearing `known_hosts`. No step changes scope. Promotion of a
+discovered smol VM hardened (§3): `setup --adopt NAME`, the user types the
+name, `--yes` doesn't apply, because the user wants promotion anywhere to
+be hard enough that an important box can't be adopted by accident
+(`providers.md` §2 has the reasoning).
 
 **v2 → v3** (design discussion with the user, 2026-10-17):
 
@@ -642,7 +651,7 @@ settled per source, `create --backend`, a bounded ssh wait in `setup`, and
 - `repos list` needs a running box; `lockdown`/`cp-in`/`cp-out` listed as
   kept; `ports add` keeps saving by default (`--ephemeral` opts out).
 - `setup` on a discovered VM prompts (user request): TTY confirm, `--yes`
-  otherwise.
+  otherwise. **Tightened in v3.1:** `--adopt` + typed name, no `--yes`.
 
 **v1 → v2** (one independent review, 2026-09-27). Changes accepted:
 

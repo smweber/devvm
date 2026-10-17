@@ -54,7 +54,8 @@ image = "ubuntu-24.04"           # image name or id; must boot sshd with root + 
 ssh_key = "scott-laptop"         # name of a key already uploaded to the project
                                  # (or `ssh_key_file = "~/.ssh/id_ed25519.pub"`:
                                  # uploaded once by name if missing)
-ipv4 = true                      # Hetzner bills a public v4 extra; false = v6 only
+ipv4 = true                      # default; Hetzner bills a public v4 extra. false =
+                                 # v6 only, for a laptop whose network routes v6
 
 [templates.default]
 server_type = "cx23"             # sizing for provider boxes; memory/disk stay smol's
@@ -85,10 +86,19 @@ machine ls`:
 - `status` lists every server in the project. Servers carrying the label
   `devvm=true` are **managed**; the rest are **unmanaged**: listed, reachable
   for `shell`/`exec`, hands-off, and `delete` refuses on them and points at
-  the console. `setup NAME` promotes one (TTY confirm or `--yes`, as on a
-  discovered smol VM) by setting the label. The label *is* the managed marker:
-  it lives on the provider, so it is shared across hosts and needs no state
-  file, and it cannot go stale the way the smol marker can.
+  the console. The label *is* the managed marker: it lives on the provider,
+  so it is shared across hosts and needs no state file, and it cannot go
+  stale the way the smol marker can.
+- **devvm never promotes a provider server.** An unmanaged server is treated
+  like an unmanaged `remote` entry, not like a discovered smol VM: `setup`
+  **refuses** on it, with no flag that overrides. The only way a server
+  becomes managed is the user adding the `devvm=true` label themselves in
+  the console or with `hcloud server add-label`, which is the provider-side
+  equivalent of writing `managed = true` in a `remote` entry: config written
+  by the user, never by a VM command. The user's project holds production
+  servers that would be broken by `setup`, and a prompt is not enough of a
+  gate for that; the label is a deliberate act in another tool. Nothing in
+  the `Provider` interface sets labels after creation (§7).
 - A second label, `devvm-template=NAME`, is informational only. Nothing reads
   it; it answers "what made this" in the console.
 - Name resolution follows `config.md` §2 as an ordered source list: `HUB/NAME`
@@ -136,9 +146,11 @@ Hetzner reuses addresses, so a stale pin would fail the next `create`.
 
 `start`/`stop` are `POST /servers/{id}/actions/poweron|poweroff`, waited to
 completion. `stop` keeps the forwards' daemon as smol does (pending,
-reconnecting). A stopped Hetzner server **still bills**; `status -v` says so
-on the row (`stopped (billing)`), because the smol intuition that stopped
-is free is wrong here.
+reconnecting). A stopped Hetzner server **still bills**, and the smol
+intuition that stopped is free is wrong here, so `stop` **warns** every time
+(`web is stopped but still billed; devvm delete web frees it`) and `status
+-v` repeats it on the row (`stopped (billing)`). The warning is one line on
+stderr, not a confirm: `stop` does what was asked.
 
 There is no `provision`/`deprovision`, no dormant state and no resize, as
 decided in the redesign.
@@ -203,7 +215,6 @@ type Provider interface {
     Create(ctx, Spec) (*Server, error)           // name, type, image, location, key, labels
     Delete(ctx, id) error
     Power(ctx, id, on bool) error
-    SetManaged(ctx, id, bool) error              // the label
 }
 ```
 
@@ -211,7 +222,8 @@ type Provider interface {
 `encoding/json`; the five endpoints are small and the SDK would be the
 module's largest dependency). A fake implements it for tests, as the fake
 smolvm does. `Server` carries name, id, state, address, type, location,
-labels.
+labels. There is deliberately no method that changes labels on an existing
+server (§2): `Create` sets them at birth and nothing else writes them.
 
 DigitalOcean maps onto this one to one (droplets, tags, named keys). AWS
 does not: it needs a VPC, a security group, an AMI lookup and a key pair
@@ -229,6 +241,11 @@ boundary and that `backend` values for providers are the provider name, so
 - `create` prints the type, location and that it bills, before calling.
 - `status` is the forgotten-VM guard: every server in the project is listed,
   managed or not, so a box left running is visible in the menu bar.
+- Unmanaged servers are untouchable: `setup`, `delete`, `keys`, `repos`,
+  `cp-in`, `auth --install-agent` and the bridge all refuse, and no flag
+  promotes one (§2). Only `status`, `start`, `stop`, `shell` and `exec`
+  work, as for an unmanaged `remote` entry, and `start`/`stop` confirm on
+  an unmanaged server since they can take a production box down.
 - API errors are surfaced verbatim with the HTTP status; rate limits are not
   retried (the loop that could hit them is `status --watch`, which is why it
   caches).
@@ -239,8 +256,8 @@ boundary and that `backend` values for providers are the provider name, so
 ## CLI surface after
 
 - **Lifecycle:** `create NAME --backend hetzner [--template T] [--server-type]
-  [--location] [--image]`, `delete`, `start`, `stop`, `setup` (promotion and
-  re-run), all unchanged in name.
+  [--location] [--image]`, `delete`, `start`, `stop`, `setup` (re-run on a
+  managed box only; never promotion), all unchanged in name.
 - **Everything else** unchanged.
 - **Config:** `[providers.hetzner]` by hand; `config check` and `config show`
   cover it.
@@ -257,20 +274,24 @@ A fresh cloud box is `create web --backend hetzner`, `attach web`, and later
    (with the cache), the `hetzner` backend value built on `sshBackend`,
    `--plain` mapping, `config check` for `[providers.*]`.
 3. **Lifecycle**: `create --backend hetzner` through `setup`, `delete` with
-   cleanup, `start`/`stop`, the billing hint.
+   cleanup, `start`/`stop` with the billing warning and the unmanaged
+   confirm.
 4. **Live test** against the user's project: create, attach, auth, ports,
    bridge, stop/start, delete, then the same from a second host.
 
 ## Open questions
 
-1. **Stopped-but-billing.** Should `stop` on a provider box warn once, or is
-   the `status` hint enough? Proposed: hint only; `stop` is what the user
-   asked for.
-2. **`ipv4 = false` by default?** Cheaper, but the laptop's network must
-   route v6. Proposed: default `true`, the boring choice.
-3. **Promoting an unmanaged server** sets a label on something devvm didn't
-   make. That is the same consent gate as `setup` on a discovered smol VM;
-   confirm that it's acceptable for a billed resource too.
+None open. Answered by the user (2026-10-17), recorded so they aren't
+reopened:
+
+- **Stopped-but-billing:** `stop` warns every time, one line on stderr (§3).
+  "I'll totally forget."
+- **`ipv4`:** default `true` (§1).
+- **Promotion:** devvm never promotes a provider server; the user sets the
+  label in the provider's tools (§2). The reason is that the project holds
+  production servers an accidental `setup` would break. The same discussion
+  tightened promotion of discovered smol VMs in `config.md` §3 (`--adopt`
+  plus a typed name, no `--yes`).
 
 ## Dependencies on `config.md`
 
