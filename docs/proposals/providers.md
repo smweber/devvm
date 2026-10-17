@@ -1,8 +1,9 @@
 # Proposal: provider backends (devvm creates and destroys cloud VMs)
 
-Status: draft v1.2, 2026-10-17, from a design discussion with the user
+Status: draft v1.3, 2026-10-17, from a design discussion with the user
 (v1.1: token stored by the CLI, cache-first watch; v1.2: refresh on demand,
-remote boxes probed; see the review log). Not
+remote boxes probed; v1.3: menu refresh via its one-shot status; see the
+review log). Not
 scheduled. It **depends on `config.md`** (the config redesign) having landed
 and the three hosts having migrated (`config.md` §8); `config.md` §9 records
 the constraints that redesign keeps for this one. First provider: Hetzner
@@ -232,10 +233,13 @@ The caches are refreshed by exactly three things:
   every provider in parallel under the hub listing's deadline, update the
   caches, emit a block. A round in flight is joined, not restarted, and the
   marker is coalesced by the existing 200ms debounce, so a double click
-  costs one round. **The menu bar app calls `__refresh` from
-  `menuWillOpen`** (`MenuBar.swift:142`): the menu opens at once on cached
-  rows and updates one block later, worst case the deadline (2s). That is
-  the one-line Swift change; block handling is unchanged.
+  costs one round. **The menu bar app needs no change for this**: on
+  `menuWillOpen` it already runs a one-shot `status --plain` (to re-read
+  hubs and smolvm) and applies the output directly, and that one-shot now
+  probes (next bullet) and writes the cache the watcher reads on its next
+  event. Calling `__refresh` there too would probe every remote twice per
+  open (found in the step 0 review), so the app does not; `__refresh` is
+  for scripts and for other watch consumers.
 - **One-shot `status`** (no `--watch`) runs the live round inline before
   printing and falls back to the caches on failure: a human typed it and
   wants fresh. `status --local` skips remotes' probes and providers as it
@@ -380,9 +384,9 @@ A fresh cloud box is `create web --backend hetzner`, `attach web`, and later
 
 0. **Status truthfulness, standalone** (§5): `run/refresh` + `__refresh`,
    the remote probe (master check, then TCP connect), `cache/reach/NAME`
-   with verified-at, `status -v` and the sixth `--plain` field, the
-   `menuWillOpen` call in the app. Ships before and independently of the
-   rest.
+   with verified-at, `status -v` and the sixth `--plain` field; the app's
+   one-shot `status` on menu open is the refresh. Ships before and
+   independently of the rest.
 1. **Provider interface and the Hetzner client** (`internal/provider`,
    `internal/provider/hetzner`) with a fake and tests against recorded
    responses. No CLI.
@@ -415,7 +419,8 @@ reopened:
   menu bar app copies only `PATH` from the login shell (`Devvm.swift:34`)
   and would never see the variable.
 - **Watch cost:** cache-first, **no polling**; refreshed when the menu
-  opens (`__refresh`), on one-shot `status`, and by lifecycle commands (§5).
+  opens (its one-shot `status`), on one-shot `status`, and by lifecycle
+  commands (§5).
   Raised by the user ("will its loop be too heavy?"); the user accepts the
   latency of a refresh on click. A 60s timer (v1.1) was dropped for it.
 - **Remote `reachable`:** probed (master check, then TCP connect) and shown
@@ -423,8 +428,14 @@ reopened:
 
 ## Review log
 
+**v1.2 → v1.3** (2026-10-17, step 0 review): the app does not call
+`__refresh`; its existing one-shot `status` on menu open is the refresh,
+since both would probe twice. Contact writes in step 0 are exec/shell/
+attach/bootstrap (create's adopt test-connect and the menu's under-row text
+are deferred to steps 2–3).
+
 **v1.1 → v1.2** (2026-10-17, with the user): the 60s timer replaced by
-refresh on demand (`run/refresh`, called by the app's `menuWillOpen`);
+refresh on demand (`run/refresh`, a marker any watch consumer may write);
 remote boxes probed cheaply and given `reachable`/`unreachable`/`?` for
 real; last-contact time cached and shown; step 0 added to ship that part
 first, standalone.
