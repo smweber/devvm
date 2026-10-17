@@ -14,13 +14,13 @@ import (
 )
 
 func (a *App) completeCopyGuestPath(ctx context.Context, name, prefix string) ([]string, cobra.ShellCompDirective) {
-	// A registered remote box is built from its conf directly: resolve has
+	// A remote entry is built from devvm.toml directly: resolve has
 	// no context and nothing for it to add. Anything else is a local smol VM,
 	// resolved like cp itself (one `smolvm machine ls`, local and quick):
 	// the record must have Managed settled, since the exec user depends on
 	// it, and cp refuses a VM devvm did not create, so completion does too.
 	var b backend.Backend
-	if m, err := config.Load(a.Paths.Config, name); err == nil && m.IsRemote() {
+	if m, err := config.Load(a.Paths, name); err == nil && m.IsRemote() {
 		if b, err = backend.For(m, a.Paths); err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}

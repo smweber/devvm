@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -16,26 +17,52 @@ import (
 // "user@host:path" is treated as a full URL and cloned with plain git.
 var ownerRepoRe = regexp.MustCompile(`^[\w.-]+/[\w.-]+$`)
 
+// runReposList lists the git checkouts in the guest's ~/src (config.md §3):
+// repos are not tracked anywhere, so the guest is the only one that knows.
+// One exec, so it needs a running box.
 func (a *App) runReposList(name string) error {
-	m, _, err := a.resolve(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
-	if len(m.Repos) == 0 {
-		fmt.Fprintf(a.Stdout, "devvm: no repos configured; add one with 'devvm repos add %s owner/repo'\n", name)
+	// An exec would boot a stopped smol VM, behind any daemon it has.
+	if !m.IsRemote() {
+		if st, err := b.Status(); err == nil && !st.Running {
+			return fmt.Errorf("'%s' is stopped; 'devvm start %s' first (repos list reads the guest's ~/src)", name, name)
+		}
+	}
+	const script = `cd "$HOME/src" 2>/dev/null || exit 0
+for d in */; do
+  d="${d%/}"
+  [ -e "$d/.git" ] || continue
+  url=$(git -C "$d" remote get-url origin 2>/dev/null)
+  printf '%s\t%s\n' "$d" "$url"
+done`
+	var out bytes.Buffer
+	if err := b.Run(context.Background(), backend.ExecOpts{Login: true, Stdout: &out}, "bash", "-c", script); err != nil {
+		return err
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		fmt.Fprintf(a.Stdout, "devvm: no git checkouts in ~/src; clone one with 'devvm repos add %s owner/repo'\n", name)
 		return nil
 	}
-	for _, r := range m.Repos {
-		fmt.Fprintf(a.Stdout, "  %s\n", r)
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		dir, url, _ := strings.Cut(line, "\t")
+		if url == "" {
+			fmt.Fprintf(a.Stdout, "  %s\n", dir)
+		} else {
+			fmt.Fprintf(a.Stdout, "  %-24s %s\n", dir, normalizeRepo(url))
+		}
 	}
 	return nil
 }
 
-// runReposAdd records repo spec(s) in the conf and (unless noClone) clones them
-// on the guest. With no repo arg it prompts, prefilling from the current
-// directory's git origin so a host-side checkout is one keystroke to add.
-func (a *App) runReposAdd(name string, repos []string, clone bool) error {
-	m, b, err := a.resolve(name)
+// runReposAdd clones repo spec(s) into ~/src on the guest; nothing is
+// recorded (config.md §3). With no repo arg it prompts, prefilling from the
+// current directory's git origin so a host-side checkout is one keystroke
+// to add.
+func (a *App) runReposAdd(name string, repos []string) error {
+	_, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -46,28 +73,16 @@ func (a *App) runReposAdd(name string, repos []string, clone bool) error {
 		}
 		repos = []string{in}
 	}
-
-	var added []string
+	var specs []string
 	for _, r := range repos {
-		r = normalizeRepo(strings.TrimSpace(r))
-		if r == "" || m.HasRepo(r) {
-			continue
+		if r = normalizeRepo(strings.TrimSpace(r)); r != "" && !slices.Contains(specs, r) {
+			specs = append(specs, r)
 		}
-		m.Repos = append(m.Repos, r)
-		added = append(added, r)
 	}
-	if len(added) == 0 {
-		fmt.Fprintf(a.Stdout, "devvm: nothing to add (already configured)\n")
-		return nil
+	if len(specs) == 0 {
+		return fmt.Errorf("no repo given")
 	}
-	if err := m.Save(a.Paths.Config); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.Stdout, "devvm: added %d repo(s) to '%s'\n", len(added), name)
-	if !clone {
-		return nil
-	}
-	return a.cloneRepos(b, added)
+	return a.cloneRepos(b, specs)
 }
 
 // promptRepo asks for one repo on the terminal, prefilling the current
@@ -89,43 +104,6 @@ func promptRepo() (string, error) {
 		return "", fmt.Errorf("a repo is required")
 	}
 	return in, nil
-}
-
-func (a *App) runReposRm(name, repo string) error {
-	m, _, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	repo = normalizeRepo(strings.TrimSpace(repo))
-	if !m.HasRepo(repo) {
-		return fmt.Errorf("no repo '%s' configured for '%s' (have: %v)", repo, name, m.Repos)
-	}
-	kept := m.Repos[:0]
-	for _, r := range m.Repos {
-		if r != repo {
-			kept = append(kept, r)
-		}
-	}
-	m.Repos = kept
-	if err := m.Save(a.Paths.Config); err != nil {
-		return err
-	}
-	// Leave the guest checkout in place — removing a repo from the conf is a
-	// registry edit, not a destructive delete of the user's working tree.
-	fmt.Fprintf(a.Stdout, "devvm: removed repo %s from '%s' (guest checkout left in place)\n", repo, name)
-	return nil
-}
-
-func (a *App) runReposClone(name string) error {
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	if len(m.Repos) == 0 {
-		fmt.Fprintf(a.Stdout, "devvm: no repos configured; add one with 'devvm repos add %s owner/repo'\n", name)
-		return nil
-	}
-	return a.cloneRepos(b, m.Repos)
 }
 
 // cloneRepos clones each spec into ~/src on the guest, skipping any that already
@@ -175,10 +153,10 @@ fi`
 }
 
 // githubURLRe matches an https or scp-like github.com remote so we can fold it
-// down to "owner/repo" shorthand; non-GitHub remotes are stored verbatim.
+// down to "owner/repo" shorthand; non-GitHub remotes are kept verbatim.
 var githubURLRe = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([\w.-]+/[\w.-]+?)(?:\.git)?$`)
 
-// normalizeRepo tidies a spec for storage: a github.com URL becomes the
+// normalizeRepo tidies a spec: a github.com URL becomes the
 // "owner/repo" shorthand (matching what gh prefers and what a bare add types);
 // a bare "owner/repo" is kept; any other URL is returned unchanged.
 func normalizeRepo(s string) string {

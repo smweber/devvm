@@ -18,7 +18,7 @@ import (
 // then removes the run files nothing else ever removes: NAME.log, and a
 // NAME.sock or NAME.master nobody answers any more (a daemon or master that
 // was killed rather than stopped). NAME.lock is not among them: see
-// RemoveLock, which runs only once the registry entry is gone. Both the
+// RemoveLock, which runs only once the entry is gone. Both the
 // state dir's run/ and a pre-split one in the config dir are reaped. A
 // socket something still answers on is never removed: a live master belongs to a daemon still shutting down, and a
 // live control socket to a daemon started since.
@@ -83,13 +83,13 @@ func reapFiles(p config.Paths, name string) error {
 }
 
 // RemoveLock unlinks a machine's startup lock. Only once the machine can no
-// longer be resolved (its conf removed): a starter already blocked on the
+// longer be resolved (its VM deleted, or its devvm.toml entry removed): a starter already blocked on the
 // lock holds the old inode and would take it when released, while the next
 // starter's O_CREATE made a fresh file and took that at once, putting two
 // daemons past the lock (two agent execs on smol, and the loser's
-// stale-socket Remove unlinking the winner's socket). With the conf gone,
+// stale-socket Remove unlinking the winner's socket). With the machine gone,
 // that next starter fails at resolve before it reaches the lock. A
-// HUB/NAME keeps its lock after `delete HUB/NAME`, since the hub conf still
+// HUB/NAME keeps its lock after `delete HUB/NAME`, since the hub entry still
 // resolves it; an empty file is harmless.
 func RemoveLock(p config.Paths, name string) {
 	for _, at := range runLayouts(p) {

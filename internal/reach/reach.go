@@ -56,7 +56,7 @@ type Entry struct {
 }
 
 // Dir is where the reach cache lives: under cache/, outside run/ and
-// machines/, so a probe's write never wakes the `status --watch` that ran it.
+// the config dir, so a probe's write never wakes the `status --watch` that ran it.
 func Dir(p config.Paths) string { return filepath.Join(p.CacheDir(), "reach") }
 
 // Path is one box's cache file.

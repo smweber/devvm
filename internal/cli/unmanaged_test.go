@@ -143,7 +143,6 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	fakeLocalSmolvm(t, `[
 		{"name":"made","state":"running","created_at":1},
 		{"name":"found","state":"stopped","created_at":2},
-		{"name":"legacy","state":"running","created_at":3},
 		{"name":"cloud","state":"stopped","created_at":4},
 		{"name":"h","state":"stopped","created_at":5}
 	]`)
@@ -151,17 +150,13 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range []*config.Machine{
-		{Name: "legacy", Backend: config.BackendSmol, Memory: 1024},
-		config.NewRemote("cloud", config.BackendRemoteUnmanaged, "u@cloud"),
-		config.NewRemote("box", config.BackendRemoteManaged, "u@box"),
-		config.NewRemote("adopted", config.BackendRemoteUnmanaged, "u@adopted"),
+		config.NewRemote("cloud", false, "u@cloud"),
+		config.NewRemote("box", true, "u@box"),
+		config.NewRemote("adopted", false, "u@adopted"),
 	} {
-		if err := m.Save(a.Paths.Config); err != nil {
+		if err := writeEntry(a.Paths, m); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.WriteFile(filepath.Join(config.MachinesDir(a.Paths.Config), "broken.toml"), []byte("backend = ["), 0o644); err != nil {
-		t.Fatal(err)
 	}
 	if err := runTree(t, a, "status", "--plain", "--local"); err != nil {
 		t.Fatal(err)
@@ -170,11 +165,9 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	for _, want := range []string{
 		"made\tsmol\trunning\t-\tmanaged\t-\n",
 		"found\tsmol\tstopped\t-\tunmanaged\t-\n",
-		"legacy\tsmol\trunning\t-\tmanaged\t-\n",
-		"cloud\tremote-unmanaged\t?\t-\tshadowed\tverified=-\n",
-		"box\tremote-managed\t?\t-\tmanaged\tverified=-\n",
-		"adopted\tremote-unmanaged\t?\t-\tunmanaged\tverified=-\n",
-		"broken\t?\tbroken conf\t-\t-\t-\n",
+		"cloud\tremote\t?\t-\tshadowed\tverified=-\n",
+		"box\tremote\t?\t-\tmanaged\tverified=-\n",
+		"adopted\tremote\t?\t-\tunmanaged\tverified=-\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plain lacks %q:\n%s", want, got)
@@ -186,16 +179,13 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	if strings.Contains(got, "dormant") {
 		t.Errorf("dormant is gone:\n%s", got)
 	}
-	if m, ok, _ := config.ReadManagedMarker(a.Paths, "legacy"); !ok || m != "3" {
-		t.Errorf("legacy conf's marker = %q, %v; want 3 written by the migration rule", m, ok)
-	}
 
 	// The hub's own row: `-`, or shadowed when a VM shares its name.
 	hub := config.NewHub("h", "u@hub")
 	r := a.hubRows(hub, hubListing{fresh: true, rows: []hubRow{
 		{name: "new", backend: "smol", state: "running", forwards: "-", managed: "unmanaged"},
 		{name: "old", backend: "smol", state: "running", forwards: "-", managed: "-"},
-	}})
+	}}, nil)
 	if got := []string{plainManaged(r[0]), plainManaged(r[1]), plainManaged(r[2])}; strings.Join(got, ",") != "-,unmanaged,-" {
 		t.Errorf("hub rows' column = %v, want -, the hub's unmanaged passed through, - for an old hub", got)
 	}
@@ -206,39 +196,62 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	}
 }
 
-// A conf whose smol VM does not exist is just not found now (no dormant
-// state); delete drops the stale conf without a prompt.
-func TestStaleSmolConf(t *testing.T) {
+// delete never removes a config entry: it refuses and points at `config
+// rm`, which owns the entry and this host's state for it.
+func TestDeleteRefusesEntries(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
-	m := &config.Machine{Name: "gone", Backend: config.BackendSmol, Memory: 1024}
-	if err := m.Save(a.Paths.Config); err != nil {
+	log := fakeSSH(t, "exit 0")
+	writeDevvmTOML(t, a, "[machines.box]\nbackend = \"remote\"\nmanaged = true\nhost = \"b\"\n\n[machines.h]\nbackend = \"hub\"\nhost = \"h\"\n")
+	before, _ := os.ReadFile(a.Paths.FilePath())
+	for _, n := range []string{"box", "h"} {
+		err := runTree(t, a, "delete", n)
+		if err == nil || !strings.Contains(err.Error(), "'devvm config rm "+n+"'") {
+			t.Errorf("delete %s = %v, want a pointer at config rm", n, err)
+		}
+	}
+	if after, _ := os.ReadFile(a.Paths.FilePath()); string(after) != string(before) {
+		t.Error("delete changed devvm.toml")
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Error("delete of an entry dialed it")
+	}
+	if err := runTree(t, a, "attach", "nope"); err == nil || !strings.Contains(err.Error(), "devvm create nope") || !strings.Contains(err.Error(), "config add nope") {
+		t.Errorf("unknown name: err = %v, want hints to create and config add", err)
+	}
+}
+
+// An entry wins over a discovered smol VM of the same name (config.md §2):
+// the entry's record and backend, no smolvm call needed to say so.
+func TestEntryShadowsSmolVM(t *testing.T) {
+	a := newTestApp(t)
+	smolLog := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
+	if err := config.WriteManagedMarker(a.Paths, "web", "1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.WriteManagedMarker(a.Paths, "gone", "9"); err != nil {
-		t.Fatal(err)
+	m, _, err := a.resolveAny("web")
+	if err != nil || m.IsRemote() || !m.Managed() {
+		t.Fatalf("no entry: %+v, %v; want the managed smol VM", m, err)
 	}
-	err := runTree(t, a, "attach", "gone")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("attach: err = %v, want not found", err)
+	writeDevvmTOML(t, a, "[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n")
+	os.Remove(smolLog)
+	m, b, err := a.resolveAny("web")
+	if err != nil || !m.IsRemote() || m.Managed() || b.Kind() != config.BackendRemote {
+		t.Fatalf("with an entry: %+v, %v", m, err)
 	}
-	if err := runTree(t, a, "delete", "gone"); err != nil {
-		t.Fatalf("delete: %v", err)
+	if _, err := os.Stat(smolLog); !os.IsNotExist(err) {
+		t.Error("resolving an entry ran smolvm")
 	}
-	if config.Exists(a.Paths.Config, "gone") {
-		t.Error("stale conf survived delete")
-	}
-	if _, ok, _ := config.ReadManagedMarker(a.Paths, "gone"); ok {
-		t.Error("marker survived delete")
-	}
-	if err := runTree(t, a, "attach", "nope"); err == nil || !strings.Contains(err.Error(), "devvm create nope") {
-		t.Errorf("unknown name: err = %v, want a hint to create", err)
+	// A broken file fails every name: it cannot say whether one is shadowed.
+	writeDevvmTOML(t, a, "[machines.web\n")
+	if _, _, err := a.resolveAny("other"); err == nil || !strings.Contains(err.Error(), "devvm.toml") {
+		t.Errorf("broken file: %v", err)
 	}
 }
 
 // forgetHostState drops the marker and the machine's pinned host key, but
-// keeps a pin another registered machine still uses (known_hosts is per
-// host, not per name).
+// keeps a pin another entry still uses (known_hosts is per host, not per
+// name).
 func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
@@ -254,12 +267,12 @@ func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	sshWithConfig(t, "")
-	gone := config.NewRemote("gone", config.BackendRemoteManaged, "dev@gone.example")
-	kept := config.NewRemote("kept", config.BackendRemoteManaged, "dev@kept.example")
+	gone := config.NewRemote("gone", true, "dev@gone.example")
+	kept := config.NewRemote("kept", true, "dev@kept.example")
 	kept.SSHPort = 2222
-	other := config.NewRemote("other", config.BackendRemoteManaged, "root@kept.example")
+	other := config.NewRemote("other", true, "root@kept.example")
 	other.SSHPort = 2222
-	if err := other.Save(a.Paths.Config); err != nil {
+	if err := writeEntry(a.Paths, other); err != nil {
 		t.Fatal(err)
 	}
 	if err := config.WriteManagedMarker(a.Paths, "gone", "1"); err != nil {
@@ -326,7 +339,7 @@ func TestKnownHostsKeyFollowsSSHConfig(t *testing.T) {
 		{"dev@plain.example", 2022, "[plain.example]:2022"},
 		{"dev@pinned", 22, "pin-alias"},
 	} {
-		m := config.NewRemote("x", config.BackendRemoteManaged, tc.dest)
+		m := config.NewRemote("x", true, tc.dest)
 		m.SSHPort = tc.port
 		if got := knownHostsKey(m); got != tc.want {
 			t.Errorf("knownHostsKey(%s, port %d) = %q, want %q", tc.dest, tc.port, got, tc.want)

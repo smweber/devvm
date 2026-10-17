@@ -266,20 +266,20 @@ func ttlLeft(d time.Duration) string {
 // only. No VM is asked whether it exists, runs or is managed, so a stray
 // ports file for a VM devvm did not create, or for one that is gone, can
 // still be listed and emptied (nothing else would ever remove it: delete
-// refuses such a VM). A HUB/NAME needs its hub conf, as before; a bare name
-// uses its conf when it has one and a bare record otherwise.
+// refuses such a VM). A HUB/NAME needs its hub's entry, as before; a bare
+// name uses its entry when it has one and a bare smol record otherwise.
 func (a *App) portsRecord(name string) (*config.Machine, error) {
 	if ok, err := hubMachineArg([]string{name}); err != nil {
 		return nil, err
 	} else if ok {
-		return config.LoadHubMachine(a.Paths.Config, name)
+		return config.LoadHubMachine(a.Paths, name)
 	}
 	if err := config.ValidName(name); err != nil {
 		return nil, err
 	}
-	m, err := config.Load(a.Paths.Config, name)
+	m, err := config.Load(a.Paths, name)
 	if errors.Is(err, config.ErrNotFound) {
-		return &config.Machine{Name: name}, nil
+		return &config.Machine{Name: name, Backend: config.BackendSmol}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -320,8 +320,10 @@ func (a *App) runPortsListAll() error {
 	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %-12s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE", "OWNER")
 	any := false
 	for _, name := range a.listMachines() {
-		if _, err := config.LoadAny(a.Paths.Config, name); err != nil {
-			continue
+		if _, _, onHub, _ := config.SplitHubName(name); onHub {
+			if _, err := config.LoadHubMachine(a.Paths, name); err != nil {
+				continue
+			}
 		}
 		saved, _ := a.savedPorts(name)
 		// guest port -> daemon-owned forward, if a daemon is up for this machine.

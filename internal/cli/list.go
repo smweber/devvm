@@ -13,7 +13,8 @@ import (
 // commands that walk "all machines": status, update's daemon restart, the
 // global `ports list`, and completion. It unions
 //
-//   - config.List: every local conf, hubs included (a hub has a row of its own);
+//   - config.List: every `[machines.*]` entry, hubs included (a hub has a row
+//     of its own);
 //   - HUB/NAME for every saved-forwards file ports/HUB@NAME (savedHubPorts);
 //   - HUB/NAME for every name in the hub's cached listing (cachedHubMachines);
 //   - HUB/NAME for every live run/HUB@NAME.sock.
@@ -22,7 +23,7 @@ import (
 // a socket or trusts a cache: the last two sources are hints for enumeration
 // and completion, and only a proxied command says whether a machine exists.
 // The socket source matters because a laptop daemon for a hub machine can
-// exist with no conf entry at all (a browser open from `attach HUB/NAME`
+// exist with no saved forwards at all (a browser open from `attach HUB/NAME`
 // creates a connection-owned forward and writes nothing).
 func (a *App) listMachines() []string {
 	seen := map[string]bool{}
@@ -33,15 +34,19 @@ func (a *App) listMachines() []string {
 			names = append(names, n)
 		}
 	}
-	local, _ := config.List(a.Paths.Config)
-	for _, n := range local {
-		add(n)
-		m, err := config.Load(a.Paths.Config, n)
-		if err != nil || !m.IsHub() {
-			continue // a broken conf is still listed (status shows it as such)
-		}
-		for _, mn := range cachedHubMachines(a.Paths, n) {
-			add(config.JoinHubName(n, mn))
+	// A file that does not parse lists no entries here; status refuses it
+	// outright, and every command naming an entry reports the parse error.
+	var local []string
+	if f, err := config.LoadFile(a.Paths); err == nil {
+		for _, m := range f.Machines() {
+			local = append(local, m.Name)
+			add(m.Name)
+			if !m.IsHub() {
+				continue
+			}
+			for _, mn := range cachedHubMachines(a.Paths, m.Name) {
+				add(config.JoinHubName(m.Name, mn))
+			}
 		}
 	}
 	// Only for a hub that is still registered: a stray file for a deleted
@@ -72,9 +77,8 @@ func cachedHubMachines(paths config.Paths, hub string) []string {
 }
 
 // savedHubPorts lists HUB/NAME for every hub machine this host has saved
-// forwards for. Local names are skipped: their machines come from
-// config.List (a stray local file must not make a conf-less name look like
-// a broken conf).
+// forwards for. Local names are skipped: their machines come from the file
+// and discovery (a stray local ports file names no machine).
 func savedHubPorts(paths config.Paths) []string {
 	var names []string
 	saved, _ := config.SavedPortsNames(paths) // a hint here; the ports verbs report a failed migration
@@ -89,7 +93,7 @@ func savedHubPorts(paths config.Paths) []string {
 // liveHubSockets lists HUB/NAME for every run/HUB@NAME.sock. A stale socket
 // (daemon crashed) is listed too; status pings it and shows no daemon, which
 // is the truthful answer. Local sockets carry no '@' and are skipped: their
-// machines come from config.List.
+// machines come from the file and discovery.
 func liveHubSockets(paths config.Paths) []string {
 	matches, _ := filepath.Glob(filepath.Join(paths.RuntimeDir(), "*@*.sock"))
 	var names []string

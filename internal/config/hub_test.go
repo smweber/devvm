@@ -1,124 +1,23 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// writeConf writes an old per-machine conf (machines/NAME.toml), which only
+// the one-time saved-forwards seed still reads.
 func writeConf(t *testing.T, dir, name, raw string) {
 	t.Helper()
-	if err := os.MkdirAll(MachinesDir(dir), 0o755); err != nil {
+	md := LegacyMachinesDir(Paths{Config: dir})
+	if err := os.MkdirAll(md, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(MachinesDir(dir), name+".toml"), []byte(raw), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(md, name+".toml"), []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// A hub conf with old [machines.NAME] tables (read only to seed saved
-// forwards, see ports.go) loads, validates, and survives Save
-// (which strips zero-int and default lines by column-0 regex; the nested
-// tables are indented and must come through untouched).
-func TestHubConfRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	writeConf(t, dir, "h", `backend = "hub"
-ssh_host = "scott@desktop"
-
-[machines.web]
-ports = ["3000", "8443:443"]
-
-[machines.api]
-`)
-	h, err := Load(dir, "h")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !h.IsHub() || h.IsHubMachine() || h.Managed() || !h.IsRemote() {
-		t.Errorf("hub predicates wrong: IsHub=%v IsHubMachine=%v Managed=%v IsRemote=%v",
-			h.IsHub(), h.IsHubMachine(), h.Managed(), h.IsRemote())
-	}
-	if h.SSHPort != 22 || h.TransportName() != TransportSSH {
-		t.Errorf("hub ssh defaults not applied: port=%d transport=%q", h.SSHPort, h.Transport)
-	}
-	if got := h.Machines["web"].Ports; len(got) != 2 || got[1] != "8443:443" {
-		t.Errorf("[machines.web] ports = %v", got)
-	}
-	if _, ok := h.Machines["api"]; !ok {
-		t.Errorf("empty [machines.api] table lost: %v", h.Machines)
-	}
-	if err := h.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	data, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "h.toml"))
-	if !strings.Contains(string(data), "[machines.web]") || !strings.Contains(string(data), `"8443:443"`) {
-		t.Errorf("saved conf lost the machine table:\n%s", data)
-	}
-	for _, bad := range []string{"memory", "\nports", "transport", "bootstrap_hook"} {
-		if strings.Contains(string(data), bad) {
-			t.Errorf("hub conf should not contain %q:\n%s", bad, data)
-		}
-	}
-	again, err := Load(dir, "h")
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if len(again.Machines) != 2 || again.Machines["web"].Ports[0] != "3000" {
-		t.Errorf("round-trip changed the tables: %v", again.Machines)
-	}
-}
-
-func TestValidateHub(t *testing.T) {
-	hub := func(mut func(*Machine)) Machine {
-		m := Machine{Name: "h", Backend: BackendHub, SSHHost: "x"}
-		mut(&m)
-		return m
-	}
-	tests := []struct {
-		name    string
-		m       Machine
-		wantErr string // substring; "" means valid
-	}{
-		{"bare hub", hub(func(m *Machine) {}), ""},
-		{"no host", hub(func(m *Machine) { m.SSHHost = "" }), "ssh_host"},
-		{"ports", hub(func(m *Machine) { m.LegacyPorts = []string{"3000"} }), "ports"},
-		{"memory", hub(func(m *Machine) { m.Memory = 1024 }), "memory"},
-		{"disk", hub(func(m *Machine) { m.Disk = 10 }), "disk"},
-		{"repos", hub(func(m *Machine) { m.Repos = []string{"a/b"} }), "repos"},
-		{"hook", hub(func(m *Machine) { m.BootstrapHook = "cmd:/x" }), "bootstrap_hook"},
-		{"default hook ok", hub(func(m *Machine) { m.BootstrapHook = DefaultBootstrapHook }), ""},
-		{"github keys", hub(func(m *Machine) { m.AuthorizedKeysGithub = []string{"a"} }), "authorized_keys_github"},
-		{"harden", hub(func(m *Machine) { m.Harden = true }), "harden"},
-		{"several named", hub(func(m *Machine) { m.LegacyPorts = []string{"1"}; m.Memory = 1 }), "ports, memory"},
-		{"mosh ok", hub(func(m *Machine) { m.Transport = TransportMosh }), ""},
-		{"tables ok", hub(func(m *Machine) { m.Machines = map[string]HubMachine{"web": {Ports: []string{"1"}}} }), ""},
-		{"bad table name", hub(func(m *Machine) { m.Machines = map[string]HubMachine{"a/b": {}} }), "[machines.a/b]"},
-		{"tables on a remote", Machine{Name: "r", Backend: BackendRemoteManaged, SSHHost: "x",
-			Machines: map[string]HubMachine{"web": {}}}, "only apply to a hub"},
-		{"tables on smol", Machine{Name: "s", Backend: BackendSmol,
-			Machines: map[string]HubMachine{"web": {}}}, "only apply to a hub"},
-	}
-	for _, tt := range tests {
-		err := tt.m.Validate()
-		switch {
-		case tt.wantErr == "" && err != nil:
-			t.Errorf("%s: unexpected error %v", tt.name, err)
-		case tt.wantErr != "" && err == nil:
-			t.Errorf("%s: want error containing %q, got nil", tt.name, tt.wantErr)
-		case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
-			t.Errorf("%s: error %q does not mention %q", tt.name, err, tt.wantErr)
-		}
-	}
-}
-
-// A hub conf carrying ports/memory is refused at Load too, so `status` shows
-// it as a broken conf rather than silently treating the hub as a machine.
-func TestLoadRejectsShapedHub(t *testing.T) {
-	dir := t.TempDir()
-	writeConf(t, dir, "h", "backend = \"hub\"\nssh_host = \"x\"\nports = [\"3000\"]\nmemory = 1024\n")
-	if _, err := Load(dir, "h"); err == nil || !strings.Contains(err.Error(), "ports, memory") {
-		t.Fatalf("Load = %v, want the ports/memory rejection", err)
 	}
 }
 
@@ -171,11 +70,20 @@ func TestHubNames(t *testing.T) {
 }
 
 func TestLoadHubMachine(t *testing.T) {
-	dir := t.TempDir()
-	writeConf(t, dir, "h", "backend = \"hub\"\nssh_host = \"u@host\"\nssh_port = 2222\nidentity = \"~/.ssh/k\"\n\n[machines.web]\nports = [\"3000\"]\n")
-	writeConf(t, dir, "r", "backend = \"remote-unmanaged\"\nssh_host = \"r\"\n")
+	p := Paths{Config: t.TempDir(), State: t.TempDir()}
+	writeFile(t, p, `
+[machines.h]
+backend = "hub"
+host = "host:2222"
+user = "u"
+identity = "~/.ssh/k"
+connect_timeout = 30
 
-	m, err := LoadHubMachine(dir, "h/web")
+[machines.r]
+backend = "remote"
+host = "r"
+`)
+	m, err := LoadHubMachine(p, "h/web")
 	if err != nil {
 		t.Fatalf("LoadHubMachine: %v", err)
 	}
@@ -185,52 +93,47 @@ func TestLoadHubMachine(t *testing.T) {
 	if m.HubMachineName() != "web" {
 		t.Errorf("HubMachineName = %q", m.HubMachineName())
 	}
-	if m.SSHHost != "u@host" || m.SSHPort != 2222 || m.Identity != "~/.ssh/k" {
+	if m.SSHHost != "u@host" || m.SSHPort != 2222 || m.Identity != "~/.ssh/k" || m.ConnectTimeout != 30 {
 		t.Errorf("hub ssh fields not carried: %+v", m)
 	}
-	if err := m.Save(dir); err == nil {
-		t.Error("Save on a hub-machine record should refuse (it is derived from the hub conf)")
+	if m.Managed() || m.Probeable() {
+		t.Error("a hub machine is neither managed here nor probed")
 	}
-
-	// A machine with no table is still a valid reference: resolve never asks
-	// the hub whether it exists.
-	if m2, err := LoadHubMachine(dir, "h/api"); err != nil || m2.Name != "h/api" {
-		t.Errorf("untabled machine: m=%+v err=%v", m2, err)
+	if _, err := LoadHubMachine(p, "r/web"); err == nil || !strings.Contains(err.Error(), "not a hub") {
+		t.Errorf("non-hub entry as hub: err=%v", err)
 	}
-	if _, err := LoadHubMachine(dir, "r/web"); err == nil || !strings.Contains(err.Error(), "not a hub") {
-		t.Errorf("non-hub conf as hub: err=%v", err)
+	if _, err := LoadHubMachine(p, "ghost/web"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing hub entry: %v", err)
 	}
-	if _, err := LoadHubMachine(dir, "ghost/web"); err == nil {
-		t.Error("missing hub conf should fail")
-	}
-	if _, err := LoadHubMachine(dir, "web"); err == nil {
+	if _, err := LoadHubMachine(p, "web"); err == nil {
 		t.Error("bare name is not a hub reference")
 	}
 	// LoadAny dispatches on the form.
-	if any, err := LoadAny(dir, "h/web"); err != nil || !any.IsHubMachine() {
+	if any, err := LoadAny(p, "h/web"); err != nil || !any.IsHubMachine() {
 		t.Errorf("LoadAny(h/web): %+v %v", any, err)
 	}
-	if any, err := LoadAny(dir, "r"); err != nil || any.IsHubMachine() || any.Backend != BackendRemoteUnmanaged {
+	if any, err := LoadAny(p, "r"); err != nil || any.IsHubMachine() || any.Backend != BackendRemote {
 		t.Errorf("LoadAny(r): %+v %v", any, err)
 	}
-	if _, err := LoadAny(dir, "h/"); err == nil {
+	if _, err := LoadAny(p, "h/"); err == nil {
 		t.Error("LoadAny(h/) should fail validation")
 	}
 }
 
-// Probeable is the remote-* boxes only: not a hub, not a machine on one,
-// not a smol VM.
+// Probeable is remote entries only: not a hub, not a machine on one, not a
+// smol VM. A method on the record (config.md §9 item 1), preserved across
+// the loader change.
 func TestProbeable(t *testing.T) {
 	hub := NewHub("h", "u@h")
 	for _, tc := range []struct {
 		m    *Machine
 		want bool
 	}{
-		{NewRemote("a", BackendRemoteManaged, "u@a"), true},
-		{NewRemote("b", BackendRemoteUnmanaged, "u@b"), true},
+		{NewRemote("a", true, "u@a"), true},
+		{NewRemote("b", false, "u@b"), true},
 		{hub, false},
 		{&Machine{Name: "h/web", Backend: BackendHub, Hub: hub}, false},
-		{NewSmol("vm"), false},
+		{&Machine{Name: "vm", Backend: BackendSmol}, false},
 	} {
 		if got := tc.m.Probeable(); got != tc.want {
 			t.Errorf("%s (%s): Probeable = %v, want %v", tc.m.Name, tc.m.Backend, got, tc.want)

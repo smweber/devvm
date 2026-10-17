@@ -945,7 +945,7 @@ func TestWaitComeUpEarlyExit(t *testing.T) {
 // relay's open deadline.
 func TestComeUpWaitHubMachine(t *testing.T) {
 	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
-	if got, want := comeUpWait("h/web")-comeUpWait("web"), hubOpenTimeout+10*time.Second; got != want {
+	if got, want := comeUpWait(config.Paths{Config: t.TempDir()}, "h/web")-comeUpWait(config.Paths{Config: t.TempDir()}, "web"), hubOpenTimeout+10*time.Second; got != want {
 		t.Errorf("hub extra = %s, want %s", got, want)
 	}
 	if HubForwardsMinVersion != "v0.1.14" {

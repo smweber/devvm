@@ -305,7 +305,7 @@ func newDaemon(p config.Paths, name, version string, tr transport, dial func() (
 		relayReplyWait: relaySubscriberWait,
 		now:            time.Now,
 		replyWait:      subscriberWait,
-		lateWait:       lateWaitFor(),
+		lateWait:       lateWaitFor(p, name),
 		forwards:       map[int]*fwd{},
 		sessions:       map[uint64]*sess{},
 		state:          StateUp,
@@ -1244,8 +1244,8 @@ func (d *daemon) bindSlot(tr transport, f *fwd, own owner, added bool, target in
 // its transport. It must outlast the dial itself — an ssh master's connect
 // is bounded by ConnectTimeout — or the orphan it exists to prevent is
 // routine on exactly the sleep/wake path that triggers it.
-func lateWaitFor() time.Duration {
-	return time.Duration(backend.SSHConnectTimeout())*time.Second + 5*time.Second
+func lateWaitFor(p config.Paths, name string) time.Duration {
+	return time.Duration(connectTimeoutFor(p, name))*time.Second + 5*time.Second
 }
 
 // transportDead reports whether tr's dead channel has fired.

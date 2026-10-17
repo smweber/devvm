@@ -96,7 +96,7 @@ func TestMigratePorts(t *testing.T) {
 	writeConf(t, p.Config, "h", "backend = \"hub\"\nssh_host = \"x\"\n\n[machines.web]\nports = [\"5173\"]\n\n[machines.api]\n")
 	// A conf Load refuses still had a list worth keeping.
 	writeConf(t, p.Config, "broken", "backend = \"nope\"\nports = [\"1\"]\n")
-	before, _ := os.ReadFile(filepath.Join(MachinesDir(p.Config), "box.toml"))
+	before, _ := os.ReadFile(filepath.Join(LegacyMachinesDir(p), "box.toml"))
 
 	if got, _ := LoadPorts(p, "box"); !slices.Equal(got, []string{"3000", "8080:80"}) {
 		t.Errorf("box seeded = %v", got)
@@ -107,7 +107,7 @@ func TestMigratePorts(t *testing.T) {
 	if got, err := SavedPortsNames(p); err != nil || !slices.Equal(got, []string{"box", "broken", "h/web"}) {
 		t.Errorf("seeded names = %v %v (none and the empty h/api seed nothing)", got, err)
 	}
-	after, _ := os.ReadFile(filepath.Join(MachinesDir(p.Config), "box.toml"))
+	after, _ := os.ReadFile(filepath.Join(LegacyMachinesDir(p), "box.toml"))
 	if string(before) != string(after) {
 		t.Errorf("conf changed by the migration:\n%s", after)
 	}
@@ -141,7 +141,7 @@ func TestMigratePortsOnce(t *testing.T) {
 	if got, _ := LoadPorts(p, "box"); got != nil {
 		t.Errorf("seeded into an existing dir: %v", got)
 	}
-	data, _ := os.ReadFile(filepath.Join(MachinesDir(p.Config), "box.toml"))
+	data, _ := os.ReadFile(filepath.Join(LegacyMachinesDir(p), "box.toml"))
 	if !strings.Contains(string(data), "3000") {
 		t.Error("conf touched")
 	}
@@ -202,17 +202,17 @@ func TestMigratePortsFailsClosed(t *testing.T) {
 	}
 	p = testPaths(t)
 	writeConf(t, p.Config, "box", "backend = \"smol\"\nports = [\"3000\"]\n")
-	if err := os.Chmod(MachinesDir(p.Config), 0); err != nil {
+	if err := os.Chmod(LegacyMachinesDir(p), 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(MachinesDir(p.Config), 0o755) })
+	t.Cleanup(func() { os.Chmod(LegacyMachinesDir(p), 0o755) })
 	if _, err := LoadPorts(p, "box"); err == nil {
 		t.Fatal("LoadPorts with an unreadable machines dir should fail")
 	}
 	if _, err := os.Stat(p.PortsDir()); !os.IsNotExist(err) {
 		t.Fatal("an unreadable machines dir left a ports dir")
 	}
-	if err := os.Chmod(MachinesDir(p.Config), 0o755); err != nil {
+	if err := os.Chmod(LegacyMachinesDir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := LoadPorts(p, "box"); err != nil || !slices.Equal(got, []string{"3000"}) {

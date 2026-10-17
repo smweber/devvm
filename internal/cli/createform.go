@@ -13,17 +13,12 @@ import (
 )
 
 // gatherCreateSpec fills any field left unset by a flag, resolving each with the
-// precedence flag > --template > [templates.default] > config.toml (deprecated)
-// > built-in. On a terminal (and without --yes) it prompts, pre-selecting that
-// resolved value; otherwise it resolves silently and errors — naming the flag —
-// on a required field that has no default. So create is fully scriptable and
-// predictable either way.
+// precedence flag > --template > [templates.default] > built-in. On a
+// terminal (and without --yes) it prompts, pre-selecting that resolved value;
+// otherwise it resolves silently and errors — naming the flag — on a required
+// field that has no default. So create is fully scriptable and predictable
+// either way.
 func (a *App) gatherCreateSpec(s *createSpec) error {
-	defaults, err := config.LoadDefaults(a.Paths.Config)
-	if err != nil {
-		return err
-	}
-
 	tty := openTTY()
 	if tty != nil {
 		defer tty.Close()
@@ -31,72 +26,29 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 	// --yes forces the non-interactive path even on a terminal.
 	interactive := tty != nil && !s.Yes
 
-	// Backend: smol unless asked; the form's first question on a terminal.
-	if s.Backend == "" {
-		s.Backend = config.BackendSmol
-		if interactive {
-			if err := form(tty, huh.NewSelect[string]().
-				Title("Backend").
-				Options(
-					huh.NewOption("smol — new local microVM", config.BackendSmol),
-					huh.NewOption("remote-managed — shape a remote host", config.BackendRemoteManaged),
-					huh.NewOption("remote-unmanaged — adopt an existing host", config.BackendRemoteUnmanaged),
-					huh.NewOption("hub — another host running devvm; reach its machines as NAME/…", config.BackendHub),
-				).Value(&s.Backend)); err != nil {
-				return err
-			}
-		}
+	t, err := a.resolveTemplate(s.Template, s.tmplFlags)
+	if err != nil {
+		return err
 	}
-
-	// The template shapes only boxes devvm sets up: an adopted host is never
-	// shaped and a hub is not a machine, so neither reads one (a hub conf
-	// carrying memory or repos would be refused).
-	shaped := s.Backend == config.BackendSmol || s.Backend == config.BackendRemoteManaged
-	var t config.Template
-	if shaped {
-		if t, err = a.resolveTemplate(s.Template, s.tmplFlags, nil); err != nil {
-			return err
-		}
-	} else if s.Template != "" || s.Inline {
-		return fmt.Errorf("--template applies only to boxes devvm sets up (smol, remote-managed), not %s", s.Backend)
+	if err := resolveMemory(tty, interactive, s, t); err != nil {
+		return err
 	}
-
-	switch s.Backend {
-	case config.BackendSmol:
-		if err := resolveMemory(tty, interactive, s, t); err != nil {
-			return err
-		}
-		if err := resolveDisk(tty, interactive, s, t); err != nil {
-			return err
-		}
-	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged, config.BackendHub:
-		// A hub is reached over the same ssh fields as a remote box.
-		if err := resolveRemote(tty, interactive, s, defaults); err != nil {
-			return err
-		}
-	default:
-		// machine() reports an invalid backend value.
+	if err := resolveDisk(tty, interactive, s, t); err != nil {
+		return err
 	}
-
-	if shaped {
-		if err := resolveHook(tty, interactive, s, t); err != nil {
-			return err
-		}
-		// The rest come from the template (flags already folded in); the
-		// form below offers them for editing, pre-filled.
-		s.User = t.User
-		s.Repos, s.Ports = t.Repos, t.Ports
-		s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
-		s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
+	if err := resolveHook(tty, interactive, s, t); err != nil {
+		return err
 	}
-
-	// Offer the optional fields (repos, ports, keys, hardening) only on a terminal;
-	// the scripted path takes the template's. A hub has none of them: they
-	// belong to the machines on it.
+	// The rest come from the template (flags already folded in); the form
+	// below offers repos and ports for editing, pre-filled.
+	s.User = t.User
+	s.Repos, s.Ports = t.Repos, t.Ports
+	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
+	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
 	if !s.savesPorts() {
 		s.Ports = nil // the proxying laptop's (HUB@NAME), seeded there
 	}
-	if interactive && s.Backend != config.BackendHub {
+	if interactive {
 		if err := askExtras(tty, s); err != nil {
 			return err
 		}
@@ -210,10 +162,8 @@ func askDisk(tty *os.File, s *createSpec, t config.Template) error {
 	return nil
 }
 
-// askExtras prompts the optional create-time fields. Repos and ports are offered
-// for any backend; github key-seeding is remote-only; hardening is remote-managed
-// only (setup ignores it elsewhere — see shape). Each accepts a space-separated
-// list and is safe to leave blank.
+// askExtras prompts the optional create-time fields, repos and ports. Each
+// accepts a space-separated list and is safe to leave blank.
 func askExtras(tty *os.File, s *createSpec) error {
 	repos := strings.Join(s.Repos, " ")
 	ports := strings.Join(s.Ports, " ")
@@ -232,89 +182,17 @@ func askExtras(tty *os.File, s *createSpec) error {
 	if s.savesPorts() {
 		s.Ports = fields(ports)
 	}
-
-	if s.Backend == config.BackendRemoteManaged || s.Backend == config.BackendRemoteUnmanaged {
-		keys := strings.Join(s.KeysGithub, " ")
-		if err := form(tty, huh.NewInput().
-			Title("Seed authorized_keys from GitHub users (space-separated handles)").
-			Placeholder("alice bob").Value(&keys)); err != nil {
-			return err
-		}
-		s.KeysGithub = fields(keys)
-	}
-	if s.Backend == config.BackendRemoteManaged {
-		if err := form(tty,
-			huh.NewConfirm().Title("Harden the box (ssh lockdown)?").Value(&s.Harden),
-		); err != nil {
-			return err
-		}
-		if s.Harden {
-			if err := form(tty, huh.NewConfirm().Title("Install fail2ban?").Value(&s.Fail2ban)); err != nil {
-				return err
-			}
-		}
-	}
 	return nil
 }
 
 // fields splits a space-separated list into a trimmed, non-empty slice (nil when
-// blank, so an empty answer leaves the conf field unset).
+// blank, so an empty answer leaves the field unset).
 func fields(s string) []string {
 	f := strings.Fields(s)
 	if len(f) == 0 {
 		return nil
 	}
 	return f
-}
-
-// resolveRemote settles the remote fields. Transport is seeded from the global
-// default (both paths); ssh-host is required with no default, so it prompts
-// interactively or errors otherwise.
-func resolveRemote(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
-	if s.Transport == "" {
-		s.Transport = d.Transport // may stay "" → applyDefaults fills ssh
-	}
-	if s.SSHHost != "" { // flag given: keep the rest at their defaults
-		return nil
-	}
-	if !interactive {
-		return fmt.Errorf("remote backend needs --ssh-host")
-	}
-	return askRemote(tty, s)
-}
-
-func askRemote(tty *os.File, s *createSpec) error {
-	port := ""
-	if s.SSHPort != 0 {
-		port = strconv.Itoa(s.SSHPort)
-	}
-	if s.Transport == "" {
-		s.Transport = config.TransportSSH
-	}
-	if err := form(tty,
-		huh.NewInput().Title("SSH host (host or user@host)").Value(&s.SSHHost).
-			Validate(func(v string) error {
-				if strings.TrimSpace(v) == "" {
-					return fmt.Errorf("required")
-				}
-				return nil
-			}),
-		huh.NewInput().Title("SSH port").Placeholder("22").Value(&port),
-		huh.NewInput().Title("SSH identity file (optional)").Value(&s.Identity),
-		huh.NewSelect[string]().Title("Transport").
-			Options(huh.NewOption("ssh", config.TransportSSH), huh.NewOption("mosh", config.TransportMosh)).
-			Value(&s.Transport),
-	); err != nil {
-		return err
-	}
-	if p := strings.TrimSpace(port); p != "" {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return fmt.Errorf("ssh port must be an integer")
-		}
-		s.SSHPort = n
-	}
-	return nil
 }
 
 // resolveHook settles the hook: flag wins; otherwise prompt (interactive,

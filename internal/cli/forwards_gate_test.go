@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -55,7 +54,7 @@ func TestRequireRunningForForwardsPolls(t *testing.T) {
 		{name: "already running", b: &statusBackend{}, m: smol, minCall: 1},
 		{name: "never running", b: &statusBackend{runningAfter: -1}, m: smol, wantErr: "vm is not running; start it first", minCall: 2},
 		{name: "status error is not a block", b: &statusBackend{runningAfter: -1, statusErr: errors.New("smolvm missing")}, m: smol, minCall: 1},
-		{name: "remote backends skip the gate", b: &statusBackend{runningAfter: -1}, m: &config.Machine{Name: "r", Backend: config.BackendRemoteUnmanaged}, minCall: 0},
+		{name: "remote backends skip the gate", b: &statusBackend{runningAfter: -1}, m: config.NewRemote("r", false, "r"), minCall: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := requireRunningForForwards(tc.m, tc.b, runningPollTimeout)
@@ -77,17 +76,12 @@ func TestRequireRunningForForwardsPolls(t *testing.T) {
 
 // `ports add` on a stopped smol VM saves to the ports file: it must be
 // recorded and must not spawn a daemon (whose first dial would exec into the
-// stopped box). The conf is never written.
+// stopped box). devvm.toml is never written.
 func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 	shrinkRunningPoll(t)
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(t.TempDir()), Stdout: &out, Stderr: &out}
-	m := &config.Machine{Name: "vm", Backend: config.BackendSmol}
-	if err := m.Save(a.Paths.Config); err != nil {
-		t.Fatal(err)
-	}
-	conf := filepath.Join(config.MachinesDir(a.Paths.Config), "vm.toml")
-	before, _ := os.ReadFile(conf)
+	m := managedSmol("vm")
 	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080:8080", false); err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +89,8 @@ func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 	if err != nil || !slices.Equal(saved, []string{"8080:8080"}) {
 		t.Fatalf("saved ports = %v, %v; want [8080:8080]", saved, err)
 	}
-	if after, _ := os.ReadFile(conf); string(after) != string(before) {
-		t.Errorf("ports add wrote the conf:\n%s", after)
+	if _, err := os.Stat(a.Paths.FilePath()); !os.IsNotExist(err) {
+		t.Errorf("ports add wrote devvm.toml: %v", err)
 	}
 	// "8080" is the same forward: nothing new is saved.
 	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080", false); err != nil {

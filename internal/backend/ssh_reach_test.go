@@ -42,7 +42,7 @@ func probeSSH(t *testing.T, check int, g string) (log string) {
 func probeBackend(t *testing.T) (*sshBackend, config.Paths) {
 	d := t.TempDir()
 	p := config.Paths{Config: filepath.Join(d, "c"), State: filepath.Join(d, "s")}
-	return &sshBackend{m: config.NewRemote("box", config.BackendRemoteUnmanaged, "u@box"), paths: p}, p
+	return &sshBackend{m: config.NewRemote("box", false, "u@box"), paths: p}, p
 }
 
 func noDial(t *testing.T) {

@@ -1,15 +1,10 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-
-	"github.com/BurntSushi/toml"
 )
 
 // Templates (config.md §1, §3): "how to shape a new box", read from the
@@ -17,11 +12,6 @@ import (
 // `setup` resolve one; nothing records which template made a box, so
 // editing a template never changes a running VM, and `setup NAME` with no
 // --template re-runs whatever `default` says now.
-//
-// This step reads only the `templates` table family. The `[machines.*]`
-// loader that replaces machines/*.toml and config.toml lands with config.md
-// step 5, so any other top-level table is ignored here without error (a
-// shared file written for a newer devvm must not break this one).
 
 // DefaultTemplate is the template `create`/`setup` use without --template,
 // and the one every other template falls back to (one level, no chains).
@@ -33,10 +23,9 @@ const DefaultTemplate = "default"
 const DefaultTemplateUser = "dev"
 
 // TemplateSpec is one layer of template values: a `[templates.NAME]`
-// table, the flags given on the command line, or an older source
-// (config.toml). Every field is a pointer so "unset" (fall back to the next
+// table, or the flags given on the command line. Every field is a pointer so "unset" (fall back to the next
 // layer) is told apart from a deliberate zero (`harden = false`, `repos =
-// []`). Key names match the old conf and config.toml where they exist.
+// []`). Key names match the old per-machine confs where they existed.
 type TemplateSpec struct {
 	User                 *string   `toml:"user"`
 	Hook                 *string   `toml:"hook"`
@@ -70,7 +59,7 @@ type Template struct {
 // Under returns s with every unset field taken from lower: s wins. Chained
 // left to right, highest precedence first:
 //
-//	flags.Under(named).Under(def).Under(old).Resolve(name)
+//	flags.Under(named).Under(def).Resolve(name)
 //
 // An empty string (`hook = ""`) is unset, not a value: it falls through like
 // a missing key, so a blank line in a template never masks default's hook.
@@ -159,71 +148,13 @@ func (t Template) Spec() TemplateSpec {
 		Harden: &harden, Fail2ban: &f2b}
 }
 
-// DefaultsSpec is config.toml as a template layer. It sits below
-// [templates.default] and above the built-ins, so a host that has only
-// config.toml keeps behaving as before; config.md step 5 removes it
-// (config.toml becomes [templates.default] by hand, §8).
-func DefaultsSpec(d *Defaults) TemplateSpec {
-	var s TemplateSpec
-	if d == nil {
-		return s
-	}
-	if d.BootstrapHook != "" {
-		h := d.BootstrapHook
-		s.Hook = &h
-	}
-	if d.Memory != 0 {
-		m := d.Memory
-		s.Memory = &m
-	}
-	if d.Disk != 0 {
-		v := d.Disk
-		s.Disk = &v
-	}
-	return s
-}
-
-// FilePath is the user's shared config file, devvm.toml.
-func (p Paths) FilePath() string { return filepath.Join(p.Config, "devvm.toml") }
-
-// templateFile is the part of devvm.toml this step decodes.
-type templateFile struct {
-	Templates map[string]TemplateSpec `toml:"templates"`
-}
-
-// LoadTemplates reads every `[templates.*]` table. A missing file is valid
-// and means no templates. An unknown key inside a template is an error (a
-// typo would otherwise silently drop a setting); other top-level tables are
-// ignored until step 5's loader reads them.
+// LoadTemplates reads every `[templates.*]` table of devvm.toml (LoadFile:
+// the whole file is validated, so a broken entry fails a template read
+// too). A missing file is valid and means no templates.
 func LoadTemplates(p Paths) (map[string]TemplateSpec, error) {
-	path := p.FilePath()
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]TemplateSpec{}, nil
-	}
+	f, err := LoadFile(p)
 	if err != nil {
 		return nil, err
-	}
-	var f templateFile
-	md, err := toml.Decode(string(data), &f)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	for _, k := range md.Undecoded() {
-		if len(k) > 0 && k[0] == "templates" {
-			return nil, fmt.Errorf("%s: unknown template key %q", path, k.String())
-		}
-	}
-	if f.Templates == nil {
-		f.Templates = map[string]TemplateSpec{}
-	}
-	for name, t := range f.Templates {
-		if err := ValidName(name); err != nil {
-			return nil, fmt.Errorf("%s: [templates.%s]: %w", path, name, err)
-		}
-		if err := t.Validate(); err != nil {
-			return nil, fmt.Errorf("%s: [templates.%s]: %w", path, name, err)
-		}
 	}
 	return f.Templates, nil
 }

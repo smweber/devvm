@@ -45,6 +45,17 @@ func SSHConnectTimeout() int {
 	return n
 }
 
+// SSHConnectTimeoutFor is SSHConnectTimeout for one box: the env override
+// when set (it is this invocation's explicit word), else the entry's
+// connect_timeout (a box behind a relayed or waking first hop, config.md
+// §1), else the default.
+func SSHConnectTimeoutFor(m *config.Machine) int {
+	if os.Getenv("DEVVM_SSH_CONNECT_TIMEOUT") == "" && m != nil && m.ConnectTimeout > 0 {
+		return m.ConnectTimeout
+	}
+	return SSHConnectTimeout()
+}
+
 // parseConnectTimeout accepts "", bare seconds, or a Go duration (rounded up
 // to whole seconds, ssh's granularity).
 func parseConnectTimeout(v string) (int, error) {
@@ -71,7 +82,7 @@ func parseConnectTimeout(v string) (int, error) {
 // sshFlags builds the shared port/identity/known_hosts options used by ssh,
 // scp, and mosh (build_ssh_flags). ControlMaster options are added separately
 // by base(), since scp/mosh don't want them.
-func (b *sshBackend) sshFlags() []string { return b.sshFlagsTimeout(SSHConnectTimeout()) }
+func (b *sshBackend) sshFlags() []string { return b.sshFlagsTimeout(SSHConnectTimeoutFor(b.m)) }
 
 // sshFlagsTimeout is sshFlags with an explicit ConnectTimeout (seconds). It
 // has to be the first -o ConnectTimeout on the line: ssh keeps the first
@@ -105,7 +116,7 @@ func (b *sshBackend) sshFlagsTimeout(connectSecs int) []string {
 
 // base returns the ssh command with shared flags + a reused ControlMaster, so
 // concurrent sessions (login + a URL watcher, say) share one connection.
-func (b *sshBackend) base() []string { return b.baseTimeout(SSHConnectTimeout()) }
+func (b *sshBackend) base() []string { return b.baseTimeout(SSHConnectTimeoutFor(b.m)) }
 
 func (b *sshBackend) baseTimeout(connectSecs int) []string {
 	ssh := append([]string{"ssh"}, b.sshFlagsTimeout(connectSecs)...)
@@ -151,7 +162,7 @@ func (b *sshBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error 
 	}
 	connect := o.ConnectTimeout
 	if connect <= 0 {
-		connect = SSHConnectTimeout()
+		connect = SSHConnectTimeoutFor(b.m)
 	}
 	host := b.baseTimeout(connect)
 	if o.BatchMode {
@@ -206,7 +217,7 @@ func (b *sshBackend) Exists() (bool, error) { return true, nil } // devvm doesn'
 func (b *sshBackend) PowerStart() error { return b.lifecycleNoop("start") }
 func (b *sshBackend) PowerStop() error  { return b.lifecycleNoop("stop") }
 
-// PowerDelete is a backend no-op; the cli removes the registry entry.
+// PowerDelete is a backend no-op; the cli removes the entry.
 func (b *sshBackend) PowerDelete() error { return nil }
 
 func (b *sshBackend) lifecycleNoop(action string) error {

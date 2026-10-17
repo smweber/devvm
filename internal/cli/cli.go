@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -98,6 +99,7 @@ const (
 	groupLifecycle = "lifecycle"
 	groupConnect   = "connect"
 	groupConfigure = "configure"
+	groupConfig    = "config"
 	groupMaintain  = "maintain"
 )
 
@@ -110,13 +112,13 @@ func (a *App) rootCmd() *cobra.Command {
 		Use:   "devvm",
 		Short: "One frontend for persistent dev boxes, whatever the transport",
 		Long: "devvm manages persistent dev boxes across backends:\n" +
-			"  smol              local, isolated smolvm microVMs\n" +
-			"  remote-managed    a remote host devvm shapes (over ssh)\n" +
-			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n" +
-			"  hub               another host running devvm; its machines are HUB/NAME\n\n" +
-			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml, templates\n" +
-			"for create/setup in ~/.config/devvm/devvm.toml ([templates.*]);\n" +
-			"this host's state (daemon sockets, logs, caches) in ~/.local/state/devvm.",
+			"  smol    local, isolated smolvm microVMs, discovered from smolvm\n" +
+			"  remote  a box reached over ssh: managed (devvm shapes it) or adopted\n" +
+			"  hub     another host running devvm; its machines are HUB/NAME\n\n" +
+			"~/.config/devvm/devvm.toml holds templates for create/setup ([templates.*])\n" +
+			"and the remote boxes and hubs ([machines.*]); see 'devvm config'.\n" +
+			"This host's state (daemon sockets, logs, caches, saved forwards, managed\n" +
+			"markers) is in ~/.local/state/devvm.",
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -133,6 +135,7 @@ func (a *App) rootCmd() *cobra.Command {
 				a.Paths.State = stateDirFor(a.Paths.Config)
 			}
 			config.MigrateState(a.Paths)
+			a.noteOldLayout()
 		},
 	}
 	root.PersistentFlags().StringVar(&a.Paths.Config, "config-dir", a.Paths.Config,
@@ -144,6 +147,7 @@ func (a *App) rootCmd() *cobra.Command {
 		&cobra.Group{ID: groupLifecycle, Title: "Lifecycle:"},
 		&cobra.Group{ID: groupConnect, Title: "Connect:"},
 		&cobra.Group{ID: groupConfigure, Title: "Configure:"},
+		&cobra.Group{ID: groupConfig, Title: "Config:"},
 		&cobra.Group{ID: groupMaintain, Title: "Maintain devvm itself:"},
 	)
 
@@ -176,8 +180,10 @@ func (a *App) rootCmd() *cobra.Command {
 		a.reposCmd(),
 		a.portsCmd(),
 		a.keysCmd(),
-		a.defaultsCmd(),
 		a.statusCmd(),
+	)...)
+	root.AddCommand(group(groupConfig,
+		a.configCmd(),
 	)...)
 	root.AddCommand(group(groupMaintain,
 		a.updateCmd(),
@@ -187,6 +193,40 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(a.sessionCmd()) // hidden: the hub side of hub forwards
 	root.AddCommand(a.refreshCmd()) // hidden: the menu bar app's "probe the remotes now"
 	return root
+}
+
+// noteOldLayout runs the one-time upgrade seeds while the old per-machine
+// layout is still there, then, when there is no devvm.toml yet, prints the
+// one-line pointer at the hand migration (config.md §8). The seeds are
+// what nothing in devvm.toml can carry: saved forwards (MigratePorts, once
+// per host) and the managed markers of the smol VMs devvm made
+// (SeedLegacyMarkers), so those VMs stay managed. Nothing else reads the
+// old files: the command carries on with no entries. stderr, so a
+// `--plain` consumer's stdout is untouched.
+func (a *App) noteOldLayout() {
+	if len(config.LegacySmolConfs(a.Paths)) > 0 || config.OldLayout(a.Paths) {
+		_ = config.MigratePorts(a.Paths) // a failure is the ports verbs' to report
+		backend.SeedLegacyMarkers(a.Paths)
+	}
+	if !config.OldLayout(a.Paths) || a.Stderr == nil {
+		return
+	}
+	old, what := config.LegacyMachinesDir(a.Paths)+"/", "machines/"
+	if names, _ := os.ReadDir(config.LegacyMachinesDir(a.Paths)); len(names) == 0 {
+		old, what = config.LegacyDefaultsPath(a.Paths), "config.toml"
+	}
+	fmt.Fprintf(a.Stderr, "devvm: %s is the old layout (saved forwards and managed markers were seeded from it); write %s by hand (see docs/proposals/config.md §8) and remove %s\n",
+		tildePath(old), tildePath(a.Paths.FilePath()), what)
+}
+
+// tildePath shortens a path under $HOME to ~/….
+func tildePath(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rest, ok := strings.CutPrefix(p, home+"/"); ok {
+			return "~/" + rest
+		}
+	}
+	return p
 }
 
 // completeMachines is the ValidArgsFunction for the verbs that go through
@@ -199,8 +239,24 @@ func (a *App) completeMachines(cmd *cobra.Command, args []string, toComplete str
 	}
 	var names []string
 	for _, n := range a.listMachines() {
-		if m, err := config.Load(a.Paths.Config, n); err == nil && m.IsHub() {
+		if m, err := config.Load(a.Paths, n); err == nil && m.IsHub() {
 			continue // a HUB/NAME never loads as a local conf, so it stays
+		}
+		names = append(names, n)
+	}
+	return withPrefix(names, toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeDeletable is delete's: smol VMs and hub machines, never a
+// devvm.toml entry (delete refuses those and points at `config rm`).
+func (a *App) completeDeletable(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var names []string
+	for _, n := range a.listMachines() {
+		if config.Exists(a.Paths, n) {
+			continue
 		}
 		names = append(names, n)
 	}

@@ -20,37 +20,39 @@ func (a *App) createCmd() *cobra.Command {
 	var s createSpec
 	c := &cobra.Command{
 		Use:   "create [NAME]",
-		Short: "Create a machine (any backend), then set it up from a template",
-		Long: "Create a machine of any backend. NAME and any unset fields are prompted\n" +
-			"for on a terminal, seeded from the template; pass them as flags/args to run\n" +
-			"non-interactively. Precedence: flag > --template > [templates.default] >\n" +
-			"config.toml (deprecated) > built-in. A new box is then shaped by 'setup'.\n\n" +
-			"  smol              a new local smolvm microVM (default)\n" +
-			"  remote-managed    a remote host devvm shapes (installs prereqs, may harden)\n" +
-			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)\n" +
-			"  hub               another host running devvm; its machines become NAME/MACHINE",
+		Short: "Create a local smol VM, then set it up from a template",
+		Long: "Create a local smol VM and shape it with 'setup'. NAME and any unset fields\n" +
+			"are prompted for on a terminal, seeded from the template; pass them as\n" +
+			"flags/args to run non-interactively. Precedence: flag > --template >\n" +
+			"[templates.default] > built-in.\n\n" +
+			"Remote boxes and hubs are not created: add one to devvm.toml with\n" +
+			"'devvm config add NAME --backend remote|hub --host H', then 'devvm setup NAME'\n" +
+			"for a managed box.",
 		Args: cobra.MaximumNArgs(1),
 		// `create HUB/NAME` is the one proxied leaf whose name exists nowhere
-		// yet: the hub writes the conf, and with no --yes its huh form runs
+		// yet: the hub makes the VM, and with no --yes its huh form runs
 		// there through the forwarded terminal. Without --template, --yes
 		// resolves unset fields from the hub's own templates, deliberately:
 		// they describe its VMs (hub.md §3). With --template the laptop
 		// resolves it and sends every field explicitly (proxy.go).
-		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				s.Name = args[0]
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Refused here, before a HUB/NAME is proxied: the hub would
+			// refuse it too, a round trip later.
+			if err := checkCreateBackend(s.Backend); err != nil {
+				return err
 			}
-			s.noteSet(cmd.Flags())
-			return a.runCreate(s)
-		}),
+			return a.hubOr(func(cmd *cobra.Command, args []string) error {
+				if len(args) > 0 {
+					s.Name = args[0]
+				}
+				s.noteSet(cmd.Flags())
+				return a.runCreate(s)
+			})(cmd, args)
+		},
 	}
 	f := c.Flags()
-	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged | hub (default smol)")
+	f.StringVarP(&s.Backend, "backend", "b", "", "smol (the only backend devvm allocates today)")
 	f.StringVarP(&s.Template, flagTemplate, "t", "", "template to create from (default: default)")
-	f.StringVar(&s.SSHHost, "ssh-host", "", "remote: ssh destination (host or user@host)")
-	f.IntVar(&s.SSHPort, "ssh-port", 0, "remote: ssh port (default 22)")
-	f.StringVar(&s.Identity, "identity", "", "remote: ssh identity file")
-	f.StringVar(&s.Transport, "transport", "", "remote: ssh|mosh (default ssh)")
 	addTemplateFlags(f, &s.tmplFlags, flagMemory, flagDisk, flagHook)
 	// The pre-template name of --hook, kept so scripts keep working.
 	f.StringVar(&s.Hook, "bootstrap-hook", "", "deprecated: use --hook")
@@ -74,7 +76,7 @@ func (a *App) shellCmd() *cobra.Command {
 			return a.runShell(args[0], transport)
 		},
 	}
-	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default from conf)")
+	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default: the entry's transport)")
 	a.machineArg(c)
 	return c
 }
@@ -93,7 +95,7 @@ func (a *App) attachCmd() *cobra.Command {
 			return a.runAttach(args[0], transport)
 		},
 	}
-	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default from conf)")
+	c.Flags().StringVar(&transport, "transport", "", "remote transport: ssh|mosh (default: the entry's transport)")
 	a.machineArg(c)
 	return c
 }
@@ -151,47 +153,33 @@ func (a *App) authCmd() *cobra.Command {
 
 // reposCmd groups per-machine git repo management. NAME is the first positional
 // of each leaf, keeping "first arg = machine" consistent across the whole CLI.
+// Repos are not tracked anywhere (config.md §3): `add` clones, `list` reads
+// the guest's ~/src.
 func (a *App) reposCmd() *cobra.Command {
-	c := &cobra.Command{Use: "repos", Short: "Manage a machine's git repositories"}
+	c := &cobra.Command{Use: "repos", Short: "Clone and list a machine's git repositories"}
 
 	add := &cobra.Command{
 		Use:   "add NAME [REPO...]",
-		Short: "Add repo(s) to the conf and clone them (owner/repo, https://, ssh://)",
-		Long: "Add repositories to a machine and clone them into ~/src.\n\n" +
+		Short: "Clone repo(s) into ~/src (owner/repo, https://, ssh://)",
+		Long: "Clone repositories into ~/src on a machine; one already there is skipped.\n\n" +
 			"REPO may be GitHub \"owner/repo\" shorthand (cloned via gh) or any git\n" +
 			"URL (https://, ssh://, git@host:path — cloned via git). With no REPO and\n" +
 			"a terminal it prompts, prefilling from the current directory's git origin.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
-			noClone, _ := cmd.Flags().GetBool("no-clone")
-			return a.runReposAdd(args[0], args[1:], !noClone)
+			return a.runReposAdd(args[0], args[1:])
 		}),
 		ValidArgsFunction: a.completeMachines,
-	}
-	add.Flags().Bool("no-clone", false, "record in the conf only; don't clone now")
-
-	rm := &cobra.Command{
-		Use:   "rm NAME REPO",
-		Short: "Remove a repo from the conf (leaves the guest checkout)",
-		Args:  cobra.ExactArgs(2),
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposRm(args[0], args[1]) }),
 	}
 
 	list := &cobra.Command{
 		Use:   "list NAME",
-		Short: "List a machine's configured repos",
+		Short: "List the git checkouts in the machine's ~/src (needs it running)",
 		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposList(args[0]) }),
 	}
 	a.machineArg(list)
 
-	clone := &cobra.Command{
-		Use:   "clone NAME",
-		Short: "Clone all of a machine's configured repos",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposClone(args[0]) }),
-	}
-	a.machineArg(clone)
-
-	c.AddCommand(add, rm, list, clone)
+	c.AddCommand(add, list)
 	return c
 }
 
@@ -278,13 +266,13 @@ func (a *App) deleteCmd() *cobra.Command {
 	var force bool
 	c := &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete the machine (backend-aware); a hub with machines needs --force",
+		Short: "Delete a smol VM devvm made, or HUB/NAME (an entry is 'config rm')",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], force) },
 	}
-	c.Flags().BoolVar(&force, "force", false,
-		"hub: delete even if this host has saved forwards or live forward daemons for its machines (drops/stops them)")
+	c.Flags().BoolVar(&force, "force", false, "deprecated: no effect (a hub entry is removed with 'devvm config rm --force')")
+	_ = c.Flags().MarkHidden("force")
 	a.machineArg(c)
-	c.ValidArgsFunction = a.completeAnyMachine // delete takes a hub too
+	c.ValidArgsFunction = a.completeDeletable
 	return c
 }
 
@@ -294,6 +282,7 @@ func (a *App) statusCmd() *cobra.Command {
 		Use:   "status [NAME]",
 		Short: "Machine status, grouped by backend; no NAME lists all machines",
 		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
+			"(smol, remote, hub)\n" +
 			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
 			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
 			"A remote box is probed first (a live ssh master, else a TCP connect: never a\n" +
@@ -305,14 +294,16 @@ func (a *App) statusCmd() *cobra.Command {
 			"only: no hub is read or dialed, and remote boxes show their last probe.\n" +
 			"--plain emits one tab-separated\n" +
 			"'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed<TAB>verified' row per machine (no\n" +
-			"headers or grouping) for scripts: state is one of running, stopped,\n" +
-			"reachable, unreachable, 'broken conf' or ?; forwards is up:N,\n" +
+			"headers or grouping) for scripts: backend is smol, remote or hub; state is\n" +
+			"one of running, stopped, reachable, unreachable or ?; forwards is up:N,\n" +
 			"reconnecting:N, down (ports configured, no daemon) or - (none configured);\n" +
 			"managed is managed, unmanaged (a smol VM devvm did not create, or an\n" +
-			"adopted remote host), shadowed (a registry entry hiding a local smol VM of\n" +
+			"adopted remote host), shadowed (a devvm.toml entry hiding a local smol VM of\n" +
 			"the same name) or - (hubs, and machines on a hub too old to say); verified\n" +
 			"is verified=<unix>:<how> or verified=- for a remote box, - otherwise.\n" +
-			"Consumers should treat any other token as unknown.\n" +
+			"Consumers should treat any other token as unknown. A devvm.toml that does\n" +
+			"not parse fails status (non-zero); under --watch it pauses the stream until\n" +
+			"the file parses again.\n" +
 			"--plain --watch keeps running and re-emits the whole listing, blank-line\n" +
 			"separated, whenever devvm changes a machine's state or a hub reports one\n" +
 			"(no polling; remote boxes are probed at start and on 'devvm __refresh').\n" +

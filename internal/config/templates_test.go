@@ -17,8 +17,7 @@ func writeFile(t *testing.T, p Paths, body string) {
 	}
 }
 
-// The templates table family is read; any other top-level table (step 5's
-// [machines.*], or something newer) is ignored without error.
+// The templates table family is read alongside [machines.*].
 func TestLoadTemplates(t *testing.T) {
 	p := Paths{Config: t.TempDir(), State: t.TempDir()}
 	if ts, err := LoadTemplates(p); err != nil || len(ts) != 0 {
@@ -40,9 +39,6 @@ harden = false
 [machines.cloud]
 backend = "remote"
 host = "2.29.47.196"
-
-[providers.hetzner]
-token_env = "X"
 `)
 	ts, err := LoadTemplates(p)
 	if err != nil {
@@ -61,7 +57,7 @@ token_env = "X"
 
 func TestLoadTemplatesRejects(t *testing.T) {
 	for body, want := range map[string]string{
-		"[templates.x]\nmemroy = 1\n":       "unknown template key",
+		"[templates.x]\nmemroy = 1\n":       "[templates.x]: unknown key \"memroy\"",
 		"[templates.x]\nmemory = 100\n":     "too small",
 		"[templates.x]\nuser = \"root\"\n":  "root",
 		"[templates.x]\nuser = \"A B\"\n":   "invalid user",
@@ -118,12 +114,6 @@ harden = false
 	empty := Paths{Config: t.TempDir()}
 	if _, _, err := TemplateLayers(empty, ""); err != nil {
 		t.Errorf("no file, default: %v", err)
-	}
-	// config.toml sits under the file's layers.
-	d := &Defaults{BootstrapHook: "cmd:/old", Memory: 1024, Disk: 9}
-	m := (TemplateSpec{}).Under(def).Under(DefaultsSpec(d)).Resolve("x")
-	if m.Hook != "cmd:/d" || m.Memory != 4096 || m.Disk != 9 {
-		t.Errorf("with config.toml = %+v", m)
 	}
 }
 

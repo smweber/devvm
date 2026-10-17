@@ -168,64 +168,22 @@ func TestDiscoverWithoutSmolvm(t *testing.T) {
 	}
 }
 
-// The one-time migration rule (until the old loader goes): a VM with an
-// old per-machine conf and no marker is managed, and gets its marker. A
-// marker that exists is never overridden by the conf.
-func TestResolveSmolConfMigratesMarker(t *testing.T) {
+// The step 3 migration aid is gone with the old loader: a VM with no
+// marker is unmanaged however it was made, and discovery writes nothing.
+// The hand migration writes markers (config.md §8).
+func TestNoMarkerIsUnmanaged(t *testing.T) {
 	ls := `[{"name":"web","state":"stopped","created_at":100}]`
 	fakeSmolList(t, &ls)
 	p := testPaths(t)
-	m := &config.Machine{Name: "web", Backend: config.BackendSmol}
-	b, ok, err := ResolveSmolConf(p, m)
-	if err != nil || !ok || b == nil {
-		t.Fatalf("ResolveSmolConf = %v, %v", ok, err)
+	d, ok, err := Discover(p, "web")
+	if err != nil || !ok {
+		t.Fatalf("Discover = %v, %v", ok, err)
 	}
-	if !m.Managed() {
-		t.Error("conf VM without a marker reads unmanaged")
+	if d.Machine.Managed() {
+		t.Error("a VM with no marker reads managed")
 	}
-	if got, ok, _ := config.ReadManagedMarker(p, "web"); !ok || got != "100" {
-		t.Errorf("marker = %q, %v; want 100 written", got, ok)
-	}
-	ls = `[{"name":"web","state":"stopped","created_at":200}]`
-	m = &config.Machine{Name: "web", Backend: config.BackendSmol}
-	if _, _, err := ResolveSmolConf(p, m); err != nil {
-		t.Fatal(err)
-	}
-	if m.Managed() {
-		t.Error("a conf overrode a stale marker")
-	}
-	// A conf whose VM is gone is not found (no dormant state).
-	ls = `[]`
-	if _, ok, err := ResolveSmolConf(p, &config.Machine{Name: "web", Backend: config.BackendSmol}); ok || err != nil {
-		t.Errorf("missing VM: ok=%v err=%v, want not found", ok, err)
-	}
-}
-
-// A conf'd VM whose migration-aid marker could not be written is settled
-// the same way by Refresh as by resolve: otherwise resolve would say
-// managed and the daemon's dial unmanaged (agent as root, no bridge).
-func TestRefreshKeepsConfRule(t *testing.T) {
-	ls := `[{"name":"web","state":"running","created_at":100}]`
-	fakeSmolList(t, &ls)
-	p := testPaths(t)
-	if err := os.MkdirAll(p.ManagedDir(), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(p.ManagedDir(), 0o500); err != nil { // readable, not writable: the marker write fails
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(p.ManagedDir(), 0o700) })
-	if os.WriteFile(filepath.Join(p.ManagedDir(), "probe"), nil, 0o600) == nil {
-		t.Skip("running as a user that can write a read-only dir (root?)")
-	}
-	m := &config.Machine{Name: "web", Backend: config.BackendSmol}
-	b, ok, err := ResolveSmolConf(p, m)
-	if err != nil || !ok || !m.Managed() {
-		t.Fatalf("ResolveSmolConf = %v, %v, managed %v", ok, err, m.Managed())
-	}
-	fresh, running, err := b.(Refresher).Refresh()
-	if err != nil || !running || !fresh.Managed() {
-		t.Errorf("Refresh = managed %v, running %v, %v; want managed like resolve", fresh != nil && fresh.Managed(), running, err)
+	if _, ok, _ := config.ReadManagedMarker(p, "web"); ok {
+		t.Error("discovery wrote a marker")
 	}
 }
 
@@ -279,5 +237,59 @@ func TestUnmanagedSmolExecIsPlain(t *testing.T) {
 	if err := b.Attach(""); err == nil {
 		// needSmolvm may fail first on a host with no smolvm; either way no attach.
 		t.Error("unmanaged Attach succeeded")
+	}
+}
+
+// The upgrade seed: every old smol conf with no marker gets one from the
+// VM's current created_at (so it stays managed); an existing marker is
+// never rewritten; a name smolvm does not list, a remote conf, or a conf
+// that does not parse is skipped; a second run lists nothing.
+func TestSeedLegacyMarkers(t *testing.T) {
+	ls := `[{"name":"web","state":"running","created_at":100},{"name":"old","state":"stopped","created_at":300},{"name":"r","state":"stopped","created_at":5}]`
+	calls := 0
+	fakeSmolList(t, &ls)
+	orig := smolLs
+	smolLs = func() ([]byte, error) { calls++; return orig() }
+	p := testPaths(t)
+	md := config.LegacyMachinesDir(p)
+	if err := os.MkdirAll(md, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for n, body := range map[string]string{
+		"web":  "backend = \"smol\"\nmemory = 1024\n",
+		"old":  "backend = \"smol\"\n",
+		"gone": "backend = \"smol\"\n",
+		"r":    "backend = \"remote-managed\"\nssh_host = \"r\"\n",
+		"bad":  "backend = [",
+	} {
+		if err := os.WriteFile(filepath.Join(md, n+".toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := config.WriteManagedMarker(p, "old", "200"); err != nil { // stale: kept as is
+		t.Fatal(err)
+	}
+	SeedLegacyMarkers(p)
+	if got, ok, _ := config.ReadManagedMarker(p, "web"); !ok || got != "100" {
+		t.Errorf("web marker = %q, %v", got, ok)
+	}
+	if got, _, _ := config.ReadManagedMarker(p, "old"); got != "200" {
+		t.Errorf("an existing marker was rewritten: %q", got)
+	}
+	for _, n := range []string{"gone", "r", "bad"} {
+		if _, ok, _ := config.ReadManagedMarker(p, n); ok {
+			t.Errorf("%s got a marker", n)
+		}
+	}
+	if d, _, _ := Discover(p, "web"); d.Machine == nil || !d.Machine.Managed() {
+		t.Error("the seeded VM is not managed")
+	}
+	calls = 0
+	if err := os.Remove(filepath.Join(md, "gone.toml")); err != nil {
+		t.Fatal(err)
+	}
+	SeedLegacyMarkers(p)
+	if calls != 0 {
+		t.Errorf("a second run listed smolvm %d times with nothing to mark", calls)
 	}
 }

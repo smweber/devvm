@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -139,61 +138,44 @@ func (a *App) runStop(name string) error {
 	return b.PowerStop()
 }
 
-func (a *App) runDelete(name string, force bool) error {
+// runDelete destroys a smol VM devvm made, or proxies `delete NAME` to a
+// hub for HUB/NAME. It never removes a config entry: an entry is the
+// user's line in devvm.toml, and the one command that removes it, and this
+// host's state for it, is `config rm` (config.md §4). force is accepted
+// and ignored, for scripts written when `delete HUB --force` existed.
+func (a *App) runDelete(name string, _ bool) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	m, b, err := a.resolveAny(name)    // delete applies to hubs and hub machines too
-	var stale *errStaleConf
-	if errors.As(err, &stale) {
-		return a.deleteStaleConf(name)
-	}
+	m, b, err := a.resolveAny(name)    // delete applies to hub machines too
 	if err != nil {
 		return err
 	}
 	if m.IsHubMachine() {
 		return a.deleteHubMachine(m, b)
 	}
-	if m.IsHub() {
-		return a.deleteHub(m, force)
+	if m.IsRemote() {
+		what := "a remote box"
+		if m.IsHub() {
+			what = "a hub"
+		}
+		return fmt.Errorf("'%s' is %s entry in devvm.toml; 'devvm config rm %s' removes the entry and this host's state for it (the box itself is never touched)", name, what, name)
 	}
-	switch {
-	case !m.IsRemote():
-		// devvm destroys only what it made (config.md §2): a VM it merely
-		// discovered is smolvm's to remove, as a config entry will be
-		// `config rm`'s.
-		if !m.Managed() {
-			return fmt.Errorf("'%s' is a smol VM devvm did not create; remove it with 'smolvm machine rm --name %s'", name, name)
-		}
-		ok, err := confirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("aborted")
-		}
-		a.reapRunFiles(name) // the daemon's exec goes before the VM does
-		if err := b.PowerDelete(); err != nil {
-			return err
-		}
-	default:
-		// Adopted (unmanaged) hosts only lose their registry entry; the box is
-		// left untouched, so confirm we're not expected to tear anything down.
-		if !m.Managed() {
-			ok, err := confirm(fmt.Sprintf(
-				"Remove registry entry for '%s' (leaves the host untouched)?", name))
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("aborted")
-			}
-		}
-		a.reapRunFiles(name)
-		_ = b.PowerDelete()
+	// devvm destroys only what it made (config.md §2): a VM it merely
+	// discovered is smolvm's to remove.
+	if !m.Managed() {
+		return fmt.Errorf("'%s' is a smol VM devvm did not create; remove it with 'smolvm machine rm --name %s'", name, name)
 	}
-	if err := config.Remove(a.Paths.Config, name); err != nil {
+	ok, err := confirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
+	if err != nil {
 		return err
 	}
-	if err := a.forgetHostState(name, m); err != nil {
+	if !ok {
+		return fmt.Errorf("aborted")
+	}
+	a.reapRunFiles(name) // the daemon's exec goes before the VM does
+	if err := b.PowerDelete(); err != nil {
+		return err
+	}
+	if err := a.forgetHostState(name, nil); err != nil {
 		return err
 	}
 	session.RemoveLock(a.Paths, name) // only now: see RemoveLock
@@ -201,37 +183,22 @@ func (a *App) runDelete(name string, force bool) error {
 	return nil
 }
 
-// deleteStaleConf is `delete` of an old per-machine smol conf whose VM is
-// gone (what used to be "dormant"): nothing to destroy, so no prompt; the
-// conf and this host's state for the name go.
-func (a *App) deleteStaleConf(name string) error {
-	a.reapRunFiles(name)
-	if err := config.Remove(a.Paths.Config, name); err != nil {
-		return err
-	}
-	if err := a.forgetHostState(name, nil); err != nil {
-		return err
-	}
-	session.RemoveLock(a.Paths, name) // only now: see RemoveLock
-	fmt.Fprintf(a.Stdout, "devvm: removed stale registry entry for '%s' (it had no VM)\n", name)
-	return nil
-}
-
-// forgetHostState removes what this host remembers about a machine besides
-// its registry entry and run files (reapRunFiles): its saved forwards
+// forgetHostState removes what this host remembers about a deleted smol VM
+// or hub machine besides its run files (reapRunFiles): its saved forwards
 // (<State>/ports/NAME), its managed marker (<State>/managed/NAME), its
 // reach cache (<State>/cache/reach/NAME) and its pinned host key in the isolated known_hosts. It is the one place `delete`
 // clears host state, so a later machine of the same name starts clean
 // (config.md §9 item 6: a server recreated under the same name and address
-// has a new host key). Run after the machine and its conf are gone, so a
-// failed delete keeps its state, and under the ports file's lock, so a
-// `ports add` that was waiting on it finds the conf gone and refuses
-// (editPorts) instead of writing the file back. A ports file left by a
-// failure here is cleared by the next `create` of the name; a marker is
-// rewritten by it.
+// has a new host key). Run after the machine is gone, so a failed delete
+// keeps its state, and under the ports file's lock, so a `ports add` that
+// was waiting on it finds the machine gone and refuses (editPorts) instead
+// of writing the file back. A ports file left by a failure here is cleared
+// by the next `create` of the name; a marker is rewritten by it. A config
+// entry's state goes through forgetEntryState (`config rm`), which never
+// touches a marker.
 //
 // m is the deleted record, for its pin; nil when there is none to drop (a
-// smol VM, a hub machine, a stale conf). See forgetHostKey.
+// smol VM, a hub machine). See forgetHostKey.
 func (a *App) forgetHostState(name string, m *config.Machine) error {
 	unlock, err := config.LockPorts(a.Paths, name)
 	if err != nil {
@@ -262,8 +229,8 @@ func (a *App) forgetHostState(name string, m *config.Machine) error {
 // keyed by the host ssh actually connects to, so it is asked (`ssh -G`
 // resolves an alias in the user's ssh config, and a non-22 port), and
 // `ssh-keygen -R` removes it, hashed or not. It is kept while another
-// registered machine still reaches the same host and port: known_hosts is
-// per host, not per machine name, and that machine's pin is the same line.
+// entry still reaches the same host and port: known_hosts is per host, not
+// per machine name, and that machine's pin is the same line.
 func (a *App) forgetHostKey(m *config.Machine) error {
 	if !m.IsRemote() || !m.Managed() || m.SSHHost == "" {
 		return nil
@@ -273,12 +240,12 @@ func (a *App) forgetHostKey(m *config.Machine) error {
 		return nil
 	}
 	key := knownHostsKey(m)
-	names, _ := config.List(a.Paths.Config)
-	for _, n := range names {
-		if n == m.Name {
-			continue
-		}
-		if o, err := config.Load(a.Paths.Config, n); err == nil && o.IsRemote() && o.Managed() && knownHostsKey(o) == key {
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return nil // cannot tell whether another entry shares the pin: keep it
+	}
+	for _, o := range f.Machines() {
+		if o.Name != m.Name && o.IsRemote() && o.Managed() && knownHostsKey(o) == key {
 			return nil
 		}
 	}
@@ -298,7 +265,7 @@ func (a *App) forgetHostKey(m *config.Machine) error {
 // so an alias's own `Port` in ssh config wins), and reads back what ssh
 // would key the pin by: HostKeyAlias when set (bare, as ssh stores it),
 // else the resolved hostname, bracketed with the port when that is not 22.
-// If -G fails, the destination's own host part and the conf's port stand in.
+// If -G fails, the destination's own host part and the entry's port stand in.
 func knownHostsKey(m *config.Machine) string {
 	host := m.SSHHost
 	if i := strings.LastIndex(host, "@"); i >= 0 {
@@ -343,7 +310,7 @@ func knownHostsKey(m *config.Machine) string {
 }
 
 // reapRunFiles stops a machine's forward daemon, if one runs, and removes
-// its run files (session.Reap) as its registry entry goes. Failing that is
+// its run files (session.Reap) as its entry goes. Failing that is
 // worth a line, not the delete: the leftovers are inert files in run/.
 func (a *App) reapRunFiles(name string) {
 	if err := session.Reap(a.Paths, name, daemonGoneTimeout); err != nil && a.Stderr != nil {
@@ -355,12 +322,10 @@ func (a *App) reapRunFiles(name string) {
 // entry, so the deregistration is a proxied `delete NAME` there, first —
 // a failed remote delete leaves the laptop side intact. Then this host's own
 // daemon for it is stopped and its host state (saved forwards) dropped;
-// the hub conf is never written. The one confirmation is the hub's: its
+// devvm.toml is never written. The one confirmation is the hub's: its
 // delete prompts through the forwarded terminal before destroying a real VM
 // (and refuses with no terminal), so a second prompt here would only ask the
-// same question twice. --force is not forwarded: it is this host's flag for
-// deleting a hub this host still has forwards for, and means nothing for a
-// machine on a hub.
+// same question twice.
 func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	hub, machine := m.Hub, m.HubMachineName()
 	p, ok := b.(backend.Proxier)
@@ -379,71 +344,5 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	if len(saved) > 0 {
 		fmt.Fprintf(a.Stdout, "devvm: dropped this host's forwards for '%s'\n", m.Name)
 	}
-	return nil
-}
-
-// deleteHub is `delete HUB`: the hub was only ever registered, never shaped,
-// so this removes one conf file and touches nothing on the host. It refuses
-// while this host has saved forwards for a machine on it (a ports file
-// HUB@NAME) or a live run/HUB@*.sock (hub.md §2): the saved forwards are
-// the laptop's for machines that still exist on the hub, and a live daemon
-// holds forwards the conf removal would orphan. --force stops those daemons,
-// drops those saved forwards and removes the conf anyway. The refusal runs
-// before the prompt, so a scripted delete fails fast. (Step 6, which adds
-// the daemons, changes nothing here: liveHubSockets already sees them.)
-func (a *App) deleteHub(m *config.Machine, force bool) error {
-	var held, saved []string
-	names, err := config.SavedPortsNames(a.Paths)
-	if err != nil {
-		return err
-	}
-	for _, display := range names {
-		if hub, _, ok, _ := config.SplitHubName(display); ok && hub == m.Name {
-			saved = append(saved, display)
-			held = append(held, "saved forwards for "+display)
-		}
-	}
-	var live []string
-	for _, display := range liveHubSockets(a.Paths) {
-		if hub, _, _, _ := config.SplitHubName(display); hub == m.Name {
-			live = append(live, display)
-			held = append(held, "forwards for "+display)
-		}
-	}
-	if len(held) > 0 && !force {
-		sort.Strings(held)
-		return fmt.Errorf("hub '%s' still has %s; delete those machines first, or use --force",
-			m.Name, strings.Join(held, ", "))
-	}
-	ok, err := confirm(fmt.Sprintf("Remove hub '%s' from the registry (leaves the host untouched)?", m.Name))
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("aborted")
-	}
-	// Every HUB/NAME with a run file, not only the live sockets: a daemon
-	// killed rather than stopped leaves its socket, and every one that ever
-	// started leaves its lock and log. The hub's own name too (a refused
-	// `__daemon HUB` still took its lock).
-	reaped := append(session.HubRuntimeNames(a.Paths, m.Name), m.Name)
-	for _, display := range reaped {
-		a.reapRunFiles(display)
-	}
-	if err := config.Remove(a.Paths.Config, m.Name); err != nil {
-		return err
-	}
-	// After the conf: a `ports add HUB/X` waiting on X's lock then finds
-	// the hub gone and writes nothing back (editPorts).
-	for _, display := range append(saved, m.Name) {
-		if err := a.forgetHostState(display, nil); err != nil {
-			return err
-		}
-	}
-	for _, display := range reaped {
-		session.RemoveLock(a.Paths, display) // only now: see RemoveLock
-	}
-	removeHubCache(a.Paths, m.Name) // derived from the conf that just went
-	fmt.Fprintf(a.Stdout, "devvm: removed hub '%s'\n", m.Name)
 	return nil
 }

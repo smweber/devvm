@@ -53,13 +53,14 @@ func DisplayName(runtime string) string {
 }
 
 // LoadHubMachine returns the record for HUB/NAME, derived from the hub's
-// conf (this host's saved forwards for it are host state: LoadPorts). It reads
-// only the hub conf and never asks the hub whether the machine exists — the
-// proxied command reports that itself, so a typo'd name costs an ssh timeout
-// only when something is actually run against it, and `resolve` stays off the
-// network. The record carries the hub's ssh fields so a Backend built from it
-// can reach the hub; Backend is BackendHub and Hub points at the hub conf.
-func LoadHubMachine(configDir, name string) (*Machine, error) {
+// `[machines.HUB]` entry (this host's saved forwards for it are host state:
+// LoadPorts). It reads only devvm.toml and never asks the hub whether the
+// machine exists: the proxied command reports that itself, so a typo'd
+// name costs an ssh timeout only when something is actually run against
+// it, and `resolve` stays off the network. The record carries the hub's ssh
+// fields so a Backend built from it can reach the hub; Backend is
+// BackendHub and Hub points at the hub's record.
+func LoadHubMachine(p Paths, name string) (*Machine, error) {
 	hubName, _, ok, err := SplitHubName(name)
 	if err != nil {
 		return nil, err
@@ -67,37 +68,42 @@ func LoadHubMachine(configDir, name string) (*Machine, error) {
 	if !ok {
 		return nil, fmt.Errorf("%q is not a HUB/NAME reference", name)
 	}
-	hub, err := Load(configDir, hubName)
+	hub, err := Load(p, hubName)
 	if err != nil {
 		return nil, err
 	}
 	if !hub.IsHub() {
-		return nil, fmt.Errorf("%q is a %s machine, not a hub (so %q names nothing)", hubName, hub.Backend, name)
+		return nil, fmt.Errorf("%q is a %s entry, not a hub (so %q names nothing)", hubName, hub.Backend, name)
 	}
-	m := &Machine{
-		Name:       name,
-		Hub:        hub,
-		Backend:    BackendHub,
-		SSHHost:    hub.SSHHost,
-		SSHPort:    hub.SSHPort,
-		Identity:   hub.Identity,
-		Transport:  hub.Transport,
-		MoshServer: hub.MoshServer,
-	}
-	m.applyDefaults()
-	return m, nil
+	return hubMachine(hub, name), nil
 }
 
-// LoadAny loads a local conf or, for a HUB/NAME reference, the hub-machine
+// hubMachine derives HUB/NAME's record from its hub's.
+func hubMachine(hub *Machine, name string) *Machine {
+	return &Machine{
+		Name:           name,
+		Hub:            hub,
+		Backend:        BackendHub,
+		SSHHost:        hub.SSHHost,
+		SSHPort:        hub.SSHPort,
+		User:           hub.User,
+		Identity:       hub.Identity,
+		Transport:      hub.Transport,
+		MoshServer:     hub.MoshServer,
+		ConnectTimeout: hub.ConnectTimeout,
+	}
+}
+
+// LoadAny loads an entry or, for a HUB/NAME reference, the hub-machine
 // record. It is the file-level counterpart of the cli's resolve (which adds
 // discovery of local smol VMs and a backend).
-func LoadAny(configDir, name string) (*Machine, error) {
+func LoadAny(p Paths, name string) (*Machine, error) {
 	if _, _, ok, err := SplitHubName(name); err != nil {
 		return nil, err
 	} else if ok {
-		return LoadHubMachine(configDir, name)
+		return LoadHubMachine(p, name)
 	}
-	return Load(configDir, name)
+	return Load(p, name)
 }
 
 // HubMachineName returns the machine's name on its hub (the part after the

@@ -221,8 +221,8 @@ func TestBridgedMachines(t *testing.T) {
 	}{
 		{managedSmol("web"), true},
 		{&config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}, true},
-		{&config.Machine{Name: "box", Backend: config.BackendRemoteManaged}, false},
-		{&config.Machine{Name: "box", Backend: config.BackendRemoteUnmanaged}, false},
+		{config.NewRemote("box", true, "box"), false},
+		{config.NewRemote("box", false, "box"), false},
 		{hub, false},
 	} {
 		if got := bridged(tc.m); got != tc.want {
@@ -264,12 +264,12 @@ func TestHubAuthRefusedWithoutProof(t *testing.T) {
 	}
 
 	// The hub's cached listing says web is not smol: the refusal says so.
-	if err := writeHubCache(a.Paths, "h", []hubRow{{name: "web", backend: config.BackendRemoteManaged, state: "reachable", forwards: "-"}}); err != nil {
+	if err := writeHubCache(a.Paths, "h", []hubRow{{name: "web", backend: config.BackendRemote, state: "reachable", forwards: "-"}}); err != nil {
 		t.Fatal(err)
 	}
 	noShim := session.PingInfo{State: session.StateUp}
 	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: new([]string), ping: &noShim})
-	if err := runTree(t, a, "auth", "h/web"); err == nil || err.Error() != "auth h/web: auth on a non-smol hub machine is not supported through the hub yet (h/web is remote-managed there)" {
+	if err := runTree(t, a, "auth", "h/web"); err == nil || err.Error() != "auth h/web: auth on a non-smol hub machine is not supported through the hub yet (h/web is remote there)" {
 		t.Errorf("non-smol hub machine: err = %v", err)
 	}
 	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {

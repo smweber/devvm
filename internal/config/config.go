@@ -1,42 +1,40 @@
-// Package config is the devvm machine registry: one TOML file per machine under
-// $XDG_CONFIG_HOME/devvm/machines/<name>.toml. It replaces the sourced-bash
-// confs the old bin/devvm read (load_machine / save_machine_conf), keeping the
-// same field set but as validated, hand-editable TOML rather than executable
-// shell.
+// Package config reads devvm's one config file, $XDG_CONFIG_HOME/devvm/devvm.toml
+// (config.md §1): `[templates.*]` (how to shape a new box, templates.go) and
+// `[machines.*]` (the boxes devvm cannot discover: remote boxes and hubs).
+// Local smol VMs have no entry; they are discovered from smolvm (backend's
+// discovery sources). The file is the user's, hand-edited and safe to keep
+// in a dotfiles repo shared by several hosts, so nothing here writes it
+// except the two structural edits of the `config` noun (edit.go). This
+// host's own state lives under Paths.State.
 package config
 
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"github.com/BurntSushi/toml"
 )
 
-// Backend identifies who owns a machine and how it's reached.
+// Backend is who owns a machine's registry and lifecycle (config.md §1, §9).
+// It is one axis; Managed is the other.
 //
-//	smol             local microVM devvm creates and shapes (smolvm-exec)
-//	remote-managed   a remote host devvm shapes (installs prereqs, may harden),
-//	                 reached over the ssh transport — you provision the box, devvm
-//	                 manages the OS. (Future: hetzner adds API-backed lifecycle.)
-//	remote-unmanaged an existing host devvm adopts hands-off (checks prereqs, never
-//	                 modifies the OS), reached over the ssh transport.
-//	hub              another host running devvm whose machines are reached as
-//	                 HUB/NAME (docs/proposals/hub.md). Reached over the ssh
-//	                 transport like a remote box, but never shaped: no
-//	                 setup, keys, repos, ports or agent land on it.
+//	smol    a local microVM, discovered from `smolvm machine ls`; never an
+//	        entry in the file. Managed is settled by discovery (the marker).
+//	remote  a `[machines.*]` entry reached over ssh. `managed = true` means
+//	        devvm shapes it (setup, prereqs, hardening, pinned host key);
+//	        the default false is an adopted box devvm never modifies.
+//	hub     a `[machines.*]` entry for another host running devvm, whose
+//	        machines are HUB/NAME (docs/proposals/hub.md). Reached over ssh
+//	        like a remote box, but never shaped and never managed.
+//
+// Code outside this package asks the record's predicates (Managed,
+// IsRemote, IsHub, IsHubMachine, Probeable), never compares these strings
+// (§9 item 1): a provider backend later answers the same predicates.
 const (
-	BackendSmol            = "smol"
-	BackendRemoteManaged   = "remote-managed"
-	BackendRemoteUnmanaged = "remote-unmanaged"
-	BackendHub             = "hub"
-
-	// legacyBackendSSH is the pre-rename backend value; migrated on load onto the
-	// remote-managed / remote-unmanaged split (see migrateLegacy).
-	legacyBackendSSH = "ssh"
+	BackendSmol   = "smol"
+	BackendRemote = "remote"
+	BackendHub    = "hub"
 )
 
 // Transport selects how an interactive connection (shell/attach) is made to a
@@ -48,13 +46,13 @@ const (
 
 // DefaultBootstrapHook is the built-in hook: do nothing, so nothing personal
 // is baked into the binary. Users who want one (e.g. their dotfiles
-// bootstrap.sh) set `hook` in a template (templates.go); an old conf's
-// bootstrap_hook and config.toml's are still read until step 5.
+// bootstrap.sh) set `hook` in a template (templates.go).
 const DefaultBootstrapHook = "none"
 
-// ErrNotFound is returned by Load when no conf file exists for a name. The
-// cli then asks discovery (backend.Discover), which finds local smol VMs.
-var ErrNotFound = errors.New("machine not registered")
+// ErrNotFound is returned by Load when the file has no `[machines.NAME]`
+// entry. The cli then asks discovery (backend.Discover), which finds local
+// smol VMs.
+var ErrNotFound = errors.New("no such entry")
 
 // nameRe mirrors valid_name in bin/devvm: names land in file paths and process
 // patterns, so keep them tame.
@@ -68,216 +66,70 @@ func ValidName(name string) error {
 	return nil
 }
 
-// HubMachine is an old hub conf's `[machines.NAME]` table, which held this
-// host's forwards for a machine on the hub. Those are host state now
-// (<State>/ports/HUB@NAME, see ports.go): the table is read only so
-// MigratePorts can seed from it once, and nothing writes it. The loader that
-// still accepts it goes with config.md step 5.
-type HubMachine struct {
-	Ports []string `toml:"ports,omitempty"` // "HOST:GUEST" or bare "PORT"
-}
-
-// Machine is one registered dev box. Zero values mean "unset"; applyDefaults
-// fills the same defaults load_machine did (SSHPort 22, BootstrapHook).
+// Machine is one resolved box: a `[machines.*]` entry, a discovered smol
+// VM, or a HUB/NAME record derived from its hub's entry. It is never
+// written back; the file is changed only by `config add`/`rm` (edit.go).
 type Machine struct {
-	// Name is derived from the filename, not stored in the file. For a hub
-	// machine it is the display form HUB/NAME (see hubname.go).
-	Name string `toml:"-"`
+	// Name is the entry's table name, the smol VM's name, or for a hub
+	// machine the display form HUB/NAME (see hubname.go).
+	Name string
 
-	// Hub is set only on a hub-machine record (LoadHubMachine): the loaded conf
-	// of the hub the machine lives on. Such a record is synthesized, never
-	// written; this host's only state for it is its saved-forwards file.
-	Hub *Machine `toml:"-"`
+	// Hub is set only on a hub-machine record (LoadHubMachine): the entry of
+	// the hub the machine lives on. This host's only state for such a
+	// machine is its saved-forwards file.
+	Hub *Machine
 
-	Backend string `toml:"backend"`
+	Backend string // BackendSmol | BackendRemote | BackendHub
 
-	// Unmanaged is the deprecated pre-rename flag; still read so old confs migrate
-	// (see migrateLegacy) but never written back — the backend value carries this
-	// now (remote-unmanaged vs remote-managed).
-	Unmanaged bool `toml:"unmanaged,omitempty"`
+	// SSHHost is the ssh destination, `[user@]host`: the entry's host
+	// without its port, prefixed with the entry's user, or on a managed
+	// remote entry with no user, the [templates.default] user (the account
+	// `setup` creates there, config.md §1, §3). With no user at all it is
+	// the bare host and ~/.ssh/config decides, as for an alias.
+	SSHHost string
+	// SSHPort is the port given in `host = "h:P"`, 0 when none (ssh config
+	// or 22). Only a port other than 0 and 22 is passed to ssh.
+	SSHPort int
+	// User is the entry's own `user`, "" when the entry sets none. setup
+	// uses it to tell a pinned login from the template's.
+	User string
 
-	// remote backends (ssh transport)
-	SSHHost    string `toml:"ssh_host,omitempty"`
-	SSHPort    int    `toml:"ssh_port,omitempty"`
-	Identity   string `toml:"identity,omitempty"`
-	Transport  string `toml:"transport,omitempty"` // ssh (default) | mosh
-	MoshServer string `toml:"mosh_server,omitempty"`
+	Identity   string
+	Transport  string // ssh (default) | mosh
+	MoshServer string
+	// ConnectTimeout is the entry's `connect_timeout` in seconds, 0 when
+	// unset (10s, or DEVVM_SSH_CONNECT_TIMEOUT, which wins when set).
+	ConnectTimeout int
 
-	// smol backend. Memory (MiB) and Disk (GiB) are a creation spec, read only
-	// at create: smolvm's own record is the source of truth once the VM
-	// exists (`status` reads its sizes from `smolvm machine ls`), and editing
-	// these here changes nothing.
-	Memory int `toml:"memory,omitempty"` // MiB
-	Disk   int `toml:"disk,omitempty"`   // GiB
-
-	// shared
-	Repos         []string `toml:"repos,omitempty"`
-	BootstrapHook string   `toml:"bootstrap_hook,omitempty"`
-
-	// LegacyPorts is the old per-box `ports` list. Saved forwards are host
-	// state now (<State>/ports/NAME, see ports.go), so devvm never reads this
-	// except for MigratePorts' one-time seed, and validateHub's refusal of a
-	// hub carrying it. It is still decoded so old confs parse, and a Save
-	// keeps what was loaded rather than dropping a list not yet migrated.
-	LegacyPorts []string `toml:"ports,omitempty"`
-
-	// ssh key seeding / hardening
-	AuthorizedKeys       []string `toml:"authorized_keys,omitempty"`
-	AuthorizedKeysGithub []string `toml:"authorized_keys_github,omitempty"`
-	Harden               bool     `toml:"harden,omitempty"`
-	Fail2ban             bool     `toml:"fail2ban,omitempty"`
-
-	// hub backend only: the old per-machine tables (see HubMachine), read only
-	// to seed saved forwards once.
-	Machines map[string]HubMachine `toml:"machines,omitempty"`
-
-	// smolManaged is a smol record's Managed bit, settled once by the
-	// discovery source that produced the record (backend's smol source: the
-	// managed marker against the VM's created_at, config.md §2) and never
-	// stored. Unsettled means unmanaged, so a record nobody settled can
-	// never be taken for one devvm may install into.
-	smolManaged bool
+	// managed is the record's Managed bit: a remote entry's `managed`, or a
+	// smol VM's as its discovery source settled it (the managed marker
+	// against the VM's created_at, config.md §2). Never stored. Unsettled
+	// means unmanaged, so a record nobody settled can never be taken for one
+	// devvm may install into.
+	managed bool
 }
 
-// NewSmol returns a defaulted smol machine record: create's, and the one the
-// smol discovery source builds for a VM with no conf. Unmanaged until the
-// source settles it (SetManaged).
-func NewSmol(name string) *Machine {
-	m := &Machine{Name: name, Backend: BackendSmol}
-	m.applyDefaults()
+// NewRemote returns a remote record for the given ssh destination
+// (`[user@]host`), the shape a `[machines.*]` entry loads to. For tests and
+// callers that build a record by hand; the loader builds its own.
+func NewRemote(name string, managed bool, sshHost string) *Machine {
+	m := &Machine{Name: name, Backend: BackendRemote, SSHHost: sshHost, managed: managed}
+	if u, _, ok := strings.Cut(sshHost, "@"); ok {
+		m.User = u
+	}
 	return m
 }
 
-// NewRemote returns a defaulted remote machine (managed or unmanaged) for the
-// given ssh host. Callers set optional fields (identity, transport, ...) after.
-func NewRemote(name, backend, sshHost string) *Machine {
-	m := &Machine{Name: name, Backend: backend, SSHHost: sshHost}
-	m.applyDefaults()
-	return m
-}
-
-// NewHub returns a defaulted hub conf for the given ssh destination.
+// NewHub returns a hub record for the given ssh destination.
 func NewHub(name, sshHost string) *Machine {
 	m := &Machine{Name: name, Backend: BackendHub, SSHHost: sshHost}
-	m.applyDefaults()
+	if u, _, ok := strings.Cut(sshHost, "@"); ok {
+		m.User = u
+	}
 	return m
 }
 
-// migrateLegacy rewrites the pre-rename `backend = "ssh"` (+ optional
-// `unmanaged`) form onto the remote-managed / remote-unmanaged split, so old
-// hand-written confs (and shared dotfiles) keep loading unchanged. The next Save
-// drops the `unmanaged` key.
-func (m *Machine) migrateLegacy() {
-	if m.Backend == legacyBackendSSH {
-		if m.Unmanaged {
-			m.Backend = BackendRemoteUnmanaged
-		} else {
-			m.Backend = BackendRemoteManaged
-		}
-	}
-	m.Unmanaged = false
-}
-
-// applyDefaults fills unset fields, matching load_machine's defaulting. The ssh
-// transport defaults apply only to remote backends, so a smol conf doesn't carry
-// meaningless ssh_port/transport. Save strips the default-valued bootstrap_hook
-// and transport lines back out, so a conf shows only what deviates from stock —
-// but Load always has a concrete value in hand.
-func (m *Machine) applyDefaults() {
-	if m.BootstrapHook == "" {
-		m.BootstrapHook = DefaultBootstrapHook
-	}
-	if m.IsRemote() {
-		if m.SSHPort == 0 {
-			m.SSHPort = 22
-		}
-		if m.Transport == "" {
-			m.Transport = TransportSSH
-		}
-	}
-}
-
-// Validate enforces the invariants load_machine checked at source time.
-func (m *Machine) Validate() error {
-	switch m.Backend {
-	case BackendSmol, BackendRemoteManaged, BackendRemoteUnmanaged, BackendHub:
-	case "":
-		return fmt.Errorf("machine %q has no backend set", m.Name)
-	default:
-		return fmt.Errorf("machine %q has unsupported backend %q", m.Name, m.Backend)
-	}
-	if m.IsRemote() && m.SSHHost == "" {
-		return fmt.Errorf("remote machine %q needs ssh_host", m.Name)
-	}
-	if m.IsHub() {
-		if err := m.validateHub(); err != nil {
-			return err
-		}
-	} else if len(m.Machines) > 0 {
-		return fmt.Errorf("machine %q: [machines.*] tables only apply to a hub", m.Name)
-	}
-	if !m.IsRemote() && m.Transport != "" {
-		return fmt.Errorf("machine %q: transport only applies to remote backends", m.Name)
-	}
-	switch m.Transport {
-	case "", TransportSSH, TransportMosh:
-	default:
-		return fmt.Errorf("machine %q: invalid transport %q (want %q or %q)",
-			m.Name, m.Transport, TransportSSH, TransportMosh)
-	}
-	return nil
-}
-
-// validateHub rejects the fields that would shape the hub itself. A hub is
-// reached like a remote box but is never set up, forwarded to, or given
-// repos/keys — those verbs refuse it — so a conf carrying them is a mistake
-// (most likely a remote conf whose backend was flipped by hand) rather than
-// something to silently ignore. transport/mosh_server stay allowed: they steer
-// the interactive hop to the hub, which is what a proxied attach rides.
-func (m *Machine) validateHub() error {
-	// transport (and mosh_server) are deliberately not on this list: they steer
-	// the interactive hop to the hub, which a proxied attach/shell rides.
-	var bad []string
-	if len(m.LegacyPorts) > 0 {
-		bad = append(bad, "ports")
-	}
-	if m.Memory != 0 {
-		bad = append(bad, "memory")
-	}
-	if m.Disk != 0 {
-		bad = append(bad, "disk")
-	}
-	if len(m.Repos) > 0 {
-		bad = append(bad, "repos")
-	}
-	if m.BootstrapHook != "" && m.BootstrapHook != DefaultBootstrapHook {
-		bad = append(bad, "bootstrap_hook")
-	}
-	if len(m.AuthorizedKeys) > 0 {
-		bad = append(bad, "authorized_keys")
-	}
-	if len(m.AuthorizedKeysGithub) > 0 {
-		bad = append(bad, "authorized_keys_github")
-	}
-	if m.Harden {
-		bad = append(bad, "harden")
-	}
-	if m.Fail2ban {
-		bad = append(bad, "fail2ban")
-	}
-	if len(bad) > 0 {
-		return fmt.Errorf("hub %q is not a machine: it cannot carry %s (forwards and setup belong to the machines on it, e.g. 'devvm ports add %s/NAME')",
-			m.Name, strings.Join(bad, ", "), m.Name)
-	}
-	for name := range m.Machines {
-		if err := ValidName(name); err != nil {
-			return fmt.Errorf("hub %q: [machines.%s]: %w", m.Name, name, err)
-		}
-	}
-	return nil
-}
-
-// IsHub reports whether this conf registers a hub (another host's devvm) rather
+// IsHub reports whether this record is a hub (another host's devvm) rather
 // than a machine. A hub-machine record (Hub != nil) is not a hub.
 func (m *Machine) IsHub() bool {
 	return m.Backend == BackendHub && m.Hub == nil
@@ -286,34 +138,30 @@ func (m *Machine) IsHub() bool {
 // IsHubMachine reports whether this is a synthesized HUB/NAME record.
 func (m *Machine) IsHubMachine() bool { return m.Hub != nil }
 
-// Managed reports whether devvm owns this box's OS and lifecycle — it installs
-// prereqs, may harden, and pins known_hosts. remote-managed is managed and
-// adopted remote-unmanaged hosts are not (devvm only checks them, never
-// modifies). A smol VM is managed only when its discovery source said so
-// (SetManaged): one devvm created, never one it merely found (config.md §2).
-// A plain field read: it never execs or reads a file.
+// Managed reports whether devvm owns this box's OS: it installs prereqs, may
+// harden, and pins known_hosts. A remote entry is managed when it says
+// `managed = true` (writing that line was the consent); a smol VM only when
+// its discovery source said so (SetManaged): one devvm created or was handed
+// with `setup --adopt`, never one it merely found (config.md §2). A hub and
+// a machine on one are never managed here (the hub holds that machine's
+// marker). A plain field read: it never execs or reads a file.
 func (m *Machine) Managed() bool {
-	switch m.Backend {
-	case BackendRemoteManaged:
-		return true
-	case BackendSmol:
-		return m.smolManaged
-	default:
+	if m.Backend == BackendHub {
 		return false
 	}
+	return m.managed
 }
 
-// SetManaged settles a smol record's Managed bit. Only a discovery source
-// calls it (and tests); it is meaningless on other backends, whose bit is
-// their backend value.
-func (m *Machine) SetManaged(managed bool) { m.smolManaged = managed }
+// SetManaged settles a record's Managed bit. Only a discovery source calls
+// it on a smol record (and tests); a remote entry's comes from the file.
+func (m *Machine) SetManaged(managed bool) { m.managed = managed }
 
-// IsRemote reports whether the box is reached over the ssh transport (both
-// remote-* backends, and a hub — its ssh fields drive the hop to it). Drives
-// ssh flags, key management, mosh, and forwards. A hub-machine record carries
+// IsRemote reports whether the box is reached over the ssh transport (a
+// remote entry, and a hub: its ssh fields drive the hop to it). Drives ssh
+// flags, key management, mosh, and forwards. A hub-machine record carries
 // the hub's ssh fields for the same reason, so it counts too.
 func (m *Machine) IsRemote() bool {
-	return m.Backend == BackendRemoteManaged || m.Backend == BackendRemoteUnmanaged || m.Backend == BackendHub
+	return m.Backend == BackendRemote || m.Backend == BackendHub
 }
 
 // Probeable reports whether the box's state is its reach cache, probed over
@@ -331,162 +179,67 @@ func (m *Machine) TransportName() string {
 	return m.Transport
 }
 
-// Dir returns the machines directory under the given config dir.
-func MachinesDir(configDir string) string { return filepath.Join(configDir, "machines") }
-
-func confPath(configDir, name string) string {
-	return filepath.Join(MachinesDir(configDir), name+".toml")
-}
-
-// Load reads, defaults, and validates the machine named name. Returns
-// ErrNotFound (wrapped) if no conf file exists.
-func Load(configDir, name string) (*Machine, error) {
+// Load returns the `[machines.NAME]` entry from devvm.toml. ErrNotFound
+// (wrapped) when the file has none, including when there is no file; a
+// file that does not parse is an error for every name, since an entry
+// shadows a discovered VM and a broken file cannot say whether it does.
+func Load(p Paths, name string) (*Machine, error) {
 	if err := ValidName(name); err != nil {
 		return nil, err
 	}
-	p := confPath(configDir, name)
-	data, err := os.ReadFile(p)
+	f, err := LoadFile(p)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, p)
-		}
 		return nil, err
 	}
-	m := &Machine{Name: name}
-	if err := toml.Unmarshal(data, m); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", p, err)
-	}
-	m.Name = name
-	m.migrateLegacy()
-	m.applyDefaults()
-	if err := m.Validate(); err != nil {
-		return nil, err
+	m, ok := f.Entry(name)
+	if !ok {
+		return nil, fmt.Errorf("%w: [machines.%s] in %s", ErrNotFound, name, f.Path)
 	}
 	return m, nil
 }
 
-// Save writes the machine's conf as commented TOML. It is tool-managed but
-// meant to stay hand-editable, so we lead with a header like the old confs.
-func (m *Machine) Save(configDir string) error {
-	if m.IsHubMachine() {
-		// The record is derived from the hub's conf and has nothing of its
-		// own to save (its forwards are host state: SavePorts).
-		return fmt.Errorf("%s is a machine on hub %s; it has no conf of its own", m.Name, m.Hub.Name)
-	}
-	if err := ValidName(m.Name); err != nil {
-		return err
-	}
-	dir := MachinesDir(configDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	var body strings.Builder
-	if err := toml.NewEncoder(&body).Encode(m); err != nil {
-		return err
-	}
-	// BurntSushi keeps zero-valued ints even with omitempty, which would litter a
-	// conf with `memory = 0` (remote) or `ssh_port = 0` (smol). None of our int
-	// fields mean anything at 0 (Load re-defaults them), so drop those lines.
-	// Both patterns are anchored at column 0: the encoder indents the keys of
-	// nested [machines.NAME] tables, so those lines are never touched.
-	clean := zeroIntLine.ReplaceAllString(body.String(), "")
-	// Drop default-valued string lines too: applyDefaults always fills these, so
-	// omitempty can't, but an omitted line reloads to the exact same value. So a
-	// conf carries bootstrap_hook/transport only when they deviate from stock.
-	clean = defaultStrLine.ReplaceAllString(clean, "")
-	content := fmt.Sprintf("# devvm machine config for %q (tool-managed; edit freely)\n\n%s", m.Name, clean)
-	return writeFileAtomic(confPath(configDir, m.Name), []byte(content), 0o644)
-}
-
-// writeFileAtomic writes via a temp file in the same directory and a rename,
-// so a reader (notably `status --watch`, which re-snapshots on the write
-// event) never sees a truncated or half-written conf. An existing file keeps
-// its mode (a conf the user chmod'ed to 0600 stays that way); mode applies
-// only to a new file. The data is fsync'ed before the rename so a crash can't
-// leave a zero-length conf behind the new name (the directory entry itself is
-// not fsync'ed: a power loss right after the rename may still show the old
-// conf, which is a complete file either way).
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+// Exists reports whether devvm.toml has a `[machines.NAME]` entry. A file
+// that does not parse has none.
+func Exists(p Paths, name string) bool {
+	f, err := LoadFile(p)
 	if err != nil {
-		return err
+		return false
 	}
-	name := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil { // CreateTemp is 0600 regardless of umask
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(name)
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return nil
+	_, ok := f.Entry(name)
+	return ok
 }
 
-// zeroIntLine matches a TOML scalar line whose int value is 0 (see Save).
-var zeroIntLine = regexp.MustCompile(`(?m)^[a-z0-9_]+ = 0\n`)
-
-// defaultStrLine matches the string lines whose value equals the built-in
-// default, so Save omits them (Load re-fills via applyDefaults). See Save.
-var defaultStrLine = regexp.MustCompile(`(?m)^(?:bootstrap_hook = "` + DefaultBootstrapHook + `"|transport = "` + TransportSSH + `")\n`)
-
-// Exists reports whether a conf file is present for name.
-func Exists(configDir, name string) bool {
-	_, err := os.Stat(confPath(configDir, name))
-	return err == nil
-}
-
-// Remove deletes a machine's conf file (idempotent).
-func Remove(configDir, name string) error {
-	// An older build's hub-conf edit lock (machines/.HUB.toml.lock) goes
-	// with the hub: nothing takes it any more, and it would linger forever.
-	_ = os.Remove(filepath.Join(MachinesDir(configDir), "."+name+".toml.lock"))
-	err := os.Remove(confPath(configDir, name))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
-}
-
-// List returns the names of all registered machines, sorted by the filesystem.
-func List(configDir string) ([]string, error) {
-	entries, err := os.ReadDir(MachinesDir(configDir))
+// List returns the names of every `[machines.*]` entry, sorted. A missing
+// file has none.
+func List(p Paths) ([]string, error) {
+	f, err := LoadFile(p)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if n, ok := strings.CutSuffix(e.Name(), ".toml"); ok {
-			names = append(names, n)
-		}
-	}
-	return names, nil
+	return f.Names(), nil
 }
+
+// OldLayout reports whether the config dir still holds the per-machine
+// layout (machines/ or config.toml) with no devvm.toml beside it. Nothing
+// reads the old files any more: the cli prints one line pointing at the
+// hand migration (config.md §8) and carries on with no entries.
+//
+// An empty machines/ is not the old layout: an older `status --watch`
+// created it on every start, conf or not.
+func OldLayout(p Paths) bool {
+	if exists(p.FilePath()) {
+		return false
+	}
+	names, _ := legacyConfNames(p)
+	return len(names) > 0 || exists(LegacyDefaultsPath(p))
+}
+
+// LegacyMachinesDir is the old per-machine conf directory, named only by
+// OldLayout and the one-time seeds (MigratePorts, LegacySmolConfs).
+func LegacyMachinesDir(p Paths) string { return filepath.Join(p.Config, "machines") }
+
+// LegacyDefaultsPath is the old config.toml, named only by OldLayout.
+func LegacyDefaultsPath(p Paths) string { return filepath.Join(p.Config, "config.toml") }
 
 // SplitPort parses a "HOST:GUEST" or bare "PORT" mapping into its host
 // preference and guest port, mirroring split_port in bin/devvm.
@@ -495,14 +248,4 @@ func SplitPort(mapping string) (host, guest string) {
 		return h, g
 	}
 	return mapping, mapping
-}
-
-// HasRepo reports whether the exact repo spec is already configured.
-func (m *Machine) HasRepo(repo string) bool {
-	for _, r := range m.Repos {
-		if r == repo {
-			return true
-		}
-	}
-	return false
 }

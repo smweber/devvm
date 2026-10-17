@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"github.com/smweber/devvm/internal/backend"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -70,33 +70,38 @@ func TestSinceHuman(t *testing.T) {
 }
 
 // Smol rows come from one `smolvm machine ls` per snapshot, not a probe per
-// machine (a --watch re-emit would otherwise spawn N+1 subprocesses).
-func TestRowForSmolUsesSnapshot(t *testing.T) {
-	a := &App{Paths: testPaths(t.TempDir())}
-	m := &config.Machine{Name: "vm", Backend: config.BackendSmol}
+// machine (a --watch re-emit would otherwise spawn N+1 subprocesses), with
+// smolvm's own sizes for a stopped VM too (config.md §3), and `down` for a
+// managed VM with saved forwards and no daemon, since the list is on this
+// host.
+func TestSmolRowsUseSnapshot(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeLocalSmolvm(t, `[{"name":"vm","state":"stopped","memory_mib":2048,"storage_gb":20,"cpus":4,"created_at":100},{"name":"other","state":"running","created_at":7}]`)
+	if err := config.WriteManagedMarker(a.Paths, "vm", "100"); err != nil {
+		t.Fatal(err)
+	}
 	if err := config.SavePorts(a.Paths, "vm", []string{"80:80"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.rowFor(m, smolMachines{available: false}).state; got != "?" {
-		t.Errorf("smolvm missing: state = %q, want ?", got)
+	if err := config.SavePorts(a.Paths, "other", []string{"81:81"}); err != nil {
+		t.Fatal(err)
 	}
-	snap := smolMachines{available: true, byName: map[string]backend.SmolMachine{
-		"vm":    {Name: "vm", State: "running", MemoryMiB: 2048, StorageGB: 20, CPUs: 4, CreatedAt: "100"},
-		"other": {Name: "other", State: "stopped"},
-	}}
-	if r := a.rowFor(m, snap); r.state != "running" || !r.running || !r.exists || plainForwards(r) != "down" {
-		t.Errorf("running vm: row = %+v, forwards %q", r, plainForwards(r))
+	rows, err := a.gatherRows(statusScope{local: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Sizes are smolvm's, for a stopped VM too (config.md §3).
-	// Stopped, with no daemon to ask: still `down`, since the saved list
-	// is on this host.
-	snap.byName["vm"] = backend.SmolMachine{Name: "vm", State: "stopped", MemoryMiB: 2048, StorageGB: 20, CPUs: 4, CreatedAt: "100"}
-	if r := a.rowFor(m, snap); r.state != "stopped" || plainForwards(r) != "down" || r.mem != 2048 || r.disk != 20 || r.cpus != 4 {
-		t.Errorf("stopped vm: row = %+v, forwards %q, want stopped/down with sizes", r, plainForwards(r))
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
 	}
-	// No dormant state: a conf whose VM is gone is a stale conf, `?`.
-	delete(snap.byName, "vm")
-	if r := a.rowFor(m, snap); r.state != "?" || plainManaged(r) != "-" || r.note == "" {
-		t.Errorf("unknown vm: row = %+v, want ? / - with a note", r)
+	vm, other := rows[0], rows[1]
+	if vm.state != "stopped" || plainForwards(vm) != "down" || vm.mem != 2048 || vm.disk != 20 || vm.cpus != 4 || plainManaged(vm) != "managed" {
+		t.Errorf("vm = %+v, forwards %q", vm, plainForwards(vm))
+	}
+	// An unmanaged VM's stray ports file reads `-`: nothing may bring it up.
+	if other.state != "running" || plainForwards(other) != "-" || plainManaged(other) != "unmanaged" {
+		t.Errorf("other = %+v", other)
+	}
+	if data, _ := os.ReadFile(log); strings.Count(string(data), "machine ls --json") != 1 {
+		t.Errorf("smolvm calls =\n%s\nwant one listing", data)
 	}
 }

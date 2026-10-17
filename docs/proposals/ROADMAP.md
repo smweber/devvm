@@ -7,7 +7,7 @@ file wins for sequencing and the design doc wins for mechanism.
 
 Status, 2026-10-17: the **hubs + browser bridge** plan (`hub.md` v3.4,
 `browser-bridge.md` v2.6) landed in full as v0.1.13–v0.1.15. The **config
-redesign** (`config.md` v3.1) is in progress, steps 1–4 landed. **In
+redesign** (`config.md` v3.1) is in progress, steps 1–5 landed; step 6 (hand migration) under way. **In
 parallel** since 2026-10-17, in its own jj workspace: the provider
 backend's independent steps 0–1 (`providers.md` v1.2; see below). After the
 redesign: the known issues below, then the ssh agent exec for remote boxes,
@@ -57,8 +57,28 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
   raw Ubuntu VM (`dev` user, prereqs, agent, `BROWSER`, forwards after),
   idempotent re-run. The remote-box run on `cloud` is pending: the box was
   OOM-killing apt at the time (its own fault, see below).
-- Steps 5 (new loader + `config` noun) and 6 (hand migration of the three
-  hosts, release) to come.
+- **Step 5 landed 2026-10-17**: `devvm.toml` is the only config file
+  (`[templates.*]` + `[machines.*]` with `backend ∈ remote|hub` mandatory,
+  `managed` default false, `host`/`user`/`transport`/`mosh_server`/
+  `identity`/`connect_timeout`; unknown tables and keys rejected); the old
+  `machines/*.toml` loader, `config.toml`, `defaults`, remote/hub `create`,
+  `repos rm/clone`, `--no-clone` and the root-adoption conf write are gone.
+  `config {path,show,edit,check,add,rm}`: `add` appends one table, `rm` cuts
+  one table's lines, both re-parse and deep-compare before an atomic rename
+  and refuse layouts they can't edit safely; `config rm` plans the edit,
+  then stops local daemons (refusing on live forwards without `--force`),
+  commits, and clears ports/reach/pin/cache. `delete` on an entry points at
+  `config rm`. First run on the new build seeds managed markers and saved
+  forwards from the old tree and prints a one-line pointer until `machines/`
+  is removed. Old-hub rows (`remote-managed`/`remote-unmanaged`, four
+  fields, `dormant`) are normalized. Live on the ThinkPad: pointer, seeds,
+  `machines/` removed with both VMs still managed, `config add/check/show/rm`
+  round trip, `delete` refusal.
+- **Step 6, hand migration**: ThinkPad done (only a smol conf; `machines/`
+  moved to `~/devvm-machines.bak`). This devvm guest done (`devvm.toml` with
+  the default template and `cloud`/`h`/`scottdev3`/`tp`; old tree in
+  `~/devvm-old-config/`). `cloud` pending (the box was OOM, see known
+  issues). Release after it.
 
 ## Provider backend, steps 0–1 (in parallel, since 2026-10-17)
 

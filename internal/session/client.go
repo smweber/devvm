@@ -50,7 +50,19 @@ func dialCancel(p config.Paths, name string, cancel <-chan struct{}) (*Client, e
 	if err != nil {
 		return nil, err
 	}
-	return c.waitComeUp(exited, logOff, cancel, time.Now().Add(comeUpWait(name)))
+	return c.waitComeUp(exited, logOff, cancel, time.Now().Add(comeUpWait(p, name)))
+}
+
+// connectTimeoutFor is the ssh ConnectTimeout the daemon for name dials
+// with: its entry's connect_timeout (a hub machine's is its hub's), unless
+// the env override is set. A name with no entry (a smol VM) or a file that
+// does not parse gets the global value.
+func connectTimeoutFor(p config.Paths, name string) int {
+	m, err := config.LoadAny(p, config.DisplayName(name))
+	if err != nil {
+		return backend.SSHConnectTimeout()
+	}
+	return backend.SSHConnectTimeoutFor(m)
 }
 
 // comeUpWait is how long Dial waits for a spawned daemon to listen. The
@@ -62,8 +74,8 @@ func dialCancel(p config.Paths, name string, cancel <-chan struct{}) (*Client, e
 // to its marker and the relay's open reply, which share one deadline
 // (hubOpenTimeout; the hub's own Dial of its daemon runs inside it), plus
 // slack for the hub's login shell: about 75s at the defaults.
-func comeUpWait(name string) time.Duration {
-	connect := time.Duration(backend.SSHConnectTimeout()) * time.Second
+func comeUpWait(p config.Paths, name string) time.Duration {
+	connect := time.Duration(connectTimeoutFor(p, name)) * time.Second
 	if connect > 60*time.Second {
 		connect = 60 * time.Second // an env override must not turn this into a minutes-long hang
 	}

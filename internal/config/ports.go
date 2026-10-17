@@ -157,6 +157,42 @@ func LockPorts(p Paths, name string) (unlock func(), err error) {
 	return func() { f.Close() }, nil // closing releases the flock
 }
 
+// legacyConfNames lists the old per-machine confs, machines/NAME.toml.
+func legacyConfNames(p Paths) ([]string, error) {
+	entries, err := os.ReadDir(LegacyMachinesDir(p))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if n, ok := strings.CutSuffix(e.Name(), ".toml"); ok && !e.IsDir() && ValidName(n) == nil {
+			names = append(names, n)
+		}
+	}
+	return names, nil
+}
+
+// LegacySmolConfs names every old per-machine conf with `backend = "smol"`
+// (decoded leniently, like MigratePorts): the VMs a devvm from before the
+// managed markers made, which the marker seed (backend.SeedLegacyMarkers)
+// marks so they stay managed across the upgrade. A conf that does not
+// parse is skipped: this is a best-effort seed, not the all-or-nothing
+// forwards one.
+func LegacySmolConfs(p Paths) []string {
+	names, _ := legacyConfNames(p)
+	var out []string
+	for _, n := range names {
+		var c legacyConf
+		if _, err := toml.DecodeFile(filepath.Join(LegacyMachinesDir(p), n+".toml"), &c); err == nil && c.Backend == BackendSmol {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // SavedPortsNames returns the display name of every machine with a saved
 // forwards file, so enumeration (listMachines, `delete HUB`, `create HUB`)
 // sees a hub machine this host has forwards for even when the hub's listing
@@ -183,9 +219,9 @@ func SavedPortsNames(p Paths) ([]string, error) {
 }
 
 // legacyConf is just the fields an old conf kept saved forwards in, decoded
-// without Load's validation: a conf Load refuses (an unknown backend, a hub
-// carrying ports) still had a list worth keeping, and the migration runs
-// only once.
+// with no validation: a conf the old loader refused (an unknown backend, a
+// hub carrying ports) still had a list worth keeping, and the migration
+// runs only once.
 type legacyConf struct {
 	Backend  string   `toml:"backend"`
 	Ports    []string `toml:"ports"`
@@ -196,7 +232,12 @@ type legacyConf struct {
 
 // MigratePorts is the one-time move of saved forwards out of config: when
 // <State>/ports does not exist yet, it is created holding a file for every
-// conf with `ports` and every hub conf `[machines.NAME]` table with `ports`.
+// old per-machine conf (machines/*.toml, the layout before devvm.toml) with
+// `ports` and every old hub conf `[machines.NAME]` table with `ports`. It
+// outlives the old loader on purpose: it reads those two keys and nothing
+// else, and it spares the hand migration (config.md §8) copying forwards
+// on a host whose ports dir does not exist yet. With no machines/ it just
+// creates the empty dir.
 // The confs are left untouched (VM commands never write config) and their
 // `ports` are never read again. Doing it once for the whole directory, not
 // per machine on first read, is what keeps a dropped list dropped: `delete
@@ -221,7 +262,7 @@ func MigratePorts(p Paths) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	names, err := List(p.Config)
+	names, err := legacyConfNames(p)
 	if err != nil {
 		return fmt.Errorf("migrate saved forwards: %w", err)
 	}
@@ -238,7 +279,7 @@ func MigratePorts(p Paths) error {
 	}
 	for _, n := range names {
 		var c legacyConf
-		path := confPath(p.Config, n)
+		path := filepath.Join(LegacyMachinesDir(p), n+".toml")
 		if _, err := toml.DecodeFile(path, &c); err != nil {
 			return fmt.Errorf("migrate saved forwards: parse %s: %w", path, err)
 		}

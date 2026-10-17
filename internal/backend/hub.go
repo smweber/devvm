@@ -46,7 +46,7 @@ type Proxier interface {
 	// o.Stdin/Stdout/Stderr are wired through as for any Run.
 	Proxy(ctx context.Context, o ExecOpts, argv ...string) error
 	// ProxyInteractive runs the same with a terminal, for attach and shell.
-	// transport is the hub conf's; see hubBackend.ProxyInteractive for why
+	// transport is the hub entry's; see hubBackend.ProxyInteractive for why
 	// only ssh is used today.
 	ProxyInteractive(transport string, argv ...string) error
 }
@@ -82,7 +82,7 @@ func (b *hubBackend) Proxy(ctx context.Context, o ExecOpts, argv ...string) erro
 }
 
 // ProxyInteractive runs a proxied leaf with a terminal: plain `ssh -t` on
-// the hub's ControlMaster, whatever the hub conf's transport says. mosh is
+// the hub's ControlMaster, whatever the hub entry's transport says. mosh is
 // not used for this hop yet: the wrapped command carries quotes and `$`
 // that would have to survive mosh's own re-quoting of the remote command
 // on the way to mosh-server, which today's mosh path never exercises (it

@@ -54,12 +54,12 @@ func listener(t *testing.T) int {
 
 func saveBox(t *testing.T, a *App, name string) {
 	t.Helper()
-	if err := config.NewRemote(name, config.BackendRemoteManaged, "u@"+name).Save(a.Paths.Config); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote(name, true, "u@"+name)); err != nil {
 		t.Fatal(err)
 	}
 }
 
-var verifiedProbe = regexp.MustCompile(`^box\tremote-managed\treachable\t-\tmanaged\tverified=\d+:probe\n$`)
+var verifiedProbe = regexp.MustCompile(`^box\tremote\treachable\t-\tmanaged\tverified=\d+:probe\n$`)
 
 // One-shot `status --plain` probes every remote box before printing; a
 // --local one reads the cache and runs no ssh at all.
@@ -76,7 +76,7 @@ func TestStatusPlainProbesRemotes(t *testing.T) {
 	if e := reach.Read(a.Paths, "box"); e.State != reach.Reachable || e.How != reach.HowProbe {
 		t.Errorf("cache = %+v", e)
 	}
-	// The cache is under cache/, never run/ or machines/ (the watched dirs).
+	// The cache is under cache/, never run/ or the config dir (the watched dirs).
 	if _, err := os.Stat(reach.Path(a.Paths, "box")); err != nil {
 		t.Error(err)
 	}
@@ -88,7 +88,7 @@ func TestStatusPlainProbesRemotes(t *testing.T) {
 	if err := runTree(t, a, "status", "--plain", "--local"); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.Stdout.(*bytes.Buffer).String(); got != "box\tremote-managed\tunreachable\t-\tmanaged\tverified=123:probe\n" {
+	if got := a.Stdout.(*bytes.Buffer).String(); got != "box\tremote\tunreachable\t-\tmanaged\tverified=123:probe\n" {
 		t.Errorf("--local plain = %q", got)
 	}
 	if lines := sshLines(t, log); len(lines) != 0 {
@@ -198,7 +198,7 @@ func TestWatchRefreshRunsOneRound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := newBlockWriter()
-	go func() { _ = watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond, nil, refresh) }()
+	go func() { _ = watchStatus(ctx, dir, okSnap(snapshot), nil, out, 50*time.Millisecond, nil, refresh) }()
 	out.next(t, "before\n")
 
 	// An ordinary change: no round.
@@ -279,7 +279,7 @@ func TestWatchProbesOnStartAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.until(t, "the box unreachable", func(b string) bool {
-		return strings.HasPrefix(b, "box\tremote-managed\tunreachable\t-\tmanaged\tverified=")
+		return strings.HasPrefix(b, "box\tremote\tunreachable\t-\tmanaged\tverified=")
 	})
 	cancel()
 	<-done
@@ -297,7 +297,7 @@ func TestNoteContact(t *testing.T) {
 		}
 		return err
 	}
-	box := config.NewRemote("box", config.BackendRemoteManaged, "u@box")
+	box := config.NewRemote("box", true, "u@box")
 	for _, tc := range []struct {
 		transport string
 		err       error
@@ -311,7 +311,7 @@ func TestNoteContact(t *testing.T) {
 			t.Errorf("%s %v recorded %+v", tc.transport, tc.err, e)
 		}
 	}
-	a.noteContact(config.NewSmol("vm"), "shell", config.TransportSSH, nil)
+	a.noteContact(&config.Machine{Name: "vm", Backend: config.BackendSmol}, "shell", config.TransportSSH, nil)
 	if _, err := os.Stat(reach.Path(a.Paths, "vm")); !os.IsNotExist(err) {
 		t.Errorf("a smol VM got a reach file: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestCommandsRecordContact(t *testing.T) {
 		t.Run(argv[0], func(t *testing.T) {
 			a := newTestApp(t)
 			reachSSH(t, 1)
-			if err := config.NewRemote("box", config.BackendRemoteUnmanaged, "u@box").Save(a.Paths.Config); err != nil {
+			if err := writeEntry(a.Paths, config.NewRemote("box", false, "u@box")); err != nil {
 				t.Fatal(err)
 			}
 			if err := runTree(t, a, argv...); err != nil {
@@ -388,7 +388,7 @@ func TestHubRowVerifiedPassesThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "h\thub\treachable\t-\t-\t-\n" +
-		"h/box\tremote-managed\treachable\t-\tmanaged\tverified=123:probe\n" +
+		"h/box\tremote\treachable\t-\tmanaged\tverified=123:probe\n" +
 		"h/old\tsmol\tstopped\t-\t-\t-\n" +
 		"h/web\tsmol\trunning\t-\tmanaged\t-\n"
 	if out.String() != want {

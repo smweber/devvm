@@ -185,9 +185,9 @@ func TestRemoteAttachSendsNoSetEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	for _, be := range []string{config.BackendRemoteManaged, config.BackendRemoteUnmanaged} {
+	for _, be := range []string{"managed", "unmanaged"} {
 		os.Remove(log)
-		b := &sshBackend{m: config.NewRemote("cloud", be, "dev@cloud"), paths: config.LegacyPaths(t.TempDir())}
+		b := &sshBackend{m: config.NewRemote("cloud", be == "managed", "dev@cloud"), paths: config.LegacyPaths(t.TempDir())}
 		if err := b.Attach(config.TransportSSH); err != nil {
 			t.Fatalf("%s: Attach: %v", be, err)
 		}

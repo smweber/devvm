@@ -143,10 +143,10 @@ func TestBrowserSmolOnly(t *testing.T) {
 		t.Errorf("unmanaged smol: installs %v, runs %q; want none", installs, rb.runs)
 	}
 
-	for _, be := range []string{config.BackendRemoteManaged, config.BackendRemoteUnmanaged} {
+	for _, be := range []string{"managed", "unmanaged"} {
 		installs = nil
 		rb := &recBackend{}
-		m := config.NewRemote("cloud", be, "dev@cloud")
+		m := config.NewRemote("cloud", be == "managed", "dev@cloud")
 		if err := Browser(context.Background(), rb, m); err != nil {
 			t.Fatalf("%s: %v", be, err)
 		}

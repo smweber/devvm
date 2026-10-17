@@ -34,12 +34,16 @@ type reachTiming struct {
 
 var reachTimes = reachTiming{deadline: 5 * time.Second, parallel: 16}
 
-// remoteConfs is every probeable registry entry (Machine.Probeable), for a round.
+// remoteConfs is every probeable `[machines.*]` entry (Machine.Probeable),
+// for a round. A file that does not parse has none.
 func (a *App) remoteConfs() []*config.Machine {
-	names, _ := config.List(a.Paths.Config)
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return nil
+	}
 	var out []*config.Machine
-	for _, n := range names {
-		if m, err := config.Load(a.Paths.Config, n); err == nil && m.Probeable() {
+	for _, m := range f.Machines() {
+		if m.Probeable() {
 			out = append(out, m)
 		}
 	}

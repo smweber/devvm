@@ -63,7 +63,7 @@ func (a *App) runSession(name string) error {
 
 // resolveForwards is resolve for the ports verbs, which also act on a
 // machine on a hub: their forwards are this host's (hub.md §7). A HUB/NAME
-// resolves from the hub conf alone, never dialing; whether the machine
+// resolves from the hub entry alone, never dialing; whether the machine
 // exists and runs is the hub's answer when the daemon's __session starts.
 func (a *App) resolveForwards(name string) (*config.Machine, backend.Backend, error) {
 	if ok, err := hubMachineArg([]string{name}); err != nil {
@@ -84,24 +84,20 @@ func (a *App) savedPorts(name string) ([]string, error) {
 // editPorts rewrites a machine's saved forwards, local or HUB/NAME alike,
 // under the file's lock (config.LockPorts): two `ports add` for one machine
 // must both land, as two for machines on one hub did under the old hub-conf
-// flock. A machine whose conf (its hub's, for HUB/NAME) existed when the
-// edit began but is gone once the lock is held was deleted meanwhile;
-// `delete` removes the conf before it clears the file under this lock, so
-// the edit refuses rather than leave a stray file behind. An unregistered
-// smol VM has no conf to check. An edit that changes nothing writes nothing.
+// flock. A machine that existed when the edit began but is gone once the
+// lock is held was deleted meanwhile (`config rm` removes the entry, and
+// `delete` a smol VM's marker, before clearing the file under this lock),
+// so the edit refuses rather than leave a stray file behind. An edit that
+// changes nothing writes nothing.
 func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
-	conf := m.Name
-	if m.IsHubMachine() {
-		conf = m.Hub.Name
-	}
-	registered := config.Exists(a.Paths.Config, conf)
+	registered := a.stillThere(m)
 	unlock, err := config.LockPorts(a.Paths, m.Name)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if registered && !config.Exists(a.Paths.Config, conf) {
-		return fmt.Errorf("'%s' was deleted while its forwards were being edited", conf)
+	if registered && !a.stillThere(m) {
+		return fmt.Errorf("'%s' was deleted while its forwards were being edited", m.Name)
 	}
 	before, err := a.savedPorts(m.Name)
 	if err != nil {
@@ -112,6 +108,22 @@ func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
 		return nil
 	}
 	return config.SavePorts(a.Paths, m.Name, after)
+}
+
+// stillThere is editPorts' "was it deleted meanwhile" check, read from host
+// files only: the entry (the hub's, for HUB/NAME) for a box in devvm.toml,
+// the managed marker for a smol VM devvm made. A smol VM devvm did not make
+// has neither, so it never reads as deleted.
+func (a *App) stillThere(m *config.Machine) bool {
+	switch {
+	case m.IsHubMachine():
+		return config.Exists(a.Paths, m.Hub.Name)
+	case m.IsRemote():
+		return config.Exists(a.Paths, m.Name)
+	default:
+		_, ok, _ := config.ReadManagedMarker(a.Paths, m.Name)
+		return ok
+	}
 }
 
 // dialForwards dials the machine's forward daemon. A hub machine's daemon
@@ -137,7 +149,7 @@ func (a *App) startHubMachine(cmd *cobra.Command, args []string) error {
 	if err := a.proxy(cmd, args); err != nil {
 		return err
 	}
-	if _, err := config.LoadHubMachine(a.Paths.Config, args[0]); err != nil {
+	if _, err := config.LoadHubMachine(a.Paths, args[0]); err != nil {
 		return err
 	}
 	if saved, err := a.savedPorts(args[0]); err != nil || len(saved) == 0 {

@@ -163,7 +163,7 @@ func TestLoginShellArgvRunsUnderLoginShell(t *testing.T) {
 // the state dir, never beside the confs.
 func TestSSHStateFilesUnderStateDir(t *testing.T) {
 	p := config.Paths{Config: t.TempDir(), State: t.TempDir()}
-	b, err := For(config.NewRemote("cloud", config.BackendRemoteManaged, "dev@cloud"), p)
+	b, err := For(config.NewRemote("cloud", true, "dev@cloud"), p)
 	if err != nil {
 		t.Fatal(err)
 	}

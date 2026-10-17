@@ -140,8 +140,8 @@ func TestAuthRemoteTakesPrivateSession(t *testing.T) {
 	log := &thinLog{}
 	stubErr := errors.New("stub: install refused")
 	stubInstall(t, log, stubErr)
-	for _, be := range []string{config.BackendRemoteManaged, config.BackendRemoteUnmanaged} {
-		m := &config.Machine{Name: "box", Backend: be}
+	for _, be := range []string{"managed", "unmanaged"} {
+		m := config.NewRemote("box", be == "managed", "")
 		err := Run(context.Background(), guestBackend{log: log}, m, []string{"github"}, Options{
 			OpenBridge: func() (Bridge, error) { log.add("dial"); return nil, errors.New("no daemon") },
 		})

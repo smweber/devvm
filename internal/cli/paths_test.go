@@ -33,7 +33,7 @@ func TestRootPathFlags(t *testing.T) {
 	} {
 		a := newApp()
 		root := a.rootCmd()
-		root.SetArgs(append(tt.args, "defaults", "path"))
+		root.SetArgs(append(tt.args, "config", "path"))
 		a.Stdout = io.Discard
 		if err := root.Execute(); err != nil {
 			t.Fatalf("%v: %v", tt.args, err)

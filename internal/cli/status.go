@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,8 +18,7 @@ import (
 // statusGroups is the display order for `status`: one section per backend.
 var statusGroups = []struct{ backend, title string }{
 	{config.BackendSmol, "smol"},
-	{config.BackendRemoteManaged, "remote-managed"},
-	{config.BackendRemoteUnmanaged, "remote-unmanaged"},
+	{config.BackendRemote, "remote"},
 	{config.BackendHub, "hub"}, // every hub's own row followed by its machines, whatever backend the hub reports for them
 }
 
@@ -30,7 +30,7 @@ var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
 const (
-	ownManaged   = "managed"   // devvm made it (smol: the marker matches) or shapes it (remote-managed)
+	ownManaged   = "managed"   // devvm made it (smol: the marker matches) or shapes it (remote, managed = true)
 	ownUnmanaged = "unmanaged" // a smol VM devvm did not create, or an adopted remote host
 	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM of the same name
 	ownNone      = "-"         // hubs; a hub machine whose hub did not say; a row nothing settled
@@ -47,7 +47,7 @@ func ownership(managed bool) string {
 type statusRow struct {
 	name        string
 	backend     string
-	state       string // running | stopped | reachable | unreachable | broken conf | ?
+	state       string // running | stopped | reachable | unreachable | ? (an older hub may send others)
 	hub         string // the hub this row belongs to (its own row included); "" for a local machine
 	exists      bool
 	running     bool
@@ -58,7 +58,7 @@ type statusRow struct {
 	fwds        fwdSummary
 	saved       bool         // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
 	managed     string       // the --plain fifth column: managed | unmanaged | shadowed | -
-	note        string       // e.g. "no VM (stale conf)"
+	note        string       // a remark for the human table, e.g. "this host"
 	reach       *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
 	hubVerified string       // a hub machine's sixth column as its hub sent it (`verified=…`); "" when it sent none
 	m           *config.Machine
@@ -77,7 +77,10 @@ type fwdSummary struct {
 // listings), grouped by backend. verbose adds a lifecycle track, live smol
 // resource sizes, and per-machine forward detail. local stops at this host.
 func (a *App) runStatusAll(verbose, local bool) error {
-	rows := a.gatherRows(statusScope{local: local, probe: !local})
+	rows, err := a.gatherRows(statusScope{local: local, probe: !local})
+	if err != nil {
+		return err
+	}
 	if len(rows) == 0 {
 		fmt.Fprintln(a.Stdout, "No machines. Create one with 'devvm create'.")
 		return nil
@@ -114,7 +117,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // scraping the human-formatted table. The token sets are the format's
 // contract:
 //
-//	state:    running | stopped | reachable | unreachable | broken conf | ?
+//	state:    running | stopped | reachable | unreachable | ?
 //	forwards: up:N | reconnecting:N | down | -
 //	managed:  managed | unmanaged | shadowed | -
 //	verified: verified=<unix>:<how> | verified=- | -
@@ -122,7 +125,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // The fifth column was appended (config.md §7), so a consumer reading four
 // fields still works. `unmanaged` is a smol VM devvm did not create (it
 // supports status/start/stop/shell/exec only; `setup --adopt` hands it
-// over) or an adopted remote host; `shadowed` is a registry entry hiding a
+// over) or an adopted remote host; `shadowed` is a entry hiding a
 // local smol VM of the same name (the entry wins for every command); `-` is
 // a hub, or a machine on a hub too old to emit the column: never
 // `unmanaged`, which would be a claim nobody made. `dormant` is gone (a
@@ -135,7 +138,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // answered. `down` means ports are configured but none is up (the normal
 // state of a stopped VM, so a UI should only flag it on a running machine);
 // `-` means nothing is configured.
-// A remote box (remote-managed, remote-unmanaged) is `reachable` when a
+// A remote box (backend `remote`, managed or not) is `reachable` when a
 // live ControlMaster answered or its last probe connected, `unreachable`
 // when its last probe failed, `?` when it was never probed or cannot be (an
 // alias behind ProxyJump/ProxyCommand): its reach cache, which this
@@ -145,19 +148,28 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // the command that talked to the box: attach, shell, exec, setup}, or
 // `verified=-` for a remote box with nothing established; a hub machine
 // carries its hub's sixth column through (a newer hub's `verified=…`), and
-// every other row has `-`. `?` / `broken conf` otherwise mean the backend could not be
-// asked / the conf did not load. Consumers should treat any other token as
-// "unknown", not fail.
+// every other row has `-`. `?` otherwise means the backend could not be
+// asked. A devvm.toml that does not parse fails the whole listing (an error
+// on stderr, non-zero exit) rather than rendering rows that may be wrong:
+// an entry shadows a smol VM, and a broken file cannot say which. `broken
+// conf` is gone with the per-machine confs, though an older hub may still
+// send it. Consumers should treat any other token as "unknown", not fail.
 // `--watch` re-emits this listing on devvm-made changes (see watchStatus); the
 // format is the same, so a consumer parses one thing.
 //
 // Hubs add no column: a hub's own row is `HUB<TAB>hub<TAB>reachable|unreachable`,
 // and a machine on it is `HUB/NAME` with the backend and state the hub
-// reported (`unreachable` for every row of a hub that did not answer, from
+// reported (an older hub's `remote-managed`/`remote-unmanaged` read as
+// `remote` plus the managed column; a hub's remote box that is also an
+// entry here is not repeated, since the direct path is the right one) (`unreachable` for every row of a hub that did not answer, from
 // the cache) and this host's own forwards column. A consumer that wants to
 // group by hub splits column 1 on `/`. --local lists this host only.
 func (a *App) runStatusPlain(local bool) error {
-	for _, r := range a.gatherRows(statusScope{local: local, probe: !local}) {
+	rows, err := a.gatherRows(statusScope{local: local, probe: !local})
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
 		fmt.Fprint(a.Stdout, plainLine(r))
 	}
 	return nil
@@ -238,13 +250,16 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 }
 
 // rowNote is the human table's trailing remark: a VM devvm did not create
-// (with what hands it over), an entry shadowing a VM, a stale conf.
+// (with what hands it over), an adopted remote box, an entry shadowing a
+// VM, the hub entry naming this host.
 func rowNote(r statusRow) string {
 	switch {
 	case r.note != "":
 		return "  (" + r.note + ")"
 	case r.hub == "" && r.managed == ownUnmanaged && r.backend == config.BackendSmol:
 		return "  (unmanaged: " + backend.AdoptHint(r.name) + ")"
+	case r.hub == "" && r.managed == ownUnmanaged:
+		return "  (adopted: devvm never modifies it)"
 	case r.managed == ownShadowed:
 		return "  (shadows a local smol VM of the same name)"
 	}
@@ -288,8 +303,8 @@ func (a *App) renderVerboseDetail(r statusRow) {
 }
 
 // statusScope says how far a listing reaches. local stops at this host: no
-// hub conf is read, nothing is dialed (hub.md §5: it is what a hub runs for
-// *its* callers, so hubs never fan out). Otherwise every hub conf
+// hub is read, nothing is dialed (hub.md §5: it is what a hub runs for
+// *its* callers, so hubs never fan out). Otherwise every hub entry
 // contributes its rows — fetched now when listings is nil, or, under
 // --watch, the latest block from each held pipe.
 //
@@ -300,21 +315,26 @@ func (a *App) renderVerboseDetail(r statusRow) {
 type statusScope struct {
 	local    bool
 	probe    bool
-	hubs     []*config.Machine // the hub confs, when the caller already loaded them (--watch); nil loads them here
+	hubs     []*config.Machine // the hub entries, when the caller already loaded them (--watch); nil loads them here
 	listings hubListings
 }
 
-// gatherRows resolves every local machine listMachines knows plus every
-// local smol VM into a statusRow, then (unless local) each hub's block: its
-// own row and a row per machine on it (hubRows).
+// gatherRows resolves every `[machines.*]` entry plus every local smol VM
+// into a statusRow, then (unless local) each hub's block: its own row and a
+// row per machine on it (hubRows). A devvm.toml that does not parse is the
+// error, and no rows: see runStatusPlain.
 //
 // smolvm is listed once per call and every smol row is derived from that one
 // listing (rather than the backend's per-machine Status probe): a snapshot is
 // re-taken on every --watch event, and N+1 `smolvm machine ls` subprocesses
 // per change would be the polling this command exists to avoid. The same
 // listing settles each VM's ownership (the smol source's rule,
-// backend.SmolManaged) and carries its sizes.
-func (a *App) gatherRows(sc statusScope) []statusRow {
+// backend.SmolRecord) and carries its sizes.
+func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return nil, err
+	}
 	if sc.probe {
 		probed := make(chan struct{})
 		go func() { defer close(probed); a.reachRound(context.Background(), a.remoteConfs()) }()
@@ -327,34 +347,22 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 		<-probed
 	}
 	var rows []statusRow
-	seen := map[string]bool{}
 	smols := smolSnapshot()
-	for _, name := range a.listMachines() {
-		if _, _, onHub, _ := config.SplitHubName(name); onHub {
-			continue // rendered under its hub below, or not at all with --local
-		}
-		seen[name] = true
-		m, err := config.Load(a.Paths.Config, name)
-		if err != nil {
-			r := statusRow{name: name, backend: "?", state: "broken conf", managed: ownNone}
-			smols.shadow(&r)
-			rows = append(rows, r)
-			continue
-		}
+	for _, m := range f.Machines() {
 		if m.IsHub() {
 			continue // its row comes with its listing
 		}
 		rows = append(rows, a.rowFor(m, smols))
 	}
-	// Local smol VMs with no registry entry: discovered, the common case
-	// once confs go (config.md §2). One devvm made reads managed and can
-	// hold forwards; any other reads unmanaged, and a stray ports file for
-	// it reads `-`, since nothing may bring its forwards up.
+	// Local smol VMs with no entry: discovered (config.md §2). One devvm
+	// made reads managed and can hold forwards; any other reads unmanaged,
+	// and a stray ports file for it reads `-`, since nothing may bring its
+	// forwards up. One shadowed by an entry has no row of its own.
 	for _, sm := range smols.list {
-		if seen[sm.Name] {
+		if _, ok := f.Entries[sm.Name]; ok {
 			continue
 		}
-		managed := backend.SmolManaged(a.Paths, sm, false)
+		managed := backend.SmolRecord(a.Paths, sm).Managed()
 		r := smolRow(statusRow{name: sm.Name, backend: config.BackendSmol, managed: ownership(managed)}, sm)
 		r.fwds = a.forwardSummary(sm.Name)
 		if managed {
@@ -363,7 +371,7 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 		rows = append(rows, r)
 	}
 	if sc.local {
-		return rows
+		return rows, nil
 	}
 	hubs := sc.hubs
 	if hubs == nil {
@@ -373,12 +381,18 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 	if listings == nil {
 		listings = a.fetchHubListings(context.Background(), hubs)
 	}
+	host, _ := os.Hostname()
 	for _, hub := range hubs {
-		hr := a.hubRows(hub, listings[hub.Name])
-		smols.shadow(&hr[0]) // the hub's own row: a registry entry like any other
+		hr := a.hubRows(hub, listings[hub.Name], f.Entries)
+		smols.shadow(&hr[0]) // the hub's own row: an entry like any other
+		if hub.Name == host {
+			// Cosmetic only (config.md §1): the shared file names this host
+			// as a hub; nothing behaves differently for it.
+			hr[0].note = "this host"
+		}
 		rows = append(rows, hr...)
 	}
-	return rows
+	return rows, nil
 }
 
 // hubRows renders one hub: its own row, then a row per machine on it. In
@@ -396,7 +410,12 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 // hub's. With no fresh answer every row of the hub is `unreachable`,
 // whatever the cache remembers: a cached `running` would be a claim nobody
 // is making.
-func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
+//
+// local is this host's own entries: a hub's row for a remote box this host
+// also has an entry for is hidden (config.md §7: the direct path is the
+// right one, and the hub is not a jump host), unless this host has forwards
+// for the HUB/NAME form. nil hides nothing.
+func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config.Entry) []statusRow {
 	state := "reachable"
 	if !l.fresh {
 		state = "unreachable"
@@ -405,6 +424,15 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 	byName := map[string]hubRow{}
 	names := map[string]bool{}
 	for _, r := range l.rows {
+		// By name, and only a remote row against a remote entry: the
+		// listing carries no host to compare, and a hub entry of that name
+		// here is another thing entirely.
+		if e, dup := local[r.name]; dup && e.Backend == config.BackendRemote && r.backend == config.BackendRemote {
+			display := config.JoinHubName(hub.Name, r.name)
+			if !a.hasSavedPorts(display) && !a.forwardSummary(display).daemon {
+				continue
+			}
+		}
 		byName[r.name], names[r.name] = r, true
 	}
 	for _, display := range append(savedHubPorts(a.Paths), liveHubSockets(a.Paths)...) {
@@ -467,7 +495,7 @@ func smolSnapshot() smolMachines {
 	return s
 }
 
-// shadow marks a registry entry's row when a local smol VM has the same
+// shadow marks a entry's row when a local smol VM has the same
 // name (config.md §2): the entry wins for every command and the VM gets no
 // row of its own, so the collision is said here rather than hidden.
 func (s smolMachines) shadow(r *statusRow) {
@@ -494,28 +522,11 @@ func (a *App) hasSavedPorts(name string) bool {
 }
 
 func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
-	r := statusRow{name: m.Name, backend: m.Backend, m: m, mem: m.Memory, disk: m.Disk, host: m.SSHHost, saved: a.hasSavedPorts(m.Name)}
-	if !m.IsRemote() {
-		// An old per-machine smol conf (until step 5): the VM is smolvm's.
-		r.managed = ownNone
-		if !smols.available {
-			r.state = "?"
-			return r
-		}
-		sm, ok := smols.byName[m.Name]
-		if !ok {
-			r.state, r.note = "?", "no VM: stale conf, 'devvm delete "+m.Name+"' drops it"
-			return r
-		}
-		r = smolRow(r, sm)
-		r.managed = ownership(backend.SmolManaged(a.Paths, sm, true))
-		r.fwds = a.forwardSummary(m.Name)
-		return r
-	}
+	r := statusRow{name: m.Name, backend: m.Backend, m: m, host: m.SSHHost, saved: a.hasSavedPorts(m.Name)}
 	r.managed = ownership(m.Managed())
 	smols.shadow(&r)
 	if _, err := backend.For(m, a.Paths); err != nil {
-		r.state = "broken conf"
+		r.state = "?"
 		return r
 	}
 	// The reach cache, never a live call: this runs on every --watch
@@ -578,7 +589,7 @@ func (a *App) runStatus(name string) error {
 			fmt.Fprintf(a.Stdout, "  managed: no (not created by devvm: status, start, stop, shell and exec only; %s)\n", backend.AdoptHint(m.Name))
 		}
 	} else {
-		// A registry entry: no smolvm call (a shadowed VM shows in the
+		// A entry: no smolvm call (a shadowed VM shows in the
 		// listing's fifth column, not here).
 		st, err := b.Status()
 		if err != nil {
@@ -586,6 +597,13 @@ func (a *App) runStatus(name string) error {
 		}
 		fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
 		fmt.Fprintf(a.Stdout, "  state: %s\n", st.Raw)
+		switch {
+		case m.IsHub():
+		case m.Managed():
+			fmt.Fprintln(a.Stdout, "  managed: yes (devvm shapes it: setup, prereqs, hardening)")
+		default:
+			fmt.Fprintln(a.Stdout, "  managed: no (adopted: devvm never modifies it)")
+		}
 	}
 	a.forwardReport(name)
 	return nil
@@ -597,7 +615,7 @@ func (a *App) runStatus(name string) error {
 // than dressing a cached token up as the current state.
 func (a *App) runStatusHubMachine(m *config.Machine) error {
 	l := a.listHub(context.Background(), m.Hub)
-	for _, r := range a.hubRows(m.Hub, l) {
+	for _, r := range a.hubRows(m.Hub, l, nil) {
 		if r.name != m.Name {
 			continue
 		}

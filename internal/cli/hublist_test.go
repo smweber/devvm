@@ -118,7 +118,7 @@ func TestWatchHubPipeOverflowRespawns(t *testing.T) {
 func TestStatusLocalSkipsHubs(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
-	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
@@ -130,7 +130,7 @@ func TestStatusLocalSkipsHubs(t *testing.T) {
 	if err := a.runStatusPlain(true); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "box\tsmol\t?\t-\t-\t-\n" {
+	if got := out.String(); got != "box\tremote\t?\t-\tunmanaged\tverified=-\n" {
 		t.Errorf("--local plain =\n%s", got)
 	}
 	if _, err := os.Stat(log); !os.IsNotExist(err) {
@@ -226,7 +226,7 @@ func TestStatusMergesHubRows(t *testing.T) {
 	if rel, _ := filepath.Rel(a.Paths.CacheDir(), hubCachePath(a.Paths, "h")); rel != "hub-h.list" {
 		t.Errorf("cache path %s is not under cache/", hubCachePath(a.Paths, "h"))
 	}
-	for dir, want := range map[string][]string{config.MachinesDir(a.Paths.Config): {"h.toml"}, a.Paths.RuntimeDir(): {"h@web.sock"}} {
+	for dir, want := range map[string][]string{a.Paths.Config: {"devvm.toml", "s"}, a.Paths.RuntimeDir(): {"h@web.sock"}} {
 		entries, _ := os.ReadDir(dir)
 		var names []string
 		for _, e := range entries {
@@ -351,6 +351,54 @@ func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 	})
 }
 
+// A hub older than devvm.toml sends its remote boxes' backend as
+// remote-managed/remote-unmanaged: the laptop reads them as `remote` and
+// the managed column, keeping a fifth column the hub did send.
+func TestParseHubRowsMapsOldBackends(t *testing.T) {
+	got := parseHubRows("a\tremote-managed\treachable\t-\nb\tremote-unmanaged\t?\t-\t-\nc\tremote-unmanaged\t?\t-\tshadowed\nd\tsmol\trunning\t-\n")
+	want := []hubRow{
+		{"a", "remote", "reachable", "-", "managed", ""},
+		{"b", "remote", "?", "-", "unmanaged", ""},
+		{"c", "remote", "?", "-", "shadowed", ""},
+		{"d", "smol", "running", "-", "-", ""},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("parseHubRows = %v, want %v", got, want)
+	}
+}
+
+// A hub's row for a remote box this host has its own entry for is hidden
+// (the direct path is the right one); its other rows show.
+func TestHubRowsHideLocalEntries(t *testing.T) {
+	a := newTestApp(t)
+	hub := config.NewHub("h", "u@h")
+	l := hubListing{fresh: true, rows: []hubRow{
+		{name: "cloud", backend: "remote", state: "reachable", forwards: "-", managed: "managed"},
+		{name: "web", backend: "smol", state: "running", forwards: "-", managed: "managed"},
+		{name: "vm", backend: "smol", state: "running", forwards: "-", managed: "managed"},
+	}}
+	local := map[string]config.Entry{"cloud": {Backend: "remote"}, "vm": {Backend: "remote"}}
+	var names []string
+	for _, r := range a.hubRows(hub, l, local) {
+		names = append(names, r.name)
+	}
+	// vm is smol on the hub: a different machine from the local entry vm.
+	if want := []string{"h", "h/vm", "h/web"}; !slices.Equal(names, want) {
+		t.Errorf("rows = %v, want %v", names, want)
+	}
+	// This host's forwards for h/cloud keep its row.
+	if err := config.SavePorts(a.Paths, "h/cloud", []string{"3000"}); err != nil {
+		t.Fatal(err)
+	}
+	names = nil
+	for _, r := range a.hubRows(hub, l, local) {
+		names = append(names, r.name)
+	}
+	if want := []string{"h", "h/cloud", "h/vm", "h/web"}; !slices.Equal(names, want) {
+		t.Errorf("rows with forwards = %v, want %v", names, want)
+	}
+}
+
 func TestHubCacheRoundTrip(t *testing.T) {
 	dir := testPaths(t.TempDir())
 	if got := readHubCache(dir, "h"); got != nil {
@@ -358,7 +406,7 @@ func TestHubCacheRoundTrip(t *testing.T) {
 	}
 	// api comes from a hub newer than this build: its columns past the
 	// fifth survive the round trip.
-	rows := []hubRow{{"web", "smol", "running", "up:1", "-", ""}, {"api", "remote-managed", "reachable", "-", "managed", "x\ty"}}
+	rows := []hubRow{{"web", "smol", "running", "up:1", "-", ""}, {"api", "remote", "reachable", "-", "managed", "x\ty"}}
 	if err := writeHubCache(dir, "h", rows); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +420,7 @@ func TestHubCacheRoundTrip(t *testing.T) {
 		t.Errorf("cache dir holds %v", entries)
 	}
 	data, _ := os.ReadFile(hubCachePath(dir, "h"))
-	if string(data) != "web\tsmol\trunning\tup:1\t-\napi\tremote-managed\treachable\t-\tmanaged\tx\ty\n" {
+	if string(data) != "web\tsmol\trunning\tup:1\t-\napi\tremote\treachable\t-\tmanaged\tx\ty\n" {
 		t.Errorf("cache text = %q", data)
 	}
 	if !slices.Equal(cachedHubMachines(dir, "h"), []string{"web", "api"}) {
@@ -422,7 +470,7 @@ func TestDeleteHubMachineDropsCacheRow(t *testing.T) {
 func TestCompleteHubPrefix(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
-	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"api": {"80"}})
@@ -523,13 +571,15 @@ func TestWatchHubPipes(t *testing.T) {
 		return strings.Contains(b, "h2\thub\treachable\t-\t-\t-\nh2/web\tsmol\trunning\t-\t-\t-\n") && strings.Contains(b, "h/web\tsmol\trunning\tdown\t-\t-\n")
 	})
 	// A local change still re-emits, with the hubs' latest blocks merged.
-	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
 		t.Fatal(err)
 	}
-	out.until(t, "with the local machine", func(b string) bool { return strings.HasPrefix(b, "box\tsmol\t?\t-\t-\t-\nh\thub\treachable") })
+	out.until(t, "with the local machine", func(b string) bool {
+		return strings.HasPrefix(b, "box\tremote\t?\t-\tunmanaged\tverified=-\nh\thub\treachable")
+	})
 
-	// A deleted hub conf closes its pipe and drops its rows.
-	if err := config.Remove(a.Paths.Config, "h2"); err != nil {
+	// A removed hub entry closes its pipe and drops its rows.
+	if err := config.RemoveEntry(a.Paths, "h2"); err != nil {
 		t.Fatal(err)
 	}
 	out.until(t, "without h2", func(b string) bool { return !strings.Contains(b, "h2") && strings.Contains(b, "h/web") })

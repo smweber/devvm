@@ -14,21 +14,21 @@ import (
 // write, no tmux set-environment (browser-bridge.md §5: remote is deferred
 // with the ssh agent exec).
 func TestRemoteSetupAndAttachLeaveBrowserAlone(t *testing.T) {
-	for _, be := range []string{config.BackendRemoteManaged, config.BackendRemoteUnmanaged} {
+	for _, be := range []string{"managed", "unmanaged"} {
 		t.Run(be, func(t *testing.T) {
 			a := newTestApp(t)
 			log := fakeSSH(t, "exit 0")
 			t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
-			m := config.NewRemote("cloud", be, "dev@cloud.example")
-			if err := m.Save(a.Paths.Config); err != nil {
+			m := config.NewRemote("cloud", be == "managed", "dev@cloud.example")
+			if err := writeEntry(a.Paths, m); err != nil {
 				t.Fatal(err)
 			}
 			// setup never shapes an adopted host; it refuses before dialing.
 			err := runTree(t, a, "setup", "cloud")
-			if be == config.BackendRemoteManaged && err != nil {
+			if be == "managed" && err != nil {
 				t.Fatalf("setup: %v\n%s", err, a.Stderr)
 			}
-			if be == config.BackendRemoteUnmanaged {
+			if be == "unmanaged" {
 				if err == nil || !strings.Contains(err.Error(), "never shapes") {
 					t.Fatalf("setup on an adopted host: err = %v, want a refusal", err)
 				}

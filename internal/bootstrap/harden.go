@@ -63,8 +63,10 @@ systemctl enable --now unattended-upgrades 2>/dev/null || true
 echo "devvm: lockdown applied (firewall + sshd + auto-updates)"
 `
 
-// Harden applies firewall + sshd hardening + auto-updates to an ssh machine.
-func Harden(ctx context.Context, b backend.Backend, m *config.Machine) error {
+// Harden applies firewall + sshd hardening + auto-updates to an ssh machine,
+// with fail2ban when asked (a template's fail2ban: the entry holds no
+// shaping fields).
+func Harden(ctx context.Context, b backend.Backend, m *config.Machine, withFail2ban bool) error {
 	// Pin AllowUsers to the actual connection user rather than guessing from
 	// SUDO_USER/logname inside the script. Hardening a root login would write
 	// `PermitRootLogin no` + `AllowUsers root` — a guaranteed lockout.
@@ -76,9 +78,13 @@ func Harden(ctx context.Context, b backend.Backend, m *config.Machine) error {
 		return fmt.Errorf("refusing to harden: the connection user is root; run 'devvm setup %s' to create the user first", m.Name)
 	}
 	fail2ban := ""
-	if m.Fail2ban {
+	if withFail2ban {
 		fail2ban = "1"
 	}
-	script := fmt.Sprintf("SSH_PORT=%d\nWANT_FAIL2BAN=%s\n%s", m.SSHPort, fail2ban, hardenBody)
+	port := m.SSHPort
+	if port == 0 {
+		port = 22 // no port in the entry's host: the ssh default
+	}
+	script := fmt.Sprintf("SSH_PORT=%d\nWANT_FAIL2BAN=%s\n%s", port, fail2ban, hardenBody)
 	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true}, "bash", "-c", script, "_", user)
 }

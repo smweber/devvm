@@ -8,8 +8,8 @@ import (
 )
 
 // Paths is where devvm keeps its files on this host, split by who owns them
-// (config.md §1). Config is the user's: machines/ and config.toml, hand-edited
-// and safe to keep in dotfiles. State is this host's own: daemon run files,
+// (config.md §1). Config is the user's: devvm.toml, hand-edited and safe to
+// keep in dotfiles (the whole dir may be a symlink into a checkout). State is this host's own: daemon run files,
 // the hub listing cache, the pinned known_hosts and the ssh ControlMaster
 // sockets, none of which may follow a dotfiles checkout to another host. The
 // helpers below are methods so a config dir can't be passed where state is
@@ -124,7 +124,7 @@ func RequestRefresh(p Paths) error {
 // CacheDir holds derived data that is safe to lose: per-hub listing caches
 // (`hub-HUB.list`, roadmap step 3) and the remote boxes' reach
 // (`reach/NAME`, package reach). It is deliberately outside run/ so
-// `status --watch`, which watches run/ (and machines/), never sees its own
+// `status --watch`, which watches run/ (and devvm.toml's dir), never sees its own
 // cache write and re-triggers.
 func (p Paths) CacheDir() string {
 	return filepath.Join(p.State, "cache")

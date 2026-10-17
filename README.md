@@ -8,30 +8,58 @@ Module: `github.com/smweber/devvm`.
 
 ## Backends
 
-A machine's `backend` says who owns it and how it's reached:
+A machine's `backend` says who owns its registry and lifecycle; `managed`
+says whether devvm may shape its OS:
 
-| backend            | what it is                                              | transport      |
-| ------------------ | ------------------------------------------------------- | -------------- |
-| `smol`             | a local smolvm microVM devvm creates and shapes         | `smolvm exec`  |
-| `remote-managed`   | a remote host devvm shapes (installs prereqs, may harden) | ssh / mosh   |
-| `remote-unmanaged` | an existing host devvm adopts hands-off (checks only)   | ssh / mosh     |
+| backend  | what it is                                                      | transport     |
+| -------- | --------------------------------------------------------------- | ------------- |
+| `smol`   | a local smolvm microVM, discovered from smolvm (never configured) | `smolvm exec` |
+| `remote` | a box reached over ssh, an entry in `devvm.toml`                 | ssh / mosh    |
+| `hub`    | another host running devvm; its machines are `HUB/NAME`          | ssh           |
 
-*Managed* backends (smol, remote-managed) are devvm's to shape — it installs
-prereqs, can harden, and manages known_hosts. *Unmanaged* (remote-unmanaged) is
-an adopted host: devvm never modifies its OS, only checks prereqs and edits the
-user's own `~/.ssh/authorized_keys`. Old confs with `backend = "ssh"` (+ optional
-`unmanaged`) migrate on load. (`hetzner`, an API-provisioned managed backend over
-the ssh transport, is the planned next backend.)
+A *managed* box is devvm's to shape: it installs prereqs, can harden, and pins
+known_hosts. A smol VM is managed when devvm created it (or you handed it over
+with `devvm setup --adopt NAME`); a remote entry when it says `managed = true`.
+An unmanaged (adopted) box is never modified: devvm only edits your own
+`~/.ssh/authorized_keys` on it.
+
+Everything you configure is one file, `~/.config/devvm/devvm.toml`, safe to
+keep in dotfiles: `[templates.*]` (how `create`/`setup` shape a box) and
+`[machines.*]` (remote boxes and hubs):
+
+```toml
+[templates.default]
+hook = "url:https://example.com/bootstrap.sh --yes"
+memory = 4096
+
+[machines.cloud]
+backend = "remote"
+managed = true          # devvm shapes it; the default false means hands-off
+host = "203.0.113.5"    # host[:port] or an ssh alias; user from the template
+
+[machines.desk]
+backend = "hub"
+host = "desk.tailnet"
+user = "me"
+```
+
+Add and remove entries with `devvm config add NAME --backend remote|hub --host
+H[:P] [--user U] [--managed]` and `devvm config rm NAME` (both touch only that
+table); `devvm config edit|check|show|path` cover the rest. No `config` command
+connects to a box. (`hetzner`, a provider backend whose VMs are discovered from
+its API, is the planned next backend.)
 
 ## Connecting
 
-- `devvm create NAME` — create/adopt any backend. Flags drive it non-interactively
-  (`--backend`, `--memory`, `--ssh-host`, `--transport`, …); a terminal prompts
-  (via [huh](https://github.com/charmbracelet/huh)) for whatever's unset.
+- `devvm create NAME` — create a local smol VM and shape it from a template.
+  Flags drive it non-interactively (`--template`, `--memory`, `--disk`,
+  `--hook`, `--yes`); a terminal prompts (via
+  [huh](https://github.com/charmbracelet/huh)) for whatever's unset. A remote
+  box is `devvm config add` then, for a managed one, `devvm setup NAME`.
 - `devvm attach NAME` — join the persistent dev tmux session.
 - `devvm shell NAME` — a raw login shell, no tmux.
-- Both take `--transport ssh|mosh` for remote machines (default from the conf's
-  `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
+- Both take `--transport ssh|mosh` for remote machines (default from the
+  entry's `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
 - **Browser opens (smol).** While `attach`/`shell` is open on a smol machine, a
   URL a guest program opens through `$BROWSER` opens in the host's browser,
   and a loopback URL (a dev server, an OAuth callback) gets its forward
@@ -119,9 +147,9 @@ what release it is). `bootstrap.sh` (host profile) installs a release binary.
 ```
 cmd/devvm/          host CLI entrypoint
 cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
-internal/cli/       cobra command tree (+ create's huh form)
-internal/config/    TOML machine registry (~/.config/devvm/machines/<name>.toml)
-internal/backend/   Backend interface + smol.go + ssh.go (both remote-* backends)
+internal/cli/       cobra command tree (+ create's huh form, the `config` noun)
+internal/config/    the devvm.toml loader + its two table edits, templates, host-state paths
+internal/backend/   Backend interface + smol.go + ssh.go (remote boxes and the hop to a hub)
 internal/session/   per-machine forward daemon (owns the one exec) + client
 internal/agentrpc/  yamux stream protocol (forward / rpc / event) shared host+guest
 internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)

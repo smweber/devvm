@@ -43,7 +43,7 @@ func hubPorts(t *testing.T, a *App, hub, machine string) ([]string, bool) {
 func TestHubPortsRunLaptopSide(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t))}
 	sshLog, _ := fakeHub(t, a) // saved forwards for h/web: 3000
-	hubConf := filepath.Join(config.MachinesDir(a.Paths.Config), "h.toml")
+	hubConf := a.Paths.FilePath()
 	confBefore, _ := os.ReadFile(hubConf)
 	od := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpAdd: {OK: true, Host: 4001, Bumped: true},
@@ -172,9 +172,11 @@ func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 			t.Errorf("h/%s has %d saved ports, want %d (a lost update): %v", m, len(got), n, got)
 		}
 	}
-	entries, _ := os.ReadDir(config.MachinesDir(a.Paths.Config))
-	if len(entries) != 1 || entries[0].Name() != "h.toml" {
-		t.Errorf("machines/ holds %v, want only h.toml", entries)
+	entries, _ := os.ReadDir(a.Paths.Config)
+	for _, e := range entries {
+		if e.Name() != "devvm.toml" && e.Name() != "s" {
+			t.Errorf("the config dir holds %s: forwards are host state", e.Name())
+		}
 	}
 }
 
@@ -298,7 +300,7 @@ func TestDialForwardsRetriesHubMachine(t *testing.T) {
 	t.Cleanup(func() { runningPollInterval = origInterval })
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	m, err := config.LoadHubMachine(a.Paths.Config, "h/web")
+	m, err := config.LoadHubMachine(a.Paths, "h/web")
 	if err != nil {
 		t.Fatal(err)
 	}

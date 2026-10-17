@@ -32,6 +32,11 @@ const statusExitFlag = "--exit-on-stdin-eof"
 // what it observes and what it can't. exitOnEOF (statusExitFlag) ends it
 // when stdin closes: over ssh that is the laptop side going away.
 func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
+	// A file that does not parse at start fails the watch like a one-shot
+	// status; one that breaks later only pauses it (watchStatus).
+	if _, err := config.LoadFile(a.Paths); err != nil {
+		return err
+	}
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	if exitOnEOF {
@@ -43,21 +48,25 @@ func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
 	if local {
 		// --local reads the reach cache and never probes, like the
 		// one-shot --local: it is what a hub runs for its callers.
-		return watchStatus(ctx, a.Paths, func() string { return a.plainSnapshot(statusScope{local: true}) }, a.Stdout, watchDebounce, nil, nil)
+		return watchStatus(ctx, a.Paths, func() (string, error) { return a.plainSnapshot(statusScope{local: true}) }, a.Stderr, a.Stdout, watchDebounce, nil, nil)
 	}
 	return a.watchWithHubs(ctx, a.Stdout, watchDebounce)
 }
 
 // watchWithHubs is the merged --watch: the local loop plus a hubWatcher
-// whose pipes wake it. The hub confs are re-read on every snapshot, and the
-// loop takes one on every machines/ event, so the pipe set follows a hub
-// conf created, deleted or re-pointed while watching. The first block waits
+// whose pipes wake it. The hub entries are re-read on every snapshot, and
+// the loop takes one on every devvm.toml event, so the pipe set follows a
+// hub entry created, deleted or re-pointed while watching. While the file
+// does not parse the pipes are left as they are and nothing is emitted. The first block waits
 // (bounded by the listing deadline) for the pipes to speak, so a consumer
 // does not start from a flash of `unreachable`.
 func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Duration) error {
 	hw := newHubWatcher(a)
 	defer hw.stop()
-	snapshot := func() string {
+	snapshot := func() (string, error) {
+		if _, err := config.LoadFile(a.Paths); err != nil {
+			return "", err // keep the pipes: a half-saved edit must not drop every hub
+		}
 		hubs := a.hubConfs() // once per block: the pipe set and the rows use the same read
 		hw.sync(hubs)
 		return a.plainSnapshot(statusScope{hubs: hubs, listings: hw.listings()})
@@ -72,21 +81,26 @@ func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Du
 	go func() { defer close(probed); round(ctx) }()
 	hw.settle(ctx, hubTimes.deadline)
 	<-probed
-	return watchStatus(ctx, a.Paths, snapshot, out, debounce, hw.wake, round)
+	return watchStatus(ctx, a.Paths, snapshot, a.Stderr, out, debounce, hw.wake, round)
 }
 
 // plainSnapshot renders the plain listing as one string so identical
 // snapshots can be suppressed byte-for-byte.
-func (a *App) plainSnapshot(sc statusScope) string {
+func (a *App) plainSnapshot(sc statusScope) (string, error) {
+	rows, err := a.gatherRows(sc)
+	if err != nil {
+		return "", err
+	}
 	var b []byte
-	for _, r := range a.gatherRows(sc) {
+	for _, r := range rows {
 		b = append(b, plainLine(r)...)
 	}
-	return string(b)
+	return string(b), nil
 }
 
-// watchStatus prints snapshot() once, then again after every change under
-// the machines dir (conf create/delete/edit) or the runtime dir (daemon sockets
+// watchStatus prints snapshot() once, then again after every change in the
+// config dir (devvm.toml written, renamed into place by `config add`/`rm`,
+// or saved by an editor) or the runtime dir (daemon sockets
 // come and go; the change marker every state-changing command and daemon
 // transition rewrites), blank-line separated so a consumer replaces its whole
 // list on each block. Identical consecutive snapshots are dropped. wake, if
@@ -106,6 +120,12 @@ func (a *App) plainSnapshot(sc statusScope) string {
 // joins that round rather than starting another, and the debounce
 // coalesces a burst of requests, so a double click costs one round.
 //
+// A snapshot that fails (devvm.toml does not parse, say mid-edit) emits
+// nothing: the consumer keeps the last block, which was true when emitted,
+// rather than a listing that may be wrong. The error goes to errOut once
+// per distinct message, and the next event after the file parses again
+// emits as usual. The first snapshot must succeed (runStatusWatch checks).
+//
 // Returns nil on ctx cancellation and on a write error, so a supervising
 // process sees a clean exit when it is the one that closed the pipe. (Execute
 // ignores SIGPIPE, so the write error is the only way a dead consumer shows.)
@@ -114,12 +134,19 @@ func (a *App) plainSnapshot(sc statusScope) string {
 // watch (verified on both inotify and kqueue), so it is recreated and
 // re-added, and any watcher error triggers a re-snapshot rather than being
 // treated as fatal — a long-running consumer must never go blind.
-func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string, out io.Writer, debounce time.Duration, wake <-chan struct{}, refresh func(context.Context)) error {
-	// Both dirs (machines/ under config, run/ under state) must exist to be
-	// watched; an empty registry is a valid thing to
-	// watch (the first `create` is the change). Match Save's and
-	// EnsureRuntimeDir's modes so nothing is loosened.
-	if err := os.MkdirAll(config.MachinesDir(paths.Config), 0o755); err != nil {
+func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (string, error), errOut, out io.Writer, debounce time.Duration, wake <-chan struct{}, refresh func(context.Context)) error {
+	// Both dirs (the config dir, run/ under state) must exist to be
+	// watched; a missing devvm.toml is a valid thing to watch (the first
+	// `config add` is the change). The directory, not the file: every
+	// write of it is a rename into place, which a watch on the file itself
+	// would lose. A devvm.toml that is a symlink into a dotfiles checkout
+	// is written in its target's dir, so that dir is watched too, and
+	// re-resolved on every config-dir event: a stow/chezmoi relink, or a
+	// devvm.toml that appears later as a link, moves the watch with it.
+	// Config-dir events count only for devvm.toml (and its target), so an
+	// editor's swap files never cost a snapshot. Match writeConfigFile's
+	// and EnsureRuntimeDir's modes so nothing is loosened.
+	if err := os.MkdirAll(paths.Config, 0o755); err != nil {
 		return err
 	}
 	if err := paths.EnsureRuntimeDir(); err != nil {
@@ -130,7 +157,9 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 		return err
 	}
 	defer w.Close()
-	dirs := []string{config.MachinesDir(paths.Config), paths.RuntimeDir()}
+	cfgDir, runDir := filepath.Clean(paths.Config), filepath.Clean(paths.RuntimeDir())
+	fileName := filepath.Clean(paths.FilePath())
+	dirs := []string{cfgDir, runDir}
 	for _, dir := range dirs {
 		if err := w.Add(dir); err != nil {
 			return fmt.Errorf("watch %s: %w", dir, err)
@@ -147,19 +176,75 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 		_ = w.Add(dir)
 	}
 
-	last := ""
+	// target is devvm.toml's symlink target ("" when it is no link);
+	// targetDir its dir when that is a third directory, watched as well.
+	var target, targetDir string
+	retarget := func() {
+		t := ""
+		if r, err := filepath.EvalSymlinks(paths.FilePath()); err == nil && filepath.Clean(r) != fileName {
+			t = filepath.Clean(r)
+		}
+		d := ""
+		if t != "" {
+			if d = filepath.Dir(t); d == cfgDir || d == runDir {
+				d = ""
+			}
+		}
+		if d != targetDir {
+			if targetDir != "" {
+				_ = w.Remove(targetDir)
+			}
+			if d != "" {
+				_ = w.Add(d)
+			}
+			targetDir = d
+		}
+		target = t
+	}
+	retarget()
+	relevant := func(name string) bool {
+		name = filepath.Clean(name)
+		dir := filepath.Dir(name)
+		switch {
+		case name == cfgDir || name == runDir || (targetDir != "" && name == targetDir):
+			return true
+		case dir == runDir:
+			// The lock file and log churn on every daemon start/stop; the
+			// socket and marker are what matter there.
+			return !isWatchNoise(name)
+		case dir == cfgDir:
+			return name == fileName || name == target
+		case targetDir != "" && dir == targetDir:
+			return name == target
+		}
+		return false
+	}
+
+	last, lastErr := "", ""
 	emit := func() error {
-		s := snapshot()
+		s, err := snapshot()
+		if err != nil {
+			if err.Error() != lastErr && errOut != nil {
+				fmt.Fprintf(errOut, "devvm: status --watch paused until devvm.toml parses again: %v\n", err)
+			}
+			lastErr = err.Error()
+			return nil
+		}
+		lastErr = ""
 		if s == last {
 			return nil
 		}
 		last = s
-		_, err := io.WriteString(out, s+"\n")
+		_, err = io.WriteString(out, s+"\n")
 		return err
 	}
 	// The first block is unconditional so the consumer starts with a full list
 	// (an empty registry yields a lone blank line, which is still "a block").
-	last = snapshot()
+	first, err := snapshot()
+	if err != nil {
+		return err
+	}
+	last = first
 	if _, err := io.WriteString(out, last+"\n"); err != nil {
 		return nil
 	}
@@ -176,9 +261,10 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 			if !ok {
 				return nil
 			}
-			// The lock file and log churn on every daemon start/stop; the
-			// socket and marker are what matter there, so skip the noise.
-			if isWatchNoise(ev.Name) {
+			if d := filepath.Dir(filepath.Clean(ev.Name)); d == cfgDir || filepath.Clean(ev.Name) == cfgDir {
+				retarget() // a relink (or a link appearing) moves the target watch
+			}
+			if !relevant(ev.Name) {
 				continue
 			}
 			if refresh != nil && filepath.Clean(ev.Name) == refreshPath && !ev.Has(fsnotify.Remove) && !ev.Has(fsnotify.Rename) {
@@ -210,6 +296,7 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 					rewatch(dir)
 				}
 			}
+			retarget()
 			if pending == nil {
 				pending = time.After(debounce)
 			}

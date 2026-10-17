@@ -168,9 +168,9 @@ func TestProxyRebuildsArgv(t *testing.T) {
 		{[]string{"--state-dir", a.Paths.State, "stop", "h/web"}, []string{"stop", "web"}},
 		{[]string{"create", "h/api", "--backend", "smol", "--yes", "-m", "512", "-d", "1"},
 			[]string{"create", "api", "--no-ports", "--backend=smol", "--disk=1", "--memory=512", "--yes"}},
-		{[]string{"repos", "add", "h/web", "--no-clone", "o/r", "https://x.example/a b.git"},
-			[]string{"repos", "add", "web", "--no-clone", "o/r", "https://x.example/a b.git"}},
-		{[]string{"repos", "rm", "h/web", "--", "-odd/name"}, []string{"repos", "rm", "web", "--", "-odd/name"}},
+		{[]string{"repos", "add", "h/web", "o/r", "https://x.example/a b.git"},
+			[]string{"repos", "add", "web", "o/r", "https://x.example/a b.git"}},
+		{[]string{"keys", "rm", "h/web", "--", "-odd/name"}, []string{"keys", "rm", "web", "--", "-odd/name"}},
 		{[]string{"keys", "rm", "h/web", "SHA256:abc"}, []string{"keys", "rm", "web", "SHA256:abc"}},
 		{[]string{"setup", "h/web"}, []string{"setup", "web", "--no-ports"}},
 	}
@@ -431,9 +431,12 @@ func TestProxyInteractiveTransport(t *testing.T) {
 	// A hub conf set to mosh still gets ssh for the proxied session (with a
 	// notice on stderr; see hubBackend.ProxyInteractive), and --transport
 	// mosh is accepted the same way rather than refused.
-	h, _ := config.Load(a.Paths.Config, "h")
+	h, _ := config.Load(a.Paths, "h")
 	h.Transport = config.TransportMosh
-	if err := h.Save(a.Paths.Config); err != nil {
+	if err := config.RemoveEntry(a.Paths, "h"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEntry(a.Paths, h); err != nil {
 		t.Fatal(err)
 	}
 	os.Remove(sshLog)

@@ -332,7 +332,7 @@ func TestHubCopyRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "scp"), []byte(scp), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.NewRemote("web", config.BackendRemoteUnmanaged, "dev@web.example").Save(hubCfg); err != nil {
+	if err := writeEntry(config.Paths{Config: hubCfg, State: hubCfg}, config.NewRemote("web", false, "dev@web.example")); err != nil {
 		t.Fatal(err)
 	}
 	devvm := `[ -n "$DEVVM_NO_SUBSCRIBE" ] || { echo 'devvm ran without DEVVM_NO_SUBSCRIBE' >&2; exit 99; }` + "\n" +

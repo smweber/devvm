@@ -6,24 +6,29 @@ constraints; read the package docs for the rest.
 ## What this is
 
 `devvm` manages persistent dev boxes across three backends: local smolvm microVMs
-(`smol`), a remote host devvm shapes (`remote-managed`), and an existing host it
-adopts hands-off (`remote-unmanaged`), plus `hub`: another host running devvm,
-whose machines (usually smol VMs) this one reaches as `HUB/NAME` (see Hubs below). The two
-`remote-*` backends share one ssh transport (`ssh.go`) and differ only in
-posture: `Managed()` vs adopt. Old confs
-with `backend = "ssh"` (+ optional `unmanaged`) migrate on load. It is a **host
-CLI** (`cmd/devvm`) plus a **guest agent** (`cmd/devvm-agent`) the host installs
-into a box only when needed (see the agent note below). It began as a ~2,100-line
-bash script; comments often explain *why* a behavior exists because it was
-hard-won there.
+(`smol`, discovered from smolvm, never configured), boxes reached over ssh
+(`remote`, a `[machines.*]` entry that is either managed or adopted), and
+`hub`: another host running devvm, whose machines (usually smol VMs) this one
+reaches as `HUB/NAME` (see Hubs below). `remote` and `hub` share one ssh
+transport (`ssh.go`). Everything the user writes is one file,
+`$XDG_CONFIG_HOME/devvm/devvm.toml` (`[templates.*]` + `[machines.*]`, see
+Config below). It is a **host CLI** (`cmd/devvm`) plus a **guest agent**
+(`cmd/devvm-agent`) the host installs into a box only when needed (see the
+agent note below). It began as a ~2,100-line bash script; comments often
+explain *why* a behavior exists because it was hard-won there.
 
-**Backend axes.** `Managed()` = remote-managed, or a smol VM devvm created
-(settled by discovery from the managed marker, below) — devvm owns the OS:
-installs prereqs, may harden, pins known_hosts. `IsRemote()` = both `remote-*`
-(reached over ssh). Code decides on these predicates, not by comparing the
-backend string (config.md §9). The old per-machine `unmanaged` bool is gone — the backend
-value carries it. A `transport` field (`ssh`|`mosh`) steers only the interactive
-connection on remote backends; forwards are always native `ssh -L`.
+**Backend axes: two, not one enum.** `backend` ∈ {`smol`, `remote`, `hub`} says
+who owns the registry and lifecycle (smolvm, the file, a hub; a provider later,
+config.md §9); `Managed()` says whether devvm owns the OS (installs prereqs,
+may harden, pins known_hosts). On a `remote` entry it is the entry's `managed`
+(default **false**: a forgotten line is the safe reading); on smol it is
+settled by discovery from the managed marker (below); a hub is never managed.
+`IsRemote()` = `remote` or `hub` (reached over ssh), `IsHub()`,
+`IsHubMachine()`, `Probeable()` (a remote box whose state is its reach cache)
+are methods too. Code decides on these predicates, **never by comparing the
+backend string** in cli/session/bootstrap/agentbin/reach (config.md §9 item
+1). A `transport` field (`ssh`|`mosh`) steers only the interactive connection
+on remote backends; forwards are always native `ssh -L`.
 
 ## Build & test
 
@@ -95,10 +100,13 @@ daemon for it is a client of that daemon over a relay (see Hubs).
 cmd/devvm/          host CLI entrypoint
 cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
 internal/cli/       cobra command tree + handlers (create's huh form in createform.go;
-                    hub proxying in proxy.go + hub*.go; attach/shell's bridge in bridge.go)
-internal/config/    TOML machine registry (~/.config/devvm/machines/<name>.toml) + Paths
-                    (config vs state dirs) + MigrateState
-internal/backend/   Backend interface + smol.go + ssh.go (both remote-* backends)
+                    the `config` noun in config_cmd.go; hub proxying in proxy.go +
+                    hub*.go; attach/shell's bridge in bridge.go)
+internal/config/    the devvm.toml loader (file.go: [templates.*] + [machines.*], strict)
+                    and its two structural writes (edit.go: append/remove one table),
+                    templates, Paths (config vs state dirs) + MigrateState, saved
+                    forwards (ports.go), managed markers (managed.go)
+internal/backend/   Backend interface + smol.go + ssh.go (remote and the hop to a hub)
                     + hub.go (HUB/NAME: proxy argv, `__session` argv; never spawns)
 internal/session/   per-machine forward daemon (owns the exec) + client + transports
                     (transport_{smol,ssh,hub}.go); daemon_session.go = sessions and
@@ -138,10 +146,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   locally). Binds run outside `d.mu`: an `ssh -O forward` against a wedged
   master must not freeze `list`/`ping`.
 - **Config vs state** (`config.Paths{Config, State}`): the config dir
-  (`$XDG_CONFIG_HOME/devvm`) holds only the user's files (`machines/`,
-  `config.toml`); this host's own state lives in `$XDG_STATE_HOME/devvm`
+  (`$XDG_CONFIG_HOME/devvm`) holds only the user's file, `devvm.toml` (safe
+  to symlink into dotfiles); this host's own state lives in `$XDG_STATE_HOME/devvm`
   (`~/.local/state/devvm`): `run/` (daemon sockets, logs, locks, `changed`),
-  `cache/` (hub listings), `ports/` (saved forwards, below), `managed/` (the
+  `cache/` (hub listings, `reach/`), `ports/` (saved forwards, below), `managed/` (the
   managed markers, below), the pinned
   `known_hosts`, and the ssh ControlMaster sockets `c-%C` (short for macOS's
   sun_path). State helpers
@@ -154,49 +162,59 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   every run file of a machine whose old socket exists. Session clients
   (`Dial`/`Existing`) use such an old-layout daemon where it is, never
   spawning a sibling (one-exec rule); `update` cycles it unless it is
-  reconnecting, and `delete` reaps both layouts.
+  reconnecting, and `delete`/`config rm` reap both layouts.
 - **Saved forwards are host state** (config.md §5): `<State>/ports/NAME`, one
   mapping per line in `ports add` syntax (`GUEST` or `HOST:GUEST`; `#` and
   blank lines skipped), `HUB@NAME` for a hub machine, 0600 in a 0700 dir,
   written atomically; an emptied list removes the file; every
-  read-modify-write (and `delete`'s removal) holds `config.LockPorts`
-  (`ports/.NAME.lock`, never unlinked). Never in a conf: the
+  read-modify-write (and `delete`'s/`config rm`'s removal) holds
+  `config.LockPorts` (`ports/.NAME.lock`, never unlinked). Never in
+  devvm.toml: the
   CLI alone reads it (`start`/`ports up` push one Add per line, `ports list`'s
   `configured:` block, `--plain`'s `down`), and **the daemon never reads it**
-  (it keeps forwards in memory; clients push adds). `ports add` saves
-  (`--ephemeral` doesn't), `ports rm` drops a line, and `delete` clears it
-  through `forgetHostState`, the one helper for "everything this host
-  remembers about NAME" (ports file, managed marker, and the pinned
-  `known_hosts` entry, kept while another registered machine uses the same
-  host). `config.MigratePorts` seeds the dir **once per
-  host** (only while `ports/` doesn't exist) from old confs' `ports` and hub
-  confs' `[machines.NAME]` tables (decoded leniently, not via `Load`), never
-  writing a conf; per-dir rather than per-file so a list dropped here can't
-  be re-seeded. It is all or nothing: any failure leaves no `ports/`, every
-  ports entry point returns the error, and the next call retries (nothing
-  else creates the dir). Those conf fields are
-  otherwise dead (decoded so old confs parse; `validateHub` still refuses
-  `ports` on a hub). The owner kind stays `conf` (a compatibility surface).
-- **Discovery and the managed marker** (config.md §2): a name with a conf uses
-  it (a remote box never runs smolvm; a conf shadows a local smol VM of the
-  same name). Any other name goes to `backend.Discover`, an ordered list of
-  sources, first match wins; smol is the only one: one `smolvm machine ls
-  --json` (existence, state, sizes, `created_at`, pinned by
-  `backend/testdata`), the row kept on the backend (`SmolRow`, so `status -v`
-  needs no guest exec). **The source settles `Managed`** on the record:
-  managed iff `<State>/managed/NAME` holds the VM's `created_at`; a stale
-  marker (VM recreated by raw smolvm) or a row with no `created_at` is
-  unmanaged. `Managed()` is a field read and never execs. `create` writes
-  the marker. Until step 5, an old per-machine smol conf with no marker is
-  treated as managed and gets one (the hand-migration aid; never overrides an
-  existing marker). The daemon re-settles through `backend.Refresher` before
-  every dial, first included, on a copy of the record (by the same rule,
-  conf included), so a VM recreated while it slept turns unmanaged: the
-  dial stops before any exec and the daemon exits (`ErrUnmanaged` is final
-  in reconnect; the transport's install gate is the backstop). A VM gone
-  since reads as not running. `created_at` is normalized to a decimal
-  integer before compare/write. A conf whose smol VM is gone is "not found"
-  (`delete` drops it).
+  (it keeps forwards in memory; clients push adds). The daemon never reads
+  ports from config either; it reads its devvm.toml entry once, at start
+  (its record, and `connect_timeout` for its waits). `ports add` saves
+  (`--ephemeral` doesn't), `ports rm` drops a line. `delete` clears a smol
+  VM's through `forgetHostState` ("everything this host remembers about
+  NAME": ports file, managed marker, reach cache, pinned `known_hosts`
+  entry, kept while another entry uses the same host); `config rm` through
+  `forgetEntryState`, the same minus the marker (an entry may shadow a smol
+  VM, whose marker is the VM's). `config.MigratePorts` seeds the dir **once
+  per host** (only while `ports/` doesn't exist) from the *old* layout's
+  `machines/*.toml` `ports` and hub `[machines.NAME]` tables, read with a
+  lenient decoder of those keys only (it outlived the old loader so the hand
+  migration need not copy forwards); per-dir rather than per-file so a list
+  dropped here can't be re-seeded. It is all or nothing: any failure leaves
+  no `ports/`, every ports entry point returns the error, and the next call
+  retries (nothing else creates the dir). The owner kind stays `conf` (a
+  compatibility surface).
+- **Resolution and the managed marker** (config.md §2): `HUB/NAME` → the hub
+  (record derived from its entry); a name with a `[machines.NAME]` entry uses
+  it (a remote box never runs smolvm; an entry **shadows** a local smol VM of
+  the same name: `shadowed` in `--plain`, a `config check` warning, and
+  `create NAME` refuses). Any other name goes to `backend.Discover`, an
+  ordered list of sources, first match wins; smol is the only one: one
+  `smolvm machine ls --json` (existence, state, sizes, `created_at`, pinned
+  by `backend/testdata`), the row kept on the backend (`SmolRow`, so `status
+  -v` needs no guest exec). A devvm.toml that does not parse fails every
+  name (an entry would win, and a broken file can't say whether one does).
+  **The source settles `Managed`** on the record: managed iff
+  `<State>/managed/NAME` holds the VM's `created_at`; no marker, a stale one
+  (VM recreated by raw smolvm) or a row with no `created_at` is unmanaged
+  (`backend.SmolRecord`). `Managed()` is a field read and never execs.
+  `create` and `setup --adopt` write the marker; so does the one-time
+  upgrade seed `backend.SeedLegacyMarkers` (root `PersistentPreRun`, while
+  `machines/` still holds `backend = "smol"` confs: an unmarked one gets its
+  VM's current `created_at`, one `ls` for all, an existing marker never
+  rewritten), so the VMs devvm made before markers stay managed. Discovery
+  itself never writes one. The daemon
+  re-settles through `backend.Refresher` before every dial, first included,
+  on a copy of the record, so a VM recreated while it slept turns unmanaged:
+  the dial stops before any exec and the daemon exits (`ErrUnmanaged` is
+  final in reconnect; the transport's install gate is the backstop). A VM
+  gone since reads as not running. `created_at` is normalized to a decimal
+  integer before compare/write.
 - **Unmanaged smol VMs do little**: `status`, `start`, `stop`, and
   `shell`/`exec` as smolvm's default user over a plain `machine exec` (no
   sudo, no `BROWSER`, no tmux, nothing installed: `resolveUnmanaged`).
@@ -204,24 +222,34 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   one line (`backend.AdoptHint`: `setup --adopt NAME`, or `smolvm machine
   rm` + `create`);
   `bridged()` requires `Managed()`; `delete` refuses and points at `smolvm
-  machine rm`. `ports rm`/`ports list` are host-side only (`portsRecord`),
+  machine rm` (as it refuses an entry and points at `config rm`). `ports rm`/`ports list` are host-side only (`portsRecord`),
   so a stray ports file can always be listed and emptied.
 - **Change marker**: every state-changing command and daemon transition calls
   `config.TouchChanged` (a *write* to `run/changed`, because kqueue ignores
-  utimes); `status --plain --watch` (fsnotify on config's `machines/` + state's
-  `run/`) re-emits on it, so a write elsewhere in state (a `ports/` file) is
-  seen only through the marker. Rule: a new state-changing command gets `defer
-  config.TouchChanged(a.Paths)`. `Machine.Save` is atomic (temp + rename) so
-  the watcher never reads a half-written conf.
+  utimes); `status --plain --watch` (fsnotify on the config **dir**, so
+  devvm.toml renamed into place is seen; a symlinked file's target dir,
+  re-resolved on every config-dir event so a stow/chezmoi relink moves the
+  watch; and state's `run/`; config-dir events count only for devvm.toml
+  and its target, so editor swap files cost nothing) re-emits on it, so a write elsewhere in state (a
+  `ports/` file) is seen only through the marker. Rule: a new state-changing
+  command gets `defer config.TouchChanged(a.Paths)`. devvm.toml writes are
+  atomic (temp + rename) so the watcher never reads a half-written file. A
+  file that stops parsing pauses the watch (no block, one stderr line, the
+  last block stays true); one broken at start fails it, like a one-shot
+  `status`, which exits non-zero on a broken file.
 - **Reach cache + refresh** (`providers.md` §5, `internal/reach`): a remote row's state is
   `cache/reach/NAME`, never a live call on the snapshot path. It is refreshed by one-shot `status`, by
   `__refresh` (writes `run/refresh`; the watcher runs one round, joined if in flight) and by attach/shell/exec/setup.
   The probe is `ssh -O check`, then `ssh -G` + a 2s TCP connect: never a full ssh, never polled.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
-  `name\tbackend\tstate\tforwards\tmanaged` with state ∈ {running, stopped,
-  reachable, unreachable, broken conf, ?}, forwards ∈ {up:N, reconnecting:N,
-  down, -} and managed ∈ {managed, unmanaged, shadowed, -}. The fifth column
-  is appended (≥4 fields must keep parsing): `shadowed` is a conf hiding a
+  `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
+  hub}, state ∈ {running, stopped, reachable, unreachable, ?}, forwards ∈
+  {up:N, reconnecting:N, down, -} and managed ∈ {managed, unmanaged,
+  shadowed, -}. A hub older than devvm.toml sends `remote-managed`/
+  `remote-unmanaged` (and maybe `broken conf`/`dormant`): the laptop maps
+  the former to `remote` + the managed column (`parseHubRows`) and passes
+  the rest through. The fifth column
+  is appended (≥4 fields must keep parsing): `shadowed` is an entry hiding a
   local smol VM of the same name, `-` is a hub, or a hub machine from a hub
   too old to send it (never `unmanaged`, which nobody said). A sixth column,
   appended the same way, is `verified=<unix>:<how>` (or `verified=-`) on a
@@ -247,42 +275,90 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   command, quitting it closed our stdout (SIGPIPE is ignored in `Execute` for
   the same reason).
 - **Env overrides**: `DEVVM_SSH_CONNECT_TIMEOUT` (seconds or duration; every
-  ssh/scp/mosh call gets `ConnectTimeout`, default 10) and
+  ssh/scp/mosh call gets `ConnectTimeout`; wins over an entry's
+  `connect_timeout`, which wins over the default 10) and
   `DEVVM_COMPLETE_TIMEOUT` (duration; guest path completion, default 2s; the
   app sets 10s for cold ControlMasters).
-- **Config** is hand-editable TOML; keep it that way (don't hide state in an
-  opaque DB). No legacy sourced-bash reader. BurntSushi's `omitempty` doesn't drop
-  zero ints, so `Save` strips `key = 0` lines and defaults are backend-scoped.
+- **Config** (`devvm.toml`, config.md §1, §4) is the user's hand-editable
+  TOML, meant for a dotfiles repo shared by every host; keep it that way
+  (don't hide state in an opaque DB, don't re-encode it). The loader is
+  strict: an unknown top-level table or key is an error (so a later family,
+  `[providers.*]`, is a loader addition, not a silent no-op), every problem
+  is reported at once, and a missing file is valid (no entries, built-in
+  templates). A `[machines.NAME]` entry: `backend` **mandatory**, `remote` or
+  `hub` (`smol` is an error: smol VMs are discovered; the old
+  `remote-managed`/`ssh` values are errors naming the fix); `managed` (remote
+  only; an error under a hub); `host` (`host[:port]`, `[v6]:port`, or an ssh
+  alias; a `user@` there is an error); `user` (unset = no `user@`, ssh
+  config decides, except a **managed** remote entry, which logs in as
+  `[templates.default]`'s user: the account `setup` creates); `transport`,
+  `mosh_server`, `identity`, `connect_timeout`. **VM commands never write
+  the file; only `config add`/`config rm` do**, and only structurally:
+  `add` appends one whole table at EOF (always writing `backend`, and
+  `managed` on remote), `rm` cuts one table's line range (its keys, glued
+  trailing comments, the blank gap; a comment block above the next header
+  stays). Both match the file's line ending (CRLF stays CRLF), re-parse and
+  require that nothing but that entry changed before an atomic rename,
+  through a symlink to its target; a **dangling** link is an error naming
+  link and target, for reads and edits alike (never an empty file, never a
+  file renamed over the link). Everything else is `config edit`
+  (`$VISUAL`/`$EDITOR`, then check; a failing check keeps the edit and
+  saves the pre-edit file as `.bak` beside the real file, with its mode).
+  HUB/NAME is refused by the noun: it lives in the hub's file. No `config`
+  command dials a box; `config check` (offline, non-zero on error) also
+  checks hook specs/port mappings and warns on collisions. `config rm` owns
+  this host's state: it **plans** the cut first (`PlanRemoveEntry`: every
+  refusal happens before any daemon is touched), refuses while a daemon
+  for the entry (or `NAME/*` for a hub) holds live forwards unless
+  `--force`, stops those daemons, commits the edit (refused if the file
+  changed since the plan), then clears saved forwards, reach cache, the
+  hub cache, the pin and locks, carrying on past failures ("removed
+  [machines.X]; but: …"). Never a managed marker (an entry may shadow a
+  smol VM). `config add` of a hub clears nothing: forwards already there
+  are what the upgrade seeded. A hub entry named exactly `os.Hostname()` is
+  marked `(this host)` in `status`/`config show`: cosmetic only. With the
+  old `machines/` (non-empty: an older `status --watch` made an empty one)
+  or `config.toml` and no devvm.toml, every command runs the two upgrade
+  seeds (forwards, markers), then prints one line pointing at the hand
+  migration (config.md §8) and sees no entries; nothing else reads the old
+  files.
 - **Connect surface**: `attach` (persistent dev tmux) and `shell` (raw login
   shell), both backend-dispatched via the `Interactive` interface and taking
-  `--transport ssh|mosh`. There is no `ssh`/`mosh` command. `create` is
-  backend-agnostic (flags-first, huh prompts on a TTY seeded from the template;
-  `--backend` defaults to smol); it adopts remote hosts by test-connecting before
-  saving the conf, then runs `setup`. `--yes` skips prompts and resolves every
-  unset field from flag > template > built-in (erroring on a required field
-  with no default). Multi-op nouns are grouped:
-  `repos {add,rm,list,clone}`, `ports {add,rm,list,up,down}`,
-  `keys {add,rm,list,dedupe}`, and `defaults {list,set,unset,path}` (global, so its
-  leaves take a KEY not a NAME). NAME is always the **first positional of the leaf**
+  `--transport ssh|mosh`. There is no `ssh`/`mosh` command. `create` makes a
+  **local smol VM only** (flags-first, huh prompts on a TTY seeded from the
+  template; `--backend` stays, default and only value `smol`, for the provider
+  later): a remote box or hub is `config add` (its huh form when `--host` is
+  missing on a TTY), then `setup` for a managed box. `--yes` skips prompts and
+  resolves every unset field from flag > template > built-in (erroring on a
+  required field with no default). Multi-op nouns are grouped:
+  `repos {add,list}`, `ports {add,rm,list,up,down}`,
+  `keys {add,rm,list,dedupe}`, and `config {path,show,edit,check,add,rm}`.
+  NAME is always the **first positional of the leaf**
   (`devvm repos add NAME REPO`) so completion and "first arg = machine" hold at any
   depth. Single-action verbs (create/start/stop/delete/attach/…)
-  stay flat, but `--help` clusters them into Lifecycle/Connect/Configure groups in an
-  explicit lifecycle order via `cobra.EnableCommandSorting=false` + `AddGroup`/`GroupID`
-  (see `rootCmd`). `repos add` records
-  in the conf and clones immediately (`--no-clone` to skip); `owner/repo` shorthand
-  clones via gh, any URL via plain git, so non-GitHub hosts work.
+  stay flat, but `--help` clusters them into Lifecycle/Connect/Configure/Config
+  groups in an explicit lifecycle order via `cobra.EnableCommandSorting=false` +
+  `AddGroup`/`GroupID` (see `rootCmd`). Repos are not tracked: `repos add`
+  clones into `~/src` (an existing checkout is skipped; `owner/repo` shorthand
+  via gh, any URL via plain git), and `repos list` lists the guest's git
+  checkouts (one exec, so a stopped smol VM is refused, never booted).
 - **Keys**: `internal/keys` is pure text logic (SHA256 fingerprint computed in-Go,
   matches `ssh-keygen`). It runs **host-side** — read `~/.ssh/authorized_keys`,
   process on the host, write back atomically (`umask 077` + temp + `mv`, content
   over stdin so nothing is shell-interpolated). No agent, so it works on adopt
   hosts with zero footprint. `internal/keys` preserves options/comments verbatim.
-- **Hubs** (`docs/proposals/hub.md`): a hub is a conf with `backend = "hub"`,
-  reached like a remote box and never shaped like one (it needs only `devvm` and
-  `smolvm`). Its VMs are addressed `HUB/NAME` and have **no conf of their own**
-  on the laptop: the record is derived from the hub conf, and the laptop's own
-  state for one (its saved forwards, `<State>/ports/HUB@NAME`) is host state
-  like any machine's; the hub conf is never written after `create`, so the
-  hub's registry is the only one. Runtime files (daemon socket, log, lock)
+- **Hubs** (`docs/proposals/hub.md`): a hub is a `[machines.HUB]` entry with
+  `backend = "hub"`, reached like a remote box and never shaped like one (it
+  needs only `devvm` and `smolvm`; registering one dials nothing, so its
+  version is checked only by the proxied verbs that need the floor). Its VMs
+  are addressed `HUB/NAME` and have **no entry of their own** on the laptop:
+  the record is derived from the hub's entry, and the laptop's own state for
+  one (its saved forwards, `<State>/ports/HUB@NAME`) is host state like any
+  machine's, so the hub's registry is the only one. `delete HUB/NAME` still
+  proxies; the hub entry itself goes with `config rm HUB`. The merged
+  listing hides a hub's `remote` row whose name is also an entry here (the
+  direct path is right; a hub is not a jump host: that is `ProxyJump` on the
+  `host` alias). Runtime files (daemon socket, log, lock)
   use `HUB@NAME`, because `run/HUB/NAME.sock` would name a directory; only
   `config.RuntimeName` and `DisplayName` convert between the forms. Commands
   **proxy**: the cli rebuilds
@@ -339,53 +415,58 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   missing file; smol `create`/`setup` **fail** if that install fails. smol
   `shell`/`attach` also carry `BROWSER` in their exec env (attach copies it
   into the `dev` tmux session), dropped if the shim is missing.
-- **Root adoption (fresh cloud VMs)**: `setup` on a remote-managed box first
+- **Root adoption (fresh cloud VMs)**: `setup` on a managed remote box first
   waits for ssh, **bounded** (`setupReachWait`, 90s: a just-made VM or a
-  cloud-init sshd bounce; only "unreachable" is retried). It tries the
-  configured login; on *permission denied* (a BatchMode stderr match: exit 255
-  alone is also "unreachable") it tries `root@host`, and a box that answers
-  only as root (or whose configured login is root) gets
-  `bootstrap.EnsureUser(USER)` — the template's `user`, default `dev`
-  (NOPASSWD sudo, root's `authorized_keys`) — then setup continues as `USER`,
-  so the hook/keys/repos never land in `/root`; it re-probes as `USER` before
-  writing anything. A changed host key or "Too many authentication failures"
-  is fatal at once, and any exit but 255 means the host answered. A
-  configured login that is neither root nor `USER` wins, with a warning.
-  A stopped smol VM is started (as `start` does) before setup's first exec.
-  Only `setup` ever tries root,
-  and only on remote + managed. This is what establishes the invariant
-  `rootWrap` assumes (login user = unprivileged user with sudo). For now the
-  old conf's `ssh_host` gets its user part rewritten (never its address:
-  `setup --host ADDR` is that run's only); config.md step 5's host/user split
-  removes that write. `Harden` pins `AllowUsers` to the actual connection
-  user and refuses to run as root (it would write `PermitRootLogin no` +
-  `AllowUsers root` — a lockout).
+  cloud-init sshd bounce; only "unreachable" is retried). It tries `USER@host`
+  — the entry's `user`, else the template's (default `dev`); on *permission
+  denied* (a BatchMode stderr match: exit 255 alone is also "unreachable") it
+  tries `root@host`, and a box that answers only as root gets
+  `bootstrap.EnsureUser(USER)` (NOPASSWD sudo, root's `authorized_keys`),
+  then setup continues as `USER`, so the hook/keys/repos never land in
+  `/root`; it re-probes as `USER` first. **Nothing is written**: with no
+  `user` in the entry every later command logs in as `[templates.default]`'s
+  user, which is what setup just made. A `--template T` whose user differs
+  from that login is **refused before anything runs** (it would create T's
+  user and pin `AllowUsers` to it, locking every later command out): the
+  fix is `user = "…"` in the entry. A changed host key or "Too many authentication
+  failures" is fatal at once, and any exit but 255 means the host answered.
+  An entry login that is neither root nor the template's user wins, with a
+  warning; `user = "root"` on a root-only box is refused. A stopped smol VM
+  is started (as `start` does) before setup's first exec. Only `setup` ever
+  tries root, and only on remote + managed. This is what establishes the
+  invariant `rootWrap` assumes (login user = unprivileged user with sudo).
+  `setup --host ADDR` is that run's address only. `Harden` pins `AllowUsers`
+  to the actual connection user and refuses to run as root (it would write
+  `PermitRootLogin no` + `AllowUsers root` — a lockout); `lockdown` takes
+  fail2ban from `[templates.default]`.
 - **Vocabulary — don't re-conflate these.** `create` allocates the resource (the
   VM/disk) and writes the managed marker; `delete` destroys it. **`setup`**
   (was `bootstrap`) shapes a box and is the single place devvm touches its
   contents, in a fixed order: ensure user → prereqs (incl. tmux, gh,
   mosh-server) → agent + shim (+ profile.d, smol) → **`hook`** → repos → keys
-  → harden → seed saved forwards. The **`hook`** (template key; an old conf's
-  `bootstrap_hook`) is the *user's* step inside it, often a dotfiles script
+  → harden → seed saved forwards. The **`hook`** (template key) is the
+  *user's* step inside it, often a dotfiles script
   itself named `bootstrap.sh`. So `create` = make the box exist; `setup` =
   shape it; `hook` = the user's part of shaping. `setup --adopt NAME` is the
   only promotion of a smol VM devvm did not make: it prints the plan and needs
   the VM's **name typed** on a TTY (no TTY, no adoption; `--yes` never
-  applies), then writes the marker. A remote-unmanaged host is never shaped.
+  applies), then writes the marker. A remote entry with `managed = false` is
+  never shaped (writing `managed = true` is the consent; `--adopt` is
+  refused there). `config add`/`config rm` = the entry exists here or not,
+  independent of the box.
 - **Lifecycle states**: a machine exists or it doesn't. There is **no dormant
   state** and no `provision`/`deprovision` (config.md §2): a smol VM is
   running or stopped, a remote box is reachable. Rebuilding is `delete` then
   `create`.
 - **Templates** (`internal/config/templates.go`, config.md §3): `[templates.*]`
-  in `$XDG_CONFIG_HOME/devvm/devvm.toml` (only that table family is read until
-  step 5; other tables are ignored). Fields: `user` (default `dev`; remote
+  in devvm.toml, beside `[machines.*]`. Fields: `user` (default `dev`; remote
   only), `hook` (`url:`/`cmd:`/`none`, built-in **`none`**: nothing personal
   baked into the binary), `memory`/`disk` (create-time, smol), `repos`,
   `ports`, `authorized_keys[_github]`, `harden`/`fail2ban` (remote). Fields
   that don't apply are ignored with one warning line. Unset fields fall back to
   `[templates.default]`, **one level**. Precedence for create/setup: flag >
-  `--template T` > the box's old conf (step 5 removes it) > `[templates.default]`
-  > `config.toml` > built-in. Nothing records which template made a box: `setup
+  `--template T` > `[templates.default]` > built-in. `config show` prints each
+  template resolved, annotated with where each value came from. Nothing records which template made a box: `setup
   NAME` re-runs whatever `default` says now. A proxied `create`/`setup HUB/NAME
   --template T` resolves T on the laptop and sends every field as the hidden
   template flags (`tmplFlags`, `--inline-template`; key sources as `--key`
@@ -394,12 +475,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   saves and prompts for none); the laptop seeds its own `HUB@NAME` forwards
   after success. A hub too old for `setup`/these flags maps to one line
   naming `devvm update` (`runProxiedShaping`).
-- **Global defaults** (`internal/config/defaults.go`): **deprecated** by
-  templates. `$XDG_CONFIG_HOME/devvm/config.toml` (`bootstrap_hook`, `memory`,
-  `disk`, `transport`) still seeds create/setup, below `[templates.default]`, so
-  existing hosts keep behaving; step 5 removes it (it becomes
-  `[templates.default]` by hand). Managed via `devvm defaults` (its CLI keys
-  use hyphens, e.g. `bootstrap-hook`; the TOML uses snake_case `bootstrap_hook`).
+- **No global defaults file**: `config.toml` and the `defaults` noun are gone;
+  their values are `[templates.default]`, edited with `config edit`.
 
 ## Testing gotchas (all real, learned the hard way)
 

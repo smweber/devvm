@@ -1,256 +1,527 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestSaveDropsNoise verifies confs stay clean: smol carries no ssh transport
-// fields, and no backend carries a spurious zero-valued int (BurntSushi keeps
-// those despite omitempty).
-func TestSaveDropsNoise(t *testing.T) {
-	dir := t.TempDir()
-
-	sm := NewSmol("s")
-	sm.Memory = 1024
-	sm.Disk = 50
-	if err := sm.Save(dir); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := Load(dir, "s"); err != nil {
-		t.Fatalf("Load: %v", err)
-	} else if got.Memory != 1024 || got.Disk != 50 {
-		t.Errorf("smol spec lost: memory=%d disk=%d", got.Memory, got.Disk)
-	}
-	smData, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "s.toml"))
-	// Default-valued lines are stripped: no ssh transport fields on smol, no zero
-	// int, and bootstrap_hook="none" (the built-in default) is omitted too.
-	for _, bad := range []string{"ssh_port", "transport", "memory = 0", "bootstrap_hook"} {
-		if strings.Contains(string(smData), bad) {
-			t.Errorf("smol conf should not contain %q:\n%s", bad, smData)
-		}
-	}
-	if !strings.Contains(string(smData), "memory = 1024") {
-		t.Errorf("smol conf lost memory:\n%s", smData)
-	}
-
-	rm := NewRemote("r", BackendRemoteUnmanaged, "h")
-	if err := rm.Save(dir); err != nil {
-		t.Fatal(err)
-	}
-	rmData, _ := os.ReadFile(filepath.Join(MachinesDir(dir), "r.toml"))
-	// transport="ssh" and bootstrap_hook="none" are stock defaults → omitted.
-	for _, bad := range []string{"memory", "transport", "bootstrap_hook"} {
-		if strings.Contains(string(rmData), bad) {
-			t.Errorf("remote conf should not contain %q:\n%s", bad, rmData)
-		}
-	}
-}
-
 func TestValidName(t *testing.T) {
-	ok := []string{"dev", "devbox3", "a.b_c-d", "A1"}
-	for _, n := range ok {
-		if err := ValidName(n); err != nil {
-			t.Errorf("ValidName(%q) = %v, want nil", n, err)
+	for _, ok := range []string{"a", "web-1", "a.b_c", "X9"} {
+		if err := ValidName(ok); err != nil {
+			t.Errorf("ValidName(%q) = %v", ok, err)
 		}
 	}
-	bad := []string{"", "-lead", ".lead", "has space", "semi;colon", "sl/ash"}
-	for _, n := range bad {
-		if err := ValidName(n); err == nil {
-			t.Errorf("ValidName(%q) = nil, want error", n)
+	for _, bad := range []string{"", "-a", ".a", "a/b", "a b", "a@b", "../x"} {
+		if ValidName(bad) == nil {
+			t.Errorf("ValidName(%q) accepted", bad)
 		}
 	}
 }
 
-func TestValidate(t *testing.T) {
-	tests := []struct {
-		name    string
-		m       Machine
-		wantErr bool
-	}{
-		{"smol ok", Machine{Name: "x", Backend: BackendSmol}, false},
-		{"remote-managed ok", Machine{Name: "x", Backend: BackendRemoteManaged, SSHHost: "h"}, false},
-		{"remote-unmanaged ok", Machine{Name: "x", Backend: BackendRemoteUnmanaged, SSHHost: "h"}, false},
-		{"remote no host", Machine{Name: "x", Backend: BackendRemoteManaged}, true},
-		{"no backend", Machine{Name: "x"}, true},
-		{"bad backend", Machine{Name: "x", Backend: "hetzner"}, true},
-		{"mosh transport ok", Machine{Name: "x", Backend: BackendRemoteManaged, SSHHost: "h", Transport: TransportMosh}, false},
-		{"transport on smol", Machine{Name: "x", Backend: BackendSmol, Transport: TransportMosh}, true},
-		{"bad transport", Machine{Name: "x", Backend: BackendRemoteManaged, SSHHost: "h", Transport: "telnet"}, true},
-	}
-	for _, tt := range tests {
-		if err := tt.m.Validate(); (err != nil) != tt.wantErr {
-			t.Errorf("%s: Validate() err=%v wantErr=%v", tt.name, err, tt.wantErr)
-		}
-	}
-}
+const sampleFile = `# ~/.config/devvm/devvm.toml, shared by every host.
 
-func TestManagedAndRemote(t *testing.T) {
-	tests := []struct {
-		backend           string
-		settled           bool // SetManaged(true), as the smol discovery source does for a VM devvm made
-		managed, isRemote bool
-	}{
-		{BackendSmol, false, false, false}, // unsettled: a VM devvm did not create, until a source says otherwise
-		{BackendSmol, true, true, false},
-		{BackendRemoteManaged, false, true, true},
-		{BackendRemoteUnmanaged, false, false, true},
-		{BackendRemoteUnmanaged, true, false, true}, // the smol bit means nothing off smol
-		{BackendHub, false, false, true},            // reached like a remote box, never shaped
-	}
-	for _, tt := range tests {
-		m := &Machine{Backend: tt.backend}
-		m.SetManaged(tt.settled)
-		if m.Managed() != tt.managed {
-			t.Errorf("%s: Managed()=%v want %v", tt.backend, m.Managed(), tt.managed)
-		}
-		if m.IsRemote() != tt.isRemote {
-			t.Errorf("%s: IsRemote()=%v want %v", tt.backend, m.IsRemote(), tt.isRemote)
-		}
-	}
-}
+[templates.default]              # what create/setup use
+user = "ops"
+hook = "none"
 
-// TestMigrateLegacySSH covers loading pre-rename confs: `backend = "ssh"` maps to
-// remote-unmanaged when unmanaged=true, else remote-managed, and the deprecated
-// key is dropped.
-func TestMigrateLegacySSH(t *testing.T) {
-	tests := []struct {
-		name, raw   string
-		wantBackend string
-	}{
-		{"legacy-unmanaged", "backend = \"ssh\"\nunmanaged = true\nssh_host = \"h\"\n", BackendRemoteUnmanaged},
-		{"legacy-managed", "backend = \"ssh\"\nssh_host = \"h\"\n", BackendRemoteManaged},
-	}
-	for _, tt := range tests {
-		dir := t.TempDir()
-		if err := os.MkdirAll(MachinesDir(dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(MachinesDir(dir), tt.name+".toml"), []byte(tt.raw), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		got, err := Load(dir, tt.name)
-		if err != nil {
-			t.Fatalf("%s: Load: %v", tt.name, err)
-		}
-		if got.Backend != tt.wantBackend {
-			t.Errorf("%s: Backend=%q want %q", tt.name, got.Backend, tt.wantBackend)
-		}
-		if got.Unmanaged {
-			t.Errorf("%s: Unmanaged should be cleared after migration", tt.name)
-		}
-		if got.TransportName() != TransportSSH {
-			t.Errorf("%s: TransportName()=%q want ssh", tt.name, got.TransportName())
-		}
-	}
-}
+[machines.thinkpad]
+backend = "hub"                  # backend is mandatory on every entry
+host = "192.168.1.196"
+user = "devvmtest"
 
-func TestSaveLoadRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	orig := &Machine{
-		Name:                 "devbox3",
-		Backend:              BackendRemoteUnmanaged,
-		SSHHost:              "devbox3",
-		Transport:            TransportMosh,
-		LegacyPorts:          []string{"3000", "5901", "8080:80"},
-		MoshServer:           "/home/linuxbrew/.linuxbrew/bin/mosh-server",
-		AuthorizedKeysGithub: []string{"alice", "bob"},
-	}
-	if err := orig.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	got, err := Load(dir, "devbox3")
+[machines.cloud]
+backend = "remote"
+managed = true
+host = "2.29.47.196:2222"        # user comes from the template
+transport = "mosh"
+connect_timeout = 25
+
+[machines.scottdev3]
+backend = "remote"
+host = "scottdev3"
+mosh_server = "/home/linuxbrew/.linuxbrew/bin/mosh-server"
+
+[machines."v6.box"]
+backend = "remote"
+managed = false
+host = "[2001:db8::1]:22"
+user = "root"
+`
+
+// A valid file: both families, the two axes, host/user resolution.
+func TestLoadFile(t *testing.T) {
+	p := testPaths(t)
+	writeFile(t, p, sampleFile)
+	f, err := LoadFile(p)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatal(err)
 	}
-	if got.Backend != BackendRemoteUnmanaged || got.SSHHost != "devbox3" {
-		t.Errorf("core fields lost: %+v", got)
+	if got := strings.Join(f.Names(), ","); got != "cloud,scottdev3,thinkpad,v6.box" {
+		t.Errorf("names = %s", got)
 	}
-	if got.Transport != TransportMosh {
-		t.Errorf("Transport lost: %q", got.Transport)
+	for _, tc := range []struct {
+		name, backend, sshHost string
+		port                   int
+		managed, remote, hub   bool
+	}{
+		// A managed entry with no user logs in as [templates.default]'s.
+		{"cloud", BackendRemote, "ops@2.29.47.196", 2222, true, true, false},
+		// An adopted entry with no user has no user@: ssh config decides.
+		{"scottdev3", BackendRemote, "scottdev3", 0, false, true, false},
+		{"thinkpad", BackendHub, "devvmtest@192.168.1.196", 0, false, true, true},
+		{"v6.box", BackendRemote, "root@2001:db8::1", 22, false, true, false},
+	} {
+		m, ok := f.Entry(tc.name)
+		if !ok {
+			t.Fatalf("%s missing", tc.name)
+		}
+		if m.Backend != tc.backend || m.SSHHost != tc.sshHost || m.SSHPort != tc.port ||
+			m.Managed() != tc.managed || m.IsRemote() != tc.remote || m.IsHub() != tc.hub {
+			t.Errorf("%s = %+v (managed %v)", tc.name, m, m.Managed())
+		}
 	}
-	if got.SSHPort != 22 {
-		t.Errorf("SSHPort default = %d, want 22", got.SSHPort)
+	cloud, _ := f.Entry("cloud")
+	if cloud.User != "" || cloud.Transport != TransportMosh || cloud.ConnectTimeout != 25 {
+		t.Errorf("cloud fields = %+v", cloud)
 	}
-	if got.BootstrapHook != DefaultBootstrapHook {
-		t.Errorf("BootstrapHook default = %q, want default", got.BootstrapHook)
+	// Entry hands out copies.
+	cloud.SSHHost = "changed"
+	if again, _ := f.Entry("cloud"); again.SSHHost == "changed" {
+		t.Error("Entry returned the file's own record")
 	}
-	// A not-yet-migrated `ports` list survives a Save (MigratePorts may
-	// still need it), though nothing but the migration reads it.
-	if len(got.LegacyPorts) != 3 || got.LegacyPorts[2] != "8080:80" {
-		t.Errorf("legacy ports lost: %v", got.LegacyPorts)
+	// The package-level readers agree.
+	if m, err := Load(p, "scottdev3"); err != nil || m.MoshServer == "" {
+		t.Errorf("Load = %+v, %v", m, err)
 	}
-	if len(got.AuthorizedKeysGithub) != 2 {
-		t.Errorf("AuthorizedKeysGithub lost: %v", got.AuthorizedKeysGithub)
+	if _, err := Load(p, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Load(nope) = %v, want ErrNotFound", err)
+	}
+	if !Exists(p, "thinkpad") || Exists(p, "nope") {
+		t.Error("Exists")
 	}
 }
 
-func TestLoadNotFound(t *testing.T) {
-	if _, err := Load(t.TempDir(), "ghost"); err == nil {
-		t.Fatal("Load(missing) = nil error, want ErrNotFound")
+// No file is valid: no entries, built-in templates.
+func TestLoadFileMissing(t *testing.T) {
+	p := testPaths(t)
+	f, err := LoadFile(p)
+	if err != nil || len(f.Entries) != 0 || len(f.Templates) != 0 {
+		t.Fatalf("missing file = %+v, %v", f, err)
+	}
+	if names, err := List(p); err != nil || len(names) != 0 {
+		t.Errorf("List = %v, %v", names, err)
+	}
+	if _, err := Load(p, "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Load = %v", err)
+	}
+}
+
+// Every rejection names the table and what is wrong.
+func TestLoadFileRejects(t *testing.T) {
+	for body, want := range map[string]string{
+		"[machines.vm]\nbackend = \"smol\"\n":                                        "discovered",
+		"[machines.x]\nhost = \"h\"\n":                                               "backend is required",
+		"[machines.x]\nbackend = \"remote-managed\"\nhost = \"h\"\n":                 "old layout",
+		"[machines.x]\nbackend = \"ssh\"\nhost = \"h\"\n":                            "old layout",
+		"[machines.x]\nbackend = \"hetzner\"\nhost = \"h\"\n":                        "unsupported backend",
+		"[machines.h]\nbackend = \"hub\"\nmanaged = false\nhost = \"h\"\n":           "managed applies only to remote",
+		"[machines.x]\nbackend = \"remote\"\n":                                       "host is required",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"u@h\"\n":                       "put it in user",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"::1\"\n":                       "needs brackets",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"h:99999\"\n":                   "invalid port",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"h\"\nuser = \"a b\"\n":         "invalid user",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"h\"\ntransport = \"telnet\"\n": "invalid transport",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"h\"\nconnect_timeout = -1\n":   "connect_timeout",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"h\"\nssh_host = \"h\"\n":       "[machines.x]: unknown key \"ssh_host\"",
+		"[machines.x]\nbackend = \"remote\"\nhost = \"h\"\nports = [\"3000\"]\n":     "[machines.x]: unknown key \"ports\"",
+		"[providers.hetzner]\ntoken_env = \"X\"\n":                                   "unknown top-level table [providers]",
+		"memory = 4096\n": "unknown top-level key",
+		"[machines.\"a/b\"]\nbackend = \"remote\"\nhost = \"h\"\n": "invalid machine name",
+		"[machines.x\n": "parse",
+	} {
+		p := testPaths(t)
+		writeFile(t, p, body)
+		if _, err := LoadFile(p); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want %q", body, err, want)
+		}
+	}
+	// All problems at once, so `config check` names them in one run.
+	p := testPaths(t)
+	writeFile(t, p, "[machines.a]\nbackend = \"smol\"\n[machines.b]\nhost = \"h\"\n")
+	if _, err := LoadFile(p); err == nil || !strings.Contains(err.Error(), "[machines.a]") || !strings.Contains(err.Error(), "[machines.b]") {
+		t.Errorf("both errors: %v", err)
+	}
+}
+
+func TestParseHost(t *testing.T) {
+	for in, want := range map[string]struct {
+		host string
+		port int
+	}{
+		"box":               {"box", 0},
+		"box.example:2222":  {"box.example", 2222},
+		"10.0.0.1":          {"10.0.0.1", 0},
+		"[::1]":             {"::1", 0},
+		"[2001:db8::1]:443": {"2001:db8::1", 443},
+	} {
+		h, port, err := ParseHost(in)
+		if err != nil || h != want.host || port != want.port {
+			t.Errorf("ParseHost(%q) = %q, %d, %v", in, h, port, err)
+		}
+	}
+	for _, bad := range []string{"", "::1", "[box]", "[::1", "[::1]x", "h:", ":22", "-oProxyCommand=x", "a b", "u@h", "h:0"} {
+		if _, _, err := ParseHost(bad); err == nil {
+			t.Errorf("ParseHost(%q) accepted", bad)
+		}
+	}
+}
+
+// The axes are methods on the record; a hub is never managed.
+func TestManagedAndRemote(t *testing.T) {
+	for _, tc := range []struct {
+		m                   *Machine
+		managed, remote, hb bool
+	}{
+		{NewRemote("a", true, "dev@a"), true, true, false},
+		{NewRemote("b", false, "b"), false, true, false},
+		{NewHub("h", "u@h"), false, true, true},
+		{&Machine{Name: "vm", Backend: BackendSmol}, false, false, false},
+	} {
+		if tc.m.Managed() != tc.managed || tc.m.IsRemote() != tc.remote || tc.m.IsHub() != tc.hb {
+			t.Errorf("%s: managed %v remote %v hub %v", tc.m.Name, tc.m.Managed(), tc.m.IsRemote(), tc.m.IsHub())
+		}
+	}
+	vm := &Machine{Name: "vm", Backend: BackendSmol}
+	vm.SetManaged(true)
+	if !vm.Managed() {
+		t.Error("a settled smol record reads unmanaged")
+	}
+	hub := NewHub("h", "u@h")
+	hub.SetManaged(true)
+	if hub.Managed() {
+		t.Error("a hub reads managed")
 	}
 }
 
 func TestSplitPort(t *testing.T) {
-	tests := []struct{ in, h, g string }{
-		{"3000", "3000", "3000"},
-		{"8080:80", "8080", "80"},
-		{"1455:1455", "1455", "1455"},
-	}
-	for _, tt := range tests {
-		h, g := SplitPort(tt.in)
-		if h != tt.h || g != tt.g {
-			t.Errorf("SplitPort(%q) = %q,%q want %q,%q", tt.in, h, g, tt.h, tt.g)
+	for in, want := range map[string][2]string{"3000": {"3000", "3000"}, "8080:80": {"8080", "80"}} {
+		if h, g := SplitPort(in); h != want[0] || g != want[1] {
+			t.Errorf("SplitPort(%q) = %q,%q", in, h, g)
 		}
 	}
 }
 
-func TestList(t *testing.T) {
-	dir := t.TempDir()
-	for _, n := range []string{"a", "b"} {
-		(&Machine{Name: n, Backend: BackendSmol}).Save(dir)
+// The old layout with no devvm.toml is what the cli points at; once
+// devvm.toml exists it is not.
+func TestOldLayout(t *testing.T) {
+	p := testPaths(t)
+	if OldLayout(p) {
+		t.Error("empty config dir reads as the old layout")
 	}
-	names, err := List(dir)
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	writeConf(t, p.Config, "box", "backend = \"smol\"\n")
+	if !OldLayout(p) {
+		t.Error("machines/ without devvm.toml is the old layout")
 	}
-	if len(names) != 2 {
-		t.Errorf("List = %v, want 2", names)
+	// The old files are never read as entries.
+	if names, err := List(p); err != nil || len(names) != 0 {
+		t.Errorf("List = %v, %v", names, err)
+	}
+	writeFile(t, p, "")
+	if OldLayout(p) {
+		t.Error("devvm.toml beside machines/ still reads as the old layout")
+	}
+	q := testPaths(t)
+	if err := os.WriteFile(LegacyDefaultsPath(q), []byte("memory = 1024\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !OldLayout(q) {
+		t.Error("config.toml alone is the old layout")
 	}
 }
 
-// Save goes through a temp file and rename so `status --watch` never snapshots
-// a half-written conf; no temp file may be left behind.
-func TestSaveIsAtomic(t *testing.T) {
-	dir := t.TempDir()
-	m := NewSmol("s")
-	for i := 0; i < 2; i++ { // second save replaces an existing conf
-		if err := m.Save(dir); err != nil {
-			t.Fatal(err)
+// `config add` appends one table at the end: every other byte (comments,
+// layout) is untouched, backend and managed are always written, and the
+// result loads to the record it was rendered from.
+func TestAppendEntry(t *testing.T) {
+	p := testPaths(t)
+	orig := sampleFile[:len(sampleFile)-1] // no trailing newline: one is added
+	writeFile(t, p, orig)
+	if err := AppendEntry(p, "new", Entry{Backend: BackendRemote, Host: "n.example:2200", User: "me", Transport: TransportMosh}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p.FilePath())
+	want := orig + "\n\n[machines.new]\nbackend = \"remote\"\nmanaged = false\nhost = \"n.example:2200\"\nuser = \"me\"\ntransport = \"mosh\"\n"
+	if string(data) != want {
+		t.Fatalf("file =\n%s\nwant\n%s", data, want)
+	}
+	m, err := Load(p, "new")
+	if err != nil || m.SSHHost != "me@n.example" || m.SSHPort != 2200 || m.Managed() {
+		t.Errorf("new = %+v, %v", m, err)
+	}
+	// A dotted name is quoted, a hub has no managed line.
+	if err := AppendEntry(p, "a.b", Entry{Backend: BackendHub, Host: "hb"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(p.FilePath())
+	if !strings.HasSuffix(string(data), "\n\n[machines.\"a.b\"]\nbackend = \"hub\"\nhost = \"hb\"\n") {
+		t.Errorf("hub table:\n%s", data)
+	}
+	if m, err := Load(p, "a.b"); err != nil || !m.IsHub() {
+		t.Errorf("a.b = %+v, %v", m, err)
+	}
+
+	// Refusals leave the file alone.
+	before, _ := os.ReadFile(p.FilePath())
+	for _, tc := range []struct {
+		name string
+		e    Entry
+		want string
+	}{
+		{"cloud", Entry{Backend: BackendRemote, Host: "x"}, "already has"},
+		{"bad", Entry{Backend: BackendRemote, Host: "u@x"}, "put it in user"},
+		{"bad", Entry{Backend: BackendSmol, Host: "x"}, "discovered"},
+		{"bad/name", Entry{Backend: BackendRemote, Host: "x"}, "invalid machine name"},
+	} {
+		if err := AppendEntry(p, tc.name, tc.e); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("AppendEntry(%s) = %v, want %q", tc.name, err, tc.want)
 		}
 	}
-	entries, err := os.ReadDir(MachinesDir(dir))
+	if after, _ := os.ReadFile(p.FilePath()); string(after) != string(before) {
+		t.Error("a refused add changed the file")
+	}
+	// A file that does not parse is never appended to.
+	writeFile(t, p, "[machines.x\n")
+	if err := AppendEntry(p, "y", Entry{Backend: BackendRemote, Host: "y"}); !errors.Is(err, ErrBrokenFile) {
+		t.Errorf("broken file: %v", err)
+	}
+}
+
+// A missing file (and dir) is created by the first add.
+func TestAppendEntryCreatesFile(t *testing.T) {
+	p := Paths{Config: filepath.Join(t.TempDir(), "devvm"), State: t.TempDir()}
+	if err := AppendEntry(p, "h", Entry{Backend: BackendHub, Host: "h.example", User: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p.FilePath())
+	if string(data) != "[machines.h]\nbackend = \"hub\"\nhost = \"h.example\"\nuser = \"u\"\n" {
+		t.Errorf("new file:\n%s", data)
+	}
+	// Round trip through EntryOf.
+	m, _ := Load(p, "h")
+	if e := EntryOf(m); e.Backend != BackendHub || e.Host != "h.example" || e.User != "u" || e.Managed != nil {
+		t.Errorf("EntryOf = %+v", e)
+	}
+}
+
+// `config rm` removes exactly one table: its keys, its own trailing
+// comments and the blank gap; a comment block above the next table and the
+// comment above its own header stay; every other byte is untouched.
+func TestRemoveEntry(t *testing.T) {
+	p := testPaths(t)
+	body := `# head
+
+[templates.default]
+user = "ops"
+
+# the cloud box
+[machines.cloud]
+backend = "remote"
+# a comment inside
+managed = true
+host = "c"
+# trailing, glued to it
+
+# describes old, after a blank: kept
+
+[machines.next]   # same-line comment
+backend = "hub"
+host = "n"
+
+# about last
+[machines.last]
+backend = "remote"
+host = "l"
+`
+	writeFile(t, p, body)
+	if err := RemoveEntry(p, "cloud"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p.FilePath())
+	want := `# head
+
+[templates.default]
+user = "ops"
+
+# the cloud box
+# describes old, after a blank: kept
+
+[machines.next]   # same-line comment
+backend = "hub"
+host = "n"
+
+# about last
+[machines.last]
+backend = "remote"
+host = "l"
+`
+	if string(data) != want {
+		t.Fatalf("after rm cloud:\n%s\nwant:\n%s", data, want)
+	}
+	// The next table is kept whole, and its comment block above too.
+	if err := RemoveEntry(p, "next"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(p.FilePath())
+	if !strings.Contains(string(data), "\n# about last\n[machines.last]\n") || strings.Contains(string(data), "machines.next") {
+		t.Errorf("after rm next:\n%s", data)
+	}
+	// The last table: the file does not end in a blank line.
+	if err := RemoveEntry(p, "last"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(p.FilePath())
+	if !strings.HasSuffix(string(data), "# about last\n") {
+		t.Errorf("after rm last:\n%q", data)
+	}
+	if f, err := LoadFile(p); err != nil || len(f.Entries) != 0 || *f.Templates["default"].User != "ops" {
+		t.Errorf("result = %+v, %v", f, err)
+	}
+	if err := RemoveEntry(p, "ghost"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("rm ghost = %v", err)
+	}
+}
+
+// A table only reachable through an odd form (an inline table) is not cut
+// by a line scan; RemoveEntry refuses rather than guess.
+func TestRemoveEntryRefusesOddForms(t *testing.T) {
+	p := testPaths(t)
+	body := "[machines]\nx = { backend = \"remote\", host = \"h\" }\n"
+	writeFile(t, p, body)
+	if err := RemoveEntry(p, "x"); err == nil || !strings.Contains(err.Error(), "config edit") {
+		t.Errorf("inline table: %v", err)
+	}
+	if data, _ := os.ReadFile(p.FilePath()); string(data) != body {
+		t.Error("a refused rm changed the file")
+	}
+	// A header-like line inside a multi-line string must not fool the scan
+	// into cutting a neighbour: the post-parse check refuses.
+	body = "[templates.default]\nhook = \"\"\"\n[machines.x]\n\"\"\"\n\n[machines.x]\nbackend = \"remote\"\nhost = \"h\"\n"
+	writeFile(t, p, body)
+	if err := RemoveEntry(p, "x"); err == nil {
+		data, _ := os.ReadFile(p.FilePath())
+		t.Errorf("multi-line string: removed, leaving\n%s", data)
+	}
+}
+
+// A devvm.toml that is a symlink (into a dotfiles checkout) stays one: the
+// edit lands in the link's target.
+func TestEditThroughSymlink(t *testing.T) {
+	p := testPaths(t)
+	dots := t.TempDir()
+	target := filepath.Join(dots, "devvm.toml")
+	if err := os.WriteFile(target, []byte("# mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, p.FilePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendEntry(p, "r", Entry{Backend: BackendRemote, Host: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(p.FilePath()); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced: %v %v", fi, err)
+	}
+	if data, _ := os.ReadFile(target); !strings.HasPrefix(string(data), "# mine\n\n[machines.r]\n") {
+		t.Errorf("target =\n%s", data)
+	}
+	if err := RemoveEntry(p, "r"); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "# mine\n" {
+		t.Errorf("target after rm = %q", data)
+	}
+}
+
+// The atomic write keeps an existing file's mode.
+func TestWriteKeepsMode(t *testing.T) {
+	p := testPaths(t)
+	writeFile(t, p, "")
+	if err := os.Chmod(p.FilePath(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendEntry(p, "r", Entry{Backend: BackendRemote, Host: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(p.FilePath()); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v", fi.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(p.Config)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".devvm.toml") {
+			t.Errorf("temp file left: %s", e.Name())
+		}
+	}
+}
+
+// A dangling devvm.toml symlink is an error naming the link and its target,
+// for reads and edits alike: never an empty file, never a regular file
+// renamed over the link.
+func TestDanglingSymlink(t *testing.T) {
+	p := testPaths(t)
+	target := filepath.Join(t.TempDir(), "gone", "devvm.toml")
+	if err := os.Symlink(target, p.FilePath()); err != nil {
+		t.Fatal(err)
+	}
+	for name, err := range map[string]error{
+		"LoadFile":    func() error { _, err := LoadFile(p); return err }(),
+		"AppendEntry": AppendEntry(p, "x", Entry{Backend: BackendRemote, Host: "x"}),
+		"RemoveEntry": RemoveEntry(p, "x"),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "is a symlink to "+target) {
+			t.Errorf("%s = %v", name, err)
+		}
+	}
+	if fi, err := os.Lstat(p.FilePath()); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was replaced: %v", err)
+	}
+}
+
+// A CRLF file gets a CRLF table.
+func TestAppendEntryCRLF(t *testing.T) {
+	p := testPaths(t)
+	writeFile(t, p, "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n")
+	if err := AppendEntry(p, "r", Entry{Backend: BackendRemote, Host: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p.FilePath())
+	want := "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n\r\n[machines.r]\r\nbackend = \"remote\"\r\nmanaged = false\r\nhost = \"r\"\r\n"
+	if string(data) != want {
+		t.Errorf("file = %q", data)
+	}
+	if err := RemoveEntry(p, "r"); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(p.FilePath()); string(data) != "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n" {
+		t.Errorf("after rm = %q", data)
+	}
+}
+
+// A planned edit is not written when the file changed meanwhile.
+func TestPlannedEditRefusesConcurrentChange(t *testing.T) {
+	p := testPaths(t)
+	writeFile(t, p, "[machines.r]\nbackend = \"remote\"\nhost = \"r\"\n")
+	e, err := PlanRemoveEntry(p, "r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "s.toml" {
-		t.Fatalf("machines dir = %v, want only s.toml", entries)
+	writeFile(t, p, "[machines.r]\nbackend = \"remote\"\nhost = \"r2\"\n")
+	if err := e.Commit(); err == nil || !strings.Contains(err.Error(), "changed while") {
+		t.Errorf("Commit = %v", err)
 	}
-	conf := filepath.Join(MachinesDir(dir), "s.toml")
-	info, _ := os.Stat(conf)
-	if info.Mode().Perm() != 0o644 {
-		t.Fatalf("conf mode = %o, want 0644", info.Mode().Perm())
-	}
-	// A mode the user chose survives a rewrite.
-	if err := os.Chmod(conf, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.Save(dir); err != nil {
-		t.Fatal(err)
-	}
-	if info, _ := os.Stat(conf); info.Mode().Perm() != 0o600 {
-		t.Fatalf("conf mode after rewrite = %o, want the user's 0600", info.Mode().Perm())
+	if data, _ := os.ReadFile(p.FilePath()); !strings.Contains(string(data), "r2") {
+		t.Error("the newer file was overwritten")
 	}
 }

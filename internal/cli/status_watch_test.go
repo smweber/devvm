@@ -82,21 +82,28 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 	defer cancel()
 	out := newBlockWriter()
 	done := make(chan error, 1)
-	go func() { done <- watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond, nil, nil) }()
+	go func() { done <- watchStatus(ctx, dir, okSnap(snapshot), nil, out, 50*time.Millisecond, nil, nil) }()
 
 	out.next(t, "a\tsmol\tstopped\t-\n") // initial, unconditional
 
-	// A conf landing in machines/ is a change.
-	set("a\tsmol\tstopped\t-\nb\tremote-managed\treachable\t-\n")
-	if err := os.WriteFile(filepath.Join(config.MachinesDir(dir.Config), "b.toml"), []byte("name = 'b'\n"), 0o644); err != nil {
+	// devvm.toml renamed into place (how `config add` and most editors
+	// write it) is a change: the config dir is watched, not the file.
+	set("a\tsmol\tstopped\t-\nb\tremote\treachable\t-\n")
+	if err := config.AppendEntry(dir, "b", config.Entry{Backend: config.BackendRemote, Host: "b"}); err != nil {
 		t.Fatal(err)
 	}
-	out.next(t, "a\tsmol\tstopped\t-\nb\tremote-managed\treachable\t-\n")
+	out.next(t, "a\tsmol\tstopped\t-\nb\tremote\treachable\t-\n")
+	// And again: a second rename over the first is seen too.
+	set("a\tsmol\tstopped\t-\n")
+	if err := config.RemoveEntry(dir, "b"); err != nil {
+		t.Fatal(err)
+	}
+	out.next(t, "a\tsmol\tstopped\t-\n")
 
 	// The marker is a change even though nothing else on disk moved.
-	set("a\tsmol\trunning\tup:2\nb\tremote-managed\treachable\t-\n")
+	set("a\tsmol\trunning\tup:2\n")
 	config.TouchChanged(dir)
-	out.next(t, "a\tsmol\trunning\tup:2\nb\tremote-managed\treachable\t-\n")
+	out.next(t, "a\tsmol\trunning\tup:2\n")
 
 	// Identical snapshot after an event: suppressed.
 	config.TouchChanged(dir)
@@ -129,13 +136,52 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 	}
 }
 
+// A devvm.toml that stops parsing mid-watch pauses it: no block (the last
+// one stays true), one line on stderr, and the next event after it parses
+// again emits as usual.
+func TestWatchStatusPausesOnBrokenFile(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	writeDevvmTOML(t, a, "[machines.b]\nbackend = \"remote\"\nhost = \"b\"\n")
+	var errBuf syncBuffer
+	a.Stderr = &errBuf
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := newBlockWriter()
+	snapshot := func() (string, error) { return a.plainSnapshot(statusScope{local: true}) }
+	done := make(chan error, 1)
+	go func() { done <- watchStatus(ctx, a.Paths, snapshot, a.Stderr, out, 50*time.Millisecond, nil, nil) }()
+	out.next(t, "b\tremote\t?\t-\tunmanaged\tverified=-\n")
+
+	writeDevvmTOML(t, a, "[machines.b\n")
+	out.none(t)
+	if !strings.Contains(errBuf.String(), "paused until devvm.toml parses again") {
+		t.Errorf("stderr = %q", errBuf.String())
+	}
+	writeDevvmTOML(t, a, "[machines.c]\nbackend = \"hub\"\nhost = \"c\"\n")
+	out.next(t, "")
+	cancel()
+	<-done
+
+	// Broken at start: the watch fails like a one-shot status.
+	writeDevvmTOML(t, a, "[machines.b\n")
+	if err := a.runStatusWatch(context.Background(), true, false); err == nil || !strings.Contains(err.Error(), "devvm.toml") {
+		t.Errorf("status --watch on a broken file = %v", err)
+	}
+	if err := a.runStatusPlain(true); err == nil {
+		t.Error("status --plain on a broken file succeeded")
+	}
+}
+
 func TestWatchStatusEmptyRegistryAndConsumerGone(t *testing.T) {
 	dir := testPaths(t.TempDir())
 	out := newBlockWriter()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- watchStatus(ctx, dir, func() string { return "" }, out, 50*time.Millisecond, nil, nil) }()
+	go func() {
+		done <- watchStatus(ctx, dir, okSnap(func() string { return "" }), nil, out, 50*time.Millisecond, nil, nil)
+	}()
 	out.next(t, "") // an empty registry still yields one (blank) block
 	cancel()
 	if err := <-done; err != nil {
@@ -145,7 +191,7 @@ func TestWatchStatusEmptyRegistryAndConsumerGone(t *testing.T) {
 	// A consumer that has gone away (write error) ends the loop cleanly.
 	pr, pw := io.Pipe()
 	pr.Close()
-	err := watchStatus(context.Background(), dir, func() string { return "x\n" }, pw, 50*time.Millisecond, nil, nil)
+	err := watchStatus(context.Background(), dir, okSnap(func() string { return "x\n" }), nil, pw, 50*time.Millisecond, nil, nil)
 	if err != nil {
 		t.Fatalf("closed consumer should end the watch with nil, got %v", err)
 	}
@@ -178,7 +224,7 @@ func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out := newBlockWriter()
-	go func() { _ = watchStatus(ctx, dir, snapshot, out, 50*time.Millisecond, nil, nil) }()
+	go func() { _ = watchStatus(ctx, dir, okSnap(snapshot), nil, out, 50*time.Millisecond, nil, nil) }()
 	out.next(t, "a\tsmol\tstopped\t-\n")
 
 	set("after removal\n")
@@ -205,4 +251,68 @@ func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
 			}
 		}
 	}
+}
+
+// devvm.toml as a symlink: an edit of its target (in another dir) is seen,
+// a relink to another target moves the watch, and editor swap files in the
+// config dir are not changes.
+func TestWatchFollowsSymlinkRetarget(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	if err := os.MkdirAll(a.Paths.Config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirA, dirB := t.TempDir(), t.TempDir()
+	fileA, fileB := filepath.Join(dirA, "devvm.toml"), filepath.Join(dirB, "devvm.toml")
+	entry := func(n string) string { return "[machines." + n + "]\nbackend = \"remote\"\nhost = \"" + n + "\"\n" }
+	row := func(n string) string { return n + "\tremote\t?\t-\tunmanaged\tverified=-\n" }
+	if err := os.WriteFile(fileA, []byte(entry("a")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte(entry("b")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fileA, a.Paths.FilePath()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := newBlockWriter()
+	snapshot := func() (string, error) { return a.plainSnapshot(statusScope{local: true}) }
+	done := make(chan error, 1)
+	go func() { done <- watchStatus(ctx, a.Paths, snapshot, nil, out, 50*time.Millisecond, nil, nil) }()
+	out.next(t, row("a"))
+
+	// An edit of the target, in its own dir, through config add.
+	if err := config.AppendEntry(a.Paths, "a2", config.Entry{Backend: config.BackendRemote, Host: "a2"}); err != nil {
+		t.Fatal(err)
+	}
+	out.next(t, row("a")+row("a2"))
+
+	// Swap files in the config dir are not changes.
+	if err := os.WriteFile(filepath.Join(a.Paths.Config, ".devvm.toml.swp"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.none(t)
+
+	// Relink (as stow would: a new link renamed over the old one).
+	tmp := filepath.Join(a.Paths.Config, ".devvm.toml.link")
+	if err := os.Symlink(fileB, tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, a.Paths.FilePath()); err != nil {
+		t.Fatal(err)
+	}
+	out.next(t, row("b"))
+	// Now B's dir is watched: an edit there is seen, one in A's is not.
+	if err := os.WriteFile(fileA, []byte(entry("a")+entry("zz")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.none(t)
+	if err := config.AppendEntry(a.Paths, "b2", config.Entry{Backend: config.BackendRemote, Host: "b2"}); err != nil {
+		t.Fatal(err)
+	}
+	out.next(t, row("b")+row("b2"))
+	cancel()
+	<-done
 }

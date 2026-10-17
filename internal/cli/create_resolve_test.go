@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/smweber/devvm/internal/config"
@@ -8,7 +10,7 @@ import (
 
 // gatherCreateSpec with Yes=true forces the non-interactive path regardless of
 // any controlling terminal, so these exercise pure flag > template >
-// config.toml > compiled resolution without touching huh.
+// compiled resolution without touching huh.
 
 // newTestApp's config dir is short (shortTempDir, under /tmp): tests that
 // serve a daemon socket under run/ would otherwise exceed macOS's 104-byte
@@ -19,31 +21,24 @@ func newTestApp(t *testing.T) *App {
 	return &App{Paths: testPaths(shortTempDir(t))}
 }
 
-func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {
+func TestResolveDefaultTemplateFillsUnsetFields(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{
-		BootstrapHook: "cmd:/opt/setup.sh",
-		Memory:        4096,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/opt/setup.sh\"\nmemory = 4096\n")
 	s := createSpec{Name: "box", Backend: config.BackendSmol, Yes: true}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
 	if s.Memory != 4096 {
-		t.Errorf("memory = %d, want 4096 from config.toml", s.Memory)
+		t.Errorf("memory = %d, want 4096 from [templates.default]", s.Memory)
 	}
 	if s.Hook != "cmd:/opt/setup.sh" {
-		t.Errorf("hook = %q, want config.toml value", s.Hook)
+		t.Errorf("hook = %q, want the template's", s.Hook)
 	}
 }
 
-func TestResolveFlagBeatsGlobalDefault(t *testing.T) {
+func TestResolveFlagBeatsTemplate(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{Memory: 4096, BootstrapHook: "cmd:/opt/setup.sh"}); err != nil {
-		t.Fatal(err)
-	}
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/opt/setup.sh\"\nmemory = 4096\n")
 	s := createSpec{Name: "box", Backend: config.BackendSmol, tmplFlags: tmplFlags{Memory: 1024, Hook: "none"}, Yes: true}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
@@ -57,42 +52,71 @@ func TestResolveFlagBeatsGlobalDefault(t *testing.T) {
 }
 
 func TestResolveCompiledDefaultWhenUnset(t *testing.T) {
-	a := newTestApp(t) // no config.toml
+	a := newTestApp(t) // no devvm.toml
 	s := createSpec{Name: "box", Backend: config.BackendSmol, tmplFlags: tmplFlags{Memory: 2048}, Yes: true}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	// The template's built-in hook is none; machine() keeps it.
 	if s.Hook != "none" || s.User != "dev" {
 		t.Errorf("hook = %q, user = %q, want the built-ins none, dev", s.Hook, s.User)
-	}
-	m, err := s.machine()
-	if err != nil {
-		t.Fatalf("machine: %v", err)
-	}
-	if m.BootstrapHook != "none" {
-		t.Errorf("machine bootstrap-hook = %q, want compiled none", m.BootstrapHook)
 	}
 }
 
 func TestResolveRequiredMemoryErrorsWithoutDefault(t *testing.T) {
-	a := newTestApp(t) // no config.toml, no --memory
+	a := newTestApp(t) // no devvm.toml, no --memory
 	s := createSpec{Name: "box", Backend: config.BackendSmol, Yes: true}
 	if err := a.gatherCreateSpec(&s); err == nil {
-		t.Fatal("expected error: smol needs memory with no flag and no config.toml")
+		t.Fatal("expected error: smol needs memory with no flag and no template memory")
 	}
 }
 
-func TestResolveRemoteTransportFromGlobal(t *testing.T) {
+// Remote create is gone (config.md §4): `create --backend remote|hub`
+// points at `config add`, before any prompt or dial.
+func TestCreateRefusesRemoteBackends(t *testing.T) {
+	for _, be := range []string{"remote", "hub", "remote-managed", "remote-unmanaged"} {
+		a := newTestApp(t)
+		err := a.runCreate(createSpec{Name: "box", Backend: be, Yes: true})
+		if err == nil || !strings.Contains(err.Error(), "config add") {
+			t.Errorf("create --backend %s = %v, want a pointer at config add", be, err)
+		}
+	}
+}
+
+// `create NAME` refuses while [machines.NAME] exists: the entry would
+// shadow the new VM.
+func TestCreateRefusesEntryName(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{Transport: config.TransportMosh}); err != nil {
+	fakeLocalSmolvm(t, `[]`)
+	writeDevvmTOML(t, a, "[machines.box]\nbackend = \"remote\"\nhost = \"b\"\n")
+	err := a.runCreate(createSpec{Name: "box", Yes: true, tmplFlags: tmplFlags{Memory: 1024}})
+	if err == nil || !strings.Contains(err.Error(), "config rm box") {
+		t.Errorf("create over an entry = %v", err)
+	}
+}
+
+// `create HUB/NAME --backend remote` is refused on this host, before any
+// proxying.
+func TestCreateHubMachineRefusesBackendLocally(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeSSH(t, "exit 0")
+	err := runTree(t, a, "create", "h/x", "--backend", "remote")
+	if err == nil || !strings.Contains(err.Error(), "config add") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Error("proxied before refusing")
+	}
+}
+
+// delete's completion offers smol VMs and hub machines, never an entry.
+func TestDeleteCompletionSkipsEntries(t *testing.T) {
+	a := newTestApp(t)
+	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
+	if err := writeEntry(a.Paths, config.NewRemote("box", true, "box")); err != nil {
 		t.Fatal(err)
 	}
-	s := createSpec{Name: "box", Backend: config.BackendRemoteManaged, SSHHost: "h", Yes: true}
-	if err := a.gatherCreateSpec(&s); err != nil {
-		t.Fatalf("gatherCreateSpec: %v", err)
-	}
-	if s.Transport != config.TransportMosh {
-		t.Errorf("transport = %q, want mosh from config.toml", s.Transport)
+	got, _ := a.completeDeletable(nil, nil, "")
+	if strings.Join(got, ",") != "h/web" {
+		t.Errorf("delete completion = %v", got)
 	}
 }

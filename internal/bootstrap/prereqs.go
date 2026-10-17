@@ -123,7 +123,7 @@ func SwitchUser(sshHost, user string) string {
 	return user + "@" + host
 }
 
-// managedRemotePrereqs is the install path for remote-managed hosts (the
+// managedRemotePrereqs is the install path for managed remote boxes (the
 // user + sudo exist: pre-existing, or created by EnsureUser on a root-only
 // box). Ports ssh_prepare_guest.
 const managedRemotePrereqs = `
@@ -132,7 +132,7 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y ` + devvmPackages + `
 ` + installGH
 
-// checkPrereqs verifies (never installs) that an adopted remote-unmanaged host
+// checkPrereqs verifies (never installs) that an adopted (unmanaged) remote host
 // has what devvm needs. Read-only and non-root: we don't shape a host we don't
 // own. Missing tools only warn — everything but `attach` works without tmux, and
 // the user may have equivalents installed elsewhere.
@@ -147,8 +147,8 @@ if [ -n "$missing" ]; then
 fi
 `
 
-// Prereqs prepares the guest: managed backends (smol, remote-managed) install the
-// minimal packages as root; adopted remote-unmanaged hosts are only checked.
+// Prereqs prepares the guest: managed boxes (smol, managed remote) install the
+// minimal packages as root; adopted remote hosts are only checked.
 func Prereqs(ctx context.Context, b backend.Backend, m *config.Machine) error {
 	if !m.Managed() {
 		// `bash -lc` (a login shell) so brew-installed tools on PATH count as

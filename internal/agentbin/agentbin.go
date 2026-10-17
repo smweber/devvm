@@ -126,8 +126,8 @@ var ErrHubMachine = errors.New("a hub machine's agent and shim are installed by 
 // BROWSER shim (devvm-open-url) beside it, as one idempotent operation
 // (browser-bridge.md §5): each half is skipped when the guest already has
 // that exact content (sha256 match), so a box whose daemon is up has both.
-// Managed boxes (smol, remote-managed) get a root-owned /usr/local/bin
-// install; adopted remote-unmanaged hosts get a user-scoped ~/.local/bin
+// Managed boxes (smol, managed remote) get a root-owned /usr/local/bin
+// install; adopted remote hosts get a user-scoped ~/.local/bin
 // install (no root, nothing system-level touched). approve, if non-nil, is
 // called once, only when something is actually written — returning an error
 // aborts, which is how the caller gates writes to an adopt host behind

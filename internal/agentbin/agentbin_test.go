@@ -120,7 +120,7 @@ func TestInstallAgentAndShimIdempotent(t *testing.T) {
 // gets the shim alone; on an adopt host that write is gated like any other.
 func TestInstallShimOnlyGated(t *testing.T) {
 	g := newFakeGuest()
-	m := &config.Machine{Name: "box", Backend: config.BackendRemoteUnmanaged}
+	m := config.NewRemote("box", false, "")
 	data, _, err := binFor("Linux x86_64")
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestInstallQuotesHostilePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := localGuest{home: home}
-	m := &config.Machine{Name: "box", Backend: config.BackendRemoteUnmanaged}
+	m := config.NewRemote("box", false, "")
 	p, err := Install(context.Background(), g, m, nil)
 	if err != nil {
 		t.Fatal(err)

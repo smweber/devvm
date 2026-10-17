@@ -250,7 +250,7 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		f.Harden, _ = fs.GetBool(flagHarden)
 		f.Fail2ban, _ = fs.GetBool(flagFail2ban)
 		f.noteSet(fs)
-		t, err := a.resolveTemplate(name, f, nil)
+		t, err := a.resolveTemplate(name, f)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -347,7 +347,7 @@ func (a *App) proxyInteractive(cmd *cobra.Command, args []string, transport stri
 }
 
 // resolveProxy loads the hub-machine record and its proxy surface. Like
-// resolve it reads the hub conf only: whether the machine exists is the
+// resolve it reads the hub entry only: whether the machine exists is the
 // proxied command's answer.
 func (a *App) resolveProxy(name string) (*config.Machine, backend.Proxier, error) {
 	m, b, err := a.resolveAny(name)

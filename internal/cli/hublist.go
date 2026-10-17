@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +22,7 @@ import (
 // state and backend the hub reported and the forwards column from *this*
 // host's daemon for HUB@NAME — the hub's forwards column describes the hub's
 // localhost, which says nothing about what this host can reach. The last
-// successful answer is cached in cache/hub-HUB.list, outside machines/ and
+// successful answer is cached in cache/hub-HUB.list, outside the config dir and
 // run/ (the two directories `status --watch` observes), so the cache write
 // never wakes the watcher that made it; a hub that does not answer renders
 // its cached rows with state `unreachable`, so the menu keeps showing the
@@ -119,6 +118,17 @@ func parseHubRows(text string) []hubRow {
 		if len(f) > 4 && f[4] != "" {
 			r.managed = f[4]
 		}
+		// A hub older than devvm.toml names its remote boxes by the old
+		// one-axis backend. Map it onto the two axes this listing speaks
+		// (backend `remote` + the managed column), keeping what a hub that
+		// had the fifth column said there.
+		switch r.backend {
+		case oldBackendRemoteManaged, oldBackendRemoteUnmanaged:
+			if r.managed == "-" {
+				r.managed = map[bool]string{true: ownManaged, false: ownUnmanaged}[r.backend == oldBackendRemoteManaged]
+			}
+			r.backend = config.BackendRemote
+		}
 		if len(f) > 5 {
 			r.rest = strings.Join(f[5:], "\t")
 		}
@@ -126,6 +136,13 @@ func parseHubRows(text string) []hubRow {
 	}
 	return rows
 }
+
+// The backend tokens a hub older than devvm.toml sends for its remote boxes
+// (parseHubRows maps them). Nothing else in devvm speaks them.
+const (
+	oldBackendRemoteManaged   = "remote-managed"
+	oldBackendRemoteUnmanaged = "remote-unmanaged"
+)
 
 // hubListing is what one hub contributes to the merged listing: its rows,
 // and whether the hub said so itself (fresh) or the cache is standing in for
@@ -138,17 +155,19 @@ type hubListing struct {
 // hubListings is keyed by hub name.
 type hubListings map[string]hubListing
 
-// hubConfs loads every hub conf, sorted by name. A conf that fails to load is
-// not a hub here; status lists it as broken conf.
+// hubConfs is every hub entry, sorted by name. A file that does not parse
+// has none (status refuses it outright).
 func (a *App) hubConfs() []*config.Machine {
-	names, _ := config.List(a.Paths.Config)
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return nil
+	}
 	var hubs []*config.Machine
-	for _, n := range names {
-		if m, err := config.Load(a.Paths.Config, n); err == nil && m.IsHub() {
+	for _, m := range f.Machines() {
+		if m.IsHub() {
 			hubs = append(hubs, m)
 		}
 	}
-	sort.Slice(hubs, func(i, j int) bool { return hubs[i].Name < hubs[j].Name })
 	return hubs
 }
 
@@ -222,8 +241,8 @@ func hubCacheText(rows []hubRow) string {
 	return b.String()
 }
 
-// writeHubCache replaces a hub's cache atomically (temp + rename, as
-// Machine.Save does): a `status` reading it mid-write sees the old listing
+// writeHubCache replaces a hub's cache atomically (temp + rename, as the
+// devvm.toml edits do): a `status` reading it mid-write sees the old listing
 // or the new one, never half a row.
 func writeHubCache(paths config.Paths, hub string, rows []hubRow) error {
 	dir := paths.CacheDir()
@@ -257,7 +276,7 @@ func readHubCache(paths config.Paths, hub string) []hubRow {
 	return parseHubRows(string(data))
 }
 
-// removeHubCache is for `delete HUB`: the cache is derived from a conf that
+// removeHubCache is for `config rm HUB`: the cache is derived from an entry that
 // no longer exists. Best-effort; a missing file is the goal.
 func removeHubCache(paths config.Paths, hub string) { _ = os.Remove(hubCachePath(paths, hub)) }
 
@@ -278,12 +297,12 @@ func dropFromHubCache(paths config.Paths, hub, machine string) {
 }
 
 // hubWatcher is `status --plain --watch`'s view of the hubs: one long-lived
-// `status --plain --local --watch` pipe per hub conf, the latest block each
+// `status --plain --local --watch` pipe per hub entry, the latest block each
 // emitted, and a wake channel the watch loop selects on, so a hub block
 // re-emits the merged listing exactly as a local change does. The hub side
 // does the watching (its own fsnotify loop); this host only holds the pipe.
 // sync runs on every snapshot, which the loop already takes on every
-// machines/ event, so a hub conf created, deleted or re-pointed while
+// devvm.toml event, so a hub entry created, deleted or re-pointed while
 // watching opens, closes or restarts its pipe with no restart of --watch.
 type hubWatcher struct {
 	a    *App

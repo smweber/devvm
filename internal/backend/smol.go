@@ -18,23 +18,18 @@ import (
 const (
 	smolImage = "ubuntu:24.04"
 	smolCPUs  = 4
-	// SmolDefaultDiskGiB is the fallback disk size when a machine's conf doesn't
-	// pin one (new confs resolve a concrete value at create).
+	// SmolDefaultDiskGiB is the fallback disk size when neither a flag nor
+	// the template sets one.
 	SmolDefaultDiskGiB = 50
 )
 
 // smolBackend drives one local smol VM. row is the `smolvm machine ls`
 // row the record was resolved from (nil when built from a bare record):
-// what `status NAME` shows sizes from without a second listing. fromConf
-// says the record came from an old per-machine conf (ResolveSmolConf), so
-// Refresh settles it by the same rule resolve did (settleSmol's migration
-// aid): otherwise a failed marker write would leave resolve saying managed
-// and the daemon's dial saying unmanaged.
+// what `status NAME` shows sizes from without a second listing.
 type smolBackend struct {
-	m        *config.Machine
-	paths    config.Paths
-	row      *SmolMachine
-	fromConf bool
+	m     *config.Machine
+	paths config.Paths
+	row   *SmolMachine
 }
 
 func (b *smolBackend) Kind() string { return config.BackendSmol }
@@ -255,7 +250,7 @@ func (b *smolBackend) Refresh() (*config.Machine, bool, error) {
 		return nil, false, nil // gone: as un-dialable as a stopped VM
 	}
 	fresh := *b.m
-	fresh.SetManaged(settleSmol(b.paths, sm, b.fromConf))
+	fresh.SetManaged(settleSmol(b.paths, sm))
 	return &fresh, sm.Running(), nil
 }
 

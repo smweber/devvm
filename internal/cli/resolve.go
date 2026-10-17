@@ -78,33 +78,29 @@ func requireManaged(m *config.Machine) error {
 	return fmt.Errorf("'%s' is a smol VM devvm did not create; %s", m.Name, backend.AdoptHint(m.Name))
 }
 
-// errStaleConf is resolveAny's "not found" for an old per-machine smol conf
-// whose VM does not exist (there is no dormant state any more). delete
-// catches it to drop the conf; everything else just reports it.
-type errStaleConf struct{ m *config.Machine }
-
-func (e *errStaleConf) Error() string {
-	return fmt.Sprintf("machine '%s' not found: no smol VM by that name (its old conf is stale; 'devvm delete %s' drops it, then 'devvm create %s')",
-		e.m.Name, e.m.Name, e.m.Name)
-}
-
 // resolveAny loads a machine, a hub, or a HUB/NAME hub-machine record and its
-// backend. A name with a registry entry uses that entry (a remote box or a
-// hub runs no smolvm command; an entry also shadows a local smol VM of the
-// same name, which status reports). Any other name goes to discovery
-// (backend.Discover: today, one `smolvm machine ls --json`), whose source
-// settles Managed on the record.
+// backend, in this order (config.md §2):
+//
+//   - HUB/NAME goes to the hub: the record is derived from the hub's entry;
+//   - a `[machines.NAME]` entry wins: a remote box or a hub runs no smolvm
+//     command, and the entry shadows a local smol VM of the same name
+//     (status reports that);
+//   - any other name goes to discovery (backend.Discover: today, one
+//     `smolvm machine ls --json`), whose source settles Managed.
+//
+// A devvm.toml that does not parse fails every name: an entry would win,
+// and a broken file cannot say whether one does.
 //
 // HUB/NAME is dispatched here, not in a root interceptor: every leaf already
 // calls resolve, and cobra cannot find the first positional before parsing
-// (cp-in puts flags first, exec disables flag parsing). It reads the hub's
-// conf only — no ssh — so a sleeping hub costs nothing until a command is
+// (cp-in puts flags first, exec disables flag parsing). It reads the file
+// only — no ssh — so a sleeping hub costs nothing until a command is
 // actually run against one of its machines.
 func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) {
 	if _, _, isHub, err := config.SplitHubName(name); err != nil {
 		return nil, nil, err
 	} else if isHub {
-		m, err := config.LoadHubMachine(a.Paths.Config, name)
+		m, err := config.LoadHubMachine(a.Paths, name)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -114,34 +110,18 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 		}
 		return m, b, nil
 	}
-	m, err := config.Load(a.Paths.Config, name)
+	m, err := config.Load(a.Paths, name)
 	if errors.Is(err, config.ErrNotFound) {
-		if err2 := config.ValidName(name); err2 != nil {
-			return nil, nil, err2
-		}
 		d, ok, err := backend.Discover(a.Paths, name)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !ok {
-			return nil, nil, fmt.Errorf("unknown machine %q; run 'devvm status', or 'devvm create %s' to make it", name, name)
+			return nil, nil, fmt.Errorf("unknown machine %q; run 'devvm status', 'devvm create %s' to make a smol VM, or 'devvm config add %s' for a remote box", name, name, name)
 		}
 		return d.Machine, d.Backend, nil
 	} else if err != nil {
 		return nil, nil, err
-	}
-	if !m.IsRemote() {
-		// An old per-machine smol conf (step 5 drops them): the VM is still
-		// smolvm's, so the smol source decides whether it exists and settles
-		// Managed, with the conf as its migration hint.
-		b, ok, err := backend.ResolveSmolConf(a.Paths, m)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			return nil, nil, &errStaleConf{m: m}
-		}
-		return m, b, nil
 	}
 	b, err := backend.For(m, a.Paths)
 	if err != nil {

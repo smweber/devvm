@@ -92,8 +92,8 @@ func serveOwnerDaemon(t *testing.T, configDir config.Paths, name string, resp ma
 // forwards for it.
 func saveRemote(t *testing.T, paths config.Paths, name string, ports ...string) {
 	t.Helper()
-	m := &config.Machine{Name: name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example"}
-	if err := m.Save(paths.Config); err != nil {
+	m := config.NewRemote(name, false, "dev@example")
+	if err := writeEntry(paths, m); err != nil {
 		t.Fatal(err)
 	}
 	if err := config.SavePorts(paths, name, ports); err != nil {
@@ -264,7 +264,7 @@ func TestStatusPlainCountsConfOwnersOnly(t *testing.T) {
 	if err := a.runStatusPlain(true); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"bare\tremote-unmanaged\t?\t-\tunmanaged\tverified=-\n", "mixed\tremote-unmanaged\t?\tup:1\tunmanaged\tverified=-\n", "sessonly\tremote-unmanaged\t?\tdown\tunmanaged\tverified=-\n"} {
+	for _, want := range []string{"bare\tremote\t?\t-\tunmanaged\tverified=-\n", "mixed\tremote\t?\tup:1\tunmanaged\tverified=-\n", "sessonly\tremote\t?\tdown\tunmanaged\tverified=-\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("plain lacks %q:\n%s", want, out.String())
 		}
