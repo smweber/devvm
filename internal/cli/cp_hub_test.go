@@ -324,7 +324,7 @@ func TestHubCopyRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := newTestApp(t)
-	hubCfg := t.TempDir()
+	hubCfg := shortTempDir(t) // the hub-side devvm uses it as config+state: ssh ControlPath length
 	bin := t.TempDir()
 	// The hub's `web` is a remote box reached by the same fake ssh, and scp
 	// (its Copy) is `cp` to the path after the colon.

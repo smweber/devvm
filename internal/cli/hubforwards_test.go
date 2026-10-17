@@ -250,7 +250,7 @@ func TestSessionRefusesHubMachine(t *testing.T) {
 // brought back on the replacement.
 func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 	old := daemonGoneTimeout
-	daemonGoneTimeout = 2 * time.Second
+	daemonGoneTimeout = 10 * time.Second // a loaded macOS CI runner under -race took >2s to tear the stand-in down
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: &out}

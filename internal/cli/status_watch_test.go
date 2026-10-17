@@ -52,8 +52,8 @@ func (w *blockWriter) next(t *testing.T, want string) {
 		if got != want {
 			t.Fatalf("snapshot = %q, want %q", got, want)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("no snapshot within 3s (want %q)", want)
+	case <-time.After(10 * time.Second): // generous: only reached on failure; macOS CI under -race is slow
+		t.Fatalf("no snapshot within 10s (want %q)", want)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("watchStatus returned %v on cancel", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("watchStatus did not return after cancel")
 	}
 }
