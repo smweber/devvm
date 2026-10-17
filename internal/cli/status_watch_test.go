@@ -288,7 +288,9 @@ func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
 
 // devvm.toml as a symlink: an edit of its target (in another dir) is seen,
 // a relink to another target moves the watch, and editor swap files in the
-// config dir are not changes.
+// config dir are not changes. On kqueue the relink often yields no event
+// at all (both NOTE_WRITEs coalesce, most often under load), so there it
+// is the relinkPoll that sees it, inside next's wait.
 func TestWatchFollowsSymlinkRetarget(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)

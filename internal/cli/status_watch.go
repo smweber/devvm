@@ -146,11 +146,14 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 	// a link, moves the watch with it. The second look is for kqueue
 	// (macOS): it reports a new name in a watched dir but not a rename
 	// over a name it has seen, so a temp-link-then-rename relink shows up
-	// only as the temp link's Create, taken before the rename lands. An
-	// in-place `rm` + `ln -s` of devvm.toml produces no event at all
-	// there (fsnotify's kqueue watch on the entry holds the old target,
-	// which survives), so every debounce re-resolves: the next event of
-	// any kind (a run/ marker touch included) picks the new target up.
+	// only as the temp link's Create, taken before the rename lands. Even
+	// that Create is lost when both steps land before fsnotify lists the
+	// dir (the two NOTE_WRITEs coalesce, and by then the temp name is
+	// gone), and an in-place `rm` + `ln -s` of devvm.toml produces no
+	// event at all (fsnotify's kqueue watch on the entry holds the old
+	// target, which survives). So every debounce re-resolves, and while
+	// devvm.toml is a link it is also re-resolved every relinkPoll with
+	// no event at all: a relink is never missed for longer than that.
 	// inotify reports both forms directly.
 	// Config-dir events count only for devvm.toml (and its target), so an
 	// editor's swap files never cost a snapshot. Match writeConfigFile's
@@ -296,7 +299,11 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 	refreshWanted := false       // a refresh request is in the debounce window
 	var roundDone chan struct{}  // the round in flight; nil (blocks forever) when idle
 	refreshPath := filepath.Clean(paths.RefreshPath())
+	var poll <-chan time.Time // armed while devvm.toml is a link (see top)
 	for {
+		if target != "" && poll == nil {
+			poll = time.After(relinkPoll)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -353,6 +360,14 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 			if pending == nil {
 				pending = time.After(debounce)
 			}
+		case <-poll:
+			poll = nil
+			if retarget() {
+				changed = true
+				if pending == nil {
+					pending = time.After(debounce)
+				}
+			}
 		case <-pending:
 			pending = nil
 			if retarget() { // cheap, and catches a relink kqueue did not report
@@ -383,6 +398,10 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 		}
 	}
 }
+
+// relinkPoll is how often a devvm.toml that is a symlink is re-resolved
+// when no event came: kqueue can report a relink as nothing (watchStatus).
+const relinkPoll = 2 * time.Second
 
 // refreshJoinedHook, when set (tests only), is called each time a refresh
 // request joins the round in flight instead of starting one, so a test can
