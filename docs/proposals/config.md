@@ -1,9 +1,9 @@
 # Proposal: one shared config, discovered machines, templates
 
-Status: draft v3.1, 2026-10-17 (§9 added), revised after two independent reviews and a
-design discussion with the user (see "Review log" at the end). Not scheduled.
-Once agreed, the order of work goes in `ROADMAP.md`. It follows v0.1.15
-(roadmap steps 1–9).
+Status: **implemented**, v3.1 design as revised by two independent reviews
+and a design discussion with the user (see "Review log"); shipped as
+v0.1.16 (see `ROADMAP.md`, "Config redesign", for what landed per step and
+where the code deviates). It followed v0.1.15 (roadmap steps 1–9).
 
 ## Problem
 
@@ -471,82 +471,34 @@ Alternatives considered:
   `ProxyJump` on the `host` alias, not `HUB/NAME`.
 - **The ports-list line format is unchanged.**
 
-### 8. Migration, by hand
+### 8. Migration, mostly automatic
 
-No command. The release that ships the new loader deletes the old one. When
-`machines/` exists without `devvm.toml`, every command prints one line
-pointing here. The mapping, applied once per host with the author's help:
+No command. The release that ships the new loader deletes the old one.
+While `machines/` (or `config.toml`) exists without `devvm.toml`, the first
+command run on the new build does the mechanical part itself and prints one
+pointer line (not for hidden commands):
 
-- a remote conf becomes `[machines.NAME]` with `backend = "remote"`,
-  `managed = true` for `remote-managed`, `host`/`user` split from `ssh_host`,
-  and `transport`/`mosh_server`/`identity` carried over;
-- a hub conf becomes `[machines.NAME]` with `backend = "hub"`, `host`, `user`;
-- `config.toml` becomes `[templates.default]` (`bootstrap_hook` → `hook`);
-- smol confs are dropped (discovered); each devvm-made smol VM gets a
-  managed marker (`devvm setup NAME` writes it and is idempotent);
-- per-box `ports` and hub `[machines.X].ports` go to
-  `state/devvm/ports/NAME` or `HUB@NAME`;
-- `~/.config/devvm/{run,cache,known_hosts}` move to `~/.local/state/devvm`.
+- `run/`, `cache/` and `known_hosts` move to `~/.local/state/devvm`
+  (step 1; a live daemon's run files stay where they are and clients find
+  it there);
+- saved forwards are seeded once into `state/devvm/ports/NAME` (and
+  `HUB@NAME`) from every conf's `ports` and hub `[machines.X].ports` (step 2,
+  all-or-nothing);
+- a managed marker is written for every smol VM that had a conf, from the
+  VM's current `created_at` (step 5; needs smolvm ≥ 1.16).
 
-### 9. Future: provider backends (constraints only, not in scope)
+What remains by hand, once per host:
 
-A later proposal may add a backend such as `hetzner` that **creates and
-destroys cloud VMs the way `create`/`delete` handle smol**. It is not part of
-this redesign and nothing below adds work to the steps in "Implementation
-order". It is recorded so the implementation doesn't close the door. The
-shape it will take, so the constraints make sense:
+- write `devvm.toml`: `config.toml` becomes `[templates.default]`
+  (`bootstrap_hook` → `hook`); each remote conf becomes `[machines.NAME]`
+  with `backend = "remote"`, `managed = true|false`, `host` (the part of
+  `ssh_host` after `@`, plus `:port` when not 22) and `user` (the part
+  before `@`; omit it on a managed box when it equals the template user);
+  each hub conf becomes `backend = "hub"` with `host` and `user`; smol confs
+  are dropped;
+- `devvm config check`, then remove `machines/` and `config.toml`.
 
-- A provider VM is **discovered from the provider's API** (filtered by a
-  `devvm` label), exactly as smol VMs are discovered from `smolvm machine
-  ls`. It has **no `[machines.*]` entry**; an entry for a provider-made VM
-  would reintroduce the dormant state §2 removes. The label *is* its managed
-  marker, so it is shared across hosts with no state file.
-- It is **reached over ssh**, sharing `backend/ssh.go` with `remote`. The
-  session daemon, transports, bridge and hub code don't change. `backend`
-  therefore means "who owns the registry and lifecycle" (smolvm, the
-  provider, the file, a hub); reach is derived from it.
-- `remote` is untouched: a hand-written entry, managed or adopted. A box the
-  user made in a provider's console stays a `remote` entry.
-- Credentials and placement go in a third table family, `[providers.NAME]`
-  (token env var, location, image, key name); sizing (`server_type`) is a
-  template field. `create NAME --backend hetzner` allocates, waits for ssh,
-  then runs `setup` with root adoption (§3). `start`/`stop` map to power
-  on/off. Everything else (firewalls, volumes, snapshots, resize) is left to
-  the provider, as `resize` is today.
-
-What the redesign does now so that fits later, each cheap now and a sweep
-later:
-
-1. **Predicates are reach, not backend equality.** `Managed()` and the
-   "reached over ssh" predicate are methods on the record; no code in `cli`,
-   `session`, `bootstrap` or `agentbin` compares the backend string to
-   `"remote"`. A provider record answers the ssh predicate `true` and
-   everything downstream works.
-2. **Discovery is an ordered list of sources, not "smol".** §2's "any other
-   name is a local smol VM" is implemented as "ask each discovery source in
-   order, first match wins", with smol the only source today. The collision
-   rule and the `shadowed` token then extend without rewording.
-3. **The source that produced a row settles `Managed`.** §2's marker file is
-   read by the smol discoverer, not by a shared reader every caller consults;
-   a provider discoverer reads its label instead. The daemon's re-read on
-   reconnect asks the backend, not the file.
-4. **`create` takes `--backend` (default `smol`)**, first question in the huh
-   form. The rule "template fields apply only where they make sense, `config
-   check` warns on a mismatch" (§3) is how `server_type`/`location` join
-   `memory`/`disk` later.
-5. **`setup` waits for ssh, bounded** (a minute or two of retries before root
-   adoption). A just-created server takes tens of seconds to answer on 22 and
-   cloud-init may bounce sshd. This also helps `setup --host` on a VM made in
-   a console today.
-6. **`delete` removes everything this host remembers about NAME** through one
-   helper: marker, ports file (§2, §5) **and the pinned `known_hosts` entry**,
-   since a recreated server under the same name and address has a new host
-   key.
-
-Two non-changes, recorded so they aren't reopened: `config check` **rejects
-unknown top-level tables** (so `[providers.*]` is a loader addition later,
-not a silent no-op today), and the lifecycle verbs need no additions
-(`create`/`delete`/`start`/`stop` already cover a provider box).
+Done on the three test hosts on 2026-10-17 (ROADMAP.md, step 6).
 
 ## CLI surface after
 
