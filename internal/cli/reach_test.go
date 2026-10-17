@@ -325,9 +325,10 @@ func TestNoteContact(t *testing.T) {
 	}
 }
 
-// shell, attach and bootstrap that got through record their contact.
+// shell and attach that got through record their contact (setup's is
+// asserted in TestSetupRemoteOrder, which already drives a managed box).
 func TestCommandsRecordContact(t *testing.T) {
-	for _, argv := range [][]string{{"shell", "box"}, {"attach", "box"}, {"bootstrap", "box"}} {
+	for _, argv := range [][]string{{"shell", "box"}, {"attach", "box"}} {
 		t.Run(argv[0], func(t *testing.T) {
 			a := newTestApp(t)
 			reachSSH(t, 1)

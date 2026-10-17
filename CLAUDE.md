@@ -215,7 +215,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   the watcher never reads a half-written conf.
 - **Reach cache + refresh** (`providers.md` §5, `internal/reach`): a remote row's state is
   `cache/reach/NAME`, never a live call on the snapshot path. It is refreshed by one-shot `status`, by
-  `__refresh` (writes `run/refresh`; the watcher runs one round, joined if in flight) and by attach/shell/exec/bootstrap.
+  `__refresh` (writes `run/refresh`; the watcher runs one round, joined if in flight) and by attach/shell/exec/setup.
   The probe is `ssh -O check`, then `ssh -G` + a 2s TCP connect: never a full ssh, never polled.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with state ∈ {running, stopped,

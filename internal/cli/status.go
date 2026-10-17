@@ -142,7 +142,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // listing refreshes with a live round first (providers.md §5). The sixth
 // column, appended like the fifth, is when and how that was last
 // established: `verified=<unix seconds>:<how>`, how ∈ {master, probe, or
-// the command that talked to the box: attach, shell, exec, bootstrap}, or
+// the command that talked to the box: attach, shell, exec, setup}, or
 // `verified=-` for a remote box with nothing established; a hub machine
 // carries its hub's sixth column through (a newer hub's `verified=…`), and
 // every other row has `-`. `?` / `broken conf` otherwise mean the backend could not be

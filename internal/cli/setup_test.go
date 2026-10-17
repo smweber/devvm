@@ -13,6 +13,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/reach"
 )
 
 func writeDevvmTOML(t *testing.T, a *App, body string) {
@@ -380,6 +381,10 @@ fail2ban = true
 	}
 	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring memory (not applicable to a remote box)") {
 		t.Errorf("warning = %q", w)
+	}
+	// Every step above ran over ssh, so the box is a verified contact now.
+	if e := reach.Read(a.Paths, "cloud"); e.State != reach.Reachable || e.How != "setup" {
+		t.Errorf("setup recorded %+v, want reachable/setup", e)
 	}
 }
 
