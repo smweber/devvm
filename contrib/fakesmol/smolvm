@@ -22,19 +22,33 @@ sub="${1:-}"; [ $# -gt 0 ] && shift
 state_of() { cat "$dir/$1.state" 2>/dev/null || echo "not created"; }
 
 # flag parsing shared by every subcommand that takes --name
-name=""; tty=0; envs=""; detached=0
+name=""; tty=0; envs=""; detached=0; cpus=4; mem=8192; storage=10; image=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --name) name="$2"; shift 2 ;;
+        --name|-n) name="$2"; shift 2 ;;
         --) shift; break ;;
-        -i|--stream|--net|--force|--json) shift ;;
+        -i|--stream|--net|--force|-f|--json) shift ;;
         -it) tty=1; shift ;;
         -d) detached=1; shift ;;
         -e) envs="$envs $2"; shift 2 ;;
-        --image|--cpus|--mem|--storage|--env) shift 2 ;;
+        --cpus) cpus="$2"; shift 2 ;;
+        --mem) mem="$2"; shift 2 ;;
+        --storage) storage="$2"; shift 2 ;;
+        --image|-I) image="$2"; shift 2 ;;
+        --env|--label) shift 2 ;;
         *) break ;;
     esac
 done
+
+# The real `ls --json` row carries created_at (Unix seconds), sizes and the
+# pid; devvm keys its managed marker on created_at, so a machine made before
+# this fake recorded one is dated by its state file's mtime, which is at
+# least stable.
+created_of() {
+    if [ -e "$dir/$1.created" ]; then cat "$dir/$1.created"
+    else stat -c %Y "$dir/$1.state" 2>/dev/null || stat -f %m "$dir/$1.state"; fi
+}
+meta_of() { cat "$dir/$1.meta" 2>/dev/null || echo "4 8192 10 ubuntu:24.04"; }
 
 case "$sub" in
     ls)
@@ -45,7 +59,10 @@ case "$sub" in
             n=$(basename "$f" .state)
             [ $first = 1 ] || printf ','
             first=0
-            printf '{"name":"%s","state":"%s"}' "$n" "$(cat "$f")"
+            set -- $(meta_of "$n")
+            st=$(cat "$f"); pid=null; [ "$st" = running ] && pid=$$
+            printf '{"name":"%s","state":"%s","created_at":%s,"cpus":%s,"memory_mib":%s,"storage_gb":%s,"image":"%s","pid":%s,"labels":{}}' \
+                "$n" "$st" "$(created_of "$n")" "$1" "$2" "$3" "$4" "$pid"
         done
         printf ']\n'
         ;;
@@ -55,6 +72,8 @@ case "$sub" in
     create)
         [ -e "$dir/$name.state" ] && { echo "fake smolvm: $name exists" >&2; exit 1; }
         echo stopped >"$dir/$name.state"
+        date +%s >"$dir/$name.created"
+        echo "$cpus $mem $storage ${image:-ubuntu:24.04}" >"$dir/$name.meta"
         ;;
     start)
         [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
@@ -64,8 +83,8 @@ case "$sub" in
         [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
         echo stopped >"$dir/$name.state"
         ;;
-    delete)
-        rm -f "$dir/$name.state"
+    delete|rm)
+        rm -f "$dir/$name.state" "$dir/$name.created" "$dir/$name.meta"
         ;;
     cp)
         # smolvm machine cp SRC NAME:DST — root-owned like the real thing.
