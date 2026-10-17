@@ -41,12 +41,15 @@ while [ $# -gt 0 ]; do
 done
 
 # The real `ls --json` row carries created_at (Unix seconds), sizes and the
-# pid; devvm keys its managed marker on created_at, so a machine made before
-# this fake recorded one is dated by its state file's mtime, which is at
-# least stable.
+# pid; devvm keys its managed marker on created_at, so it must never change
+# for a machine's lifetime. A machine made before this fake recorded one is
+# dated once, from its state file's mtime, and that date is persisted: start,
+# stop and exec rewrite the state file, so the mtime itself would drift.
 created_of() {
-    if [ -e "$dir/$1.created" ]; then cat "$dir/$1.created"
-    else stat -c %Y "$dir/$1.state" 2>/dev/null || stat -f %m "$dir/$1.state"; fi
+    if [ ! -e "$dir/$1.created" ]; then
+        { stat -c %Y "$dir/$1.state" 2>/dev/null || stat -f %m "$dir/$1.state"; } >"$dir/$1.created"
+    fi
+    cat "$dir/$1.created"
 }
 meta_of() { cat "$dir/$1.meta" 2>/dev/null || echo "4 8192 10 ubuntu:24.04"; }
 
