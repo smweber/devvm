@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -281,4 +283,122 @@ func TestWatchProbesOnStartAndRefresh(t *testing.T) {
 	})
 	cancel()
 	<-done
+}
+
+// noteContact writes only on evidence that ssh got through: success, or a
+// remote command's own exit status. ssh's 255 and any mosh failure write
+// nothing, nor does a contact with a box that is not probeable.
+func TestNoteContact(t *testing.T) {
+	a := newTestApp(t)
+	exitErr := func(code int) error {
+		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+		if err == nil {
+			t.Fatal("no exit error")
+		}
+		return err
+	}
+	box := config.NewRemote("box", config.BackendRemoteManaged, "u@box")
+	for _, tc := range []struct {
+		transport string
+		err       error
+	}{
+		{config.TransportSSH, exitErr(255)},
+		{config.TransportMosh, exitErr(1)},
+		{config.TransportSSH, errors.New("ssh is not installed on this host")},
+	} {
+		a.noteContact(box, "shell", tc.transport, tc.err)
+		if e := reach.Read(a.Paths, "box"); e.State != reach.Unknown {
+			t.Errorf("%s %v recorded %+v", tc.transport, tc.err, e)
+		}
+	}
+	a.noteContact(config.NewSmol("vm"), "shell", config.TransportSSH, nil)
+	if _, err := os.Stat(reach.Path(a.Paths, "vm")); !os.IsNotExist(err) {
+		t.Errorf("a smol VM got a reach file: %v", err)
+	}
+	a.noteContact(box, "attach", config.TransportMosh, nil)
+	if e := reach.Read(a.Paths, "box"); e.State != reach.Reachable || e.How != "attach" {
+		t.Errorf("mosh success = %+v", e)
+	}
+	a.noteContact(box, "shell", config.TransportSSH, exitErr(3))
+	if e := reach.Read(a.Paths, "box"); e.State != reach.Reachable || e.How != "shell" {
+		t.Errorf("remote exit 3 = %+v", e)
+	}
+}
+
+// shell, attach and bootstrap that got through record their contact.
+func TestCommandsRecordContact(t *testing.T) {
+	for _, argv := range [][]string{{"shell", "box"}, {"attach", "box"}, {"bootstrap", "box"}} {
+		t.Run(argv[0], func(t *testing.T) {
+			a := newTestApp(t)
+			reachSSH(t, 1)
+			if err := config.NewRemote("box", config.BackendRemoteUnmanaged, "u@box").Save(a.Paths.Config); err != nil {
+				t.Fatal(err)
+			}
+			if err := runTree(t, a, argv...); err != nil {
+				t.Fatalf("%v: %v\n%s", argv, err, a.Stderr.(*bytes.Buffer).String())
+			}
+			if e := reach.Read(a.Paths, "box"); e.State != reach.Reachable || e.How != argv[0] {
+				t.Errorf("%v recorded %+v", argv, e)
+			}
+		})
+	}
+}
+
+// A round's deadline cuts short a probe in flight and leaves a box with no
+// slot unprobed: both keep their cached entries, and the round returns
+// within its deadline (plus the kill's drain).
+func TestReachRoundDeadlineKeepsCache(t *testing.T) {
+	a := newTestApp(t)
+	orig := reachTimes
+	reachTimes = reachTiming{deadline: 300 * time.Millisecond, parallel: 1}
+	t.Cleanup(func() { reachTimes = orig })
+	log := fakeSSH(t, "exec sleep 5") // every master check hangs
+	recorded := reach.Entry{State: reach.Reachable, Verified: time.Unix(1760000000, 0), How: "attach"}
+	for _, n := range []string{"one", "two"} {
+		saveBox(t, a, n)
+		if err := reach.Write(a.Paths, n, recorded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	a.reachRound(context.Background(), a.remoteConfs())
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("round took %s", d)
+	}
+	for _, n := range []string{"one", "two"} {
+		if e := reach.Read(a.Paths, n); e.State != reach.Reachable || e.How != "attach" || !e.Verified.Equal(recorded.Verified) {
+			t.Errorf("%s: cache = %+v", n, e)
+		}
+	}
+	if n := len(sshLines(t, log)); n != 1 {
+		t.Errorf("ssh calls = %d, want 1 (one slot, one master check cut short)", n)
+	}
+}
+
+// A hub machine is its hub's row: never probed here, its hub's sixth
+// column passed through.
+func TestHubRowVerifiedPassesThrough(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeSSH(t, "printf 'box\\tremote-managed\\treachable\\t-\\tmanaged\\tverified=123:probe\\nweb\\tsmol\\trunning\\t-\\tmanaged\\t-\\nold\\tsmol\\tstopped\\t-\\n'")
+	writeHub(t, a, "h", nil)
+	var out bytes.Buffer
+	a.Stdout = &out
+	if err := a.runStatusPlain(false); err != nil {
+		t.Fatal(err)
+	}
+	want := "h\thub\treachable\t-\t-\t-\n" +
+		"h/box\tremote-managed\treachable\t-\tmanaged\tverified=123:probe\n" +
+		"h/old\tsmol\tstopped\t-\t-\t-\n" +
+		"h/web\tsmol\trunning\t-\tmanaged\t-\n"
+	if out.String() != want {
+		t.Errorf("plain =\n%s\nwant\n%s", out.String(), want)
+	}
+	for _, l := range sshLines(t, log) {
+		if strings.Contains(l, "-O check") || strings.Contains(l, " -G ") {
+			t.Errorf("a hub row was probed: %s", l)
+		}
+	}
+	if entries, _ := os.ReadDir(reach.Dir(a.Paths)); len(entries) != 0 {
+		t.Errorf("reach cache holds %d entries", len(entries))
+	}
 }

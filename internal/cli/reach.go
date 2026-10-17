@@ -15,8 +15,8 @@ import (
 
 // Remote reach (providers.md §5). A remote box's `status` state is its
 // reach cache (package reach), refreshed only when a human looks: a
-// one-shot `status`, a refresh request to `status --watch` (`__refresh`,
-// which the menu bar app sends when its menu opens), and the commands that
+// one-shot `status` (which the menu bar app runs when its menu opens), a
+// refresh request to `status --watch` (`__refresh`), and the commands that
 // have just talked to the box. There is no background polling: nothing in
 // devvm needs a remote box's state except someone looking at it, and a
 // poll would turn every idle watcher into a stream of connects to boxes
@@ -112,7 +112,10 @@ func (a *App) noteContact(m *config.Machine, how, transport string, err error) {
 
 // refreshCmd is the hidden `__refresh`: ask every `status --watch` on this
 // host for one live round (RequestRefresh's marker). It returns at once;
-// the watcher emits a block when the round ends, if anything changed.
+// the watcher emits a block when the round ends, if anything changed. It is
+// for scripts and other consumers of the watch stream: the menu bar app
+// does not need it, since the one-shot `status --plain` it runs when its
+// menu opens probes the remotes itself and applies that output directly.
 func (a *App) refreshCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "__refresh",

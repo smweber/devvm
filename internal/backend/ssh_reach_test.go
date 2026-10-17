@@ -154,27 +154,107 @@ func TestDialReason(t *testing.T) {
 	}
 }
 
-// A dial that never answers is cut by the round's deadline: unreachable,
-// timed out, within it. Injected, so no unroutable address is relied on.
-func TestProbeTimeout(t *testing.T) {
+// The dial's own timeout (the box never answered for ProbeDialTimeout) is
+// `unreachable`, connect timed out. Injected: no unroutable address.
+func TestProbeDialTimeout(t *testing.T) {
 	probeSSH(t, 255, "hostname 192.0.2.1\nport 22\n")
 	old := probeDial
 	var addr string
-	probeDial = func(ctx context.Context, a string) error { addr = a; <-ctx.Done(); return ctx.Err() }
+	probeDial = func(_ context.Context, a string) error {
+		addr = a
+		return &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	}
 	defer func() { probeDial = old }()
-	b, _ := probeBackend(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	e := b.Probe(ctx)
+	b, p := probeBackend(t)
+	e := b.Probe(context.Background())
 	if e.State != reach.Unreachable || e.Reason != "connect timed out" {
 		t.Errorf("probe = %+v", e)
 	}
 	if addr != "192.0.2.1:22" {
 		t.Errorf("dialled %q", addr)
 	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("probe took %s", d)
+	if c := reach.Read(p, "box"); c.State != reach.Unreachable {
+		t.Errorf("cache = %+v", c)
+	}
+}
+
+// A probe the round's deadline cuts short tested nothing: a dial with less
+// than ProbeDialTimeout to answer (a late slot), or a master check killed
+// mid-way, keeps the cached entry rather than claiming `unreachable`.
+func TestProbeCutShortKeepsCache(t *testing.T) {
+	recorded := reach.Entry{State: reach.Reachable, Verified: time.Unix(1760000000, 0), How: "attach"}
+	check := func(t *testing.T, b *sshBackend, p config.Paths) {
+		t.Helper()
+		if err := reach.Write(p, "box", recorded); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		e := b.Probe(ctx)
+		if e.State != reach.Reachable || e.How != "attach" || !e.Verified.Equal(recorded.Verified) {
+			t.Errorf("probe = %+v, want the cached entry", e)
+		}
+		if c := reach.Read(p, "box"); c.State != reach.Reachable || c.How != "attach" {
+			t.Errorf("cache = %+v, want it untouched", c)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("probe took %s", d)
+		}
+	}
+	t.Run("dial", func(t *testing.T) {
+		probeSSH(t, 255, "hostname 192.0.2.1\nport 22\n")
+		old := probeDial
+		probeDial = func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() }
+		defer func() { probeDial = old }()
+		b, p := probeBackend(t)
+		check(t, b, p)
+	})
+	t.Run("master check", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		noDial(t)
+		b, p := probeBackend(t)
+		check(t, b, p)
+	})
+}
+
+// `?` (not probeable) never overwrites what a command or a master check
+// recorded; it is written when there is nothing better, or only a `?`.
+func TestProbeUnknownKeepsRecord(t *testing.T) {
+	probeSSH(t, 255, "hostname 10.0.0.1\nport 22\nproxyjump bastion\n")
+	noDial(t)
+	b, p := probeBackend(t)
+	for _, prev := range []reach.Entry{
+		{State: reach.Reachable, Verified: time.Unix(1760000000, 0), How: "exec"},
+		{State: reach.Reachable, Verified: time.Unix(1760000000, 0), How: reach.HowMaster},
+		{State: reach.Unreachable, Verified: time.Unix(1760000000, 0), How: reach.HowProbe, Reason: "connect timed out"},
+	} {
+		if err := reach.Write(p, "box", prev); err != nil {
+			t.Fatal(err)
+		}
+		if e := b.Probe(context.Background()); e.State != prev.State || e.How != prev.How {
+			t.Errorf("probe over %+v = %+v", prev, e)
+		}
+		if c := reach.Read(p, "box"); c.State != prev.State || c.How != prev.How {
+			t.Errorf("cache over %+v = %+v", prev, c)
+		}
+	}
+	// No cache, then a `?` one: written.
+	if err := reach.Remove(p, "box"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		b.Probe(context.Background())
+		if c := reach.Read(p, "box"); c.State != reach.Unknown || c.Reason != "ProxyJump" {
+			t.Errorf("cache = %+v", c)
+		}
+	}
+	if _, err := os.Stat(reach.Path(p, "box")); err != nil {
+		t.Errorf("no file written: %v", err)
 	}
 }
 

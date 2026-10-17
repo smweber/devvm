@@ -45,22 +45,23 @@ func ownership(managed bool) string {
 
 // statusRow is one machine's resolved status for rendering.
 type statusRow struct {
-	name    string
-	backend string
-	state   string // running | stopped | reachable | unreachable | broken conf | ?
-	hub     string // the hub this row belongs to (its own row included); "" for a local machine
-	exists  bool
-	running bool
-	mem     int // MiB (smol: smolvm's own record)
-	disk    int // GiB (smol: smolvm's own record)
-	cpus    int
-	host    string
-	fwds    fwdSummary
-	saved   bool         // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
-	managed string       // the --plain fifth column: managed | unmanaged | shadowed | -
-	note    string       // e.g. "no VM (stale conf)"
-	reach   *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
-	m       *config.Machine
+	name        string
+	backend     string
+	state       string // running | stopped | reachable | unreachable | broken conf | ?
+	hub         string // the hub this row belongs to (its own row included); "" for a local machine
+	exists      bool
+	running     bool
+	mem         int // MiB (smol: smolvm's own record)
+	disk        int // GiB (smol: smolvm's own record)
+	cpus        int
+	host        string
+	fwds        fwdSummary
+	saved       bool         // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
+	managed     string       // the --plain fifth column: managed | unmanaged | shadowed | -
+	note        string       // e.g. "no VM (stale conf)"
+	reach       *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
+	hubVerified string       // a hub machine's sixth column as its hub sent it (`verified=…`); "" when it sent none
+	m           *config.Machine
 }
 
 // fwdSummary is what status knows about a machine's forward daemon.
@@ -142,8 +143,9 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // column, appended like the fifth, is when and how that was last
 // established: `verified=<unix seconds>:<how>`, how ∈ {master, probe, or
 // the command that talked to the box: attach, shell, exec, bootstrap}, or
-// `verified=-` for a remote box with nothing established; every other row
-// has `-`. `?` / `broken conf` otherwise mean the backend could not be
+// `verified=-` for a remote box with nothing established; a hub machine
+// carries its hub's sixth column through (a newer hub's `verified=…`), and
+// every other row has `-`. `?` / `broken conf` otherwise mean the backend could not be
 // asked / the conf did not load. Consumers should treat any other token as
 // "unknown", not fail.
 // `--watch` re-emits this listing on devvm-made changes (see watchStatus); the
@@ -177,10 +179,13 @@ func plainLine(r statusRow) string {
 
 // plainVerified renders the sixth column (see runStatusPlain).
 func plainVerified(r statusRow) string {
-	if r.reach == nil {
-		return "-"
+	switch {
+	case r.reach != nil:
+		return r.reach.Plain()
+	case r.hubVerified != "":
+		return r.hubVerified
 	}
-	return r.reach.Plain()
+	return "-"
 }
 
 // plainManaged renders the fifth column (see runStatusPlain).
@@ -424,6 +429,11 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 			// The hub's own word on ownership (its marker), passed through;
 			// a hub too old for the column said nothing, which is `-`.
 			r.backend, r.state, r.managed = hr.backend, hr.state, hr.managed
+			// A newer hub's sixth column, passed through as the hub said
+			// it (its remote boxes' last contact, from the hub's cache).
+			if v, _, _ := strings.Cut(hr.rest, "\t"); strings.HasPrefix(v, "verified=") {
+				r.hubVerified = v
+			}
 			// "dormant" only from a hub older than the dormant state's removal.
 			r.exists, r.running = hr.state != "dormant", hr.state == "running"
 		} else {

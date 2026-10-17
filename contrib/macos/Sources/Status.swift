@@ -92,8 +92,10 @@ struct Machine {
     }
 
     /// A glyph for the menu row. Filled = live, hollow = off, dotted = unknown
-    /// (which `unreachable` is: the hub did not say).
+    /// (which `unreachable` is: the hub did not say). A remote box at `?` is
+    /// selectable (isLive) but unverified, so it is dotted, not filled.
     var glyph: String {
+        if state == "?" { return "◌" }
         if isLive { return "●" }
         if state == "stopped" || state == "dormant" { return "○" } // dormant: an old hub's word
         return "◌"

@@ -193,6 +193,8 @@ func (e Entry) Describe(now time.Time) string {
 	switch {
 	case e.State == Reachable && !e.Verified.IsZero():
 		return fmt.Sprintf("reachable, verified %s ago (%s)", ago(now.Sub(e.Verified)), e.How)
+	case e.State == Reachable:
+		return "reachable (unverified)" // a hand-edited or partial file: --plain says reachable too
 	case e.State == Unreachable:
 		since := e.Since
 		if since.IsZero() {

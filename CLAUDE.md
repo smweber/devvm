@@ -225,7 +225,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   local smol VM of the same name, `-` is a hub, or a hub machine from a hub
   too old to send it (never `unmanaged`, which nobody said). A sixth column,
   appended the same way, is `verified=<unix>:<how>` (or `verified=-`) on a
-  remote row and `-` on every other. There is no
+  remote row (a hub machine carries its hub's through) and `-` on every other. There is no
   `dormant` (an old hub may still send it); so
   are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact] [ttl=9m42s]`,
   owner kinds `conf`/`connection`/`ttl`; parsers split on whitespace and read only

@@ -21,8 +21,9 @@ import (
 // its hub's, so neither is one.
 type Prober interface {
 	// Probe establishes the box's reach now, writes it to the reach cache
-	// and returns it. Bounded by ctx; a probe the deadline cuts short is
-	// `unreachable` ("timed out").
+	// and returns it. Bounded by ctx; a probe the deadline cuts short
+	// before it tested anything for a full ProbeDialTimeout claims nothing
+	// and returns the cached entry unchanged.
 	Probe(ctx context.Context) reach.Entry
 }
 
@@ -49,9 +50,11 @@ var probeDial = func(ctx context.Context, addr string) error {
 }
 
 // Probe is providers.md §5's probe, and deliberately never a full ssh: no
-// handshake, no auth, no remote process, so it costs milliseconds against
-// a live master and at most ProbeDialTimeout otherwise, and it cannot hang
-// on a prompt or a slow login shell. In order:
+// ssh connection, no auth, nothing run on the box, so it costs
+// milliseconds against a live master and at most ProbeDialTimeout
+// otherwise, and it cannot hang on a prompt or a slow login shell. (`ssh
+// -G` is local but may run a `Match exec` from the user's ssh config; it
+// is bounded by ctx like the rest.) In order:
 //
 //  1. `ssh -O check` against the box's ControlMasters (the daemon's, which
 //     it holds whenever the box has forwards, then the shared one
@@ -61,36 +64,55 @@ var probeDial = func(ctx context.Context, addr string) error {
 //     with ProxyJump/ProxyCommand is not dialled, since the dial would test
 //     the wrong host, and stays `?`.
 //  3. A TCP connect to the resolved host:port.
+//
+// What it writes is only what it established. A probe the round's
+// deadline cut short (the master check or `-G` killed, or a dial that had
+// less than ProbeDialTimeout to answer, as a box that got a late slot
+// does) tested nothing and leaves the cache as it was. A `?` (not
+// probeable) never overwrites a state a command or a master check
+// recorded: for an alias behind ProxyJump that record is the only
+// evidence there is, and "not probed" says nothing against it.
 func (b *sshBackend) Probe(ctx context.Context) reach.Entry {
-	e := b.probe(ctx)
+	e, ok := b.probe(ctx)
+	if !ok {
+		return reach.Read(b.paths, b.m.Name)
+	}
+	if e.State == reach.Unknown {
+		if prev := reach.Read(b.paths, b.m.Name); prev.State != reach.Unknown {
+			return prev
+		}
+	}
 	_ = reach.Write(b.paths, b.m.Name, e) // derived data; a failed write is not a failed probe
 	return e
 }
 
-func (b *sshBackend) probe(ctx context.Context) reach.Entry {
-	timedOut := func() reach.Entry {
-		return reach.Entry{State: reach.Unreachable, Verified: time.Now(), How: reach.HowProbe, Reason: "timed out"}
-	}
+// probe returns the entry it established, and false when ctx ended it
+// before it established anything.
+func (b *sshBackend) probe(ctx context.Context) (reach.Entry, bool) {
 	if b.masterAlive(ctx) {
-		return reach.Entry{State: reach.Reachable, Verified: time.Now(), How: reach.HowMaster}
+		return reach.Entry{State: reach.Reachable, Verified: time.Now(), How: reach.HowMaster}, true
 	}
 	if ctx.Err() != nil {
-		return timedOut()
+		return reach.Entry{}, false
 	}
 	host, port, proxy, err := b.resolveDest(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
-			return timedOut()
+			return reach.Entry{}, false
 		}
-		return reach.Entry{State: reach.Unknown, Reason: "ssh -G failed: " + err.Error()}
+		return reach.Entry{State: reach.Unknown, Reason: "ssh -G failed: " + err.Error()}, true
 	}
 	if proxy != "" {
-		return reach.Entry{State: reach.Unknown, Reason: proxy}
+		return reach.Entry{State: reach.Unknown, Reason: proxy}, true
 	}
+	start := time.Now()
 	if err := probeDial(ctx, net.JoinHostPort(host, port)); err != nil {
-		return reach.Entry{State: reach.Unreachable, Verified: time.Now(), How: reach.HowProbe, Reason: dialReason(err, host)}
+		if ctx.Err() != nil && time.Since(start) < ProbeDialTimeout {
+			return reach.Entry{}, false // cut short by the round, not timed out by the box
+		}
+		return reach.Entry{State: reach.Unreachable, Verified: time.Now(), How: reach.HowProbe, Reason: dialReason(err, host)}, true
 	}
-	return reach.Entry{State: reach.Reachable, Verified: time.Now(), How: reach.HowProbe}
+	return reach.Entry{State: reach.Reachable, Verified: time.Now(), How: reach.HowProbe}, true
 }
 
 // masterAlive asks each of the box's ControlMaster sockets whether a

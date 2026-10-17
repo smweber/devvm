@@ -101,6 +101,7 @@ func TestDescribe(t *testing.T) {
 		{Entry{State: Unreachable, Verified: now, Since: time.Date(2026, 10, 15, 9, 5, 0, 0, time.Local)}, "unreachable since Oct 15 09:05"},
 		{Entry{State: Unknown, Reason: "ProxyJump"}, "not probed (ProxyJump)"},
 		{Entry{State: Unknown}, "not probed yet"},
+		{Entry{State: Reachable}, "reachable (unverified)"},
 	} {
 		if got := tc.e.Describe(now); got != tc.want {
 			t.Errorf("Describe(%+v) = %q, want %q", tc.e, got, tc.want)
