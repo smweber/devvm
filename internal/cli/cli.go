@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -98,6 +99,18 @@ func Execute() int {
 		var pe *proxyExit
 		if errors.As(err, &pe) {
 			return pe.code
+		}
+		// A signal stopped the command after its cleanup (interruptible):
+		// die by it, as the default disposition would have.
+		var ie *interrupted
+		if errors.As(err, &ie) {
+			fmt.Fprintln(os.Stderr, "devvm:", err)
+			signal.Reset(ie.sig)
+			_ = syscall.Kill(os.Getpid(), ie.sig)
+			// The signal reaches some thread asynchronously; returning at
+			// once would usually exit with the status before it lands.
+			time.Sleep(time.Second)
+			return 128 + int(ie.sig)
 		}
 		// cobra already prints usage errors; print anything else once, plainly.
 		fmt.Fprintln(os.Stderr, "devvm:", err)

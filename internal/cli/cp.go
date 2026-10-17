@@ -83,24 +83,28 @@ func (a *App) cpInCmd() *cobra.Command {
 			return cobra.MinimumNArgs(2)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cmd.Flags().Changed(fromTarFlag) { // Changed, so `--from-tar=` is refused, not the normal path
-				return a.runCopyInFromTar(cmd.Context(), fromTar, args, target, o)
-			}
-			name, srcs, dst, asDir, err := copyArgs(args, target, "~")
-			if err != nil {
-				return err
-			}
-			o.asDir = asDir
-			// HUB/NAME is dispatched here rather than through hubOr: the
-			// laptop keeps the local checks and the archive build and
-			// streams the result to the hub (cp_hub.go), so nothing about
-			// the parsed command is replayed as is.
-			if ok, err := hubMachineArg(args); err != nil {
-				return err
-			} else if ok {
-				return a.runCopyInHub(cmd.Context(), name, srcs, dst, o)
-			}
-			return a.runCopyIn(cmd.Context(), name, srcs, dst, o)
+			// A signal mid-copy unwinds through the cleanup (the spool,
+			// the guest stage) instead of killing devvm on the spot.
+			return interruptible(cmd.Context(), func(ctx context.Context) error {
+				if cmd.Flags().Changed(fromTarFlag) { // Changed, so `--from-tar=` is refused, not the normal path
+					return a.runCopyInFromTar(ctx, fromTar, args, target, o)
+				}
+				name, srcs, dst, asDir, err := copyArgs(args, target, "~")
+				if err != nil {
+					return err
+				}
+				o.asDir = asDir
+				// HUB/NAME is dispatched here rather than through hubOr: the
+				// laptop keeps the local checks and the archive build and
+				// streams the result to the hub (cp_hub.go), so nothing about
+				// the parsed command is replayed as is.
+				if ok, err := hubMachineArg(args); err != nil {
+					return err
+				} else if ok {
+					return a.runCopyInHub(ctx, name, srcs, dst, o)
+				}
+				return a.runCopyIn(ctx, name, srcs, dst, o)
+			})
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, incomplete string) ([]string, cobra.ShellCompDirective) {
 			switch {

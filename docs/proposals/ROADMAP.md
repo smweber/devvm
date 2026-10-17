@@ -264,9 +264,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
   behind on the ThinkPad; apt refused "not valid yet"). `stop`/`start` fixes
   it. Candidate: `setup` enables guest time sync, or daemon come-up sets the
   clock from the host.
-- **SIGINT during a copy leaks the laptop-side spool** (no signal handler
-  outside `status --watch`; five killed 200 MB copies left 610 MB in
-  `$TMPDIR`).
 - **Cold-boot bridge retry**: `attach`/`shell` on a stopped VM, local or
   `HUB/NAME`, gets no bridge for that session, only a notice, because the
   daemon's exec startups would overlap the attach's own tmux execs while

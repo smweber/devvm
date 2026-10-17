@@ -33,31 +33,35 @@ func (a *App) cpOutCmd() *cobra.Command {
 			"  devvm cp-out -f myvm notes.txt                # overwrite ./notes.txt",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cmd.Flags().Changed(toTarFlag) { // Changed, so `--to-tar=` is refused, not the normal path
-				return a.runCopyOutToTar(cmd.Context(), toTar, args, target, o)
-			}
-			name, srcs, dst, asDir, err := copyArgs(args, target, ".")
-			if err != nil {
-				return err
-			}
-			o.asDir = asDir
-			for _, src := range srcs {
-				if src == "" {
-					return fmt.Errorf("source must not be empty")
+			// A signal mid-copy unwinds through the cleanup (the spool,
+			// the guest stage) instead of killing devvm on the spot.
+			return interruptible(cmd.Context(), func(ctx context.Context) error {
+				if cmd.Flags().Changed(toTarFlag) { // Changed, so `--to-tar=` is refused, not the normal path
+					return a.runCopyOutToTar(ctx, toTar, args, target, o)
 				}
-			}
-			// HUB/NAME: the same checks and extraction, with each archive
-			// streamed from the hub's hidden form (cp_hub.go).
-			if ok, err := hubMachineArg(args); err != nil {
-				return err
-			} else if ok {
-				return a.runCopyOutHub(cmd.Context(), name, srcs, dst, o)
-			}
-			_, b, err := a.resolve(name)
-			if err != nil {
-				return err
-			}
-			return copyOut(cmd.Context(), b, name, srcs, dst, o, a.Stderr)
+				name, srcs, dst, asDir, err := copyArgs(args, target, ".")
+				if err != nil {
+					return err
+				}
+				o.asDir = asDir
+				for _, src := range srcs {
+					if src == "" {
+						return fmt.Errorf("source must not be empty")
+					}
+				}
+				// HUB/NAME: the same checks and extraction, with each archive
+				// streamed from the hub's hidden form (cp_hub.go).
+				if ok, err := hubMachineArg(args); err != nil {
+					return err
+				} else if ok {
+					return a.runCopyOutHub(ctx, name, srcs, dst, o)
+				}
+				_, b, err := a.resolve(name)
+				if err != nil {
+					return err
+				}
+				return copyOut(ctx, b, name, srcs, dst, o, a.Stderr)
+			})
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, prefix string) ([]string, cobra.ShellCompDirective) {
 			switch {
