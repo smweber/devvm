@@ -66,6 +66,12 @@ type Provider interface {
 	// Get returns the server with this exact name, or nil, nil when absent.
 	Get(ctx context.Context, name string) (*Server, error)
 	// Create makes the server and waits for it to be created and started.
+	// A non-nil server may come back WITH a non-nil error: the server was
+	// created (it exists and bills) but waiting for it to start, or reading
+	// it back, failed. Callers must handle both together: record or name
+	// the server they got (so it is not lost track of, and can be deleted)
+	// and still report the error. A nil server with an error means nothing
+	// was created.
 	Create(ctx context.Context, s Spec) (*Server, error)
 	Delete(ctx context.Context, id int64) error
 	Power(ctx context.Context, id int64, on bool) error

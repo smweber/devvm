@@ -316,6 +316,13 @@ func (m *Machine) IsRemote() bool {
 	return m.Backend == BackendRemoteManaged || m.Backend == BackendRemoteUnmanaged || m.Backend == BackendHub
 }
 
+// Probeable reports whether the box's state is its reach cache, probed over
+// ssh (providers.md §5): a box reached over ssh that is neither a hub (its
+// state is its listing pipe's) nor a machine on one (its hub's word).
+func (m *Machine) Probeable() bool {
+	return m.IsRemote() && !m.IsHub() && !m.IsHubMachine()
+}
+
 // TransportName is the effective interactive transport (defaulted to ssh).
 func (m *Machine) TransportName() string {
 	if m.Transport == "" {

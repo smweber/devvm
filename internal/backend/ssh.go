@@ -110,10 +110,15 @@ func (b *sshBackend) base() []string { return b.baseTimeout(SSHConnectTimeout())
 func (b *sshBackend) baseTimeout(connectSecs int) []string {
 	ssh := append([]string{"ssh"}, b.sshFlagsTimeout(connectSecs)...)
 	_ = os.MkdirAll(b.paths.State, 0o700)
+	// Keepalives as the daemon's master has them (session's startMaster):
+	// without them a master outliving a laptop sleep keeps answering
+	// `ssh -O check` until TCP's own keepalive gives up, and the reach
+	// probe would read that stale master as `reachable`.
 	ssh = append(ssh,
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath="+b.paths.ControlPath(),
-		"-o", "ControlPersist=60")
+		"-o", "ControlPersist=60",
+		"-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3")
 	return ssh
 }
 

@@ -34,19 +34,12 @@ type reachTiming struct {
 
 var reachTimes = reachTiming{deadline: 5 * time.Second, parallel: 16}
 
-// probeable is a box whose state the reach cache carries: the remote-*
-// backends. A hub's own row is its listing pipe's, a hub machine's is its
-// hub's, a smol VM's is smolvm's.
-func probeable(m *config.Machine) bool {
-	return !m.IsHubMachine() && (m.Backend == config.BackendRemoteManaged || m.Backend == config.BackendRemoteUnmanaged)
-}
-
-// remoteConfs is every probeable registry entry, for a round.
+// remoteConfs is every probeable registry entry (Machine.Probeable), for a round.
 func (a *App) remoteConfs() []*config.Machine {
 	names, _ := config.List(a.Paths.Config)
 	var out []*config.Machine
 	for _, n := range names {
-		if m, err := config.Load(a.Paths.Config, n); err == nil && probeable(m) {
+		if m, err := config.Load(a.Paths.Config, n); err == nil && m.Probeable() {
 			out = append(out, m)
 		}
 	}
@@ -97,7 +90,7 @@ func (a *App) reachRound(ctx context.Context, ms []*config.Machine) {
 // failure writes nothing: an auth or host-key refusal is not
 // `unreachable`, and the next probe will say what it is.
 func (a *App) noteContact(m *config.Machine, how, transport string, err error) {
-	if m == nil || !probeable(m) {
+	if m == nil || !m.Probeable() {
 		return
 	}
 	if err != nil {

@@ -217,3 +217,23 @@ func TestLoadHubMachine(t *testing.T) {
 		t.Error("LoadAny(h/) should fail validation")
 	}
 }
+
+// Probeable is the remote-* boxes only: not a hub, not a machine on one,
+// not a smol VM.
+func TestProbeable(t *testing.T) {
+	hub := NewHub("h", "u@h")
+	for _, tc := range []struct {
+		m    *Machine
+		want bool
+	}{
+		{NewRemote("a", BackendRemoteManaged, "u@a"), true},
+		{NewRemote("b", BackendRemoteUnmanaged, "u@b"), true},
+		{hub, false},
+		{&Machine{Name: "h/web", Backend: BackendHub, Hub: hub}, false},
+		{NewSmol("vm"), false},
+	} {
+		if got := tc.m.Probeable(); got != tc.want {
+			t.Errorf("%s (%s): Probeable = %v, want %v", tc.m.Name, tc.m.Backend, got, tc.want)
+		}
+	}
+}

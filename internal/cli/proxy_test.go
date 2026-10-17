@@ -113,7 +113,7 @@ func sq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 // terminal, -t iff one, the hub's destination, then the login-shell wrapper
 // around `env DEVVM_NO_SUBSCRIBE=1 devvm …`, every token single-quoted.
 func wantSSH(a *App, tty bool, devvmArgv ...string) string {
-	line := "-o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=" + a.Paths.ControlPath() + " -o ControlPersist=60"
+	line := "-o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=" + a.Paths.ControlPath() + " -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
 	if tty {
 		line += " -t -o LogLevel=ERROR" // Quiet: no "Shared connection … closed." after a pty run
 	} else {

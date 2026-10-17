@@ -87,3 +87,30 @@ func TestFakeLifecycle(t *testing.T) {
 		t.Fatalf("CallCount(Get) = %d", n)
 	}
 }
+
+// CreateErr: the server is created and handed back with the error, and the
+// project lists it (it exists and bills), so a caller can clean it up.
+func TestFakeCreateErrKeepsServer(t *testing.T) {
+	ctx := context.Background()
+	p := New()
+	startFailed := errors.New("start action failed")
+	p.CreateErr = startFailed
+	s, err := p.Create(ctx, provider.Spec{Name: "web", Type: "cx23"})
+	if !errors.Is(err, startFailed) {
+		t.Fatalf("err = %v, want the CreateErr", err)
+	}
+	if s == nil || s.Name != "web" || s.ID == 0 {
+		t.Fatalf("server = %+v, want the created one with the error", s)
+	}
+	got, err := p.Get(ctx, "web")
+	if err != nil || got == nil || got.ID != s.ID {
+		t.Fatalf("Get after a failed Create = %+v, %v; the server must exist", got, err)
+	}
+	p.CreateErr = nil
+	if err := p.Delete(ctx, s.ID); err != nil {
+		t.Fatalf("deleting the half-created server: %v", err)
+	}
+	if got, _ := p.Get(ctx, "web"); got != nil {
+		t.Errorf("server survived Delete: %+v", got)
+	}
+}

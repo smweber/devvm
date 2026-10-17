@@ -402,3 +402,66 @@ func TestHubRowVerifiedPassesThrough(t *testing.T) {
 		t.Errorf("reach cache holds %d entries", len(entries))
 	}
 }
+
+// The central §5 promise, end to end through the merged watch: one round
+// at start, none for any number of ordinary `run/changed` touches, and
+// exactly one for a `devvm __refresh`. A round is counted by its `ssh -G`
+// (one box, one resolve per round; the fake has no master).
+func TestWatchRoundsOnlyOnRefresh(t *testing.T) {
+	a := newTestApp(t)
+	log, _ := reachSSH(t, listener(t))
+	saveBox(t, a, "box")
+	rounds := func() int {
+		n := 0
+		for _, l := range sshLines(t, log) {
+			if strings.Contains(l, " -G ") {
+				n++
+			}
+		}
+		return n
+	}
+	waitRounds := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for rounds() < want {
+			if time.Now().After(deadline) {
+				t.Fatalf("rounds = %d, want %d", rounds(), want)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := newBlockWriter()
+	done := make(chan error, 1)
+	go func() { done <- a.watchWithHubs(ctx, out, 30*time.Millisecond) }()
+	select {
+	case <-out.blocks:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no first block")
+	}
+	if n := rounds(); n != 1 {
+		t.Fatalf("opening rounds = %d, want 1", n)
+	}
+	for range 3 {
+		config.TouchChanged(a.Paths)
+		time.Sleep(50 * time.Millisecond) // past the debounce each time: three separate snapshots
+	}
+	out.none(t)
+	if n := rounds(); n != 1 {
+		t.Fatalf("after run/changed: rounds = %d, want still 1", n)
+	}
+	// The real command, from a second App on the same state dir (as a
+	// separate devvm process would be).
+	other := &App{Paths: a.Paths}
+	if err := runTree(t, other, "__refresh"); err != nil {
+		t.Fatal(err)
+	}
+	waitRounds(2)
+	time.Sleep(300 * time.Millisecond) // a second round would have started by now
+	if n := rounds(); n != 2 {
+		t.Errorf("after __refresh: rounds = %d, want 2 (opening + one)", n)
+	}
+	cancel()
+	<-done
+}

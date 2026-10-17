@@ -28,6 +28,11 @@ type Provider struct {
 	// token, for exercising callers' fallback paths. Set it before sharing
 	// the fake across goroutines.
 	Err error
+	// CreateErr, when set, is returned by Create after the server has been
+	// stored and is returned with it: the real provider's "created, but the
+	// start (or the read-back) failed" case, where the server exists and
+	// bills though the call failed.
+	CreateErr error
 }
 
 var (
@@ -161,7 +166,7 @@ func (p *Provider) Create(ctx context.Context, spec provider.Spec) (*provider.Se
 	}
 	p.servers[s.ID] = s
 	c := clone(s)
-	return &c, nil
+	return &c, p.CreateErr
 }
 
 func (p *Provider) Delete(ctx context.Context, id int64) error {
