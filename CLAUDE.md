@@ -231,8 +231,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `config.TouchChanged` (a *write* to `run/changed`, because kqueue ignores
   utimes); `status --plain --watch` (fsnotify on the config **dir**, so
   devvm.toml renamed into place is seen; a symlinked file's target dir,
-  re-resolved on every config-dir event so a stow/chezmoi relink moves the
-  watch; and state's `run/`; config-dir events count only for devvm.toml
+  re-resolved on every config-dir event and on every debounce so a stow/chezmoi
+  relink moves the watch; kqueue can drop a relink, so a one-shot `status`
+  touches the change marker on its way out, and the menu bar app runs one per
+  menu open: that is the refresh, never a timer; and state's `run/`; config-dir events count only for devvm.toml
   and its target, so editor swap files cost nothing) re-emits on it, so a write elsewhere in state (a
   `ports/` file) is seen only through the marker. Rule: a new state-changing
   command gets `defer config.TouchChanged(a.Paths)`. devvm.toml writes are

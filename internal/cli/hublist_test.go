@@ -213,9 +213,12 @@ func TestStatusMergesHubRows(t *testing.T) {
 	if out.String() != want {
 		t.Errorf("plain =\n%s\nwant\n%s", out.String(), want)
 	}
-	// The cache is the hub's rows verbatim, in cache/; machines/ and run/
-	// hold only what the test put there (a cache write must never wake
-	// `status --watch`, which observes those two).
+	// The cache is the hub's rows verbatim, in cache/; the config dir holds
+	// only what the test put there, and run/ gains exactly the change
+	// marker: a cache write must never wake `status --watch` by itself
+	// (the watch writes caches too), but a one-shot status touches the
+	// marker once on its way out so a running watch re-reads the caches it
+	// just refreshed and re-resolves a symlinked devvm.toml (status.go).
 	data, err := os.ReadFile(hubCachePath(a.Paths, "h"))
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +229,7 @@ func TestStatusMergesHubRows(t *testing.T) {
 	if rel, _ := filepath.Rel(a.Paths.CacheDir(), hubCachePath(a.Paths, "h")); rel != "hub-h.list" {
 		t.Errorf("cache path %s is not under cache/", hubCachePath(a.Paths, "h"))
 	}
-	for dir, want := range map[string][]string{a.Paths.Config: {"devvm.toml", "s"}, a.Paths.RuntimeDir(): {"h@web.sock"}} {
+	for dir, want := range map[string][]string{a.Paths.Config: {"devvm.toml", "s"}, a.Paths.RuntimeDir(): {"changed", "h@web.sock"}} {
 		entries, _ := os.ReadDir(dir)
 		var names []string
 		for _, e := range entries {

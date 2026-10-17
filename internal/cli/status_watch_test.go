@@ -289,8 +289,9 @@ func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
 // devvm.toml as a symlink: an edit of its target (in another dir) is seen,
 // a relink to another target moves the watch, and editor swap files in the
 // config dir are not changes. On kqueue the relink often yields no event
-// at all (both NOTE_WRITEs coalesce, most often under load), so there it
-// is the relinkPoll that sees it, inside next's wait.
+// at all (both NOTE_WRITEs coalesce, most often under load); what catches
+// it there is the next debounce, nudged here as a one-shot `status` (the
+// menu bar app's menu open) nudges it: a touch of the change marker.
 func TestWatchFollowsSymlinkRetarget(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
@@ -350,6 +351,7 @@ func TestWatchFollowsSymlinkRetarget(t *testing.T) {
 	if err := os.Rename(tmp, a.Paths.FilePath()); err != nil {
 		t.Fatal(err)
 	}
+	config.TouchChanged(a.Paths) // what a one-shot status does on its way out
 	out.next(t, row("b"))
 	// Now B's dir is watched: an edit there is seen, one in A's is not.
 	if err := os.WriteFile(fileA, []byte(entry("a")+entry("zz")), 0o644); err != nil {

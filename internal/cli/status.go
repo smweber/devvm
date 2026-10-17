@@ -91,6 +91,13 @@ func (a *App) runStatusAll(verbose, local bool) error {
 		return err
 	}
 	if !local {
+		// The live round refreshed the reach and provider caches a running
+		// `status --watch` reads, and its debounce re-resolves a symlinked
+		// devvm.toml (kqueue may have dropped the relink): wake it. The menu
+		// bar app runs this on every menu open, so that is the user's refresh.
+		config.TouchChanged(a.Paths)
+	}
+	if !local {
 		a.noteNoToken()
 	}
 	sources := a.providerSourceLines(local)
@@ -230,6 +237,13 @@ func (a *App) runStatusPlain(local bool) error {
 	}
 	if err != nil {
 		return err
+	}
+	if !local {
+		// The live round refreshed the reach and provider caches a running
+		// `status --watch` reads, and its debounce re-resolves a symlinked
+		// devvm.toml (kqueue may have dropped the relink): wake it. The menu
+		// bar app runs this on every menu open, so that is the user's refresh.
+		config.TouchChanged(a.Paths)
 	}
 	if !local {
 		a.noteNoToken()
