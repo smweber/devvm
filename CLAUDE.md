@@ -144,7 +144,12 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   relies on that) and unlinks only its own (`ownsSocket`: inode check *plus* a
   dial — ext4/APFS reuse inode numbers, tmpfs doesn't, which hid the bug
   locally). Binds run outside `d.mu`: an `ssh -O forward` against a wedged
-  master must not freeze `list`/`ping`. SIGTERM/INT/HUP run the same
+  master must not freeze `list`/`ping`.
+  A smol daemon is also its guest's time sync (the guest runs no time daemon
+  and stays behind after the host suspends): it pushes its clock over the
+  agent exec (`time` stream) on every dial and every 60s, and the agent steps
+  the guest's via `sudo -n date` when drift ≥ 2s. Nothing installed; only
+  while a daemon holds the exec (a hub VM's is the hub daemon's). SIGTERM/INT/HUP run the same
   shutdown as a client stop (later signals are absorbed); SIGKILL orphans
   the ssh master, which the next start `-O exit`s and never adopts; a
   SIGKILLed smol daemon's exec is not covered.

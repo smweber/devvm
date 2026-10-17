@@ -2,10 +2,12 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 	"github.com/smweber/devvm/internal/agentbin"
@@ -53,7 +55,61 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 	}
 	t := &smolTransport{agent: agent, mux: mux, evCh: make(chan bridgeRequest), paths: paths}
 	go serveEvents(mux, t.evCh)
+	go syncClock(mux, clockSyncInterval)
 	return t, nil
+}
+
+// clockSyncInterval is how often the daemon pushes its clock to a smol
+// guest after the push that follows every dial.
+const clockSyncInterval = 60 * time.Second
+
+// syncClock pushes this host's wall clock to the agent once now (every
+// dial, first and each reconnect) and then every interval, until the
+// session dies; the agent steps the guest's clock when it is 2s or more
+// off. A smol guest does not resync after the host suspends, and its init
+// runs no time daemon, so this is its time sync: over the one agent exec,
+// nothing installed. Only while a daemon holds the exec: an unmanaged VM
+// never gets one, and a hub machine's exec (and its sync) is the hub
+// daemon's, so neither the ssh nor the hub transport does this.
+//
+// It logs only a step or a failure (each distinct failure once), never an
+// "ok". An agent older than the time stream stops it after one line. Close
+// never waits on it: the session's end stops the loop, and one exchange is
+// bounded by agentrpc's own deadline.
+func syncClock(mux *yamux.Session, interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	lastErr := ""
+	for {
+		r, err := agentrpc.SyncClock(mux, time.Now())
+		switch {
+		case mux.IsClosed():
+			return
+		case errors.Is(err, agentrpc.ErrClockUnsupported):
+			transportLogf("clock: the agent does not support clock sync (older than this devvm); not syncing")
+			return
+		case err != nil:
+			if msg := err.Error(); msg != lastErr {
+				lastErr = msg
+				transportLogf("clock: sync failed: %v", err)
+			}
+		case r.Result == agentrpc.ClockStepped:
+			lastErr = ""
+			transportLogf("clock: guest was %s off; stepped it to this host's", r.Drift)
+		case r.Result != agentrpc.ClockOK:
+			if r.Result != lastErr {
+				lastErr = r.Result
+				transportLogf("clock: guest is %s off; %s", r.Drift, r.Result)
+			}
+		default:
+			lastErr = ""
+		}
+		select {
+		case <-mux.CloseChan():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // smolInstallGate is the approve callback of the smol transport's install:

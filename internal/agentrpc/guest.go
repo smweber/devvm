@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/yamux"
 )
@@ -13,6 +14,10 @@ import (
 // "rpc" stream (keys/repos/prereqs — wired in later phases); nil rejects them.
 type GuestHandlers struct {
 	RPC func(stream net.Conn)
+	// Clock answers a "time" stream: given the host's clock, it decides
+	// whether to step the guest's and reports what it did (clock.go). nil
+	// closes the stream unanswered, as an agent older than it does.
+	Clock func(host time.Time) ClockReply
 }
 
 // GuestSession wraps the yamux server so the agent can also push event streams
@@ -66,6 +71,8 @@ func handleGuestStream(stream net.Conn, h GuestHandlers) {
 	case strings.HasPrefix(header, TypeForward+" "):
 		target := strings.TrimSpace(header[len(TypeForward)+1:])
 		guestForward(stream, br, target)
+	case strings.HasPrefix(header, TypeTime+" ") && h.Clock != nil:
+		guestClock(stream, header[len(TypeTime)+1:], h.Clock)
 	case header == TypeRPC:
 		if h.RPC != nil {
 			h.RPC(bufferedConn{Conn: stream, r: br})

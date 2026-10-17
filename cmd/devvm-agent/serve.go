@@ -36,7 +36,7 @@ func guestSockPath(name string) string {
 // runServe carries every forward (and rpc/events) for one machine over this
 // single exec's stdio, multiplexed with yamux. On ready it also starts a guest
 // unix-socket listener so the open-url shim can push URLs to the host and
-// read back what the host did.
+// read back what the host did. The host may also push its clock (clock.go).
 // --auth selects the auth session's socket (see the socket-name comment).
 func runServe(args []string) {
 	sock := defaultSockName
@@ -48,7 +48,8 @@ func runServe(args []string) {
 			fatal("unknown serve flag: " + a)
 		}
 	}
-	err := agentrpc.Serve(os.Stdin, os.Stdout, agentrpc.GuestHandlers{},
+	h := agentrpc.GuestHandlers{Clock: newClockSyncer().handle}
+	err := agentrpc.Serve(os.Stdin, os.Stdout, h,
 		func(g *agentrpc.GuestSession) { go serveURLSocket(g, guestSockPath(sock)) })
 	if err != nil {
 		log.Fatalf("serve: %v", err)

@@ -6,6 +6,7 @@
 //	forward HOST:PORT   host->guest: carry a TCP connection to HOST:PORT (mux)
 //	rpc                 host->guest: one JSON request/response (keys/repos/...)
 //	event               guest->host: pushed events (open-url / callback-wanted)
+//	time SEC.NSEC       host->guest: the host's clock; the guest steps to it (clock.go)
 //
 // The forward path is the direct descendant of devvm-mux: one exec, many
 // streams, because smolvm has poor concurrency across separate exec sessions.
@@ -27,6 +28,7 @@ const (
 	TypeForward = "forward" // "forward HOST:PORT"
 	TypeRPC     = "rpc"
 	TypeEvent   = "event"
+	TypeTime    = "time" // "time SEC.NSEC"
 )
 
 // Stdio adapts a separate reader/writer (an exec's stdin/stdout) into the single
