@@ -1,6 +1,6 @@
 # Proposal: one shared config, discovered machines, templates
 
-Status: draft v3, 2026-10-17, revised after two independent reviews and a
+Status: draft v3.1, 2026-10-17 (§9 added), revised after two independent reviews and a
 design discussion with the user (see "Review log" at the end). Not scheduled.
 Once agreed, the order of work goes in `ROADMAP.md`. It follows v0.1.15
 (roadmap steps 1–9).
@@ -483,6 +483,66 @@ pointing here. The mapping, applied once per host with the author's help:
   `state/devvm/ports/NAME` or `HUB@NAME`;
 - `~/.config/devvm/{run,cache,known_hosts}` move to `~/.local/state/devvm`.
 
+### 9. Future: provider backends (constraints only, not in scope)
+
+A later proposal may add a backend such as `hetzner` that **creates and
+destroys cloud VMs the way `create`/`delete` handle smol**. It is not part of
+this redesign and nothing below adds work to the steps in "Implementation
+order". It is recorded so the implementation doesn't close the door. The
+shape it will take, so the constraints make sense:
+
+- A provider VM is **discovered from the provider's API** (filtered by a
+  `devvm` label), exactly as smol VMs are discovered from `smolvm machine
+  ls`. It has **no `[machines.*]` entry**; an entry for a provider-made VM
+  would reintroduce the dormant state §2 removes. The label *is* its managed
+  marker, so it is shared across hosts with no state file.
+- It is **reached over ssh**, sharing `backend/ssh.go` with `remote`. The
+  session daemon, transports, bridge and hub code don't change. `backend`
+  therefore means "who owns the registry and lifecycle" (smolvm, the
+  provider, the file, a hub); reach is derived from it.
+- `remote` is untouched: a hand-written entry, managed or adopted. A box the
+  user made in a provider's console stays a `remote` entry.
+- Credentials and placement go in a third table family, `[providers.NAME]`
+  (token env var, location, image, key name); sizing (`server_type`) is a
+  template field. `create NAME --backend hetzner` allocates, waits for ssh,
+  then runs `setup` with root adoption (§3). `start`/`stop` map to power
+  on/off. Everything else (firewalls, volumes, snapshots, resize) is left to
+  the provider, as `resize` is today.
+
+What the redesign does now so that fits later, each cheap now and a sweep
+later:
+
+1. **Predicates are reach, not backend equality.** `Managed()` and the
+   "reached over ssh" predicate are methods on the record; no code in `cli`,
+   `session`, `bootstrap` or `agentbin` compares the backend string to
+   `"remote"`. A provider record answers the ssh predicate `true` and
+   everything downstream works.
+2. **Discovery is an ordered list of sources, not "smol".** §2's "any other
+   name is a local smol VM" is implemented as "ask each discovery source in
+   order, first match wins", with smol the only source today. The collision
+   rule and the `shadowed` token then extend without rewording.
+3. **The source that produced a row settles `Managed`.** §2's marker file is
+   read by the smol discoverer, not by a shared reader every caller consults;
+   a provider discoverer reads its label instead. The daemon's re-read on
+   reconnect asks the backend, not the file.
+4. **`create` takes `--backend` (default `smol`)**, first question in the huh
+   form. The rule "template fields apply only where they make sense, `config
+   check` warns on a mismatch" (§3) is how `server_type`/`location` join
+   `memory`/`disk` later.
+5. **`setup` waits for ssh, bounded** (a minute or two of retries before root
+   adoption). A just-created server takes tens of seconds to answer on 22 and
+   cloud-init may bounce sshd. This also helps `setup --host` on a VM made in
+   a console today.
+6. **`delete` removes everything this host remembers about NAME** through one
+   helper: marker, ports file (§2, §5) **and the pinned `known_hosts` entry**,
+   since a recreated server under the same name and address has a new host
+   key.
+
+Two non-changes, recorded so they aren't reopened: `config check` **rejects
+unknown top-level tables** (so `[providers.*]` is a loader addition later,
+not a silent no-op today), and the lifecycle verbs need no additions
+(`create`/`delete`/`start`/`stop` already cover a provider box).
+
 ## CLI surface after
 
 - **Lifecycle:** `create NAME [--template T] [--memory] [--disk]`, `setup
@@ -538,6 +598,12 @@ None open. Answered, recorded so they aren't reopened:
 - **`memory`/`disk` on remote boxes:** ignored, and `config check` warns.
 
 ## Review log
+
+**v3.1** (design discussion with the user, 2026-10-17): added §9, the
+constraints a future provider backend (`hetzner`) puts on this redesign:
+reach predicates as methods, discovery as an ordered source list, `Managed`
+settled per source, `create --backend`, a bounded ssh wait in `setup`, and
+`delete` clearing `known_hosts`. No step changes scope.
 
 **v2 → v3** (design discussion with the user, 2026-10-17):
 
