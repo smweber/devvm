@@ -194,13 +194,18 @@ func copyOutWith(ctx context.Context, name string, srcs []string, dst string, o 
 // and a failed download never touches DEST. The guest script's stderr is
 // captured so its refusal reads as the error, prefixed with the machine name.
 //
-// A backend.Downloader (smol) cannot stream it: smolvm caps a `machine exec`'s
-// streamed stdout at 11 MiB. There the tar is staged in the guest and pulled
-// with CopyOut (downloadStaged).
+// A backend.Downloader (smol) cannot stream more than 11 MiB: smolvm caps a
+// `machine exec`'s streamed stdout there. Its tar is staged in the guest and
+// pulled with CopyOut (downloadStaged).
 func downloadArchive(ctx context.Context, b backend.Backend, name, src, archive string, recursive bool, stderr io.Writer) error {
 	if d, ok := b.(backend.Downloader); ok {
 		return downloadStaged(ctx, b, d, name, src, archive, recursive, stderr)
 	}
+	return downloadStream(ctx, b, name, src, archive, recursive, stderr)
+}
+
+// downloadStream is downloadArchive over exec stdout.
+func downloadStream(ctx context.Context, b backend.Backend, name, src, archive string, recursive bool, stderr io.Writer) error {
 	f, err := os.Create(archive)
 	if err != nil {
 		return err
@@ -218,18 +223,24 @@ func downloadArchive(ctx context.Context, b backend.Backend, name, src, archive 
 	return closeErr
 }
 
-// copyOutStagePrefix names cp-out's guest stage: a file in copyStageDir
-// (/var/tmp, which machine cp sees; /tmp is a tmpfs it does not).
+// copyOutStagePrefix names cp-out's guest stage: a directory in copyStageDir
+// (/var/tmp, which machine cp sees; /tmp is a tmpfs it does not) holding the
+// tar as a.tar.
 const copyOutStagePrefix = copyStageDir + "/devvm-cp-out-"
 
 // downloadStaged is downloadArchive through a guest stage: one exec writes
-// the tar to a file in copyStageDir, CopyOut pulls it to archive (still in
+// the tar into a directory in copyStageDir, CopyOut pulls it to archive (still in
 // the host temp dir, so a failure never touches DEST), and one more exec
 // removes the stage. The host picks the stage's name rather than the guest's
 // mktemp, so the removal knows it on every path out, including an
 // interruption that cut the first exec short; it runs on a fresh context for
 // that reason, as copyArchive's does. The execs and the copy are sequential
 // one-shots, like cp-in's (the one-exec rule is about parallel execs).
+//
+// A CopyOut that fails (not cancelled) falls back to streaming: if `machine
+// cp NAME:SRC DST` were missing from a smolvm, every smol cp-out would break
+// otherwise. Up to 11 MiB the stream then succeeds; past it the error names
+// both failures.
 func downloadStaged(ctx context.Context, b backend.Backend, d backend.Downloader, name, src, archive string, recursive bool, stderr io.Writer) error {
 	var rnd [8]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
@@ -239,7 +250,8 @@ func downloadStaged(ctx context.Context, b backend.Backend, d backend.Downloader
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := b.Run(cleanupCtx, backend.ExecOpts{Stdin: strings.NewReader(""), Stderr: stderr}, "rm", "-f", "--", stage); err != nil {
+		// Like cp-in's cleanup, this exec boots a VM the user stopped mid-copy.
+		if err := b.Run(cleanupCtx, backend.ExecOpts{Stdin: strings.NewReader(""), Stderr: stderr}, "rm", "-rf", "--", stage); err != nil {
 			fmt.Fprintf(stderr, "devvm: could not clean up %s: %v\n", stage, err)
 		}
 	}()
@@ -248,8 +260,14 @@ func downloadStaged(ctx context.Context, b backend.Backend, d backend.Downloader
 		"sh", "-c", copyOutScript, "devvm-cp-out", src, strconv.FormatBool(recursive), stage); err != nil {
 		return guestCopyError(name, &msg, fmt.Errorf("archive %s in the guest: %w", src, err))
 	}
-	if err := d.CopyOut(ctx, stage, archive); err != nil {
-		return fmt.Errorf("download %s: %w", src, err)
+	if err := d.CopyOut(ctx, stage+"/a.tar", archive); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("download %s: %w", src, err)
+		}
+		if serr := downloadStream(ctx, b, name, src, archive, recursive, stderr); serr != nil {
+			return fmt.Errorf("download %s: %v; streaming instead: %w", src, err, serr)
+		}
+		return nil
 	}
 	if msg.Len() > 0 {
 		stderr.Write(msg.Bytes()) // tar warnings on an otherwise good archive

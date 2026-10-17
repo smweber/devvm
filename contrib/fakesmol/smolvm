@@ -92,9 +92,15 @@ case "$sub" in
     cp)
         # smolvm machine cp SRC NAME:DST — root-owned like the real thing.
         # NAME:SRC DST downloads (read as root, written as the caller).
-        case "$1" in
-            *:*) sudo cat -- "${1#*:}" >"$2" ;;
-            *) src="$1"; dst="${2#*:}"; sudo cp -a "$src" "$dst" ;;
+        # Keyed on $2 first: an upload's host source may itself hold a ':'.
+        # NAME:… is a ':' not preceded by a '/' (devvm's host paths are
+        # absolute, machine names never hold one).
+        case "$2" in
+            [!/]*:*) sudo cp -a "$1" "${2#*:}" ;;
+            *) case "$1" in
+                   [!/]*:*) sudo cat -- "${1#*:}" >"$2" ;;
+                   *) echo "fake smolvm: cp needs NAME: on one side" >&2; exit 2 ;;
+               esac ;;
         esac
         ;;
     exec)

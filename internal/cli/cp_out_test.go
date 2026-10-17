@@ -119,26 +119,36 @@ func TestCopyOut(t *testing.T) {
 }
 
 // localDownloadBackend is localCopyBackend with a CopyOut, so cp-out takes
-// the staged path (a smol backend's): the guest script writes its tar under
-// copyStageDir and CopyOut copies it to the host archive. It records every
-// stage it was asked for, and can fail the download.
+// the staged path (a smol backend's): the guest script writes its tar into a
+// stage directory under copyStageDir and CopyOut copies it to the host
+// archive. It records every file it was asked for, and can fail the
+// download, or the streaming fallback (a capped exec stdout).
 type localDownloadBackend struct {
 	localCopyBackend
-	failDownload bool
-	stages       []string
+	failDownload, failStream bool
+	stages                   []string // stage directories CopyOut read from
+}
+
+func (b *localDownloadBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
+	if b.failStream && argv[0] == "sh" && len(argv) == 6 { // copyOutScript without a stage
+		fmt.Fprintln(o.Stderr, "stdout capped")
+		return fmt.Errorf("exit status 1")
+	}
+	return b.localCopyBackend.Run(ctx, o, argv...)
 }
 
 func (b *localDownloadBackend) CopyOut(ctx context.Context, guestSrc, hostDst string) error {
-	b.stages = append(b.stages, guestSrc)
-	if !strings.HasPrefix(guestSrc, copyOutStagePrefix) {
-		return fmt.Errorf("stage %q is outside %s", guestSrc, copyStageDir)
+	stage := filepath.Dir(guestSrc)
+	b.stages = append(b.stages, stage)
+	if !strings.HasPrefix(stage, copyOutStagePrefix) || filepath.Base(guestSrc) != "a.tar" {
+		return fmt.Errorf("download %q is not a.tar in a stage under %s", guestSrc, copyStageDir)
 	}
-	info, err := os.Stat(guestSrc)
+	info, err := os.Lstat(stage)
 	if err != nil {
 		return err
 	}
-	if info.Mode().Perm() != 0600 {
-		return fmt.Errorf("stage %s has mode %v, want 0600", guestSrc, info.Mode().Perm())
+	if !info.IsDir() || info.Mode().Perm() != 0700 {
+		return fmt.Errorf("stage %s has mode %v, want a 0700 directory", stage, info.Mode())
 	}
 	if b.failDownload {
 		return fmt.Errorf("download failed")
@@ -163,41 +173,80 @@ func (b *localDownloadBackend) checkCleaned(t *testing.T) {
 
 // TestCopyOutStaged pins the staged download (a Downloader backend): the
 // archive comes through CopyOut rather than exec stdout, the stage is
-// removed after a good copy and after a failed one, and a failed download
-// leaves the destination alone.
+// removed after a good copy and after a failed one, a failed CopyOut falls
+// back to streaming, and a download that fails both ways leaves the
+// destination alone and names both errors.
 func TestCopyOutStaged(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		home, root := t.TempDir(), t.TempDir()
-		writeTree(t, home, "source/a", "source/b")
-		b := &localDownloadBackend{localCopyBackend: localCopyBackend{home: home}, failDownload: fail}
-		dst := filepath.Join(root, "destination")
-		err := copyOut(context.Background(), b, "vm", []string{"source"}, dst, copyOpts{recursive: true}, io.Discard)
-		if len(b.stages) != 1 {
-			t.Fatalf("fail=%v: CopyOut called for %q, want one stage", fail, b.stages)
-		}
-		b.checkCleaned(t)
-		if fail {
-			if err == nil || !strings.Contains(err.Error(), "download source: download failed") {
-				t.Fatalf("error = %v", err)
+	for _, tc := range []struct {
+		name                     string
+		failDownload, failStream bool
+		wantErr                  string
+	}{
+		{name: "copy out"},
+		{name: "fallback", failDownload: true},
+		{name: "both fail", failDownload: true, failStream: true,
+			wantErr: "download source: download failed; streaming instead: vm: stdout capped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, root := t.TempDir(), t.TempDir()
+			writeTree(t, home, "source/a", "source/b")
+			b := &localDownloadBackend{localCopyBackend: localCopyBackend{home: home},
+				failDownload: tc.failDownload, failStream: tc.failStream}
+			dst := filepath.Join(root, "destination")
+			err := copyOut(context.Background(), b, "vm", []string{"source"}, dst, copyOpts{recursive: true}, io.Discard)
+			if len(b.stages) != 1 {
+				t.Fatalf("CopyOut called for %q, want one stage", b.stages)
 			}
-			if _, err := os.Lstat(dst); !os.IsNotExist(err) {
-				t.Fatal("failed download changed destination")
+			b.checkCleaned(t)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("error = %v; want %q", err, tc.wantErr)
+				}
+				if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+					t.Fatal("failed download changed destination")
+				}
+				return
 			}
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, f := range []string{"a", "b"} {
-			if data, err := os.ReadFile(filepath.Join(dst, f)); err != nil || string(data) != payload {
-				t.Fatalf("%s = %q, %v", f, data, err)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			for _, f := range []string{"a", "b"} {
+				if data, err := os.ReadFile(filepath.Join(dst, f)); err != nil || string(data) != payload {
+					t.Fatalf("%s = %q, %v", f, data, err)
+				}
+			}
+		})
+	}
+}
+
+// TestCopyOutScriptStageExists: the guest script never writes through a
+// name that already exists, a pre-planted symlink included (mkdir neither
+// follows a final symlink nor accepts an existing path).
+func TestCopyOutScriptStageExists(t *testing.T) {
+	home, dir := t.TempDir(), t.TempDir()
+	writeTree(t, home, "source")
+	victim := filepath.Join(dir, "victim")
+	if err := os.Mkdir(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(dir, "stage")
+	if err := os.Symlink(victim, stage); err != nil {
+		t.Fatal(err)
+	}
+	b := &localCopyBackend{home: home}
+	var msg bytes.Buffer
+	err := b.Run(context.Background(), backend.ExecOpts{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: &msg},
+		"sh", "-c", copyOutScript, "devvm-cp-out", "source", "false", stage)
+	if err == nil {
+		t.Fatal("script accepted an existing stage")
+	}
+	if ents, _ := os.ReadDir(victim); len(ents) != 0 {
+		t.Fatalf("script wrote through the symlink: %v", ents)
 	}
 }
 
 // TestCopyOutStagedCancelled: an interruption during the guest exec still
-// removes the stage, by the name the host chose.
+// removes the stage, by the name the host chose, and does not fall back.
 func TestCopyOutStagedCancelled(t *testing.T) {
 	home := t.TempDir()
 	writeTree(t, home, "source")
@@ -234,11 +283,14 @@ func (b *cancellingBackend) Run(ctx context.Context, o backend.ExecOpts, argv ..
 			return err
 		}
 		b.stage = argv[len(argv)-1]
-		if _, err := os.Stat(b.stage); err != nil {
+		if _, err := os.Stat(b.stage + "/a.tar"); err != nil {
 			return fmt.Errorf("script made no stage: %w", err)
 		}
 		b.cancel()
 		return context.Canceled
+	}
+	if argv[0] == "sh" {
+		return fmt.Errorf("streamed after cancel")
 	}
 	return b.localDownloadBackend.Run(ctx, o, argv...)
 }
