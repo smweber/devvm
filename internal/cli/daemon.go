@@ -19,6 +19,10 @@ func (a *App) daemonCmd() *cobra.Command {
 			// machine; its transport is a __session on the hub, never an
 			// agent exec (hub.md §7). resolve refuses hub machines for every
 			// other verb, so they are let through here explicitly.
+			// A provider server's address comes from the last listing
+			// first (providers.go: providerLookup), so the daemon's start
+			// needs neither the API nor the token when a status has run.
+			a.providerCacheFirst = true
 			m, b, err := a.resolveForwards(args[0])
 			if err != nil {
 				return err

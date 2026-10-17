@@ -52,6 +52,9 @@ func (a *App) resolveUnmanaged(name string) (*config.Machine, backend.Backend, e
 		// would otherwise act on the hub itself with the machine's record.
 		return nil, nil, fmt.Errorf("%s: %w", name, backend.ErrHubProxy)
 	}
+	if m.IsProvider() && m.Server.Address == "" {
+		return nil, nil, fmt.Errorf("'%s' is a %s server with no public address (status %s): devvm reaches it over ssh only", name, providerTitle(m.Backend), m.Server.Status)
+	}
 	return m, b, nil
 }
 
@@ -71,7 +74,15 @@ func requireMachine(m *config.Machine) error {
 // never refused here: an adopted remote host has its own, consented,
 // posture (agentInstallApprover). A machine on a hub is refused by its
 // hub, which holds the marker.
+//
+// A provider server without the devvm=true label is refused here too, and
+// unlike an adopted remote entry it gets no consented posture: it is
+// someone's server in the project (providers.md §8), so keys, repos, cp,
+// ports, auth and attach all refuse, and no flag promotes it.
 func requireManaged(m *config.Machine) error {
+	if m.IsProvider() && !m.Managed() {
+		return providerUnmanagedErr(m)
+	}
 	if m.IsRemote() || m.Managed() {
 		return nil
 	}
@@ -86,7 +97,10 @@ func requireManaged(m *config.Machine) error {
 //     command, and the entry shadows a local smol VM of the same name
 //     (status reports that);
 //   - any other name goes to discovery (backend.Discover: today, one
-//     `smolvm machine ls --json`), whose source settles Managed.
+//     `smolvm machine ls --json`), whose source settles Managed;
+//   - and only then each configured provider (providerLookup: one API Get
+//     per provider with a token), whose label settles Managed. An entry or
+//     a smol VM therefore shadows a provider server of the same name.
 //
 // A devvm.toml that does not parse fails every name: an entry would win,
 // and a broken file cannot say whether one does.
@@ -110,18 +124,36 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 		}
 		return m, b, nil
 	}
-	m, err := config.Load(a.Paths, name)
-	if errors.Is(err, config.ErrNotFound) {
+	if err := config.ValidName(name); err != nil {
+		return nil, nil, err
+	}
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return nil, nil, err
+	}
+	m, ok := f.Entry(name)
+	if !ok {
 		d, ok, err := backend.Discover(a.Paths, name)
 		if err != nil {
 			return nil, nil, err
 		}
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown machine %q; run 'devvm status', 'devvm create %s' to make a smol VM, or 'devvm config add %s' for a remote box", name, name, name)
+		if ok {
+			return d.Machine, d.Backend, nil
 		}
-		return d.Machine, d.Backend, nil
-	} else if err != nil {
-		return nil, nil, err
+		// Last, the providers (providers.md §2): one API call each, only
+		// now that every local source has missed.
+		pm, hint, err := a.providerLookup(f, name, a.providerCacheFirst)
+		if err != nil {
+			return nil, nil, err
+		}
+		if pm == nil {
+			msg := fmt.Sprintf("unknown machine %q; run 'devvm status', 'devvm create %s' to make a smol VM, or 'devvm config add %s' for a remote box", name, name, name)
+			if hint != "" {
+				msg += " (" + hint + ")"
+			}
+			return nil, nil, errors.New(msg)
+		}
+		m = pm
 	}
 	b, err := backend.For(m, a.Paths)
 	if err != nil {

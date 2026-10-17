@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/reach"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -20,7 +22,8 @@ import (
 var statusGroups = []struct{ backend, title string }{
 	{config.BackendSmol, "smol"},
 	{config.BackendRemote, "remote"},
-	{config.BackendHub, "hub"}, // every hub's own row followed by its machines, whatever backend the hub reports for them
+	{config.BackendHetzner, "hetzner"}, // provider servers: their own section, from the provider's cached listing
+	{config.BackendHub, "hub"},         // every hub's own row followed by its machines, whatever backend the hub reports for them
 }
 
 // smolLifecycle is the state track shown in the verbose view; the live state
@@ -33,7 +36,7 @@ var smolLifecycle = []string{"running", "stopped"}
 const (
 	ownManaged   = "managed"   // devvm made it (smol: the marker matches) or shapes it (remote, managed = true)
 	ownUnmanaged = "unmanaged" // a smol VM devvm did not create, or an adopted remote host
-	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM of the same name
+	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
 	ownNone      = "-"         // hubs; a hub machine whose hub did not say; a row nothing settled
 )
 
@@ -62,6 +65,7 @@ type statusRow struct {
 	note        string       // a remark for the human table, e.g. "this host"
 	reach       *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
 	hubVerified string       // a hub machine's sixth column as its hub sent it (`verified=…`); "" when it sent none
+	shadows     []string     // what this row hides, for the human note ("a local smol VM", "a hetzner server")
 	m           *config.Machine
 }
 
@@ -87,8 +91,17 @@ func (a *App) runStatusAll(verbose, local bool) error {
 	if err != nil {
 		return err
 	}
+	if !local {
+		a.noteNoToken()
+	}
+	sources := a.providerSourceLines(local)
 	if len(rows) == 0 {
 		fmt.Fprintln(a.Stdout, "No machines. Create one with 'devvm create'.")
+		if verbose {
+			for _, l := range sources {
+				fmt.Fprintln(a.Stdout, l)
+			}
+		}
 		return nil
 	}
 
@@ -100,7 +113,8 @@ func (a *App) runStatusAll(verbose, local bool) error {
 				group = append(group, r)
 			}
 		}
-		if len(group) == 0 {
+		src, isProvider := sources[g.backend]
+		if len(group) == 0 && !(verbose && isProvider) {
 			continue
 		}
 		if !first {
@@ -108,6 +122,14 @@ func (a *App) runStatusAll(verbose, local bool) error {
 		}
 		first = false
 		fmt.Fprintln(a.Stdout, g.title)
+		if verbose && isProvider {
+			// The listing's age and health, once per section: the rows
+			// are its, however old (providers.md §5).
+			fmt.Fprintf(a.Stdout, "  %s\n", src)
+		}
+		if len(group) == 0 {
+			continue
+		}
 		if g.backend == config.BackendSmol {
 			a.renderSmolGroup(group, verbose)
 		} else {
@@ -115,6 +137,25 @@ func (a *App) runStatusAll(verbose, local bool) error {
 		}
 	}
 	return nil
+}
+
+// providerSourceLines is each configured provider's `status -v` line
+// (providerSourceLine), keyed by provider; none with --local, which skips
+// providers. Read from the caches only.
+func (a *App) providerSourceLines(local bool) map[string]string {
+	out := map[string]string{}
+	if local {
+		return out
+	}
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return out
+	}
+	now := time.Now()
+	for _, pn := range f.ProviderNames() {
+		out[pn] = providerSourceLine(pn, readProviderCache(a.Paths, pn), now)
+	}
+	return out
 }
 
 // runStatusPlain emits one tab-separated row per machine — name, backend,
@@ -171,6 +212,16 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // entry here is not repeated, since the direct path is the right one) (`unreachable` for every row of a hub that did not answer, from
 // the cache) and this host's own forwards column. A consumer that wants to
 // group by hub splits column 1 on `/`. --local lists this host only.
+//
+// A provider server (backend `hetzner`) is a row from the provider's last
+// listing (cache/provider-NAME.list, refreshed by the live round first):
+// state running | stopped | starting | stopping | ? mapped from the
+// provider's own status, the fifth column managed (the devvm=true label) or
+// unmanaged, the sixth its last contact as for a remote box. A provider
+// that cannot be listed (no token, an API error) keeps its cached rows with
+// their last state; it never reads `unreachable`, which would say the box
+// is down. A server whose name an entry or a local smol VM holds has no row
+// (the other row reads `shadowed`). --local lists no provider.
 func (a *App) runStatusPlain(local bool) error {
 	rows, err := a.gatherRows(statusScope{local: local, probe: !local})
 	if bc, ok := asBrokenConf(err); ok {
@@ -180,6 +231,9 @@ func (a *App) runStatusPlain(local bool) error {
 	}
 	if err != nil {
 		return err
+	}
+	if !local {
+		a.noteNoToken()
 	}
 	for _, r := range rows {
 		fmt.Fprint(a.Stdout, plainLine(r))
@@ -272,7 +326,11 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 	}
 	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
 	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s%s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds), rowNote(r))
+		state := r.state
+		if verbose && r.m != nil && r.m.IsProvider() && state == "stopped" {
+			state = "stopped (billing)" // providers.md §3: a stopped server still bills
+		}
+		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s%s\n", r.name, state, hostW, r.host, fwdsCount(r.fwds), rowNote(r))
 		if verbose {
 			a.renderVerboseDetail(r)
 		}
@@ -288,10 +346,16 @@ func rowNote(r statusRow) string {
 		return "  (" + r.note + ")"
 	case r.hub == "" && r.managed == ownUnmanaged && r.backend == config.BackendSmol:
 		return "  (unmanaged: " + backend.AdoptHint(r.name) + ")"
+	case r.hub == "" && r.managed == ownUnmanaged && r.m != nil && r.m.IsProvider():
+		return "  (unmanaged: no devvm=true label; status, shell and exec only)"
 	case r.hub == "" && r.managed == ownUnmanaged:
 		return "  (adopted: devvm never modifies it)"
 	case r.managed == ownShadowed:
-		return "  (shadows a local smol VM of the same name)"
+		what := strings.Join(r.shadows, " and ")
+		if what == "" {
+			what = "a local smol VM"
+		}
+		return "  (shadows " + what + " of the same name)"
 	}
 	return ""
 }
@@ -299,7 +363,16 @@ func rowNote(r statusRow) string {
 // renderVerboseDetail prints the lifecycle track and sizes (local smol) and
 // each live forward under a machine's row.
 func (a *App) renderVerboseDetail(r statusRow) {
-	if r.reach != nil {
+	if r.m != nil && r.m.IsProvider() {
+		s := r.m.Server
+		fmt.Fprintf(a.Stdout, "    server: %s in %s, %s (id %d, %s status %s)\n",
+			dash(s.Type), dash(s.Location), dash(s.Address), s.ID, r.backend, dash(s.Status))
+		if r.reach != nil {
+			// Not probed: the state is the API's; this is the last time a
+			// command (attach, shell, exec, setup) got through.
+			fmt.Fprintf(a.Stdout, "    contact: %s\n", providerContact(*r.reach))
+		}
+	} else if r.reach != nil {
 		fmt.Fprintf(a.Stdout, "    reach: %s\n", r.reach.Describe(time.Now()))
 	}
 	if r.backend == config.BackendSmol && r.exists && r.hub == "" {
@@ -338,9 +411,9 @@ func (a *App) renderVerboseDetail(r statusRow) {
 // contributes its rows — fetched now when listings is nil, or, under
 // --watch, the latest block from each held pipe.
 //
-// probe runs a live reach round over the remote boxes first (the one-shot
-// listing: a human typed it and wants fresh), in parallel with the hubs'
-// listings so the two cost one deadline. Without it, as on every --watch
+// probe runs a live round first (liveRound: the remote boxes probed, every
+// provider listed; the one-shot listing: a human typed it and wants fresh),
+// in parallel with the hubs' listings so they all cost one deadline. Without it, as on every --watch
 // snapshot, a remote row is its reach cache and nothing is dialled.
 type statusScope struct {
 	local    bool
@@ -367,7 +440,7 @@ func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 	}
 	if sc.probe {
 		probed := make(chan struct{})
-		go func() { defer close(probed); a.reachRound(context.Background(), a.remoteConfs()) }()
+		go func() { defer close(probed); a.liveRound(context.Background()) }()
 		if !sc.local && sc.listings == nil {
 			if sc.hubs == nil {
 				sc.hubs = a.hubConfs()
@@ -403,6 +476,7 @@ func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 	if sc.local {
 		return rows, nil
 	}
+	rows = a.providerRows(f, smols, rows)
 	hubs := sc.hubs
 	if hubs == nil {
 		hubs = a.hubConfs()
@@ -422,7 +496,68 @@ func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 		}
 		rows = append(rows, hr...)
 	}
+	markShadowsProviders(a.providerCachedNames(f), rows)
 	return rows, nil
+}
+
+// providerRows appends a row per server in each configured provider's
+// cached listing (never a live call: gatherRows' probe is what refreshes
+// the cache first). A server whose name an entry or a local smol VM holds
+// gets no row: that one wins for every command (providers.md §2), and its
+// own row says `shadowed` (markShadowsProviders).
+func (a *App) providerRows(f *config.File, smols smolMachines, rows []statusRow) []statusRow {
+	for _, pn := range f.ProviderNames() {
+		for _, s := range readProviderCache(a.Paths, pn).servers {
+			if _, ok := f.Entries[s.Name]; ok {
+				continue
+			}
+			if _, ok := smols.byName[s.Name]; ok {
+				continue
+			}
+			m := providerRecord(f, pn, s)
+			r := statusRow{name: s.Name, backend: pn, state: s.State, host: dash(s.Address), m: m,
+				managed: ownership(m.Managed()), exists: true, running: s.State == provider.StateRunning}
+			if r.state == "" {
+				r.state = provider.StateUnknown
+			}
+			e := reach.Read(a.Paths, s.Name)
+			r.reach = &e
+			r.fwds = a.forwardSummary(s.Name)
+			if m.Managed() {
+				r.saved = a.hasSavedPorts(s.Name)
+			}
+			rows = append(rows, r)
+		}
+	}
+	return rows
+}
+
+// markShadowsProviders marks every local row (an entry, a hub's own row, a
+// smol VM) whose name a provider's cached listing also has: that server is
+// hidden behind it, which the fifth column says rather than hides.
+func markShadowsProviders(cached map[string][]string, rows []statusRow) {
+	if len(cached) == 0 {
+		return
+	}
+	for i := range rows {
+		r := &rows[i]
+		if strings.Contains(r.name, "/") || (r.m != nil && r.m.IsProvider()) {
+			continue
+		}
+		for _, pn := range sortedNames(cached) {
+			if slices.Contains(cached[pn], r.name) {
+				r.managed = ownShadowed
+				r.shadows = append(r.shadows, "a "+pn+" server")
+			}
+		}
+	}
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // hubRows renders one hub: its own row, then a row per machine on it. In
@@ -531,6 +666,7 @@ func smolSnapshot() smolMachines {
 func (s smolMachines) shadow(r *statusRow) {
 	if _, ok := s.byName[r.name]; ok {
 		r.managed = ownShadowed
+		r.shadows = append(r.shadows, "a local smol VM")
 	}
 }
 
@@ -627,8 +763,20 @@ func (a *App) runStatus(name string) error {
 		}
 		fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
 		fmt.Fprintf(a.Stdout, "  state: %s\n", st.Raw)
+		if m.IsProvider() {
+			s := m.Server
+			fmt.Fprintf(a.Stdout, "  server: %s in %s, %s\n", dash(s.Type), dash(s.Location), dash(s.Address))
+			if s.State == provider.StateStopped {
+				fmt.Fprintf(a.Stdout, "  billing: stopped but still billed by %s\n", providerTitle(m.Backend))
+			}
+			fmt.Fprintf(a.Stdout, "  contact: %s\n", providerContact(reach.Read(a.Paths, m.Name)))
+		}
 		switch {
 		case m.IsHub():
+		case m.IsProvider() && m.Managed():
+			fmt.Fprintln(a.Stdout, "  managed: yes (the devvm=true label: devvm shapes it)")
+		case m.IsProvider():
+			fmt.Fprintf(a.Stdout, "  managed: no (no devvm=true label: status, shell and exec only; devvm never promotes a provider server)\n")
 		case m.Managed():
 			fmt.Fprintln(a.Stdout, "  managed: yes (devvm shapes it: setup, prereqs, hardening)")
 		default:
@@ -709,4 +857,14 @@ func fwdsCount(f fwdSummary) string {
 		return fmt.Sprintf("%d (reconnecting %s)", f.n, sinceHuman(f.since))
 	}
 	return strconv.Itoa(f.n)
+}
+
+// providerContact is a provider box's last-contact text: the reach cache's
+// words once a command got through, else "none recorded yet" (it is never
+// probed, so "not probed" would read as a gap to fill).
+func providerContact(e reach.Entry) string {
+	if e.Verified.IsZero() {
+		return "none recorded yet"
+	}
+	return e.Describe(time.Now())
 }

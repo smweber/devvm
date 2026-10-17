@@ -17,9 +17,9 @@ Config below). It is a **host CLI** (`cmd/devvm`) plus a **guest agent**
 agent note below). It began as a ~2,100-line bash script; comments often
 explain *why* a behavior exists because it was hard-won there.
 
-**Backend axes: two, not one enum.** `backend` ∈ {`smol`, `remote`, `hub`} says
-who owns the registry and lifecycle (smolvm, the file, a hub; a provider later,
-config.md §9); `Managed()` says whether devvm owns the OS (installs prereqs,
+**Backend axes: two, not one enum.** `backend` ∈ {`smol`, `remote`, `hub`,
+`hetzner`} says who owns the registry and lifecycle (smolvm, the file, a hub,
+the provider's API: providers.md); `Managed()` says whether devvm owns the OS (installs prereqs,
 may harden, pins known_hosts). On a `remote` entry it is the entry's `managed`
 (default **false**: a forgotten line is the safe reading); on smol it is
 settled by discovery from the managed marker (below); a hub is never managed.
@@ -243,9 +243,14 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   The probe is `ssh -O check`, then `ssh -G` + a TCP connect (2s, or the entry's `connect_timeout`
   capped at the 5s round): never a full ssh, never polled. A connect that times out is `?`, not
   `unreachable` (a slow Tailscale peer is not a dead one); refused/unroutable is `unreachable`.
+- **Providers** (`providers.md`, `cli/providers.go`): no entry; resolve asks each `[providers.*]` (one Get) only after entry+smol miss and with a token
+  (`<State>/providers/NAME.token` via `providers token`; `HCLOUD_TOKEN` wins). `status` reads `cache/provider-NAME.list`, written only by the
+  live round (one-shot `status`, `__refresh`); `--local` skips providers; the daemon resolves cache-first. Lifecycle verbs refuse until step 3.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
-  hub}, state ∈ {running, stopped, reachable, unreachable, broken conf, ?}, forwards ∈
+  hub, hetzner}, state ∈ {running, stopped, starting, stopping, reachable,
+  unreachable, broken conf, ?} (a `hetzner` row's state is mapped from the API's status,
+  never `unreachable`; its managed column is the devvm=true label), forwards ∈
   {up:N, reconnecting:N, down, -} and managed ∈ {managed, unmanaged,
   shadowed, -}. A hub older than devvm.toml sends `remote-managed`/
   `remote-unmanaged` (and maybe `broken conf`/`dormant`): the laptop maps
@@ -287,7 +292,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   TOML, meant for a dotfiles repo shared by every host; keep it that way
   (don't hide state in an opaque DB, don't re-encode it). The loader is
   strict: an unknown top-level table or key is an error (so a later family,
-  `[providers.*]`, is a loader addition, not a silent no-op), every problem
+  `[providers.hetzner]`, landed that way), every problem
   is reported at once, and a missing file is valid (no entries, built-in
   templates). A `[machines.NAME]` entry: `backend` **mandatory**, `remote` or
   `hub` (`smol` is an error: smol VMs are discovered; the old

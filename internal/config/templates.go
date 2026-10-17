@@ -37,6 +37,12 @@ type TemplateSpec struct {
 	AuthorizedKeys       *[]string `toml:"authorized_keys"`
 	Harden               *bool     `toml:"harden"`
 	Fail2ban             *bool     `toml:"fail2ban"`
+	// Provider placement (providers.md §1): create-time only, provider
+	// boxes only, over the `[providers.*]` table (Template.Placement).
+	ServerType *string `toml:"server_type"`
+	Location   *string `toml:"location"`
+	Image      *string `toml:"image"`
+	IPv4       *bool   `toml:"ipv4"`
 }
 
 // Template is a fully resolved template: every layer applied, built-ins
@@ -54,6 +60,13 @@ type Template struct {
 	AuthorizedKeys       []string
 	Harden               bool
 	Fail2ban             bool
+	// The provider fields as the template layers set them, "" (nil) when
+	// none did: the provider table and the built-ins go under them in
+	// Placement, which needs to know the table, so they are not filled here.
+	ServerType string
+	Location   string
+	Image      string
+	IPv4       *bool
 }
 
 // Under returns s with every unset field taken from lower: s wins. Chained
@@ -95,6 +108,18 @@ func (s TemplateSpec) Under(lower TemplateSpec) TemplateSpec {
 	if out.Fail2ban == nil {
 		out.Fail2ban = lower.Fail2ban
 	}
+	if blank(out.ServerType) {
+		out.ServerType = lower.ServerType
+	}
+	if blank(out.Location) {
+		out.Location = lower.Location
+	}
+	if blank(out.Image) {
+		out.Image = lower.Image
+	}
+	if out.IPv4 == nil {
+		out.IPv4 = lower.IPv4
+	}
 	return out
 }
 
@@ -124,6 +149,17 @@ func (s TemplateSpec) Resolve(name string) Template {
 	if s.Fail2ban != nil {
 		t.Fail2ban = *s.Fail2ban
 	}
+	trim := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return strings.TrimSpace(*p)
+	}
+	t.ServerType, t.Location, t.Image = trim(s.ServerType), trim(s.Location), trim(s.Image)
+	if s.IPv4 != nil {
+		v := *s.IPv4
+		t.IPv4 = &v
+	}
 	return t
 }
 
@@ -143,9 +179,16 @@ func (t Template) Spec() TemplateSpec {
 	repos, ports := slices.Clone(t.Repos), slices.Clone(t.Ports)
 	gh, files := slices.Clone(t.AuthorizedKeysGithub), slices.Clone(t.AuthorizedKeys)
 	harden, f2b := t.Harden, t.Fail2ban
+	st, loc, img := t.ServerType, t.Location, t.Image
+	var ipv4 *bool
+	if t.IPv4 != nil {
+		v := *t.IPv4
+		ipv4 = &v
+	}
 	return TemplateSpec{User: &user, Hook: &hook, Memory: &mem, Disk: &disk,
 		Repos: &repos, Ports: &ports, AuthorizedKeysGithub: &gh, AuthorizedKeys: &files,
-		Harden: &harden, Fail2ban: &f2b}
+		Harden: &harden, Fail2ban: &f2b,
+		ServerType: &st, Location: &loc, Image: &img, IPv4: ipv4}
 }
 
 // LoadTemplates reads every `[templates.*]` table of devvm.toml (LoadFile:
@@ -213,6 +256,16 @@ func (s TemplateSpec) Validate() error {
 	}
 	if s.Disk != nil && *s.Disk != 0 && *s.Disk < 1 {
 		return fmt.Errorf("disk %d too small (min 1 GiB)", *s.Disk)
+	}
+	for _, kv := range []struct {
+		key string
+		v   *string
+	}{{"server_type", s.ServerType}, {"location", s.Location}, {"image", s.Image}} {
+		if kv.v != nil {
+			if err := validPlacement(kv.key, strings.TrimSpace(*kv.v)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

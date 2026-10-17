@@ -384,6 +384,42 @@ func TestToken(t *testing.T) {
 	}
 }
 
+// A token file others can read is warned about on every read (as ssh warns
+// about a private key) and still used; a 0600 one is read silently.
+func TestTokenModeWarning(t *testing.T) {
+	dir := t.TempDir()
+	p := config.Paths{Config: dir, State: dir}
+	t.Setenv(TokenEnv, "")
+	var warn strings.Builder
+	old := Warn
+	Warn = &warn
+	t.Cleanup(func() { Warn = old })
+	path := provider.TokenPath(p, "hetzner")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Token(p); err != nil || warn.Len() != 0 {
+		t.Fatalf("0600: %v, warned %q", err, warn.String())
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if tok, err := Token(p); err != nil || tok != "secret-token" {
+			t.Fatalf("0644: %q, %v", tok, err)
+		}
+	}
+	if n := strings.Count(warn.String(), "readable by others"); n != 2 {
+		t.Fatalf("want a warning per read, got %q", warn.String())
+	}
+	if strings.Contains(warn.String(), "secret-token") {
+		t.Fatal("the warning must never carry the token")
+	}
+}
+
 func TestLocationFallsBackToDatacenter(t *testing.T) {
 	var s apiServer
 	if err := json.Unmarshal([]byte(`{"datacenter":{"location":{"name":"fsn1"}}}`), &s); err != nil {

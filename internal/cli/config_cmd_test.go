@@ -210,7 +210,7 @@ func TestConfigCheck(t *testing.T) {
 	for body, want := range map[string]string{
 		"[machines.vm]\nbackend = \"smol\"\n":                                        "discovered",
 		"[machines.h]\nbackend = \"hub\"\nmanaged = true\nhost = \"h\"\n":            "managed applies only to remote",
-		"[providers.x]\na = 1\n":                                                     "unknown top-level table",
+		"[providers.x]\na = 1\n":                                                     "unknown provider",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"x\"\nbogus = 1\n":              "unknown key \"bogus\"",
 		"[templates.t]\nhook = \"bogus\"\n":                                          "template t",
 		"[templates.default]\nports = [\"x\"]\n":                                     "template default",

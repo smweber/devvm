@@ -99,6 +99,8 @@ func checkCreateBackend(b string) error {
 	switch b {
 	case "", config.BackendSmol:
 		return nil
+	case config.BackendHetzner:
+		return fmt.Errorf("create --backend %s is not supported yet (providers step 3)", b)
 	case config.BackendRemote, config.BackendHub, "remote-managed", "remote-unmanaged":
 		return fmt.Errorf("create allocates local smol VMs only; add a remote box or hub with 'devvm config add NAME --backend remote|hub --host H', then 'devvm setup NAME' for a managed one")
 	default:

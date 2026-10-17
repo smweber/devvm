@@ -69,7 +69,7 @@ func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Du
 		hw.sync(hubs)
 		return a.plainSnapshot(statusScope{hubs: hubs, listings: hw.listings()})
 	}
-	round := func(ctx context.Context) { a.reachRound(ctx, a.remoteConfs()) }
+	round := func(ctx context.Context) { a.liveRound(ctx) } // probes and provider listings
 	hw.sync(a.hubConfs())
 	// The opening round runs alongside the pipes' settle, inside the same
 	// first-block wait (both are bounded by the listing deadline), so the
@@ -110,7 +110,7 @@ func (a *App) plainSnapshot(sc statusScope) (string, error) {
 // should still re-run a plain status on demand (e.g. when its menu opens),
 // or ask this watcher for a refresh (below).
 //
-// refresh, if not nil, is the live round (reachRound) that a refresh
+// refresh, if not nil, is the live round (liveRound) that a refresh
 // request runs: a write of run/refresh (`devvm __refresh`) runs it once, in
 // the background, and the block it changes is emitted when it ends. Every
 // other event re-snapshots from the caches only, so a daemon touching run/

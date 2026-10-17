@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/reach"
 )
 
@@ -232,10 +233,19 @@ func (b *sshBackend) lifecycleNoop(action string) error {
 // shows, and a human asked. Running is "it answered". A hub's own conf is
 // reached through this backend too, but its state is its listing pipe's
 // (cli's hubRows), so it is not probed here.
+//
+// A provider server is not probed either: the API row it was resolved from
+// carries its power state, which is the truer answer (a stopped server
+// would only read as a failed connect).
 func (b *sshBackend) Status() (State, error) {
 	st := State{Name: b.m.Name, Backend: b.m.Backend, Exists: true, Raw: "ssh -> " + b.m.SSHHost}
 	if b.m.IsHub() {
 		st.Running = true
+		return st, nil
+	}
+	if s := b.m.Server; s != nil {
+		st.Running = s.State == provider.StateRunning
+		st.Raw = fmt.Sprintf("%s (server %d, %s)", s.State, s.ID, s.Status)
 		return st, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ProbeBudget)

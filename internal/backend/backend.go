@@ -1,7 +1,8 @@
 // Package backend abstracts the two transports devvm drives — local smol
 // microVMs and ssh hosts — behind one interface, replacing the old bash string
-// dispatch ("${BACKEND}_run", m_run, ...). A future cloud backend (hetzner)
-// slots in as a third implementation reusing the ssh transport.
+// dispatch ("${BACKEND}_run", m_run, ...). A provider server (hetzner) is
+// reached by the ssh implementation: only its registry differs, and that is
+// the cli's provider source, not a transport.
 package backend
 
 import (
@@ -58,7 +59,7 @@ func (o ExecOpts) user() string {
 // two exec styles: Run waits with stdio wired through; Spawn returns a Session
 // whose stdin/stdout pipes the caller drives (the persistent agent exec).
 type Backend interface {
-	Kind() string // config.BackendSmol | config.BackendRemote | config.BackendHub
+	Kind() string // config.BackendSmol | config.BackendRemote | config.BackendHub | config.BackendHetzner
 	Exists() (bool, error)
 	PowerStart() error
 	PowerStop() error
@@ -76,7 +77,9 @@ func For(m *config.Machine, paths config.Paths) (Backend, error) {
 	switch m.Backend {
 	case config.BackendSmol:
 		return &smolBackend{m: m, paths: paths}, nil
-	case config.BackendRemote:
+	case config.BackendRemote, config.BackendHetzner:
+		// A provider server is a remote box in every way that matters once
+		// it exists (providers.md §4): same ssh, same daemon, same bridge.
 		return &sshBackend{m: m, paths: paths}, nil
 	case config.BackendHub:
 		if m.IsHubMachine() {

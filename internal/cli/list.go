@@ -20,7 +20,8 @@ import (
 //   - HUB/NAME for every saved-forwards file ports/HUB@NAME (savedHubPorts);
 //   - HUB/NAME for every name in the hub's cached listing (cachedHubMachines);
 //   - HUB/NAME for every live run/HUB@NAME.sock, in this layout's run/ and
-//     the pre-split one's (a v0.1.15 daemon keeps serving from there).
+//     the pre-split one's (a v0.1.15 daemon keeps serving from there);
+//   - every server in a configured provider's cached listing.
 //
 // It lives here and not in config, which stays a file reader that never dials
 // a socket or trusts a cache: the last two sources are hints for enumeration
@@ -49,6 +50,13 @@ func (a *App) listMachinesFrom(smols smolMachines) []string {
 	// outright, and every command naming an entry reports the parse error.
 	var local []string
 	if f, err := config.LoadFile(a.Paths); err == nil {
+		// Provider servers from each provider's last listing: a hint, as
+		// the hub caches are (an entry or smol VM of the name wins anyway).
+		for _, names := range a.providerCachedNames(f) {
+			for _, n := range names {
+				add(n)
+			}
+		}
 		for _, m := range f.Machines() {
 			local = append(local, m.Name)
 			add(m.Name)

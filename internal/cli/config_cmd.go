@@ -31,9 +31,9 @@ func (a *App) configCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "config",
 		Short: "Show, check and edit devvm.toml (templates, remote boxes, hubs)",
-		Long: "devvm.toml holds [templates.*] (how create/setup shape a box) and\n" +
+		Long: "devvm.toml holds [templates.*] (how create/setup shape a box),\n" +
 			"[machines.*] (remote boxes and hubs; local smol VMs are discovered, not\n" +
-			"configured). It is yours: hand-edit it, keep it in dotfiles. 'add' and 'rm'\n" +
+			"configured) and [providers.*] (where provider servers are made; written by hand). It is yours: hand-edit it, keep it in dotfiles. 'add' and 'rm'\n" +
 			"append or remove one whole table and never touch another line; everything\n" +
 			"else is 'edit'. No config command connects to a box.",
 	}
@@ -111,6 +111,57 @@ func (a *App) showConfig(f *config.File) {
 		showLine(w, "authorized_keys", tomlList(t.AuthorizedKeys), src(own.AuthorizedKeys != nil, def.AuthorizedKeys != nil))
 		showLine(w, "harden", strconv.FormatBool(t.Harden), src(own.Harden != nil, def.Harden != nil))
 		showLine(w, "fail2ban", strconv.FormatBool(t.Fail2ban), src(own.Fail2ban != nil, def.Fail2ban != nil))
+		if f.HasProviders() || len(own.ProviderFields()) > 0 || len(def.ProviderFields()) > 0 {
+			// Placement: template > [providers.*] > built-in (shown against
+			// the first provider, the only one today).
+			var pn string
+			var ps config.ProviderSpec
+			if names := f.ProviderNames(); len(names) > 0 {
+				pn, ps = names[0], f.Providers[names[0]]
+			}
+			pl := t.Placement(ps)
+			psrc := func(ownSet, defSet, provSet bool) string {
+				if s := src(ownSet, defSet); s != "built-in" {
+					return s
+				}
+				if provSet {
+					return "from [providers." + pn + "]"
+				}
+				return "built-in"
+			}
+			set := func(p *string) bool { return p != nil && strings.TrimSpace(*p) != "" }
+			showLine(w, "server_type", strconv.Quote(pl.ServerType), psrc(set(own.ServerType), set(def.ServerType), false))
+			showLine(w, "location", strconv.Quote(pl.Location), psrc(set(own.Location), set(def.Location), ps.Location != ""))
+			showLine(w, "image", strconv.Quote(pl.Image), psrc(set(own.Image), set(def.Image), ps.Image != ""))
+			showLine(w, "ipv4", strconv.FormatBool(pl.IPv4), psrc(own.IPv4 != nil, def.IPv4 != nil, ps.IPv4 != nil))
+		}
+	}
+	for _, pn := range f.ProviderNames() {
+		p := f.Providers[pn]
+		fmt.Fprintf(w, "\n[providers.%s]  # the token is not here: 'devvm providers token %s'\n", pn, pn)
+		pick := func(v, def string) (string, string) {
+			if v != "" {
+				return v, ""
+			}
+			return def, "built-in; a template may override"
+		}
+		v, n := pick(p.Location, config.DefaultLocation)
+		showLine(w, "location", strconv.Quote(v), n)
+		v, n = pick(p.Image, config.DefaultImage)
+		showLine(w, "image", strconv.Quote(v), n)
+		switch {
+		case p.SSHKey != "":
+			showLine(w, "ssh_key", strconv.Quote(p.SSHKey), "")
+		case p.SSHKeyFile != "":
+			showLine(w, "ssh_key_file", strconv.Quote(p.SSHKeyFile), "uploaded once by name if missing")
+		default:
+			fmt.Fprintln(w, "# ssh_key: unset (create needs ssh_key or ssh_key_file)")
+		}
+		if p.IPv4 != nil {
+			showLine(w, "ipv4", strconv.FormatBool(*p.IPv4), "")
+		} else {
+			showLine(w, "ipv4", "true", "default")
+		}
 	}
 	host, _ := os.Hostname()
 	for _, m := range f.Machines() {
@@ -209,8 +260,15 @@ func (a *App) runConfigCheck() error {
 	for _, w := range a.collisions(f) {
 		fmt.Fprintf(a.Stderr, "devvm: warning: %s\n", w)
 	}
+	for _, w := range a.providerWarnings(f) {
+		fmt.Fprintf(a.Stderr, "devvm: warning: %s\n", w)
+	}
 	if _, err := os.Stat(f.Path); err != nil {
 		fmt.Fprintf(a.Stdout, "%s: missing, which is valid (no entries, built-in templates)\n", f.Path)
+		return nil
+	}
+	if f.HasProviders() {
+		fmt.Fprintf(a.Stdout, "%s: ok (%d machine entries, %d templates, providers: %s)\n", f.Path, len(f.Entries), len(f.Templates), strings.Join(f.ProviderNames(), ", "))
 		return nil
 	}
 	fmt.Fprintf(a.Stdout, "%s: ok (%d machine entries, %d templates)\n", f.Path, len(f.Entries), len(f.Templates))
@@ -245,6 +303,32 @@ func (a *App) collisions(f *config.File) []string {
 	for _, sm := range list {
 		if _, ok := f.Entries[sm.Name]; ok {
 			out = append(out, fmt.Sprintf("[machines.%s] shadows the local smol VM '%s'; rename the entry, or remove the VM with 'smolvm machine rm --name %s'", sm.Name, sm.Name, sm.Name))
+		}
+	}
+	return out
+}
+
+// providerWarnings is config check's word on providers, offline: a
+// template setting provider placement with no [providers.*] table to use it
+// (it applies to nothing), and a provider server in the last listing whose
+// name an entry or a local smol VM holds (that one wins for every command,
+// providers.md §2). The listing is the cache, never the API.
+func (a *App) providerWarnings(f *config.File) []string {
+	var out []string
+	if !f.HasProviders() {
+		for _, name := range sortedNames(f.Templates) {
+			if fs := f.Templates[name].ProviderFields(); len(fs) > 0 {
+				out = append(out, fmt.Sprintf("[templates.%s] sets %s, which apply only to provider servers, and no [providers.*] table is configured", name, strings.Join(fs, ", ")))
+			}
+		}
+		return out
+	}
+	cached := a.providerCachedNames(f)
+	for _, pn := range sortedNames(cached) {
+		for _, n := range cached[pn] {
+			if owner := localOwner(f, n); owner != "" {
+				out = append(out, fmt.Sprintf("%s shadows the %s server '%s' (from its last listing); rename one of them", owner, providerTitle(pn), n))
+			}
 		}
 	}
 	return out

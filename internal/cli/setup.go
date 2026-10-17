@@ -272,7 +272,13 @@ func (a *App) runSetup(name string, o setupOpts) error {
 	if err != nil {
 		return err
 	}
+	if m.IsProvider() && !m.Managed() {
+		return providerUnmanagedErr(m) // --adopt or not: a provider server is never promoted
+	}
 	if m.IsRemote() {
+		if o.Adopt && m.IsProvider() {
+			return fmt.Errorf("--adopt applies only to a local smol VM devvm did not create; '%s' is a %s server, whose label is the consent", name, providerTitle(m.Backend))
+		}
 		if o.Adopt {
 			return fmt.Errorf("--adopt applies only to a local smol VM devvm did not create; '%s' is a %s entry, whose managed line is the consent", name, m.Backend)
 		}
@@ -464,9 +470,27 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 			ignored = append(ignored, "fail2ban")
 		}
 	}
+	if !m.IsProvider() {
+		// Placement is create-time and a provider's; nothing else has one.
+		if t.ServerType != "" {
+			ignored = append(ignored, "server_type")
+		}
+		if t.Location != "" {
+			ignored = append(ignored, "location")
+		}
+		if t.Image != "" {
+			ignored = append(ignored, "image")
+		}
+		if t.IPv4 != nil {
+			ignored = append(ignored, "ipv4")
+		}
+	}
 	if len(ignored) > 0 {
 		kind := "a smol VM"
-		if m.IsRemote() {
+		switch {
+		case m.IsProvider():
+			kind = "a " + providerTitle(m.Backend) + " server"
+		case m.IsRemote():
 			kind = "a remote box"
 		}
 		fmt.Fprintf(a.Stderr, "devvm: template %s: ignoring %s (not applicable to %s)\n",

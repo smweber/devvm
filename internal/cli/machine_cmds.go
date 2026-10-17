@@ -11,6 +11,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/reach"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -107,6 +108,9 @@ func (a *App) runStart(name string) error {
 	if err != nil {
 		return err
 	}
+	if m.IsProvider() {
+		return providerLifecycleErr(m, "start")
+	}
 	if err := b.PowerStart(); err != nil {
 		return err
 	}
@@ -126,9 +130,12 @@ func (a *App) runStart(name string) error {
 
 func (a *App) runStop(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	_, b, err := a.resolveUnmanaged(name)
+	m, b, err := a.resolveUnmanaged(name)
 	if err != nil {
 		return err
+	}
+	if m.IsProvider() {
+		return providerLifecycleErr(m, "stop") // before the daemon is touched
 	}
 	// Reap this machine's forwards (stop its daemon) before powering off, so no
 	// dead forward squats a host port.
@@ -151,6 +158,16 @@ func (a *App) runDelete(name string, _ bool) error {
 	}
 	if m.IsHubMachine() {
 		return a.deleteHubMachine(m, b)
+	}
+	// A provider server: refused before anything is touched (no daemon
+	// reaped, no host state forgotten). devvm deletes only servers it made
+	// (the label); the managed ones are step 3's.
+	if m.IsProvider() {
+		if !m.Managed() {
+			return fmt.Errorf("'%s' is a %s server devvm did not make (no %s=%s label): devvm never deletes one; delete it in the %s console",
+				name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
+		}
+		return providerLifecycleErr(m, "delete")
 	}
 	if m.IsRemote() {
 		what := "a remote box"

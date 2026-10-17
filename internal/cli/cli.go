@@ -15,6 +15,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +28,14 @@ type App struct {
 	Stdin  io.Reader // nil means os.Stdin; set by tests that drive a stdin-EOF path
 	Stdout io.Writer
 	Stderr io.Writer
+
+	// providerAPI, when set, builds the provider client for a token in
+	// place of the real one (tests: the fake, so every API call is
+	// counted). nil is the real client (providers.go).
+	providerAPI func(name, token string) (provider.Provider, error)
+	// providerCacheFirst makes resolve's provider source read the last
+	// listing before the API: the forward daemon's mode (daemonCmd).
+	providerCacheFirst bool
 }
 
 func (a *App) stdin() io.Reader {
@@ -114,7 +123,8 @@ func (a *App) rootCmd() *cobra.Command {
 		Long: "devvm manages persistent dev boxes across backends:\n" +
 			"  smol    local, isolated smolvm microVMs, discovered from smolvm\n" +
 			"  remote  a box reached over ssh: managed (devvm shapes it) or adopted\n" +
-			"  hub     another host running devvm; its machines are HUB/NAME\n\n" +
+			"  hub     another host running devvm; its machines are HUB/NAME\n" +
+			"  hetzner a Hetzner Cloud server, discovered from the API ([providers.hetzner])\n\n" +
 			"~/.config/devvm/devvm.toml holds templates for create/setup ([templates.*])\n" +
 			"and the remote boxes and hubs ([machines.*]); see 'devvm config'.\n" +
 			"This host's state (daemon sockets, logs, caches, saved forwards, managed\n" +
@@ -184,6 +194,7 @@ func (a *App) rootCmd() *cobra.Command {
 	)...)
 	root.AddCommand(group(groupConfig,
 		a.configCmd(),
+		a.providersCmd(),
 	)...)
 	root.AddCommand(group(groupMaintain,
 		a.updateCmd(),

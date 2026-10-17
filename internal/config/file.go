@@ -14,10 +14,11 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// The loader for devvm.toml (config.md §1). Two table families, nothing
-// else: an unknown top-level table is an error, not a silent no-op, so a
-// later family (a provider's `[providers.*]`, §9) is a loader addition that
-// an older devvm refuses loudly rather than half-reads. Unknown keys inside
+// The loader for devvm.toml (config.md §1). Three table families,
+// `[templates.*]`, `[machines.*]` and `[providers.*]` (providers.md §1),
+// nothing else: an unknown top-level table is an error, not a silent no-op,
+// so a later family is a loader addition that an older devvm refuses
+// loudly rather than half-reads. Unknown keys inside
 // a known table are errors too: a typo would otherwise drop a setting, and
 // for `managed` that would quietly be the safe reading the user did not
 // mean. A missing file is valid: no entries, built-in templates.
@@ -44,13 +45,16 @@ type File struct {
 	Path      string
 	Templates map[string]TemplateSpec
 	Entries   map[string]Entry
+	Providers map[string]ProviderSpec
 	// machines are the entries as records, built once by validate.
 	machines map[string]*Machine
+	defUser  string
 }
 
 type rawFile struct {
 	Templates map[string]TemplateSpec `toml:"templates"`
 	Machines  map[string]Entry        `toml:"machines"`
+	Providers map[string]ProviderSpec `toml:"providers"`
 }
 
 // LoadFile reads and validates devvm.toml. A missing file is an empty,
@@ -79,7 +83,10 @@ func ParseFile(path string, data []byte) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	f := &File{Path: path, Templates: raw.Templates, Entries: raw.Machines}
+	f := &File{Path: path, Templates: raw.Templates, Entries: raw.Machines, Providers: raw.Providers}
+	if f.Providers == nil {
+		f.Providers = map[string]ProviderSpec{}
+	}
 	if f.Templates == nil {
 		f.Templates = map[string]TemplateSpec{}
 	}
@@ -109,12 +116,14 @@ func undecodedError(k toml.Key) error {
 		return fmt.Errorf("[templates.%s]: unknown key %q", k[1], strings.Join(k[2:], "."))
 	case k[0] == "machines" && len(k) > 2:
 		return fmt.Errorf("[machines.%s]: unknown key %q", k[1], strings.Join(k[2:], "."))
-	case k[0] == "templates" || k[0] == "machines":
+	case k[0] == "providers" && len(k) > 2:
+		return fmt.Errorf("[providers.%s]: unknown key %q", k[1], strings.Join(k[2:], "."))
+	case k[0] == "templates" || k[0] == "machines" || k[0] == "providers":
 		return fmt.Errorf("unknown key %q (want [%s.NAME] tables)", k.String(), k[0])
 	case len(k) == 1:
-		return fmt.Errorf("unknown top-level key or table %q (devvm.toml has [templates.*] and [machines.*] only)", k[0])
+		return fmt.Errorf("unknown top-level key or table %q (devvm.toml has [templates.*], [machines.*] and [providers.*] only)", k[0])
 	default:
-		return fmt.Errorf("unknown top-level table [%s] (devvm.toml has [templates.*] and [machines.*] only)", k[0])
+		return fmt.Errorf("unknown top-level table [%s] (devvm.toml has [templates.*], [machines.*] and [providers.*] only)", k[0])
 	}
 }
 
@@ -129,10 +138,20 @@ func (f *File) validate() []error {
 			errs = append(errs, fmt.Errorf("[templates.%s]: %w", name, err))
 		}
 	}
+	for _, name := range sortedKeys(f.Providers) {
+		if !IsProviderBackend(name) {
+			errs = append(errs, fmt.Errorf("[providers.%s]: unknown provider (devvm knows: %s)", name, strings.Join(knownProviders, ", ")))
+			continue
+		}
+		if err := f.Providers[name].validate(); err != nil {
+			errs = append(errs, fmt.Errorf("[providers.%s]: %w", name, err))
+		}
+	}
 	defUser := DefaultTemplateUser
 	if u := f.Templates[DefaultTemplate].User; u != nil && *u != "" && ValidUser(*u) == nil {
 		defUser = *u
 	}
+	f.defUser = defUser
 	f.machines = map[string]*Machine{}
 	for _, name := range sortedKeys(f.Entries) {
 		m, err := f.Entries[name].machine(name, defUser)
@@ -162,6 +181,8 @@ func (e Entry) machine(name, defUser string) (*Machine, error) {
 		return nil, errors.New(`backend is required ("remote" or "hub")`)
 	case BackendSmol:
 		return nil, errors.New("smol VMs are discovered from smolvm, not configured: remove this table")
+	case BackendHetzner:
+		return nil, fmt.Errorf("%s servers are discovered from the provider's API, not configured: remove this table (a server made in the console is a backend = \"remote\" entry)", e.Backend)
 	case "remote-managed", "remote-unmanaged", "ssh":
 		return nil, fmt.Errorf(`backend %q is the old layout: write backend = "remote" and managed = true or false`, e.Backend)
 	default:

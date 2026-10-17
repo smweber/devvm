@@ -27,14 +27,19 @@ import (
 //	hub     a `[machines.*]` entry for another host running devvm, whose
 //	        machines are HUB/NAME (docs/proposals/hub.md). Reached over ssh
 //	        like a remote box, but never shaped and never managed.
+//	hetzner a Hetzner Cloud server, discovered from the API (providers.md
+//	        §2); never an entry. Reached over ssh like a remote box; Managed
+//	        is the devvm=true label. The value is the provider's name, so a
+//	        second provider is the same shape (providers.go).
 //
 // Code outside this package asks the record's predicates (Managed,
 // IsRemote, IsHub, IsHubMachine, Probeable), never compares these strings
 // (§9 item 1): a provider backend later answers the same predicates.
 const (
-	BackendSmol   = "smol"
-	BackendRemote = "remote"
-	BackendHub    = "hub"
+	BackendSmol    = "smol"
+	BackendRemote  = "remote"
+	BackendHub     = "hub"
+	BackendHetzner = "hetzner"
 )
 
 // Transport selects how an interactive connection (shell/attach) is made to a
@@ -79,7 +84,11 @@ type Machine struct {
 	// machine is its saved-forwards file.
 	Hub *Machine
 
-	Backend string // BackendSmol | BackendRemote | BackendHub
+	Backend string // BackendSmol | BackendRemote | BackendHub | BackendHetzner
+
+	// Server is set only on a provider record (NewProviderMachine): what
+	// the API row said, at resolve time. Never saved.
+	Server *ProviderServer
 
 	// SSHHost is the ssh destination, `[user@]host`: the entry's host
 	// without its port, prefixed with the entry's user, or on a managed
@@ -157,11 +166,12 @@ func (m *Machine) Managed() bool {
 func (m *Machine) SetManaged(managed bool) { m.managed = managed }
 
 // IsRemote reports whether the box is reached over the ssh transport (a
-// remote entry, and a hub: its ssh fields drive the hop to it). Drives ssh
-// flags, key management, mosh, and forwards. A hub-machine record carries
-// the hub's ssh fields for the same reason, so it counts too.
+// remote entry, a provider server, and a hub: its ssh fields drive the hop
+// to it). Drives ssh flags, key management, mosh, and forwards. A
+// hub-machine record carries the hub's ssh fields for the same reason, so
+// it counts too.
 func (m *Machine) IsRemote() bool {
-	return m.Backend == BackendRemote || m.Backend == BackendHub
+	return m.Backend == BackendRemote || m.Backend == BackendHub || m.IsProvider()
 }
 
 // Probeable reports whether the box's state is its reach cache, probed over
