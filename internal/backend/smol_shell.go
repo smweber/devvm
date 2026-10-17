@@ -14,7 +14,7 @@ const tmuxSocket = "/home/" + DefaultUser + "/.devvm/tmux.sock"
 
 // ManagedShimPath is the BROWSER shim (devvm-open-url) on a box devvm owns:
 // agentbin.Install puts it beside the root-owned agent (a test there pins
-// the two together). On smol it is installed by bootstrap and again by the
+// the two together). On smol it is installed by setup and again by the
 // daemon's transport before it spawns the agent exec (browser-bridge.md §5).
 const ManagedShimPath = "/usr/local/bin/devvm-open-url"
 
@@ -22,7 +22,7 @@ const ManagedShimPath = "/usr/local/bin/devvm-open-url"
 // pointed at the shim, so a login tool hands its URL to the daemon's bridge
 // (or, with no daemon answering, the shim prints it). The guest side of
 // each exec drops it again when the shim is not there (a box neither
-// bootstrapped nor served since step 9): a BROWSER naming a missing file
+// set up nor served since step 9): a BROWSER naming a missing file
 // makes gh fail outright instead of printing the URL.
 func browserEnv() map[string]string { return map[string]string{"BROWSER": ManagedShimPath} }
 

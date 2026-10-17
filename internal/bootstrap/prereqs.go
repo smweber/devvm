@@ -1,8 +1,8 @@
-// Package provision runs the guest-side provisioning devvm owns: the built-in
-// minimal prereqs (a ready box), a pluggable provisioner (bootstrap.sh is just
-// one instance), and ssh hardening. This decouples devvm from bootstrap.sh —
-// the default provisioner reproduces the old curl|bash path, but any URL/cmd
-// works.
+// Package bootstrap holds the guest-side steps of `devvm setup` (config.md
+// §3): the user devvm works as, devvm's own prereqs, the agent and BROWSER
+// shim, the user's hook (a dotfiles bootstrap.sh is just one instance; any
+// url:/cmd: works), and ssh hardening. The package keeps its old name; the
+// verb is `setup`.
 package bootstrap
 
 import (
@@ -15,20 +15,38 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// smolPrereqs installs the minimal packages and the dev user, writes the agent
-// marker, hostname/hosts, and the gai.conf IPv4-precedence fix. Runs as root in
-// the guest ($1 is the machine name). Ports smol_prepare_guest.
+// devvmPackages are what devvm itself needs in a box it manages, beyond
+// the base image: build tools, curl/git, plus tmux (attach's dev session),
+// gh (repos' owner/repo clones) and mosh-server (the mosh transport). Those
+// last three used to come from the hook, which is why attach preflights
+// tmux (RequireGuestTmux); setup installs them now (config.md §3).
+const devvmPackages = "build-essential ca-certificates curl git rsync tmux mosh"
+
+// installGH installs gh from the distro when it has it (Debian 12+, Ubuntu
+// 22.04+) and from GitHub's own apt repository otherwise. Idempotent.
+const installGH = `
+if ! command -v gh >/dev/null 2>&1; then
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y gh; then
+        install -d -m 0755 /etc/apt/keyrings
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+            "$(dpkg --print-architecture)" >/etc/apt/sources.list.d/github-cli.list
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y gh
+    fi
+fi
+`
+
+// smolPrereqs installs devvm's packages, writes hostname/hosts, and the
+// gai.conf IPv4-precedence fix. Runs as root in the guest ($1 is the
+// machine name), after EnsureUser. Ports smol_prepare_guest.
 const smolPrereqs = `
 set -e
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    build-essential ca-certificates curl git sudo
-if ! id -u dev >/dev/null 2>&1; then
-    useradd --create-home --shell /bin/bash dev
-fi
-touch /etc/devvm-agent
-printf '%s ALL=(ALL) NOPASSWD:ALL\n' dev >/etc/sudoers.d/devvm
-chmod 0440 /etc/sudoers.d/devvm
+DEBIAN_FRONTEND=noninteractive apt-get install -y ` + devvmPackages + `
+` + installGH + `
 printf '%s\n' "$1" >/etc/hostname
 sed -i '/^127\.0\.1\.1[[:space:]]/d' /etc/hosts
 grep -qE "[[:space:]]$1([[:space:]]|\$)" /etc/hosts || printf '127.0.1.1 %s\n' "$1" >>/etc/hosts
@@ -40,23 +58,30 @@ grep -qs '^precedence ::ffff:0:0/96  100' /etc/gai.conf || \
     printf 'precedence ::ffff:0:0/96  100\n' >>/etc/gai.conf
 `
 
-// ensureDevUser creates the unprivileged dev user on a remote-managed host whose
-// ssh login is root (a fresh cloud VM). Mirrors smolPrereqs' user setup and
-// copies root's authorized_keys over so the client key that reached root keeps
-// working as dev. Runs as the login user (root) with no sudo wrap — sudo may not
-// be installed yet, so it installs it here.
-const ensureDevUserScript = `
+// ensureUserScript creates the unprivileged user ($1) devvm works as, with
+// NOPASSWD sudo, and copies root's authorized_keys over so the client key
+// that reached root keeps working as that user. Runs as root with no sudo
+// wrap: sudo may not be installed yet (a fresh cloud VM, a smol base
+// image), so it installs it here. Idempotent; an existing user keeps its
+// home and keys. The sudoers drop-in is per user (devvm-USER), so a user an
+// earlier setup made (an older devvm wrote /etc/sudoers.d/devvm for dev)
+// keeps its sudo when a template names another.
+const ensureUserScript = `
 set -e
+u="$1"
 export DEBIAN_FRONTEND=noninteractive
 command -v sudo >/dev/null 2>&1 || { apt-get update; apt-get install -y sudo; }
-if ! id -u dev >/dev/null 2>&1; then
-    useradd --create-home --shell /bin/bash dev
+if ! id -u "$u" >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash "$u"
 fi
-printf '%s ALL=(ALL) NOPASSWD:ALL\n' dev >/etc/sudoers.d/devvm
-chmod 0440 /etc/sudoers.d/devvm
-install -d -m 700 -o dev -g dev /home/dev/.ssh
-if [ -s /root/.ssh/authorized_keys ] && [ ! -s /home/dev/.ssh/authorized_keys ]; then
-    install -m 600 -o dev -g dev /root/.ssh/authorized_keys /home/dev/.ssh/authorized_keys
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$u" >"/etc/sudoers.d/devvm-$u"
+chmod 0440 "/etc/sudoers.d/devvm-$u"
+home="$(getent passwd "$u" | cut -d: -f6)"
+[ -n "$home" ] || { echo "devvm: user $u has no home directory in passwd" >&2; exit 1; }
+g="$(id -gn "$u")"
+install -d -m 700 -o "$u" -g "$g" "$home/.ssh"
+if [ -s /root/.ssh/authorized_keys ] && [ ! -s "$home/.ssh/authorized_keys" ]; then
+    install -m 600 -o "$u" -g "$g" /root/.ssh/authorized_keys "$home/.ssh/authorized_keys"
 fi
 `
 
@@ -70,28 +95,21 @@ func LoginUser(ctx context.Context, b backend.Backend) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-// EnsureDevUser establishes the invariant the ssh backend's rootWrap relies on —
-// the login user is an unprivileged dev user with NOPASSWD sudo — on a
-// remote-managed host currently reached as root (a fresh cloud VM). It reports
-// whether it created the user, i.e. whether the caller must switch the machine's
-// ssh_host to the dev user. No-op on other backends or non-root logins.
-func EnsureDevUser(ctx context.Context, b backend.Backend, m *config.Machine) (bool, error) {
-	if !m.IsRemote() || !m.Managed() {
-		return false, nil
+// EnsureUser establishes the invariant the ssh backend's rootWrap (and the
+// smol backend's `sudo -u dev`) relies on: user exists, unprivileged, with
+// NOPASSWD sudo and root's keys. asRoot is how this backend runs a command
+// as root without sudo: on smol ExecOpts{User: "root"} (the exec enters as
+// root); on a remote box reached as root@host, the zero ExecOpts (the login
+// is root already, and a fresh box may have no sudo to wrap with).
+func EnsureUser(ctx context.Context, b backend.Backend, asRoot backend.ExecOpts, user string) error {
+	if err := config.ValidUser(user); err != nil {
+		return err
 	}
-	user, err := LoginUser(ctx, b)
-	if err != nil {
-		return false, err
+	asRoot.Stream = true
+	if err := b.Run(ctx, asRoot, "bash", "-c", ensureUserScript, "_", user); err != nil {
+		return fmt.Errorf("creating user %s: %w", user, err)
 	}
-	if user != "root" {
-		return false, nil
-	}
-	// Deliberately not ExecOpts{User: "root"}: that would prefix sudo, which a
-	// fresh box may lack. The login user is already root.
-	if err := b.Run(ctx, backend.ExecOpts{Stream: true}, "bash", "-c", ensureDevUserScript); err != nil {
-		return false, fmt.Errorf("creating dev user: %w", err)
-	}
-	return true, nil
+	return nil
 }
 
 // SwitchUser rewrites the user part of an ssh destination ("root@h" → "dev@h").
@@ -105,16 +123,14 @@ func SwitchUser(sshHost, user string) string {
 	return user + "@" + host
 }
 
-// managedRemotePrereqs is the lighter install path for remote-managed hosts (the
-// user + sudo exist — pre-existing, or created by EnsureDevUser on a root-only
+// managedRemotePrereqs is the install path for remote-managed hosts (the
+// user + sudo exist: pre-existing, or created by EnsureUser on a root-only
 // box). Ports ssh_prepare_guest.
 const managedRemotePrereqs = `
 set -e
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    build-essential ca-certificates curl git rsync
-touch /etc/devvm-agent
-`
+DEBIAN_FRONTEND=noninteractive apt-get install -y ` + devvmPackages + `
+` + installGH
 
 // checkPrereqs verifies (never installs) that an adopted remote-unmanaged host
 // has what devvm needs. Read-only and non-root: we don't shape a host we don't

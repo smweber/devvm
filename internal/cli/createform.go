@@ -13,10 +13,11 @@ import (
 )
 
 // gatherCreateSpec fills any field left unset by a flag, resolving each with the
-// precedence flag > config.toml global default > compiled built-in. On a terminal
-// (and without --yes) it prompts, pre-selecting that resolved default; otherwise
-// it resolves silently and errors — naming the flag — on a required field that
-// has no default. So create is fully scriptable and predictable either way.
+// precedence flag > --template > [templates.default] > config.toml (deprecated)
+// > built-in. On a terminal (and without --yes) it prompts, pre-selecting that
+// resolved value; otherwise it resolves silently and errors — naming the flag —
+// on a required field that has no default. So create is fully scriptable and
+// predictable either way.
 func (a *App) gatherCreateSpec(s *createSpec) error {
 	defaults, err := config.LoadDefaults(a.Paths.Config)
 	if err != nil {
@@ -30,29 +31,42 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 	// --yes forces the non-interactive path even on a terminal.
 	interactive := tty != nil && !s.Yes
 
-	// Backend is required and has no global default.
+	// Backend: smol unless asked; the form's first question on a terminal.
 	if s.Backend == "" {
-		if !interactive {
-			return fmt.Errorf("--backend is required (smol|remote-managed|remote-unmanaged|hub)")
+		s.Backend = config.BackendSmol
+		if interactive {
+			if err := form(tty, huh.NewSelect[string]().
+				Title("Backend").
+				Options(
+					huh.NewOption("smol — new local microVM", config.BackendSmol),
+					huh.NewOption("remote-managed — shape a remote host", config.BackendRemoteManaged),
+					huh.NewOption("remote-unmanaged — adopt an existing host", config.BackendRemoteUnmanaged),
+					huh.NewOption("hub — another host running devvm; reach its machines as NAME/…", config.BackendHub),
+				).Value(&s.Backend)); err != nil {
+				return err
+			}
 		}
-		if err := form(tty, huh.NewSelect[string]().
-			Title("Backend").
-			Options(
-				huh.NewOption("smol — new local microVM", config.BackendSmol),
-				huh.NewOption("remote-managed — shape a remote host", config.BackendRemoteManaged),
-				huh.NewOption("remote-unmanaged — adopt an existing host", config.BackendRemoteUnmanaged),
-				huh.NewOption("hub — another host running devvm; reach its machines as NAME/…", config.BackendHub),
-			).Value(&s.Backend)); err != nil {
+	}
+
+	// The template shapes only boxes devvm sets up: an adopted host is never
+	// shaped and a hub is not a machine, so neither reads one (a hub conf
+	// carrying memory or repos would be refused).
+	shaped := s.Backend == config.BackendSmol || s.Backend == config.BackendRemoteManaged
+	var t config.Template
+	if shaped {
+		if t, err = a.resolveTemplate(s.Template, s.tmplFlags, nil); err != nil {
 			return err
 		}
+	} else if s.Template != "" || s.Inline {
+		return fmt.Errorf("--template applies only to boxes devvm sets up (smol, remote-managed), not %s", s.Backend)
 	}
 
 	switch s.Backend {
 	case config.BackendSmol:
-		if err := resolveMemory(tty, interactive, s, defaults); err != nil {
+		if err := resolveMemory(tty, interactive, s, t); err != nil {
 			return err
 		}
-		if err := resolveDisk(tty, interactive, s, defaults); err != nil {
+		if err := resolveDisk(tty, interactive, s, t); err != nil {
 			return err
 		}
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged, config.BackendHub:
@@ -64,17 +78,24 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 		// machine() reports an invalid backend value.
 	}
 
-	// The bootstrap-hook runs only on managed boxes (adopt hosts are never shaped),
-	// so only offer it there.
-	if s.Backend == config.BackendSmol || s.Backend == config.BackendRemoteManaged {
-		if err := resolveBootstrapHook(tty, interactive, s, defaults); err != nil {
+	if shaped {
+		if err := resolveHook(tty, interactive, s, t); err != nil {
 			return err
 		}
+		// The rest come from the template (flags already folded in); the
+		// form below offers them for editing, pre-filled.
+		s.User = t.User
+		s.Repos, s.Ports = t.Repos, t.Ports
+		s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
+		s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
 	}
 
 	// Offer the optional fields (repos, ports, keys, hardening) only on a terminal;
-	// the scripted path leaves them empty and uses the dedicated subcommands. A
-	// hub has none of them: they belong to the machines on it.
+	// the scripted path takes the template's. A hub has none of them: they
+	// belong to the machines on it.
+	if !s.savesPorts() {
+		s.Ports = nil // the proxying laptop's (HUB@NAME), seeded there
+	}
 	if interactive && s.Backend != config.BackendHub {
 		if err := askExtras(tty, s); err != nil {
 			return err
@@ -105,26 +126,26 @@ func resolveName(s *createSpec) error {
 	return nil
 }
 
-// resolveMemory settles smol's required memory: flag, else global default, else
+// resolveMemory settles smol's required memory: flag, else the template, else
 // prompt (interactive) or error (non-interactive) — smol has no universal default.
-func resolveMemory(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+func resolveMemory(tty *os.File, interactive bool, s *createSpec, t config.Template) error {
 	if s.Memory != 0 { // flag wins
 		return nil
 	}
 	if interactive {
-		return askMemory(tty, s, d)
+		return askMemory(tty, s, t)
 	}
-	if d.Memory != 0 {
-		s.Memory = d.Memory
+	if t.Memory != 0 {
+		s.Memory = t.Memory
 		return nil
 	}
-	return fmt.Errorf("smol needs --memory MiB (or set memory in config.toml)")
+	return fmt.Errorf("smol needs --memory MiB (or memory in the template, [templates.%s] in devvm.toml)", t.Name)
 }
 
-func askMemory(tty *os.File, s *createSpec, d *config.Defaults) error {
+func askMemory(tty *os.File, s *createSpec, t config.Template) error {
 	pref := suggestedMemoryMiB()
-	if d.Memory != 0 {
-		pref = d.Memory
+	if t.Memory != 0 {
+		pref = t.Memory
 	}
 	val := strconv.Itoa(pref)
 	if err := form(tty, huh.NewInput().
@@ -146,28 +167,28 @@ func askMemory(tty *os.File, s *createSpec, d *config.Defaults) error {
 	return nil
 }
 
-// resolveDisk settles smol's disk: flag, else global default, else prompt
+// resolveDisk settles smol's disk: flag, else the template, else prompt
 // (interactive) or the compiled default (non-interactive). Unlike memory, disk
 // always has a built-in fallback (SmolDefaultDiskGiB), so it never errors.
-func resolveDisk(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
+func resolveDisk(tty *os.File, interactive bool, s *createSpec, t config.Template) error {
 	if s.Disk != 0 { // flag wins
 		return nil
 	}
 	if interactive {
-		return askDisk(tty, s, d)
+		return askDisk(tty, s, t)
 	}
-	if d.Disk != 0 {
-		s.Disk = d.Disk
+	if t.Disk != 0 {
+		s.Disk = t.Disk
 	} else {
 		s.Disk = backend.SmolDefaultDiskGiB
 	}
 	return nil
 }
 
-func askDisk(tty *os.File, s *createSpec, d *config.Defaults) error {
+func askDisk(tty *os.File, s *createSpec, t config.Template) error {
 	pref := backend.SmolDefaultDiskGiB
-	if d.Disk != 0 {
-		pref = d.Disk
+	if t.Disk != 0 {
+		pref = t.Disk
 	}
 	val := strconv.Itoa(pref)
 	if err := form(tty, huh.NewInput().
@@ -191,21 +212,26 @@ func askDisk(tty *os.File, s *createSpec, d *config.Defaults) error {
 
 // askExtras prompts the optional create-time fields. Repos and ports are offered
 // for any backend; github key-seeding is remote-only; hardening is remote-managed
-// only (it's a no-op elsewhere — see runBootstrap). Each accepts a space-separated
+// only (setup ignores it elsewhere — see shape). Each accepts a space-separated
 // list and is safe to leave blank.
 func askExtras(tty *os.File, s *createSpec) error {
 	repos := strings.Join(s.Repos, " ")
 	ports := strings.Join(s.Ports, " ")
-	if err := form(tty,
-		huh.NewInput().Title("Repos to clone (owner/repo or URL, space-separated)").
-			Placeholder("me/app me/tools").Value(&repos),
-		huh.NewInput().Title("Ports to forward (HOST:GUEST or PORT, space-separated)").
-			Placeholder("3000 8080:80").Value(&ports),
-	); err != nil {
+	inputs := []huh.Field{huh.NewInput().Title("Repos to clone (owner/repo or URL, space-separated)").
+		Placeholder("me/app me/tools").Value(&repos)}
+	// No ports prompt on a hub running a laptop's create: the forwards are
+	// the laptop's, which seeds them from its own --port.
+	if s.savesPorts() {
+		inputs = append(inputs, huh.NewInput().Title("Ports to forward (HOST:GUEST or PORT, space-separated)").
+			Placeholder("3000 8080:80").Value(&ports))
+	}
+	if err := form(tty, inputs...); err != nil {
 		return err
 	}
 	s.Repos = fields(repos)
-	s.Ports = fields(ports)
+	if s.savesPorts() {
+		s.Ports = fields(ports)
+	}
 
 	if s.Backend == config.BackendRemoteManaged || s.Backend == config.BackendRemoteUnmanaged {
 		keys := strings.Join(s.KeysGithub, " ")
@@ -291,21 +317,20 @@ func askRemote(tty *os.File, s *createSpec) error {
 	return nil
 }
 
-// resolveBootstrapHook settles the bootstrap-hook: flag wins; otherwise prompt
-// (interactive, pre-selecting the global-or-none default) or take the global
-// default silently. An empty result means "none" via applyDefaults.
-func resolveBootstrapHook(tty *os.File, interactive bool, s *createSpec, d *config.Defaults) error {
-	if s.BootstrapHook != "" { // flag wins
+// resolveHook settles the hook: flag wins; otherwise prompt (interactive,
+// pre-selecting the template's) or take the template's silently.
+func resolveHook(tty *os.File, interactive bool, s *createSpec, t config.Template) error {
+	if s.Hook != "" { // flag wins
 		return nil
 	}
 	if !interactive {
-		s.BootstrapHook = d.BootstrapHook // "" → applyDefaults fills "none"
+		s.Hook = t.Hook
 		return nil
 	}
-	return askBootstrapHook(tty, s, d)
+	return askHook(tty, s, t)
 }
 
-func askBootstrapHook(tty *os.File, s *createSpec, d *config.Defaults) error {
+func askHook(tty *os.File, s *createSpec, t config.Template) error {
 	const (
 		optDefault = "default"
 		optNone    = "none"
@@ -313,28 +338,28 @@ func askBootstrapHook(tty *os.File, s *createSpec, d *config.Defaults) error {
 	)
 	choice := optNone
 	var opts []huh.Option[string]
-	// Offer the config.toml default (pre-selected) only when it's set to something
+	// Offer the template's hook (pre-selected) only when it's something
 	// other than "none" — otherwise it's identical to the plain "none" option.
-	if d.BootstrapHook != "" && d.BootstrapHook != bootstrap.KindNone {
-		opts = append(opts, huh.NewOption("default (config.toml): "+d.BootstrapHook, optDefault))
+	if t.Hook != "" && t.Hook != bootstrap.KindNone {
+		opts = append(opts, huh.NewOption("template "+t.Name+": "+t.Hook, optDefault))
 		choice = optDefault
 	}
 	opts = append(opts,
 		huh.NewOption("none — skip the hook", optNone),
 		huh.NewOption("custom — enter a url:/cmd: spec", optCustom),
 	)
-	if err := form(tty, huh.NewSelect[string]().Title("Bootstrap hook").Options(opts...).Value(&choice)); err != nil {
+	if err := form(tty, huh.NewSelect[string]().Title("Hook").Options(opts...).Value(&choice)); err != nil {
 		return err
 	}
 	switch choice {
 	case optDefault:
-		s.BootstrapHook = d.BootstrapHook
+		s.Hook = t.Hook
 	case optNone:
-		s.BootstrapHook = bootstrap.KindNone
+		s.Hook = bootstrap.KindNone
 	case optCustom:
 		custom := ""
 		if err := form(tty, huh.NewInput().
-			Title("Bootstrap-hook spec").
+			Title("Hook spec").
 			Placeholder("url:<URL> [args] | cmd:<path> [args] | none").
 			Value(&custom).
 			Validate(func(v string) error {
@@ -343,7 +368,7 @@ func askBootstrapHook(tty *os.File, s *createSpec, d *config.Defaults) error {
 			})); err != nil {
 			return err
 		}
-		s.BootstrapHook = strings.TrimSpace(custom)
+		s.Hook = strings.TrimSpace(custom)
 	}
 	return nil
 }

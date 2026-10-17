@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -79,36 +80,27 @@ func (f *fakeBackend) Spawn(context.Context, backend.ExecOpts, ...string) (*back
 	return nil, nil
 }
 
-func TestEnsureDevUser(t *testing.T) {
+// EnsureUser takes the template's user, not a hardcoded dev: the name
+// rides as $1 into the script (never interpolated), with the backend's
+// as-root opts.
+func TestEnsureUser(t *testing.T) {
 	ctx := context.Background()
-
-	// Root login on remote-managed: creates the user and reports the switch.
 	fb := &fakeBackend{loginUser: "root"}
-	m := config.NewRemote("x", config.BackendRemoteManaged, "root@h")
-	created, err := EnsureDevUser(ctx, fb, m)
-	if err != nil || !created {
-		t.Fatalf("root login: created=%v err=%v, want true, nil", created, err)
-	}
-	if len(fb.runs) != 2 || fb.runs[1][0] != "bash" {
-		t.Fatalf("root login: runs = %v, want id -un then the bash setup script", fb.runs)
-	}
-
-	// Non-root login: probe only, no setup script.
-	fb = &fakeBackend{loginUser: "dev"}
-	created, err = EnsureDevUser(ctx, fb, m)
-	if err != nil || created {
-		t.Fatalf("dev login: created=%v err=%v, want false, nil", created, err)
+	if err := EnsureUser(ctx, fb, backend.ExecOpts{}, "alice"); err != nil {
+		t.Fatal(err)
 	}
 	if len(fb.runs) != 1 {
-		t.Fatalf("dev login: runs = %v, want only the id -un probe", fb.runs)
+		t.Fatalf("runs = %v, want the one setup script", fb.runs)
 	}
-
-	// Unmanaged host: never even probed.
-	fb = &fakeBackend{loginUser: "root"}
-	um := config.NewRemote("y", config.BackendRemoteUnmanaged, "root@h")
-	created, err = EnsureDevUser(ctx, fb, um)
-	if err != nil || created || len(fb.runs) != 0 {
-		t.Fatalf("unmanaged: created=%v err=%v runs=%v, want no action", created, err, fb.runs)
+	run := fb.runs[0]
+	if run[0] != "bash" || run[len(run)-1] != "alice" || strings.Contains(run[2], "alice") ||
+		strings.Contains(run[2], "/home/dev") || !strings.Contains(run[2], "NOPASSWD") {
+		t.Errorf("run = %q", run)
+	}
+	for _, bad := range []string{"root", "Bob", "-x", "a b", ""} {
+		if err := EnsureUser(ctx, fb, backend.ExecOpts{}, bad); err == nil {
+			t.Errorf("EnsureUser(%q) accepted", bad)
+		}
 	}
 }
 

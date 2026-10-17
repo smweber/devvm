@@ -20,46 +20,43 @@ func (a *App) createCmd() *cobra.Command {
 	var s createSpec
 	c := &cobra.Command{
 		Use:   "create [NAME]",
-		Short: "Create/adopt + bootstrap a machine (any backend)",
+		Short: "Create a machine (any backend), then set it up from a template",
 		Long: "Create a machine of any backend. NAME and any unset fields are prompted\n" +
-			"for on a terminal; pass them as flags/args to run non-interactively.\n\n" +
-			"  smol              a new local smolvm microVM\n" +
+			"for on a terminal, seeded from the template; pass them as flags/args to run\n" +
+			"non-interactively. Precedence: flag > --template > [templates.default] >\n" +
+			"config.toml (deprecated) > built-in. A new box is then shaped by 'setup'.\n\n" +
+			"  smol              a new local smolvm microVM (default)\n" +
 			"  remote-managed    a remote host devvm shapes (installs prereqs, may harden)\n" +
 			"  remote-unmanaged  adopt an existing host hands-off (checks prereqs only)\n" +
 			"  hub               another host running devvm; its machines become NAME/MACHINE",
 		Args: cobra.MaximumNArgs(1),
 		// `create HUB/NAME` is the one proxied leaf whose name exists nowhere
 		// yet: the hub writes the conf, and with no --yes its huh form runs
-		// there through the forwarded terminal. --yes resolves unset fields
-		// from the hub's config.toml, deliberately: its defaults describe its
-		// VMs (hub.md §3).
+		// there through the forwarded terminal. Without --template, --yes
+		// resolves unset fields from the hub's own templates, deliberately:
+		// they describe its VMs (hub.md §3). With --template the laptop
+		// resolves it and sends every field explicitly (proxy.go).
 		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				s.Name = args[0]
 			}
+			s.noteSet(cmd.Flags())
 			return a.runCreate(s)
 		}),
 	}
 	f := c.Flags()
-	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged | hub")
-	f.IntVarP(&s.Memory, "memory", "m", 0, "smol: VM memory in MiB")
-	f.IntVarP(&s.Disk, "disk", "d", 0, "smol: VM disk in GiB (default 50)")
+	f.StringVarP(&s.Backend, "backend", "b", "", "smol | remote-managed | remote-unmanaged | hub (default smol)")
+	f.StringVarP(&s.Template, flagTemplate, "t", "", "template to create from (default: default)")
 	f.StringVar(&s.SSHHost, "ssh-host", "", "remote: ssh destination (host or user@host)")
 	f.IntVar(&s.SSHPort, "ssh-port", 0, "remote: ssh port (default 22)")
 	f.StringVar(&s.Identity, "identity", "", "remote: ssh identity file")
 	f.StringVar(&s.Transport, "transport", "", "remote: ssh|mosh (default ssh)")
-	f.StringVar(&s.BootstrapHook, "bootstrap-hook", "", "bootstrap-hook: url:/cmd:/none (default: none, or config.toml)")
-	f.BoolVarP(&s.Yes, "yes", "y", false, "don't prompt; resolve unset fields from flags, config.toml, then built-in defaults")
-	return c
-}
-
-func (a *App) bootstrapCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "bootstrap NAME",
-		Short: "Resume/rerun guest software setup",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runBootstrap(args[0]) }),
-	}
-	a.machineArg(c)
+	addTemplateFlags(f, &s.tmplFlags, flagMemory, flagDisk, flagHook)
+	// The pre-template name of --hook, kept so scripts keep working.
+	f.StringVar(&s.Hook, "bootstrap-hook", "", "deprecated: use --hook")
+	_ = f.MarkHidden("bootstrap-hook")
+	f.BoolVarP(&s.Yes, "yes", "y", false, "don't prompt; resolve unset fields from flags, the template, then built-in defaults")
+	_ = c.RegisterFlagCompletionFunc(flagTemplate, a.completeTemplates)
 	return c
 }
 

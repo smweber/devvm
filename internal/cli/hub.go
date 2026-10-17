@@ -22,16 +22,20 @@ import (
 //
 // Hubs are usable only once the hub answers `status --plain --local` (the
 // merged listing, roadmap step 3): an older hub would answer the listing with
-// "unknown flag" and read as unreachable forever. So this constant is the
-// first tag that ships the listing, v0.1.13 (with step 4's cp flags). It is
-// deliberately *not* raised for hub forwards: listing, cp and proxying keep
+// "unknown flag" and read as unreachable forever. So the first floor was the
+// first tag that ships the listing, v0.1.13 (with step 4's cp flags). It was
+// deliberately *not* raised for hub forwards: listing, cp and proxying kept
 // working against a v0.1.13 hub, so forwards are checked per feature
 // instead. `__session` and relay sessions need session.HubForwardsMinVersion
 // (the first tag that ships roadmap step 6), and the laptop's hub transport
 // says so when an older hub refuses `__session` or an older hub daemon
-// answers a relay open without echoing `relay`. Bump this and
-// TestHubMinVersionPinned together, so any change is deliberate.
-const hubMinVersion = "v0.1.13"
+// answers a relay open without echoing `relay`.
+//
+// v0.1.16 is the first tag with `setup` (which replaced `bootstrap`) and
+// the explicit template flags a proxied `create`/`setup HUB/NAME
+// --template` sends (config.md §7): an older hub would reject both. Bump
+// this and TestHubMinVersionPinned together, so any change is deliberate.
+const hubMinVersion = "v0.1.16"
 
 // devvmVersionRe matches cobra's `devvm --version` line. Anchored per line
 // (not to the whole output) because the login shell that runs it may print a

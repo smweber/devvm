@@ -9,11 +9,11 @@ import (
 )
 
 // RequireGuestTmux verifies tmux exists in the guest before a command that
-// depends on it (shell/ssh/mosh all attach a tmux session named "dev"). tmux is
-// not part of devvm's own prereqs — the bootstrap-hook installs it — so a box
-// whose hook is "none", or a bootstrap that skipped tmux, otherwise fails deep in
-// the keeper / `new-session` path with a confusing symptom. Fail early, naming the
-// likely cause and a concrete fix.
+// depends on it (shell/ssh/mosh all attach a tmux session named "dev"). `setup`
+// installs tmux on a managed box now, but a box set up by an older devvm (whose
+// hook was meant to install it) or an adopted host may still lack it, and would
+// otherwise fail deep in the keeper / `new-session` path with a confusing
+// symptom. Fail early, naming the likely cause and a concrete fix.
 func RequireGuestTmux(b Backend, m *config.Machine) error {
 	// Login shell so a brew-installed tmux (/home/linuxbrew/.linuxbrew/bin, off
 	// the bare non-login PATH) is found — matching every other tmux invocation.
@@ -21,9 +21,14 @@ func RequireGuestTmux(b Backend, m *config.Machine) error {
 		"tmux", "-V") == nil {
 		return nil
 	}
+	if m.Managed() {
+		return fmt.Errorf(
+			"tmux not found in %q: attaching a dev session needs tmux, which 'devvm setup' installs\n"+
+				"  re-run it:  devvm setup %s",
+			m.Name, m.Name)
+	}
 	return fmt.Errorf(
-		"tmux not found in %q: attaching a dev session needs tmux, but the bootstrap-hook "+
-			"(bootstrap-hook=%q) didn't install it\n"+
-			"  install it in the guest, e.g.:  devvm exec %s -- sudo apt-get install -y tmux",
-		m.Name, m.BootstrapHook, m.Name)
+		"tmux not found in %q: attaching a dev session needs tmux\n"+
+			"  install it on the host, e.g.:  devvm exec %s -- sudo apt-get install -y tmux",
+		m.Name, m.Name)
 }

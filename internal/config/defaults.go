@@ -11,11 +11,11 @@ import (
 )
 
 // Defaults are user-level create-time defaults, read from
-// $XDG_CONFIG_HOME/devvm/config.toml. They sit between command-line flags and
-// the compiled-in defaults when `create` resolves an unset field
-// (flag > config.toml > built-in). They are consulted only at create time; a
-// machine's own conf is the source of truth afterward, so editing this file
-// never changes what an existing box does.
+// $XDG_CONFIG_HOME/devvm/config.toml. Deprecated by templates (templates.go):
+// they now sit below [templates.default] and above the built-ins when
+// create/setup resolve a field (flag > --template > [templates.default] >
+// config.toml > built-in), so a host with only config.toml keeps behaving.
+// config.md step 5 removes the file; its values become [templates.default].
 //
 // Only fields worth pinning globally live here; grow it key-by-key. Keep the
 // key list in sync with DefaultKeys / the Get/Set switches below.
@@ -95,7 +95,7 @@ func SaveDefaults(configDir string, d *Defaults) error {
 }
 
 // Validate enforces the same field invariants create would, so a bad config.toml
-// (or `defaults set`) fails loudly instead of surfacing at bootstrap. Bootstrap-hook
+// (or `defaults set`) fails loudly instead of surfacing at setup. Hook
 // specs are validated by the caller (internal/bootstrap, to avoid an import
 // cycle) — see the defaults command.
 func (d *Defaults) Validate() error {

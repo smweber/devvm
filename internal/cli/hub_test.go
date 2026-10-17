@@ -92,7 +92,7 @@ func TestShapingVerbsRefuseHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	verbs := [][]string{
-		{"bootstrap", "h"}, {"lockdown", "h"},
+		{"setup", "h"}, {"lockdown", "h"},
 		{"start", "h"}, {"stop", "h"},
 		{"attach", "h"}, {"shell", "h"}, {"exec", "h", "true"}, {"auth", "h"},
 		{"cp-in", "h", src, "/tmp"}, {"cp-out", "h", "/etc/hostname", t.TempDir()},
@@ -169,13 +169,14 @@ func TestHubVersionCheck(t *testing.T) {
 		refused          bool
 		warn             string // substring of the warning; "" means silent
 	}{
-		{"below floor", "devvm version v0.0.1\n", "v0.1.13", true, ""},
-		{"below floor with banner", "Welcome!\ndevvm version v0.1.12\n", "v0.1.13", true, ""},
-		{"exact match", "devvm version v0.1.13\n", "v0.1.13", false, ""},
-		{"dev hub", "devvm version dev\n", "v0.1.13", false, `"dev", not a release`},
-		{"newer hub", "devvm version v9.9.9\n", "v0.1.13", false, "newer devvm (v9.9.9)"},
-		{"older supported hub", "devvm version v0.1.13\n", "v0.1.14", false, "older devvm (v0.1.13)"},
-		{"dev laptop", "devvm version v0.1.13\n", "dev", false, "local build (dev)"},
+		{"below floor", "devvm version v0.0.1\n", "v0.1.16", true, ""},
+		{"below floor with banner", "Welcome!\ndevvm version v0.1.12\n", "v0.1.16", true, ""},
+		{"before setup", "devvm version v0.1.15\n", "v0.1.16", true, ""},
+		{"exact match", "devvm version v0.1.16\n", "v0.1.16", false, ""},
+		{"dev hub", "devvm version dev\n", "v0.1.16", false, `"dev", not a release`},
+		{"newer hub", "devvm version v9.9.9\n", "v0.1.16", false, "newer devvm (v9.9.9)"},
+		{"older supported hub", "devvm version v0.1.16\n", "v0.1.17", false, "older devvm (v0.1.16)"},
+		{"dev laptop", "devvm version v0.1.16\n", "dev", false, "local build (dev)"},
 		{"unparseable", "bash: devvm: command not found\n", "v0.1.13", false, "could not read"},
 		{"empty", "", "v0.1.13", false, "could not read"},
 	}
@@ -336,7 +337,7 @@ func TestCompletionOmitsHubsForShapingVerbs(t *testing.T) {
 	for _, tt := range []struct {
 		verb    string
 		wantHub bool
-	}{{"attach", false}, {"bootstrap", false}, {"status", true}, {"delete", true}} {
+	}{{"attach", false}, {"setup", false}, {"status", true}, {"delete", true}} {
 		c, _, err := root.Find([]string{tt.verb})
 		if err != nil {
 			t.Fatal(err)
@@ -355,7 +356,7 @@ func TestCreateHubRefusesShapingFlags(t *testing.T) {
 	a := newTestApp(t)
 	fakeSSH(t, "exit 0")
 	spec := createSpec{Name: "h", Backend: config.BackendHub, SSHHost: "u@hub", Yes: true,
-		Memory: 4096, Disk: 20, BootstrapHook: "cmd:/x", Ports: []string{"3000"}, Repos: []string{"o/r"}}
+		tmplFlags: tmplFlags{Memory: 4096, Disk: 20, Hook: "cmd:/x", Ports: []string{"3000"}, Repos: []string{"o/r"}}}
 	err := a.runCreate(spec)
 	if err == nil {
 		t.Fatal("hub with shaping flags should be refused")
@@ -424,9 +425,9 @@ func TestDeleteHubRefusesWhileHeld(t *testing.T) {
 }
 
 // The floor is pinned so a change is deliberate: bump this and hubMinVersion
-// together when roadmap step 3 (`status --plain --local`) ships in a tag.
+// together (last: config step 4, `setup` and the proxied template flags).
 func TestHubMinVersionPinned(t *testing.T) {
-	if hubMinVersion != "v0.1.13" {
-		t.Fatalf("hubMinVersion = %q; it must be the first tag that ships step 3 (see hub.go)", hubMinVersion)
+	if hubMinVersion != "v0.1.16" {
+		t.Fatalf("hubMinVersion = %q; it must be the first tag that ships setup and the template flags (see hub.go)", hubMinVersion)
 	}
 }

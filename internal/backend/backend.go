@@ -116,11 +116,9 @@ type RootCopier interface {
 }
 
 // AdoptHint is the one next step every refusal of an unmanaged smol VM
-// names. `setup --adopt` lands in the release after this one (config.md
-// step 4, which drops the parenthetical); until then the removal route is
-// the one that works today.
+// names: the handover, or the removal route.
 func AdoptHint(name string) string {
-	return fmt.Sprintf("hand it over with 'devvm setup --adopt %s' (coming in the next release), or remove it with 'smolvm machine rm --name %s' and 'devvm create %s'", name, name, name)
+	return fmt.Sprintf("hand it over with 'devvm setup --adopt %s', or remove it with 'smolvm machine rm --name %s' and 'devvm create %s'", name, name, name)
 }
 
 // Interactive is the connect surface every backend implements. Shell opens a raw

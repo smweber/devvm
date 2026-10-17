@@ -57,7 +57,7 @@ func TestUnmanagedSmolRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, argv := range [][]string{
-		{"attach", "web"}, {"auth", "web"}, {"bootstrap", "web"},
+		{"attach", "web"}, {"auth", "web"}, {"setup", "web"},
 		{"cp-in", "web", src, "/tmp"}, {"cp-out", "web", "/etc/hostname", t.TempDir()},
 		{"ports", "add", "web", "3000"}, {"ports", "up", "web"}, {"ports", "down", "web"},
 		{"repos", "add", "web", "o/r"}, {"repos", "list", "web"},

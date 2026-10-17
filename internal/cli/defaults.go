@@ -16,10 +16,11 @@ import (
 func (a *App) defaultsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "defaults",
-		Short: "Manage global create-time defaults (config.toml)",
-		Long: "Global defaults seed unset `create` fields, with precedence\n" +
-			"flag > config.toml > built-in. They apply only at create time; a\n" +
-			"machine's own conf is the source of truth afterward.",
+		Short: "Manage global create-time defaults (config.toml; deprecated)",
+		Long: "Deprecated: templates in devvm.toml ([templates.default]) replace\n" +
+			"config.toml, which a later release removes. Until then its values sit\n" +
+			"below the templates: flag > --template > [templates.default] >\n" +
+			"config.toml > built-in, for create and setup.",
 	}
 
 	list := &cobra.Command{

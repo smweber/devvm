@@ -16,29 +16,27 @@ import (
 
 // createSpec is the flag- and prompt-collected input for `create`. Every field
 // has a flag so create runs fully non-interactively; a terminal prompts for
-// whatever's left unset.
+// whatever's left unset, seeded from the effective template.
 type createSpec struct {
-	Name          string
-	Backend       string
-	Memory        int
-	Disk          int
-	SSHHost       string
-	SSHPort       int
-	Identity      string
-	Transport     string
-	BootstrapHook string
+	Name      string
+	Backend   string
+	Template  string // --template; "" means [templates.default]
+	SSHHost   string
+	SSHPort   int
+	Identity  string
+	Transport string
 
-	// Optional fields the interactive wizard offers (no flags; use the dedicated
-	// subcommands or edit the conf for the scripted path). Repos/Ports apply to any
-	// backend but a hub (Ports are saved as this host's state, config.SavePorts,
-	// not in the conf); the rest are remote-only (harden is remote-managed only).
-	Repos      []string
-	Ports      []string
+	// The template fields (hook, memory, disk, repos, ports, keys, harden,
+	// fail2ban, user): flags here, then settled by gatherCreateSpec from
+	// flag > template > built-in. Repos/Ports apply to any backend but a
+	// hub (Ports are saved as this host's state, config.SavePorts, not in
+	// the conf); keys and hardening are remote-only (harden is
+	// remote-managed only).
+	tmplFlags
 	KeysGithub []string
-	Harden     bool
-	Fail2ban   bool
+	KeyFiles   []string
 
-	Yes bool // skip prompts; resolve every unset field from flag > config.toml > compiled
+	Yes bool // skip prompts; resolve every unset field from flag > template > built-in
 }
 
 func (a *App) runCreate(s createSpec) error {
@@ -81,13 +79,13 @@ func (a *App) runCreate(s createSpec) error {
 	}
 
 	// Allocate the resource (adopt backends just probe), then register before
-	// bootstrap so resolve() sees it (and a mid-flight failure is resumable via
-	// `devvm bootstrap`).
+	// setup so resolve() sees it (and a mid-flight failure is resumable via
+	// `devvm setup`).
 	if err := a.provisionResource(m); err != nil {
 		return err
 	}
 	if m.IsHub() {
-		// A hub is registered, never shaped: no bootstrap. The one extra check
+		// A hub is registered, never shaped: no setup. The one extra check
 		// is that its devvm is usable at all (installed, on the login shell's
 		// PATH, and not older than the hub surface), before the conf exists.
 		b, err := backend.For(m, a.Paths)
@@ -123,17 +121,60 @@ func (a *App) runCreate(s createSpec) error {
 	// predecessor left (a hand-removed conf never ran `delete`). Before the
 	// conf, so a failure here registers nothing; the VM provisionResource
 	// made (smol) stays, and the error names the mappings to re-add by hand.
-	if err := a.editPorts(m, func([]string) []string { return s.Ports }); err != nil {
-		return fmt.Errorf("save forwards %v for '%s' (not registered): %w", s.Ports, m.Name, err)
+	// Unless this is a hub running a laptop's proxied create: those
+	// forwards are the laptop's, and it seeds them itself.
+	if s.savesPorts() {
+		if err := a.editPorts(m, func([]string) []string { return s.Ports }); err != nil {
+			return fmt.Errorf("save forwards %v for '%s' (not registered): %w", s.Ports, m.Name, err)
+		}
 	}
 	if err := m.Save(a.Paths.Config); err != nil {
 		return err
 	}
-	if err := a.runBootstrap(s.Name); err != nil {
-		return err
+	if m.IsRemote() && !m.Managed() {
+		// An adopted host is never shaped: setup refuses it.
+		b, err := backend.For(m, a.Paths)
+		if err != nil {
+			return err
+		}
+		if err := a.checkAdoptedRemote(m, b); err != nil {
+			return err
+		}
+		a.printCreateNext(m)
+		return nil
+	}
+	// setup gets the template create settled (flags, prompts and all), so
+	// it resolves nothing again, and treats the box as fresh: a ports file
+	// a same-named predecessor left is replaced.
+	t := s.template()
+	if err := a.runSetup(s.Name, setupOpts{resolved: &t, fresh: true,
+		tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}}); err != nil {
+		return fmt.Errorf("'%s' was created but setup failed: %w; re-run 'devvm setup %s'", s.Name, err, s.Name)
 	}
 	a.printCreateNext(m)
 	return nil
+}
+
+// template is the settled spec as the template setup shapes with.
+func (s createSpec) template() config.Template {
+	name := s.Template
+	if name == "" {
+		name = config.DefaultTemplate
+	}
+	user := s.User
+	if user == "" {
+		user = config.DefaultTemplateUser
+	}
+	hook := s.Hook
+	if hook == "" {
+		hook = config.DefaultBootstrapHook
+	}
+	return config.Template{
+		Name: name, User: user, Hook: hook, Memory: s.Memory, Disk: s.Disk,
+		Repos: s.Repos, Ports: s.Ports,
+		AuthorizedKeysGithub: s.KeysGithub, AuthorizedKeys: s.KeyFiles,
+		Harden: s.Harden, Fail2ban: s.Fail2ban,
+	}
 }
 
 // provisionResource allocates the backend resource, leaving it running: create's
@@ -155,15 +196,19 @@ func (a *App) provisionResource(m *config.Machine) error {
 	if err := backend.SmolCreate(m.Name, m.Memory, m.Disk); err != nil {
 		return err
 	}
-	return a.markManaged(m.Name)
+	// A failure leaves the VM made but unmanaged, which the error says;
+	// nothing is installed into it.
+	if err := a.writeManagedMarker(m.Name); err != nil {
+		return fmt.Errorf("created VM '%s' but could not mark it managed: %w; %s", m.Name, err, backend.AdoptHint(m.Name))
+	}
+	return nil
 }
 
-// markManaged writes the managed marker for a smol VM devvm just made
-// (config.md §2): the VM's created_at, read back from smolvm, so a VM later
-// deleted and recreated under the same name behind devvm's back is never
-// mistaken for this one. A failure leaves the VM made but unmanaged, which
-// the error says; nothing is installed into it.
-func (a *App) markManaged(name string) error {
+// writeManagedMarker records that devvm owns the smol VM NAME (config.md
+// §2): its created_at, read back from smolvm, so a VM later deleted and
+// recreated under the same name behind devvm's back is never mistaken for
+// this one. create and `setup --adopt` are its only callers.
+func (a *App) writeManagedMarker(name string) error {
 	sm, ok, err := backend.SmolLookup(name)
 	if err == nil && !ok {
 		err = fmt.Errorf("smolvm does not list it")
@@ -171,10 +216,7 @@ func (a *App) markManaged(name string) error {
 	if err == nil {
 		err = config.WriteManagedMarker(a.Paths, name, string(sm.CreatedAt))
 	}
-	if err != nil {
-		return fmt.Errorf("created VM '%s' but could not mark it managed: %w; %s", name, err, backend.AdoptHint(name))
-	}
-	return nil
+	return err
 }
 
 // machine builds and validates the registry entry from the gathered spec.
@@ -208,6 +250,7 @@ func (s createSpec) machine() (*config.Machine, error) {
 		m.Memory = s.Memory
 		m.Disk = s.Disk
 		m.AuthorizedKeysGithub = s.KeysGithub
+		m.AuthorizedKeys = s.KeyFiles
 		m.Harden = s.Harden
 		m.Fail2ban = s.Fail2ban
 		m.LegacyPorts = s.Ports // only so validateHub names it; never saved
@@ -224,7 +267,8 @@ func (s createSpec) machine() (*config.Machine, error) {
 			m.Transport = s.Transport
 		}
 		m.AuthorizedKeysGithub = s.KeysGithub
-		// Hardening runs only on managed remotes (see runBootstrap); recording it
+		m.AuthorizedKeys = s.KeyFiles
+		// Hardening runs only on managed remotes (see shape); recording it
 		// on an adopt host would be a silent no-op, so keep it managed-only.
 		if s.Backend == config.BackendRemoteManaged {
 			m.Harden = s.Harden
@@ -233,9 +277,11 @@ func (s createSpec) machine() (*config.Machine, error) {
 	default:
 		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged|hub)", s.Backend)
 	}
+	// The old conf records what create used (hook, repos, keys, harden):
+	// setup's conf layer replays it until step 5 drops per-machine confs.
 	m.Repos = s.Repos
-	if s.BootstrapHook != "" {
-		m.BootstrapHook = s.BootstrapHook
+	if s.Hook != "" {
+		m.BootstrapHook = s.Hook
 	}
 	if err := m.Validate(); err != nil {
 		return nil, err
@@ -244,7 +290,9 @@ func (s createSpec) machine() (*config.Machine, error) {
 }
 
 // probeRemote confirms the host answers over ssh before we save its config, so
-// adopting a typo'd or unreachable host fails loudly up front. Read-only.
+// adopting a typo'd or unreachable host fails loudly up front. Read-only. It
+// does not wait or try root: config.md step 5 removes remote create, and
+// `setup`'s bounded wait and root adoption cover a box that is not ready yet.
 func (a *App) probeRemote(m *config.Machine) error {
 	b, err := backend.For(m, a.Paths)
 	if err != nil {

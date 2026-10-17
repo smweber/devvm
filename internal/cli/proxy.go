@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -42,7 +45,7 @@ import (
 // defer config.TouchChanged. delete is absent because it is not dispatched
 // through proxy(): runDelete proxies it itself and already defers the touch.
 var proxiedStateVerbs = map[string]bool{
-	"create": true, "start": true, "stop": true,
+	"create": true, "setup": true, "start": true, "stop": true,
 }
 
 // stdinIsTTY and stdoutIsTTY decide `ssh -t` (hub.md §4): the hub side gets
@@ -137,8 +140,16 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 		defer config.TouchChanged(a.Paths) // wake `status --watch`
 	}
 	var runs [][]string
-	switch strings.Join(leaf, " ") {
-	case "keys add":
+	var seed func() error
+	shaping := false
+	switch key := strings.Join(leaf, " "); {
+	case key == "create" || key == "setup":
+		argv, after, err := a.proxyShaping(cmd, args, m, key == "create")
+		if err != nil {
+			return err
+		}
+		runs, seed, shaping = append(runs, argv), after, true
+	case key == "keys add":
 		lines, err := laptopKeyLines(args[1:])
 		if err != nil {
 			return err
@@ -153,7 +164,7 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 			}
 			runs = append(runs, argv)
 		}
-	case "repos add":
+	case key == "repos add":
 		if len(args) == 1 {
 			// As the local leaf: prompt with the laptop cwd's origin prefilled
 			// when there is a terminal; without one the origin is the answer,
@@ -177,11 +188,139 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 		runs = append(runs, argv)
 	}
 	for _, argv := range runs {
-		if err := a.runProxied(m, p, argv); err != nil {
+		run := a.runProxied
+		if shaping {
+			run = a.runProxiedShaping
+		}
+		if err := run(m, p, argv); err != nil {
 			return err
 		}
 	}
+	if seed != nil {
+		return seed()
+	}
 	return nil
+}
+
+// proxyShaping builds a proxied `create`/`setup HUB/NAME` (config.md §7).
+//
+// Saved forwards for HUB/NAME are this host's state (HUB@NAME, config.md
+// §5), never the hub's: --port is always stripped and --no-ports sent, so
+// the hub neither saves nor prompts for any, and the returned after seeds
+// this host's file once the hub's run succeeded. It replaces the list on a
+// fresh box (create, setup --adopt) and merges into it on a re-run.
+//
+// With --template T (other than default, which is the same as no flag),
+// the template is resolved here, from this host's devvm.toml, and sent as
+// the explicit template flags plus --inline-template, so the hub's own file
+// never matters. Key sources are read here too (a key file and the GitHub
+// lookup are this host's) and cross as lines, except for a machine this
+// host knows is smol, which takes no keys. Without a template the leaf goes
+// across as typed and the hub resolves its own default.
+func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine, create bool) (argv []string, after func() error, err error) {
+	fs := cmd.Flags()
+	var ports []string
+	if fs.Changed(flagPort) {
+		ports, _ = fs.GetStringArray(flagPort)
+	}
+	adopt := false
+	if fs.Lookup("adopt") != nil {
+		adopt, _ = fs.GetBool("adopt")
+	}
+	fresh := create || adopt
+	name, _ := fs.GetString(flagTemplate)
+	inline := fs.Changed(flagTemplate) && name != config.DefaultTemplate
+
+	skip := []string{flagPort, flagNoPorts}
+	var extra []string
+	if inline {
+		var f tmplFlags
+		f.User, _ = fs.GetString(flagUser)
+		f.Hook, _ = fs.GetString(flagHook)
+		if f.Hook == "" && fs.Lookup("bootstrap-hook") != nil {
+			f.Hook, _ = fs.GetString("bootstrap-hook")
+		}
+		f.Memory, _ = fs.GetInt(flagMemory)
+		f.Disk, _ = fs.GetInt(flagDisk)
+		if fs.Changed(flagRepo) {
+			f.Repos, _ = fs.GetStringArray(flagRepo)
+		}
+		f.Ports = ports
+		f.Keys, _ = fs.GetStringArray(flagKey)
+		f.Harden, _ = fs.GetBool(flagHarden)
+		f.Fail2ban, _ = fs.GetBool(flagFail2ban)
+		f.noteSet(fs)
+		t, err := a.resolveTemplate(name, f, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		keyLines := f.Keys
+		if !a.hubMachineIsSmol(m, fs, create) {
+			keyLines = append(a.templateKeyLines(t.AuthorizedKeysGithub, t.AuthorizedKeys), keyLines...)
+		}
+		ports = t.Ports
+		// Everything the user typed except the template flags, which go
+		// across resolved instead.
+		skip = append(append(skip, flagTemplate, "bootstrap-hook"), templateFlagNames...)
+		extra = templateArgv(t, keyLines)
+	}
+	extra = append(extra, "--"+flagNoPorts)
+	argv, err = hubArgvSkip(cmd, args, skip)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The leaf and the machine come first; the added flags go after them,
+	// where cobra parses them like any other flag.
+	head := len(strings.Fields(cmd.CommandPath())) // leaf path + machine
+	argv = append(append(slices.Clone(argv[:head]), extra...), argv[head:]...)
+	after = func() error {
+		if !fresh && len(ports) == 0 {
+			return nil
+		}
+		return a.seedPorts(m, ports, fresh)
+	}
+	return argv, after, nil
+}
+
+// hubMachineIsSmol reports whether a hub machine is known to be smol, so a
+// template's keys (ignored on smol) need no resolving: no GitHub fetch and
+// no "ignoring keys" line on every run. A create is smol unless --backend
+// says otherwise; a setup asks this host's cached listing of the hub, and a
+// machine missing from it is taken as smol (what hub machines are), so only
+// a cached remote row gets keys.
+func (a *App) hubMachineIsSmol(m *config.Machine, fs *pflag.FlagSet, create bool) bool {
+	if create {
+		b, _ := fs.GetString("backend")
+		return b == "" || b == config.BackendSmol
+	}
+	for _, row := range readHubCache(a.Paths, m.Hub.Name) {
+		if row.name == m.HubMachineName() {
+			return row.backend == config.BackendSmol
+		}
+	}
+	return true
+}
+
+// runProxiedShaping is runProxied for create/setup, mapping a hub too old
+// for them to one line: `setup` and the flags the laptop adds
+// (--inline-template, --no-ports) are v0.1.16, and an older hub answers
+// with cobra's "unknown command"/"unknown flag", or a login shell's 127.
+// The hub's output is passed through as it comes (a pty run merges both
+// streams, so both are watched).
+func (a *App) runProxiedShaping(m *config.Machine, p backend.Proxier, argv []string) error {
+	var seen bytes.Buffer
+	o := proxyExecOpts(proxyTTY())
+	o.Stdout, o.Stderr = io.MultiWriter(a.Stdout, &seen), io.MultiWriter(a.Stderr, &seen)
+	err := p.Proxy(context.Background(), o, argv...)
+	var ee *exec.ExitError
+	if err != nil && errors.As(err, &ee) {
+		out := seen.String()
+		if ee.ExitCode() == 127 || strings.Contains(out, `unknown command "setup"`) ||
+			strings.Contains(out, "unknown flag: --"+flagInline) || strings.Contains(out, "unknown flag: --"+flagNoPorts) {
+			return fmt.Errorf("hub %s runs devvm older than %s (needs setup); run 'devvm update' there", m.Hub.Name, hubMinVersion)
+		}
+	}
+	return a.exitStatus(m, err)
 }
 
 // proxyInteractive is attach/shell for a hub machine: the same proxied leaf,
@@ -307,6 +446,11 @@ func (a *App) laptopRepo() (string, error) {
 // flags are walked: --config-dir and any other persistent flag of a parent
 // belong to the laptop.
 func hubArgv(cmd *cobra.Command, args []string) ([]string, error) {
+	return hubArgvSkip(cmd, args, nil)
+}
+
+// hubArgvSkip is hubArgv leaving out the named flags.
+func hubArgvSkip(cmd *cobra.Command, args []string, skip []string) ([]string, error) {
 	argv := append([]string{}, strings.Fields(cmd.CommandPath())[1:]...)
 	pos := append([]string{}, args...)
 	if len(pos) > 0 {
@@ -329,7 +473,7 @@ func hubArgv(cmd *cobra.Command, args []string) ([]string, error) {
 			dash--
 		}
 	}
-	argv = append(argv, setFlags(cmd)...)
+	argv = append(argv, setFlags(cmd, skip...)...)
 	if dash >= 0 {
 		argv = append(argv, pos[:dash]...)
 		argv = append(argv, "--")
@@ -347,19 +491,19 @@ func hubArgv(cmd *cobra.Command, args []string) ([]string, error) {
 // cobra's LocalFlags() is a copy of the definitions with no parse state.
 // Inherited flags — the root's --config-dir and --state-dir — are the
 // laptop's and skipped.
-func setFlags(cmd *cobra.Command) []string {
+func setFlags(cmd *cobra.Command, skip ...string) []string {
 	var out []string
 	inherited := cmd.InheritedFlags()
 	cmd.Flags().Visit(func(f *pflag.Flag) {
-		if f.Name == "help" || inherited.Lookup(f.Name) != nil {
+		if f.Name == "help" || inherited.Lookup(f.Name) != nil || slices.Contains(skip, f.Name) {
 			return
 		}
 		switch v := f.Value.(type) {
 		case pflag.SliceValue:
 			// One --name=item per element. A stringSlice (CSV) flag whose
-			// item itself contains a comma would be re-split on the hub; no
-			// proxied leaf has a slice flag today, so this is future-proofing
-			// with that one caveat.
+			// item itself contains a comma would be re-split on the hub; the
+			// template flags (--repo, --port, --key) are stringArrays for
+			// that reason, so a key line's options survive.
 			for _, item := range v.GetSlice() {
 				out = append(out, "--"+f.Name+"="+item)
 			}

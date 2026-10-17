@@ -12,7 +12,7 @@ import (
 )
 
 // resolve loads a machine and its backend for the verbs that act *on* a
-// machine (attach, ports, keys, bootstrap, auth, cp, …). It refuses a hub:
+// machine (attach, ports, keys, setup, auth, cp, …). It refuses a hub:
 // a hub is reached like a remote box but is never shaped, so every one of
 // those verbs fails here, in one place, with the same message. It also
 // refuses a local smol VM devvm did not create (requireManaged): only
@@ -65,7 +65,7 @@ func requireMachine(m *config.Machine) error {
 }
 
 // requireManaged refuses a local VM devvm did not create (config.md §2):
-// attach, cp, ports, auth, bootstrap, repos and the browser bridge all
+// attach, cp, ports, auth, setup, repos and the browser bridge all
 // assume devvm's `dev` user, tmux socket and agent, none of which such a VM
 // has, and none of which devvm may put there unasked. Remote boxes are
 // never refused here: an adopted remote host has its own, consented,

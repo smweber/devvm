@@ -56,7 +56,7 @@ func (a *App) writeGuestAuthKeys(b backend.Backend, lines []string) error {
 }
 
 // addGuestKeys merges incoming key lines into authorized_keys (dedup by material,
-// dropping the guest's own keys). Shared by authorize-key and bootstrap seeding.
+// dropping the guest's own keys). Shared by authorize-key and setup seeding.
 // The read-modify-write isn't locked: two concurrent invocations (from different
 // hosts, say) can lose one side's update — the atomic mv prevents corruption,
 // not lost writes. Re-running is always safe.

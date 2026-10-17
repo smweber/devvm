@@ -120,8 +120,8 @@ func TestCreateClearsStalePorts(t *testing.T) {
 		if err := config.SavePorts(a.Paths, tc.name, []string{"3000", "4000"}); err != nil {
 			t.Fatal(err)
 		}
-		spec := createSpec{Name: tc.name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@" + tc.name, Ports: tc.ports, Yes: true}
-		_ = a.runCreate(spec) // bootstrap against the fake ssh may fail; the ports file is settled before it
+		spec := createSpec{Name: tc.name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@" + tc.name, tmplFlags: tmplFlags{Ports: tc.ports}, Yes: true}
+		_ = a.runCreate(spec) // the adopted-host checks against the fake ssh may fail; the ports file is settled before it
 		if !config.Exists(a.Paths.Config, tc.name) {
 			t.Fatalf("%s: not registered\n%s", tc.name, a.Stderr)
 		}

@@ -63,7 +63,7 @@ func TestProfileScriptGuard(t *testing.T) {
 			}
 		})
 	}
-	want := "# Written by devvm bootstrap: BROWSER opens URLs on the devvm host.\n" +
+	want := "# Written by devvm setup: BROWSER opens URLs on the devvm host.\n" +
 		"if [ -z \"${BROWSER:-}\" ] && [ -x '/usr/local/bin/devvm-open-url' ]; then\n" +
 		"    export BROWSER='/usr/local/bin/devvm-open-url'\n" +
 		"fi\n"

@@ -107,7 +107,8 @@ internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
 internal/auth/      login orchestration, URL bridge, callback-as-forward
-internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
+internal/bootstrap/ the guest steps of `setup`: EnsureUser, prereqs (install on managed /
+                    check on adopt), the template's hook, hardening
                     + browser.go (smol: agent + shim + /etc/profile.d/devvm.sh)
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop shelf,
@@ -199,8 +200,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `shell`/`exec` as smolvm's default user over a plain `machine exec` (no
   sudo, no `BROWSER`, no tmux, nothing installed: `resolveUnmanaged`).
   Everything else goes through `resolve`, whose `requireManaged` refuses in
-  one line (`backend.AdoptHint`: `setup --adopt NAME`, marked as coming in
-  the next release until step 4, or `smolvm machine rm` + `create`);
+  one line (`backend.AdoptHint`: `setup --adopt NAME`, or `smolvm machine
+  rm` + `create`);
   `bridged()` requires `Managed()`; `delete` refuses and points at `smolvm
   machine rm`. `ports rm`/`ports list` are host-side only (`portsRecord`),
   so a stray ports file can always be listed and emptied.
@@ -248,9 +249,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Connect surface**: `attach` (persistent dev tmux) and `shell` (raw login
   shell), both backend-dispatched via the `Interactive` interface and taking
   `--transport ssh|mosh`. There is no `ssh`/`mosh` command. `create` is
-  backend-agnostic (flags-first, huh prompts on a TTY); it adopts remote hosts by
-  test-connecting before saving the conf. `--yes` skips prompts and resolves every
-  unset field from flag > `config.toml` > built-in (erroring on a required field
+  backend-agnostic (flags-first, huh prompts on a TTY seeded from the template;
+  `--backend` defaults to smol); it adopts remote hosts by test-connecting before
+  saving the conf, then runs `setup`. `--yes` skips prompts and resolves every
+  unset field from flag > template > built-in (erroring on a required field
   with no default). Multi-op nouns are grouped:
   `repos {add,rm,list,clone}`, `ports {add,rm,list,up,down}`,
   `keys {add,rm,list,dedupe}`, and `defaults {list,set,unset,path}` (global, so its
@@ -325,38 +327,71 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `Managed()` alone. The smol transport's install gate **fails** when
   `!Managed()` (a detached daemon can't ask anyone), so nothing is installed
   into a smol VM devvm did not create. `Install` returns the paths to use
-  (agent and shim). On smol, `bootstrap` installs agent + shim and writes
+  (agent and shim). On smol, `setup` installs agent + shim and writes
   `/etc/profile.d/devvm.sh` (`bootstrap.Browser`), so profile.d never names a
-  missing file; smol `create`/`bootstrap` **fail** if that install fails. smol
+  missing file; smol `create`/`setup` **fail** if that install fails. smol
   `shell`/`attach` also carry `BROWSER` in their exec env (attach copies it
   into the `dev` tmux session), dropped if the shim is missing.
-- **Root adoption (fresh cloud VMs)**: `bootstrap` on a remote-managed box whose
-  ssh login is root first runs `bootstrap.EnsureDevUser` — creates `dev`
-  (NOPASSWD sudo, copies root's `authorized_keys`) and rewrites the conf's
-  `ssh_host` to `dev@…` — so the hook/keys/repos never land in `/root`. This is
-  what establishes the invariant `rootWrap` assumes (login user = unprivileged
-  dev with sudo). `Harden` pins `AllowUsers` to the actual connection user and
-  refuses to run as root (it would write `PermitRootLogin no` + `AllowUsers
-  root` — a lockout).
+- **Root adoption (fresh cloud VMs)**: `setup` on a remote-managed box first
+  waits for ssh, **bounded** (`setupReachWait`, 90s: a just-made VM or a
+  cloud-init sshd bounce; only "unreachable" is retried). It tries the
+  configured login; on *permission denied* (a BatchMode stderr match: exit 255
+  alone is also "unreachable") it tries `root@host`, and a box that answers
+  only as root (or whose configured login is root) gets
+  `bootstrap.EnsureUser(USER)` — the template's `user`, default `dev`
+  (NOPASSWD sudo, root's `authorized_keys`) — then setup continues as `USER`,
+  so the hook/keys/repos never land in `/root`; it re-probes as `USER` before
+  writing anything. A changed host key or "Too many authentication failures"
+  is fatal at once, and any exit but 255 means the host answered. A
+  configured login that is neither root nor `USER` wins, with a warning.
+  A stopped smol VM is started (as `start` does) before setup's first exec.
+  Only `setup` ever tries root,
+  and only on remote + managed. This is what establishes the invariant
+  `rootWrap` assumes (login user = unprivileged user with sudo). For now the
+  old conf's `ssh_host` gets its user part rewritten (never its address:
+  `setup --host ADDR` is that run's only); config.md step 5's host/user split
+  removes that write. `Harden` pins `AllowUsers` to the actual connection
+  user and refuses to run as root (it would write `PermitRootLogin no` +
+  `AllowUsers root` — a lockout).
 - **Vocabulary — don't re-conflate these.** `create` allocates the resource (the
-  VM/disk) and writes the managed marker; `delete` destroys it. The
-  **`bootstrap-hook`** (conf `bootstrap_hook`) is the *user setup step* the
-  `bootstrap` phase runs (prereqs + hardening + hook). So `create` = make the
-  box exist; `bootstrap-hook` = shape it.
+  VM/disk) and writes the managed marker; `delete` destroys it. **`setup`**
+  (was `bootstrap`) shapes a box and is the single place devvm touches its
+  contents, in a fixed order: ensure user → prereqs (incl. tmux, gh,
+  mosh-server) → agent + shim (+ profile.d, smol) → **`hook`** → repos → keys
+  → harden → seed saved forwards. The **`hook`** (template key; an old conf's
+  `bootstrap_hook`) is the *user's* step inside it, often a dotfiles script
+  itself named `bootstrap.sh`. So `create` = make the box exist; `setup` =
+  shape it; `hook` = the user's part of shaping. `setup --adopt NAME` is the
+  only promotion of a smol VM devvm did not make: it prints the plan and needs
+  the VM's **name typed** on a TTY (no TTY, no adoption; `--yes` never
+  applies), then writes the marker. A remote-unmanaged host is never shaped.
 - **Lifecycle states**: a machine exists or it doesn't. There is **no dormant
   state** and no `provision`/`deprovision` (config.md §2): a smol VM is
   running or stopped, a remote box is reachable. Rebuilding is `delete` then
   `create`.
-- **Bootstrap-hook**: may be `url:`, `cmd:`, or `none`; the built-in default is
-  **`none`** (nothing personal baked into the binary). Each box's hook is resolved
-  once at create time (flag > `config.toml` `bootstrap_hook` > built-in) and written
-  concretely into its conf, so editing global defaults never changes what an existing
-  box re-runs on `bootstrap`. A `url:` hook (e.g. a dotfiles `bootstrap.sh`) is a
-  per-user choice set via `defaults set bootstrap-hook …`.
-- **Global defaults** (`internal/config/defaults.go`): create-time defaults in
-  `$XDG_CONFIG_HOME/devvm/config.toml` (`bootstrap_hook`, `memory`, `transport`),
-  sibling to `machines/`. Consulted **only** at create (to seed prompts and the
-  non-interactive path), never at runtime. Managed via `devvm defaults` (its CLI keys
+- **Templates** (`internal/config/templates.go`, config.md §3): `[templates.*]`
+  in `$XDG_CONFIG_HOME/devvm/devvm.toml` (only that table family is read until
+  step 5; other tables are ignored). Fields: `user` (default `dev`; remote
+  only), `hook` (`url:`/`cmd:`/`none`, built-in **`none`**: nothing personal
+  baked into the binary), `memory`/`disk` (create-time, smol), `repos`,
+  `ports`, `authorized_keys[_github]`, `harden`/`fail2ban` (remote). Fields
+  that don't apply are ignored with one warning line. Unset fields fall back to
+  `[templates.default]`, **one level**. Precedence for create/setup: flag >
+  `--template T` > the box's old conf (step 5 removes it) > `[templates.default]`
+  > `config.toml` > built-in. Nothing records which template made a box: `setup
+  NAME` re-runs whatever `default` says now. A proxied `create`/`setup HUB/NAME
+  --template T` resolves T on the laptop and sends every field as the hidden
+  template flags (`tmplFlags`, `--inline-template`; key sources as `--key`
+  lines, skipped for a smol hub machine), so the hub's file never matters.
+  Every proxied create/setup strips `--port` and sends `--no-ports` (the hub
+  saves and prompts for none); the laptop seeds its own `HUB@NAME` forwards
+  after success. A hub too old for `setup`/these flags maps to one line
+  naming `devvm update` (`runProxiedShaping`).
+- **Global defaults** (`internal/config/defaults.go`): **deprecated** by
+  templates. `$XDG_CONFIG_HOME/devvm/config.toml` (`bootstrap_hook`, `memory`,
+  `disk`, `transport`) still seeds create/setup, below `[templates.default]`, so
+  existing hosts keep behaving; step 5 removes it (it becomes
+  `[templates.default]` by hand). Managed via `devvm defaults` (its CLI keys
   use hyphens, e.g. `bootstrap-hook`; the TOML uses snake_case `bootstrap_hook`).
 
 ## Testing gotchas (all real, learned the hard way)

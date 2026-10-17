@@ -373,7 +373,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
             // Start/Stop still apply; copies and ports wait for the handover.
             if !sub.items.isEmpty { sub.addItem(.separator()) }
             // Same next step as the CLI's refusals (backend.AdoptHint).
-            sub.addItem(item("Not created by devvm: hand it over with 'devvm setup --adopt \(m.name)' (coming in the next release),", nil))
+            sub.addItem(item("Not created by devvm: hand it over with 'devvm setup --adopt \(m.name)',", nil))
             sub.addItem(item("or remove it with 'smolvm machine rm --name \(m.label)' and 'devvm create \(m.name)'", nil))
         }
         if sub.items.isEmpty {

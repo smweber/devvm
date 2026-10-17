@@ -114,7 +114,8 @@ func (a *App) rootCmd() *cobra.Command {
 			"  remote-managed    a remote host devvm shapes (over ssh)\n" +
 			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n" +
 			"  hub               another host running devvm; its machines are HUB/NAME\n\n" +
-			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml;\n" +
+			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml, templates\n" +
+			"for create/setup in ~/.config/devvm/devvm.toml ([templates.*]);\n" +
 			"this host's state (daemon sockets, logs, caches) in ~/.local/state/devvm.",
 		Version:       Version,
 		SilenceUsage:  true,
@@ -157,7 +158,7 @@ func (a *App) rootCmd() *cobra.Command {
 
 	root.AddCommand(group(groupLifecycle,
 		a.createCmd(),
-		a.bootstrapCmd(),
+		a.setupCmd(),
 		a.lockdownCmd(),
 		a.startCmd(),
 		a.stopCmd(),

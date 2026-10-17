@@ -8,12 +8,12 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// `bootstrap cloud` and `attach cloud` on a remote box leave BROWSER alone:
+// `setup cloud` and `attach cloud` on a remote box leave BROWSER alone:
 // no agent or shim install (not even its uname probe; the prereqs'
 // /etc/devvm-agent marker is older and unrelated), no /etc/profile.d
 // write, no tmux set-environment (browser-bridge.md §5: remote is deferred
 // with the ssh agent exec).
-func TestRemoteBootstrapAndAttachLeaveBrowserAlone(t *testing.T) {
+func TestRemoteSetupAndAttachLeaveBrowserAlone(t *testing.T) {
 	for _, be := range []string{config.BackendRemoteManaged, config.BackendRemoteUnmanaged} {
 		t.Run(be, func(t *testing.T) {
 			a := newTestApp(t)
@@ -23,8 +23,18 @@ func TestRemoteBootstrapAndAttachLeaveBrowserAlone(t *testing.T) {
 			if err := m.Save(a.Paths.Config); err != nil {
 				t.Fatal(err)
 			}
-			if err := runTree(t, a, "bootstrap", "cloud"); err != nil {
-				t.Fatalf("bootstrap: %v\n%s", err, a.Stderr)
+			// setup never shapes an adopted host; it refuses before dialing.
+			err := runTree(t, a, "setup", "cloud")
+			if be == config.BackendRemoteManaged && err != nil {
+				t.Fatalf("setup: %v\n%s", err, a.Stderr)
+			}
+			if be == config.BackendRemoteUnmanaged {
+				if err == nil || !strings.Contains(err.Error(), "never shapes") {
+					t.Fatalf("setup on an adopted host: err = %v, want a refusal", err)
+				}
+				if _, statErr := os.Stat(log); statErr == nil {
+					t.Fatal("setup's refusal dialed the host")
+				}
 			}
 			if err := runTree(t, a, "attach", "cloud"); err != nil {
 				t.Fatalf("attach: %v\n%s", err, a.Stderr)

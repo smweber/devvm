@@ -7,8 +7,8 @@ import (
 )
 
 // gatherCreateSpec with Yes=true forces the non-interactive path regardless of
-// any controlling terminal, so these exercise pure flag > config.toml > compiled
-// resolution without touching huh.
+// any controlling terminal, so these exercise pure flag > template >
+// config.toml > compiled resolution without touching huh.
 
 // newTestApp's config dir is short (shortTempDir, under /tmp): tests that
 // serve a daemon socket under run/ would otherwise exceed macOS's 104-byte
@@ -34,8 +34,8 @@ func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {
 	if s.Memory != 4096 {
 		t.Errorf("memory = %d, want 4096 from config.toml", s.Memory)
 	}
-	if s.BootstrapHook != "cmd:/opt/setup.sh" {
-		t.Errorf("bootstrap-hook = %q, want config.toml value", s.BootstrapHook)
+	if s.Hook != "cmd:/opt/setup.sh" {
+		t.Errorf("hook = %q, want config.toml value", s.Hook)
 	}
 }
 
@@ -44,27 +44,27 @@ func TestResolveFlagBeatsGlobalDefault(t *testing.T) {
 	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{Memory: 4096, BootstrapHook: "cmd:/opt/setup.sh"}); err != nil {
 		t.Fatal(err)
 	}
-	s := createSpec{Name: "box", Backend: config.BackendSmol, Memory: 1024, BootstrapHook: "none", Yes: true}
+	s := createSpec{Name: "box", Backend: config.BackendSmol, tmplFlags: tmplFlags{Memory: 1024, Hook: "none"}, Yes: true}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
 	if s.Memory != 1024 {
 		t.Errorf("memory = %d, want 1024 (flag wins)", s.Memory)
 	}
-	if s.BootstrapHook != "none" {
-		t.Errorf("bootstrap-hook = %q, want none (flag wins)", s.BootstrapHook)
+	if s.Hook != "none" {
+		t.Errorf("hook = %q, want none (flag wins)", s.Hook)
 	}
 }
 
 func TestResolveCompiledDefaultWhenUnset(t *testing.T) {
 	a := newTestApp(t) // no config.toml
-	s := createSpec{Name: "box", Backend: config.BackendSmol, Memory: 2048, Yes: true}
+	s := createSpec{Name: "box", Backend: config.BackendSmol, tmplFlags: tmplFlags{Memory: 2048}, Yes: true}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	// gatherCreateSpec leaves bootstrap-hook empty; machine() applies the compiled "none".
-	if s.BootstrapHook != "" {
-		t.Errorf("bootstrap-hook = %q, want empty before defaulting", s.BootstrapHook)
+	// The template's built-in hook is none; machine() keeps it.
+	if s.Hook != "none" || s.User != "dev" {
+		t.Errorf("hook = %q, user = %q, want the built-ins none, dev", s.Hook, s.User)
 	}
 	m, err := s.machine()
 	if err != nil {

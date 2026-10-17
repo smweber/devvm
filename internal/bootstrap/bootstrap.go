@@ -9,27 +9,27 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// Bootstrap-hook kinds.
+// Hook kinds.
 const (
 	KindNone = "none"
 	KindURL  = "url"
 	KindCmd  = "cmd"
 )
 
-// Spec is a parsed bootstrap-hook value: a kind plus a target and args.
+// Spec is a parsed hook value: a kind plus a target and args.
 type Spec struct {
 	Kind   string
 	Target string // URL or command path
 	Args   []string
 }
 
-// ParseSpec parses a machine's bootstrap-hook string:
+// ParseSpec parses a template's hook string (an old conf's bootstrap_hook):
 //
 //	url:<URL> [args...]   curl the URL and run it with args (default: bootstrap.sh)
 //	cmd:<path> [args...]  run a guest command
 //	none                  skip the hook
 //
-// An empty spec means the default url hook.
+// An empty spec means the built-in default, none.
 func ParseSpec(s string) (Spec, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -40,25 +40,25 @@ func ParseSpec(s string) (Spec, error) {
 	}
 	kind, rest, ok := strings.Cut(s, ":")
 	if !ok {
-		return Spec{}, fmt.Errorf("invalid bootstrap-hook spec %q (want url:/cmd:/none)", s)
+		return Spec{}, fmt.Errorf("invalid hook spec %q (want url:/cmd:/none)", s)
 	}
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {
-		return Spec{}, fmt.Errorf("bootstrap-hook %q needs a %s value", s, kind)
+		return Spec{}, fmt.Errorf("hook %q needs a %s value", s, kind)
 	}
 	switch kind {
 	case KindURL, KindCmd:
 		return Spec{Kind: kind, Target: fields[0], Args: fields[1:]}, nil
 	default:
-		return Spec{}, fmt.Errorf("unknown bootstrap-hook kind %q", kind)
+		return Spec{}, fmt.Errorf("unknown hook kind %q", kind)
 	}
 }
 
-// RunHook executes the machine's bootstrap-hook as the dev user (login shell),
-// after the caller has already run Prereqs. Reproduces bootstrap_machine's
-// curl|bash for the default url spec, but the URL/cmd is now configurable.
-func RunHook(ctx context.Context, b backend.Backend, m *config.Machine) error {
-	spec, err := ParseSpec(m.BootstrapHook)
+// RunHook executes a hook spec as the box's user (login shell), after the
+// caller has already run Prereqs. Reproduces bootstrap_machine's curl|bash
+// for a url spec; the URL/cmd is the template's.
+func RunHook(ctx context.Context, b backend.Backend, hook string) error {
+	spec, err := ParseSpec(hook)
 	if err != nil {
 		return err
 	}
@@ -76,6 +76,6 @@ func RunHook(ctx context.Context, b backend.Backend, m *config.Machine) error {
 		argv := append([]string{spec.Target}, spec.Args...)
 		return b.Run(ctx, opts, argv...)
 	default:
-		return fmt.Errorf("unknown bootstrap-hook kind %q", spec.Kind)
+		return fmt.Errorf("unknown hook kind %q", spec.Kind)
 	}
 }

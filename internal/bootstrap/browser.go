@@ -20,14 +20,14 @@ var installAgent = agentbin.Install
 
 // Browser installs the agent and its BROWSER shim on a managed smol box and
 // writes ProfilePath pointing at the shim (browser-bridge.md §5). The
-// install happens here, at bootstrap, and not only lazily when the daemon's
+// install happens here, at setup, and not only lazily when the daemon's
 // transport first spawns the agent exec, so profile.d never names a file
 // that does not exist yet. One-shot execs only, in sequence: nothing here
 // runs beside another exec.
 //
 // Every other backend is left alone: remote boxes have no agent exec to
 // answer the shim yet (their plumbing is deferred with it), an adopt host
-// never gets a profile.d write, and a hub machine is bootstrapped by its
+// never gets a profile.d write, and a hub machine is set up by its
 // hub, which runs this itself.
 func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
 	if m.IsRemote() || !m.Managed() {
@@ -49,7 +49,7 @@ func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
 // on attach, or set it themselves.
 func profileScript(shim string) string {
 	q := sq(shim)
-	return "# Written by devvm bootstrap: BROWSER opens URLs on the devvm host.\n" +
+	return "# Written by devvm setup: BROWSER opens URLs on the devvm host.\n" +
 		`if [ -z "${BROWSER:-}" ] && [ -x ` + q + " ]; then\n" +
 		"    export BROWSER=" + q + "\n" +
 		"fi\n"

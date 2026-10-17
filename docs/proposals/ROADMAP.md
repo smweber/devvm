@@ -7,7 +7,7 @@ file wins for sequencing and the design doc wins for mechanism.
 
 Status, 2026-10-17: the **hubs + browser bridge** plan (`hub.md` v3.4,
 `browser-bridge.md` v2.6) landed in full as v0.1.13–v0.1.15. The **config
-redesign** (`config.md` v3.1) is in progress, steps 1–3 landed. **In
+redesign** (`config.md` v3.1) is in progress, steps 1–4 landed. **In
 parallel** since 2026-10-17, in its own jj workspace: the provider
 backend's independent steps 0–1 (`providers.md` v1.2; see below). After the
 redesign: the known issues below, then the ssh agent exec for remote boxes,
@@ -44,8 +44,21 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
   Swift change built blind. Live-tested on the ThinkPad against the devvm-made
   `web` (managed via its conf) and a raw alpine VM `raw` (unmanaged; kept
   there as the `setup --adopt` test subject), one agent exec throughout.
-- Steps 4 (`setup` + templates, `--adopt`), 5 (new loader + `config` noun),
-  6 (hand migration of the three hosts, release) to come.
+- **Step 4 landed 2026-10-17**: `bootstrap` → `setup`; `[templates.*]`
+  from `devvm.toml` with one-level fallback to `default` (precedence flag >
+  `--template` > the box's old conf > `default` > `config.toml` > built-in);
+  fixed order user → prereqs (+tmux, gh, mosh) → agent/shim → hook → repos →
+  keys → harden → forwards; `setup --adopt NAME` on a discovered VM prints
+  its plan and requires the VM's name typed on a terminal (`--yes` is no
+  bypass); root adoption with a 90s bounded reachability wait and
+  `EnsureUser(name)`; `setup --host`; proxied `create`/`setup` send the
+  template inline and keep forwards on the laptop; `hubMinVersion` is
+  v0.1.16. Live on the ThinkPad: the refusals, a typed-name adoption of a
+  raw Ubuntu VM (`dev` user, prereqs, agent, `BROWSER`, forwards after),
+  idempotent re-run. The remote-box run on `cloud` is pending: the box was
+  OOM-killing apt at the time (its own fault, see below).
+- Steps 5 (new loader + `config` noun) and 6 (hand migration of the three
+  hosts, release) to come.
 
 ## Provider backend, steps 0–1 (in parallel, since 2026-10-17)
 

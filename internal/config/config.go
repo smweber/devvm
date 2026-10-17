@@ -27,7 +27,7 @@ import (
 //	hub              another host running devvm whose machines are reached as
 //	                 HUB/NAME (docs/proposals/hub.md). Reached over the ssh
 //	                 transport like a remote box, but never shaped: no
-//	                 bootstrap, keys, repos, ports or agent land on it.
+//	                 setup, keys, repos, ports or agent land on it.
 const (
 	BackendSmol            = "smol"
 	BackendRemoteManaged   = "remote-managed"
@@ -46,11 +46,10 @@ const (
 	TransportMosh = "mosh"
 )
 
-// DefaultBootstrapHook is the built-in fallback bootstrap-hook: do nothing. A
-// box's own hook is chosen at create time (flag > global config.toml > this) and
-// written concretely into its conf, so nothing personal is baked into the binary.
-// Users who want a default (e.g. their dotfiles bootstrap) set `bootstrap-hook` in
-// config.toml — see Defaults.
+// DefaultBootstrapHook is the built-in hook: do nothing, so nothing personal
+// is baked into the binary. Users who want one (e.g. their dotfiles
+// bootstrap.sh) set `hook` in a template (templates.go); an old conf's
+// bootstrap_hook and config.toml's are still read until step 5.
 const DefaultBootstrapHook = "none"
 
 // ErrNotFound is returned by Load when no conf file exists for a name. The
@@ -230,7 +229,7 @@ func (m *Machine) Validate() error {
 }
 
 // validateHub rejects the fields that would shape the hub itself. A hub is
-// reached like a remote box but is never bootstrapped, forwarded to, or given
+// reached like a remote box but is never set up, forwarded to, or given
 // repos/keys — those verbs refuse it — so a conf carrying them is a mistake
 // (most likely a remote conf whose backend was flipped by hand) rather than
 // something to silently ignore. transport/mosh_server stay allowed: they steer

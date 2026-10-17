@@ -36,9 +36,9 @@ the ssh transport, is the planned next backend.)
   URL a guest program opens through `$BROWSER` opens in the host's browser,
   and a loopback URL (a dev server, an OAuth callback) gets its forward
   bound first. `BROWSER` points at `/usr/local/bin/devvm-open-url`, which
-  `bootstrap` installs with the agent; `shell` and `attach` set it, `attach`
+  `setup` installs with the agent; `shell` and `attach` set it, `attach`
   also in the `dev` tmux session's environment (new windows and panes get
-  it; a shell started before `bootstrap` installed the shim needs `export
+  it; a shell started before `setup` installed the shim needs `export
   BROWSER=/usr/local/bin/devvm-open-url` once), and
   `/etc/profile.d/devvm.sh` sets it for other sh/bash login shells (cron,
   and every `devvm exec`, which runs under a login shell) unless `BROWSER` is already set or the shim is
@@ -127,7 +127,7 @@ internal/agentrpc/  yamux stream protocol (forward / rpc / event) shared host+gu
 internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)
 internal/keys/      authorized_keys logic (dedup / revoke / list), host-side, was awk
 internal/auth/      login orchestration, URL bridge, callback-as-forward
-internal/bootstrap/ prereqs (install on managed / check on adopt) + bootstrap-hook + hardening
+internal/bootstrap/ the guest steps of `setup`: user, prereqs, the template hook, hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 ```
 

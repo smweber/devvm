@@ -73,7 +73,7 @@ func Harden(ctx context.Context, b backend.Backend, m *config.Machine) error {
 		return err
 	}
 	if user == "" || user == "root" {
-		return fmt.Errorf("refusing to harden: the connection user is root; run 'devvm bootstrap %s' to create the dev user first", m.Name)
+		return fmt.Errorf("refusing to harden: the connection user is root; run 'devvm setup %s' to create the user first", m.Name)
 	}
 	fail2ban := ""
 	if m.Fail2ban {
