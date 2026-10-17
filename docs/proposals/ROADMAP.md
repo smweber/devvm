@@ -264,10 +264,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
   behind on the ThinkPad; apt refused "not valid yet"). `stop`/`start` fixes
   it. Candidate: `setup` enables guest time sync, or daemon come-up sets the
   clock from the host.
-- **A killed laptop daemon orphans its ssh ControlMaster** (no SIGTERM
-  handler): its `ssh -M` keeps the `-L` ports, stale `.sock`/`.master` stay,
-  the next daemon's `ssh -M` cannot take the ControlPath. A clean `stop`
-  leaves nothing behind.
 - **SIGINT during a copy leaks the laptop-side spool** (no signal handler
   outside `status --watch`; five killed 200 MB copies left 610 MB in
   `$TMPDIR`).

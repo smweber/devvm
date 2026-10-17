@@ -52,13 +52,28 @@ func newSSHTransport(conn backend.SSHConn) (*sshTransport, error) {
 // startMaster launches a backgrounded ControlMaster (ssh -M -N -f). Keepalives
 // make a dropped link kill the master; monitor() notices it's gone.
 func (t *sshTransport) startMaster() error {
-	// A master that died without unlinking its socket (killed, or a link drop
-	// mid-cleanup) would make `-M` fall back to a plain connection with
-	// "ControlSocket already exists, disabling multiplexing" — and the daemon's
-	// reconnect would then find no master and spin. Only a socket nobody
-	// answers is removed.
-	if _, err := os.Stat(t.conn.ControlPath); err == nil && !t.masterAlive() {
-		_ = os.Remove(t.conn.ControlPath)
+	// Anything at the ControlPath would make `-M` fall back to a plain
+	// connection with "ControlSocket already exists, disabling multiplexing".
+	// A socket nobody answers (a master that died without unlinking it) is
+	// removed. One that answers is an orphan: the path is this machine's
+	// daemon's alone, and the caller is that daemon, either starting (under
+	// the startup lock, no daemon answering the control socket) or
+	// reconnecting after teardown closed its own master. A daemon killed
+	// without its shutdown (SIGKILL, or a build before it handled SIGTERM)
+	// leaves its `ssh -M -f` running, holding its -L ports; before this, the
+	// degraded `-M` then passed the masterAlive check below on the orphan's
+	// answer and every re-added forward collided with the orphan's own.
+	// It is not adopted: its forwards are unknown here and its options may
+	// predate this build. It is asked to exit, which frees its ports, and a
+	// fresh master is started.
+	if _, err := os.Stat(t.conn.ControlPath); err == nil {
+		if t.masterAlive() {
+			_ = t.control("exit")
+			t.waitMasterGone()
+		}
+		if !t.masterAlive() {
+			_ = os.Remove(t.conn.ControlPath)
+		}
 	}
 	args := append([]string{}, t.conn.Flags...)
 	args = append(args,
@@ -186,6 +201,17 @@ func (t *sshTransport) masterAlive() bool {
 	cmd := exec.CommandContext(ctx, "ssh", "-O", "check",
 		"-o", "ControlPath="+t.conn.ControlPath, t.conn.Host)
 	return cmd.Run() == nil
+}
+
+// waitMasterGone waits, bounded by controlTimeout, for a master told to
+// exit to stop answering: `-O exit` returns once the request is acked, and
+// a `-M` started before the old master unlinked its socket would degrade.
+func (t *sshTransport) waitMasterGone() {
+	for deadline := time.Now().Add(controlTimeout); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if !t.masterAlive() {
+			return
+		}
+	}
 }
 
 func (t *sshTransport) markDead() {

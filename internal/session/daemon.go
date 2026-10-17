@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"sort"
 	"sync"
 	"syscall"
@@ -324,6 +325,12 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 	if err := paths.EnsureRuntimeDir(); err != nil {
 		return err
 	}
+	// Termination signals run the same shutdown a client's stop does, so a
+	// killed daemon releases its smol exec, ssh master or hub relay instead
+	// of orphaning it (see daemonSignals). Registered before the first dial,
+	// so a signal during it is held for the check below, not fatal.
+	sigs, stopSignals := daemonSignals()
+	defer stopSignals()
 	// Serialize startup: two racing daemons could otherwise both pass the dial
 	// check, and the loser's stale-socket Remove would unlink the winner's live
 	// socket (and, on smol, both would briefly hold parallel agent execs).
@@ -386,6 +393,14 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 	if err != nil {
 		return err
 	}
+	// Signalled during the first dial: release what it made and go, before
+	// any socket exists.
+	select {
+	case s := <-sigs:
+		tr.Close()
+		return fmt.Errorf("%v during startup; not serving", s)
+	default:
+	}
 	ln, info, err := listenControl(sock)
 	if err != nil {
 		tr.Close()
@@ -396,7 +411,43 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 
 	d := newDaemon(paths, m.Name, version, tr, dialFresh)
 	d.ln, d.sockInfo = ln, info
+	return d.run(sigs)
+}
+
+// daemonSignals registers the signals that stop a daemon: SIGTERM (kill,
+// a logout or shutdown), SIGINT and SIGHUP (sent by hand; the daemon is
+// setsid'd, so no terminal sends either). Without a handler each one killed
+// the process outright, leaving its transport behind: on ssh the `ssh -M
+// -f` master (a process of its own) kept answering on the ControlPath and
+// holding every -L port, on smol the `machine exec` kept the agent running
+// (the next daemon's would be a parallel exec), on a hub the `__session`
+// relay stayed open. SIGKILL cannot be handled: startMaster's `-O exit` of
+// an orphaned master covers it on the next start (ssh and hub, whose relay
+// rides that master); a SIGKILLed smol daemon's exec is out of scope.
+func daemonSignals() (<-chan os.Signal, func()) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	return sigs, func() { signal.Stop(sigs) }
+}
+
+// run serves the control socket and supervises until a stop, an idle exit
+// or a signal on sigs, then shuts down once. The first signal is a stop like
+// any client's. Later ones are absorbed (sigs stays registered until
+// RunDaemon returns, and its one-slot buffer drops the rest): a second
+// SIGTERM does not force an exit, since exiting mid-teardown is exactly the
+// orphan the handler exists to prevent, and shutdown is bounded anyway (each
+// `ssh -O` by controlTimeout, a late dial by lateWait). SIGKILL is the
+// override, cleaned up after as daemonSignals says.
+func (d *daemon) run(sigs <-chan os.Signal) error {
 	go d.serveControl()
+	go func() {
+		select {
+		case s := <-sigs:
+			d.logf("%s: %v; shutting down", d.name, s)
+			d.triggerStop()
+		case <-d.stop:
+		}
+	}()
 	d.loop()
 	return d.shutdown()
 }
