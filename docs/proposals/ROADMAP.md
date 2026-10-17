@@ -141,7 +141,21 @@ redesign: they build on resolve's source list, templates, `setup` and
   → end of `setup`'s `shape` (how=`setup`); `remoteConfs()` → the new
   loader's remote entries (step 5); Status.swift live check →
   `backend != "smol" && !isHub` when the column becomes `remote` (step 5).
-- Steps 2–4: after the redesign. Notes for step 3 from review: put a
+- **Step 2 built 2026-10-17** (`providers` bookmark; lands on master after
+  v0.1.16 is tagged): `[providers.hetzner]` in the loader (placement keys;
+  templates gain `server_type`/`location`/`image`/`ipv4`, template >
+  provider table > built-in), `providers token hetzner [--clear]`,
+  `BackendHetzner` on `sshBackend`, `config.NewProviderMachine` (record
+  never saved; `Machine.Server` carries id/status/address), discovery last
+  in resolve's source order (one `Get`, only with a table and a token),
+  provider listing in the live round with `cache/provider-hetzner.list`
+  (flock; live lookups merge rows in), `--plain` backend `hetzner` with the
+  §5 state mapping, shadowing by entry/smol/hub row, refusal matrix (§8),
+  lifecycle verbs refusing until step 3. Two Opus review rounds; the second
+  made the daemon/`__session`/`config rm`/completion cache-only and stripped
+  `HCLOUD_TOKEN` from the daemon env. Swift: unlabelled hetzner rows are
+  not usable; `starting`/`stopping` glyph (blind).
+- Steps 3–4: next. Notes for step 3 from review: put a
   deadline on `Create`; `stop` should `Get` first and skip an already-off
   server; step 2 warns on a token file mode wider than 0600.
 

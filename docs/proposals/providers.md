@@ -1,6 +1,6 @@
 # Proposal: provider backends (devvm creates and destroys cloud VMs)
 
-Status: draft v1.3, 2026-10-17, from a design discussion with the user
+Status: draft v1.4, 2026-10-17, from a design discussion with the user
 (v1.1: token stored by the CLI, cache-first watch; v1.2: refresh on demand,
 remote boxes probed; v1.3: menu refresh via its one-shot status; see the
 review log). Not
@@ -427,6 +427,30 @@ reopened:
   with last-contact time (§5). The user: "it feels like a lie".
 
 ## Review log
+
+**v1.3 → v1.4** (2026-10-17, step 2 as built and reviewed):
+
+- **The daemon reads the provider cache only** (§8 made structural): the
+  CLI merges every live `Get` into `cache/provider-hetzner.list` under a
+  flock shared with the listing writer, so a daemon spawned right after a
+  resolve always hits the cache; on a miss it errors ("run `devvm status`")
+  and never dials. `HCLOUD_TOKEN` is stripped from the daemon's spawn
+  environment. The hub-side `__session`, `config rm` and guest-path
+  completion resolve from local sources only; `__session` refuses a
+  provider box (§6: a hub never relays one).
+- **Token command** `providers token hetzner [--clear]`: echo-off on a TTY,
+  stdin otherwise, validated with one `GET /servers` before the atomic
+  0600 write; a wider mode warns on every read.
+- **Probe timeout is `?`** (pre-release fix, config session): a dial that
+  times out records `?` with the reason, so a slow Tailscale peer is not
+  shown dead; refused/unroutable stay `unreachable`. The "`?` never
+  overwrites" rule holds for ProxyJump/ProxyCommand and `ssh -G` failures
+  only; a tested timeout may overwrite.
+- Provider rows get their own `hetzner` section in the human listing; the
+  billing hint lives in the row note (`-v`), never in the `--plain` state.
+- Deferred to step 3: `start`/`stop` with a confirm on unmanaged servers
+  (§8); bare IPv6 addresses need `[addr]` for scp in `Copy`; the
+  known_hosts pin for a reused address is cleared by `delete` (§3).
 
 **v1.2 → v1.3** (2026-10-17, step 0 review): the app does not call
 `__refresh`; its existing one-shot `status` on menu open is the refresh,
