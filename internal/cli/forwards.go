@@ -453,12 +453,15 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 		}
 		a.reportForward(name, host, guest, pref, bumped, pending)
 	}
-	// A daemon mid-backoff (the VM was just started, the link is back) should
-	// not make `start`/`ports up` wait up to 30s for pending forwards.
-	if st, err := cl.Status(); err == nil && st.Reconnecting() {
-		if err := cl.Kick(); err == nil {
-			fmt.Fprintln(a.Stdout, "devvm: forward daemon is reconnecting; retrying now")
-		}
+	// Always kick. A daemon mid-backoff (the VM was just started, the link
+	// is back) should not make `start`/`ports up` wait up to 30s for
+	// pending forwards; an up daemon ignores the retry but syncs a smol
+	// guest's clock on it, which is the case after a host wake (its ticker
+	// may be up to a minute late then).
+	st, serr := cl.Status()
+	reconnecting := serr == nil && st.Reconnecting()
+	if err := cl.Kick(); err == nil && reconnecting {
+		fmt.Fprintln(a.Stdout, "devvm: forward daemon is reconnecting; retrying now")
 	}
 	return nil
 }

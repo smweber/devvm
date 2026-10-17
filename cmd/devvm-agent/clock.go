@@ -20,6 +20,11 @@ import (
 // noise would make it jump back and forth.
 const clockThreshold = 2 * time.Second
 
+// clockLog is the agent's clock line, timestamped like the daemon's own
+// lines around it in the daemon log (the agent's stderr lands there). The
+// stamp is the guest's clock, the one being reported as wrong.
+var clockLog = log.New(os.Stderr, "devvm-agent: ", log.LstdFlags)
+
 // clockSetWait bounds one `sudo -n date`: -n never prompts, so anything
 // slower is wedged.
 const clockSetWait = 5 * time.Second
@@ -56,7 +61,7 @@ func (c *clockSyncer) handle(host time.Time) agentrpc.ClockReply {
 		r.Result = "error: " + err.Error()
 		if msg := err.Error(); msg != c.lastErr {
 			c.lastErr = msg
-			log.Printf("clock: %s off the host's; could not step it: %v", r.Drift, err)
+			clockLog.Printf("clock: %s off the host's; could not step it: %v", r.Drift, err)
 		}
 		return r
 	}

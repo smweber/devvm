@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,5 +119,32 @@ func TestRestartDaemonsCyclesOldLayoutDaemon(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(legacy.RuntimeDir(), "box.sock")); err == nil {
 		t.Error("old socket still there after WaitGone")
+	}
+}
+
+// `ports up`/`start` kick the daemon even when it is up: the retry is a
+// no-op there, but the kick also syncs a smol guest's clock (after a host
+// wake). The "retrying now" line is for a reconnecting daemon only.
+func TestPortsUpAlwaysKicks(t *testing.T) {
+	for _, state := range []string{session.StateUp, session.StateReconnecting} {
+		t.Run(state, func(t *testing.T) {
+			var out bytes.Buffer
+			a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
+			saveRemote(t, a.Paths, "box", "3000")
+			od := serveOwnerDaemon(t, a.Paths, "box", map[string]session.Response{
+				session.OpAdd:  {OK: true, Host: 3000},
+				session.OpList: {OK: true, State: state},
+			}, false)
+			if err := a.tunnelUp("box"); err != nil {
+				t.Fatal(err)
+			}
+			if kicks := od.requests(session.OpKick); len(kicks) != 1 {
+				t.Fatalf("%d kicks, want 1", len(kicks))
+			}
+			retry := strings.Contains(out.String(), "retrying now")
+			if retry != (state == session.StateReconnecting) {
+				t.Errorf("state %s: output %q", state, out.String())
+			}
+		})
 	}
 }
