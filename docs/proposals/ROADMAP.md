@@ -7,7 +7,7 @@ file wins for sequencing and the design doc wins for mechanism.
 
 Status, 2026-10-17: the **hubs + browser bridge** plan (`hub.md` v3.4,
 `browser-bridge.md` v2.6) landed in full as v0.1.13–v0.1.15. The **config
-redesign** (`config.md` v3.1) is in progress, steps 1–5 landed; step 6 (hand migration) under way. **In
+redesign** (`config.md` v3.1) landed in full; the three hosts are migrated; v0.1.16 is the release. **In
 parallel** since 2026-10-17, in its own jj workspace: the provider
 backend's independent steps 0–1 (`providers.md` v1.2; see below). After the
 redesign: the known issues below, then the ssh agent exec for remote boxes,
@@ -55,8 +55,9 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
   template inline and keep forwards on the laptop; `hubMinVersion` is
   v0.1.16. Live on the ThinkPad: the refusals, a typed-name adoption of a
   raw Ubuntu VM (`dev` user, prereqs, agent, `BROWSER`, forwards after),
-  idempotent re-run. The remote-box run on `cloud` is pending: the box was
-  OOM-killing apt at the time (its own fault, see below).
+  idempotent re-run. The remote-box run on `cloud` passed once the box
+  recovered (prereqs including gh and mosh, the hook, nothing written to
+  config).
 - **Step 5 landed 2026-10-17**: `devvm.toml` is the only config file
   (`[templates.*]` + `[machines.*]` with `backend ∈ remote|hub` mandatory,
   `managed` default false, `host`/`user`/`transport`/`mosh_server`/
@@ -77,8 +78,10 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
 - **Step 6, hand migration**: ThinkPad done (only a smol conf; `machines/`
   moved to `~/devvm-machines.bak`). This devvm guest done (`devvm.toml` with
   the default template and `cloud`/`h`/`scottdev3`/`tp`; old tree in
-  `~/devvm-old-config/`). `cloud` pending (the box was OOM, see known
-  issues). Release after it.
+  `~/devvm-old-config/`). `cloud` done (`devvm.toml` with its adopted
+  `scottdev3`; the fake smolvm now emits `created_at`, so its `web` is
+  managed). **All three hosts run the step 5 build on the new layout.**
+  Release v0.1.16 after a whole-redesign review.
 
 ## Provider backend, steps 0–1 (in parallel, since 2026-10-17)
 
@@ -205,6 +208,14 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 ## Known issues (pre-existing, found by live runs, not fixed)
 
 Real:
+
+- **An external `devvm exec` storm can exhaust a fake-smolvm hub.** On
+  2026-10-17 the cloud hub received ~7,800 `exec web -- … toggledark dark`
+  calls in two hours (one per second, from outside devvm's own code: an
+  appearance-sync hook on a client), each a real login shell on the box
+  (the fake's guest is the host), until apt and sshd were OOM-killed. devvm
+  itself has no rate limit on proxied `exec`; the real question is what
+  client sent them.
 
 - **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
   caps `machine exec` streamed stdout at 11534336 bytes, and `downloadArchive`
