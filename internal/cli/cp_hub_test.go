@@ -35,6 +35,9 @@ func TestMain(m *testing.M) {
 		// A test standing in its own replacement daemon names its socket:
 		// the refusal waits (bounded) for that to listen, as a real
 		// daemon's come-up would, instead of racing it to Dial's check.
+		if f := os.Getenv(testDaemonSpawnedEnv); f != "" {
+			_ = os.WriteFile(f, nil, 0o600)
+		}
 		if sock := os.Getenv(testDaemonWaitEnv); sock != "" {
 			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 				if c, err := net.Dial("unix", sock); err == nil {
@@ -54,6 +57,10 @@ func TestMain(m *testing.M) {
 
 // testDaemonWaitEnv names a socket the refused `__daemon` waits for.
 const testDaemonWaitEnv = "DEVVM_TEST_DAEMON_WAIT_SOCK"
+
+// testDaemonSpawnedEnv names a file the refused `__daemon` creates first,
+// so a test standing in the replacement starts it only once one is spawned.
+const testDaemonSpawnedEnv = "DEVVM_TEST_DAEMON_SPAWNED"
 
 const marker = tarMarker + "\n"
 

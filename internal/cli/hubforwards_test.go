@@ -250,7 +250,7 @@ func TestSessionRefusesHubMachine(t *testing.T) {
 // brought back on the replacement.
 func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 	old := daemonGoneTimeout
-	daemonGoneTimeout = 10 * time.Second // a loaded macOS CI runner under -race took >2s to tear the stand-in down
+	daemonGoneTimeout = 10 * time.Second // bounded, so a stuck wait fails fast instead of after 90s
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: &out}
@@ -260,23 +260,27 @@ func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf}},
 		}},
 	}, true)
-	// The replacement: what `__daemon h/web` would be, listening as soon as
-	// the old socket is gone (the test binary itself runs no daemon).
+	// The replacement: what `__daemon h/web` would be, listening once
+	// restartDaemon has spawned it (the test binary itself runs no daemon).
+	// Not as soon as the old socket is gone: WaitGone polls, and a
+	// replacement up between two polls looks like the old daemon never
+	// left (macOS CI hit that every run).
 	sock := filepath.Join(a.Paths.RuntimeDir(), "h@web.sock")
-	// The spawned `__daemon` (this test binary, which refuses) exits within
-	// a millisecond; it waits for the stand-in to listen first, or Dial's
+	// The spawned `__daemon` (this test binary, which refuses) marks that it
+	// ran, then waits for the stand-in to listen before exiting, or Dial's
 	// check after the exit races the goroutine below.
+	spawned := filepath.Join(t.TempDir(), "spawned")
+	t.Setenv(testDaemonSpawnedEnv, spawned)
 	t.Setenv(testDaemonWaitEnv, sock)
 	next := make(chan *ownerDaemon, 1)
 	go func() {
-		for len(first.requests(session.OpStop)) == 0 {
-			time.Sleep(time.Millisecond)
-		}
-		for {
-			if _, err := os.Stat(sock); os.IsNotExist(err) {
+		for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Millisecond) {
+			if _, err := os.Stat(spawned); err == nil {
 				break
 			}
-			time.Sleep(time.Millisecond)
+			if time.Now().After(deadline) {
+				return // no spawn: restartDaemons' result says why
+			}
 		}
 		next <- serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 			session.OpList: {OK: true, State: session.StateUp, Version: Version},
@@ -285,6 +289,9 @@ func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 	res := a.restartDaemons()
 	if strings.Join(res.cycled, ",") != "h/web" || len(res.failed)+len(res.skipped) != 0 {
 		t.Fatalf("res = %+v\n%s", res, out.String())
+	}
+	if stops := first.requests(session.OpStop); len(stops) != 1 {
+		t.Errorf("stops sent to the old daemon = %d", len(stops))
 	}
 	if adds := (<-next).requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 {
 		t.Errorf("forwards on the replacement = %+v", adds)
