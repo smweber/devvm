@@ -239,6 +239,17 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 ## Known issues (pre-existing, found by live runs, not fixed)
 
+- **Menu bar app, cp-out path completion into a directory** (user, 2026-10-17):
+  Tab cycles through files and directories, but after selecting a directory
+  a further Tab does not descend into it; the user has to type a second `/`
+  and delete it before Tab lists the directory's contents. The completer
+  should treat a selected directory (trailing `/`) as the new prefix.
+- **`TestWatchFollowsSymlinkRetarget` is flaky on macOS CI** (2026-10-17):
+  the kqueue watcher sometimes misses a symlink renamed over `devvm.toml`
+  under `-race` on the runner; the watcher code did not change between a
+  passing and two failing runs. Real-world impact: a stow relink of
+  devvm.toml on a Mac may not be noticed by a running `status --watch`
+  until the next event.
 Real:
 
 - **An external `devvm exec` storm can exhaust a fake-smolvm hub.** On
