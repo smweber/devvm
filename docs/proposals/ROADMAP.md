@@ -194,7 +194,10 @@ redesign: they build on resolve's source list, templates, `setup` and
 4. **Mac tests** when at the laptop: the v0.1.14 menubar changes (drop shelf,
    Tab completion, save panel), the step 3 fifth-column Swift change, and a
    Mac as a smol hub (`smolvm machine create` and `open` from an sshd
-   session; a daemon spawned there surviving logout).
+   session; a daemon spawned there surviving logout). Also cp-out path
+   completion into a directory (written blind): cycle to a directory, then
+   "/" goes in (no doubled slash) and Right arrow accepts so the next Tab
+   does; a unique directory is still entered by the next Tab.
 
 ## Hubs + browser bridge (done)
 
@@ -241,12 +244,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
    handed over with `setup --adopt` (config §2–3).
 
 ## Known issues (pre-existing, found by live runs, not fixed)
-
-- **Menu bar app, cp-out path completion into a directory** (user, 2026-10-17):
-  Tab cycles through files and directories, but after selecting a directory
-  a further Tab does not descend into it; the user has to type a second `/`
-  and delete it before Tab lists the directory's contents. The completer
-  should treat a selected directory (trailing `/`) as the new prefix.
 
 - **An external `devvm exec` storm can exhaust a fake-smolvm hub.** On
   2026-10-17 the cloud hub received ~7,800 `exec web -- … toggledark dark`

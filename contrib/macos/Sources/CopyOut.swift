@@ -30,6 +30,10 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     /// Set while a completion rewrites the field, so the change it causes
     /// is not mistaken for the user editing.
     private var applying = false
+    /// The directory (ending in "/") the last completion wrote into the
+    /// field, until the user edits it: a "/" typed right after it accepts
+    /// it and goes in rather than doubling the slash.
+    private var completedDir: String?
 
     init(devvm: Devvm, machine: String) {
         self.devvm = devvm
@@ -103,6 +107,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         inFlight = nil
         pendingTab = false
         completer = TabCompleter()
+        completedDir = nil
         hint.stringValue = ""
         hint.toolTip = nil
     }
@@ -111,6 +116,21 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
 
     func controlTextDidChange(_ obj: Notification) {
         guard !applying else { return }
+        // A "/" typed after a directory a completion just wrote (the field
+        // reads "src//"): accept that directory, drop the extra "/" and go
+        // in, as a Tab on "src/" outside a cycle does. Without this, a
+        // directory reached by cycling could only be entered by typing "/"
+        // and deleting it again before the next Tab.
+        if let dir = completedDir, field.stringValue == dir + "/" {
+            completer.edited()
+            pendingTab = false
+            debounce?.invalidate()
+            debounce = nil
+            setText(dir)
+            tab(backwards: false)
+            return
+        }
+        completedDir = nil
         // The user edited: any cycle ends, and a Tab still waiting for its
         // lookup is dropped (it was for text that no longer exists).
         completer.edited()
@@ -196,6 +216,24 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
             tab(backwards: true)
             return true
         }
+        // Right arrow or Cmd-Right on a cycled candidate accepts it: the text
+        // stays, the cycle ends, so the next Tab enters a directory instead
+        // of moving on. The caret movement itself still happens.
+        let accepts: [Selector] = [
+            #selector(NSResponder.moveRight(_:)),
+            #selector(NSResponder.moveToEndOfLine(_:)),
+            #selector(NSResponder.moveToRightEndOfLine(_:)),
+            #selector(NSResponder.moveToEndOfParagraph(_:)),
+            #selector(NSResponder.moveToEndOfDocument(_:)),
+        ]
+        if accepts.contains(commandSelector), let shown = completer.shown, shown == field.stringValue {
+            completer.edited()
+            hint.stringValue = ""
+            hint.toolTip = nil
+            // Fetch the directory's entries now, so the next Tab lists them
+            // without waiting.
+            if shown.hasSuffix("/") && inFlight != shown { lookup() }
+        }
         return false
     }
 
@@ -241,6 +279,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private func setText(_ s: String) {
         applying = true
         defer { applying = false }
+        completedDir = s.hasSuffix("/") ? s : nil
         guard let editor = field.currentEditor() as? NSTextView else {
             field.stringValue = s
             return

@@ -60,6 +60,24 @@ struct PathCompletion {
 /// - several with nothing left to grow: each Tab cycles to the next
 ///   candidate, Shift-Tab to the previous, wrapping around.
 /// Any edit by the user ends a cycle (`edited()`).
+///
+/// Going into a directory. A Tab always works on the text as it stands:
+/// once the text ends in "/" and no cycle is showing it, the answer that
+/// produced it cannot cover it (the text added a "/" past that answer's
+/// query, see `PathCompletion.candidates(for:)`), so the Tab looks the
+/// directory up and lists it like any other prefix, common-prefix step
+/// included. A unique directory is therefore entered by the next Tab. A
+/// directory shown by a cycle is not: Tab there moves on to the next
+/// candidate, or "srv/" after "src/" could never be reached. Such a
+/// directory is *accepted* instead, which ends the cycle with the text
+/// unchanged, as zsh does (CopyOutPanel):
+/// - typing "/" after a directory a completion just wrote (cycled or
+///   unique) accepts it, the doubled "/" is dropped, and the panel Tabs at
+///   once, so "/" means "go in": the listing appears as for a Tab;
+/// - Right arrow or Cmd-Right while a cycle shows a candidate
+///   accepts it without changing the text; the next Tab then enters a
+///   directory (and its listing is fetched meanwhile).
+/// A file shown by a cycle keeps cycling on Tab, as before.
 struct TabCompleter {
     enum Outcome {
         /// No answer covers the current text yet: look it up, and Tab
@@ -80,6 +98,9 @@ struct TabCompleter {
 
     var isCycling: Bool { cycleIndex >= 0 && cycleIndex < cycle.count }
 
+    /// The candidate a cycle shows now, nil when there is no cycle.
+    var shown: String? { isCycling ? cycle[cycleIndex] : nil }
+
     /// A lookup landed. An in-progress cycle keeps its own candidates.
     mutating func received(_ answer: PathCompletion) {
         self.answer = answer
@@ -92,7 +113,9 @@ struct TabCompleter {
         answer = nil
     }
 
-    /// The user changed the text (typing, deleting, pasting).
+    /// The user changed the text (typing, deleting, pasting), or accepted
+    /// the candidate a cycle shows: either way the next Tab works on the
+    /// text itself.
     mutating func edited() {
         cycle = []
         cycleIndex = -1
