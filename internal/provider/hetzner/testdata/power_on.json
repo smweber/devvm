@@ -1,0 +1,134 @@
+[
+  {
+    "method": "POST",
+    "path": "/servers/170855058/actions/poweron",
+    "status": 201,
+    "response": {
+      "action": {
+        "id": 662009086313835,
+        "command": "start_server",
+        "started": "2026-10-17T04:02:25Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313835",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313835,
+        "command": "start_server",
+        "started": "2026-10-17T04:02:25Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313835",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313835,
+        "command": "start_server",
+        "started": "2026-10-17T04:02:25Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313835",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313835,
+        "command": "start_server",
+        "started": "2026-10-17T04:02:25Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313835",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313835,
+        "command": "start_server",
+        "started": "2026-10-17T04:02:25Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313835",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313835,
+        "command": "start_server",
+        "started": "2026-10-17T04:02:25Z",
+        "finished": "2026-10-17T04:02:31Z",
+        "progress": 100,
+        "status": "success",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  }
+]

@@ -1,0 +1,32 @@
+[
+  {
+    "method": "POST",
+    "path": "/servers",
+    "request": {
+      "image": "ubuntu-24.04",
+      "labels": {
+        "devvm": "true",
+        "devvm-template": "record"
+      },
+      "location": "nbg1",
+      "name": "devvm-rec-d84193",
+      "public_net": {
+        "enable_ipv4": true,
+        "enable_ipv6": true
+      },
+      "server_type": "cx23",
+      "ssh_keys": [
+        "devvm-rec-d84193"
+      ],
+      "start_after_create": true
+    },
+    "status": 409,
+    "response": {
+      "error": {
+        "code": "uniqueness_error",
+        "message": "server name is already used",
+        "details": {}
+      }
+    }
+  }
+]

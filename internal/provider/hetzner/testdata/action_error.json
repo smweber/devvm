@@ -1,0 +1,20 @@
+[
+  {
+    "note": "hand-written in the documented action shape: a recording can't make an action fail on demand",
+    "method": "POST",
+    "path": "/servers/42/actions/poweron",
+    "status": 201,
+    "response": {
+      "action": {"id": 9001, "command": "start_server", "status": "running", "progress": 0, "started": "2026-10-17T12:00:00Z", "finished": null, "resources": [{"id": 42, "type": "server"}], "error": null}
+    }
+  },
+  {
+    "note": "hand-written",
+    "method": "GET",
+    "path": "/actions/9001",
+    "status": 200,
+    "response": {
+      "action": {"id": 9001, "command": "start_server", "status": "error", "progress": 100, "started": "2026-10-17T12:00:00Z", "finished": "2026-10-17T12:00:05Z", "resources": [{"id": 42, "type": "server"}], "error": {"code": "action_failed", "message": "Action failed"}}
+    }
+  }
+]

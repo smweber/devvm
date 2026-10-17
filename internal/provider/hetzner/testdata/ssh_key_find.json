@@ -1,0 +1,29 @@
+[
+  {
+    "method": "GET",
+    "path": "/ssh_keys?name=devvm-rec-d84193",
+    "status": 200,
+    "response": {
+      "ssh_keys": [
+        {
+          "id": 131413975,
+          "name": "devvm-rec-d84193",
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdDOiwcDAcfwtvmTFkBOudzCPqpxlZ/yV7SbzpZe2I5 devvm-rec-d84193",
+          "fingerprint": "cd:f9:73:3c:58:28:ad:44:ed:a8:86:03:87:e1:8c:e8",
+          "labels": {},
+          "created": "2026-10-17T04:01:31Z"
+        }
+      ],
+      "meta": {
+        "pagination": {
+          "last_page": 1,
+          "next_page": null,
+          "page": 1,
+          "per_page": 25,
+          "previous_page": null,
+          "total_entries": 1
+        }
+      }
+    }
+  }
+]

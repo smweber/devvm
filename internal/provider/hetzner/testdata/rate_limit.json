@@ -1,0 +1,15 @@
+[
+  {
+    "note": "hand-written in the documented error shape: a recording can't provoke a rate limit on demand",
+    "method": "GET",
+    "path": "/servers?page=1&per_page=50",
+    "status": 429,
+    "response": {
+      "error": {
+        "code": "rate_limit_exceeded",
+        "message": "limit of 3600 requests per hour reached",
+        "details": {}
+      }
+    }
+  }
+]

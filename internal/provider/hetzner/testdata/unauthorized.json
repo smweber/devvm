@@ -1,0 +1,14 @@
+[
+  {
+    "method": "GET",
+    "path": "/servers?page=1\u0026per_page=50",
+    "status": 401,
+    "response": {
+      "error": {
+        "code": "unauthorized",
+        "details": null,
+        "message": "the token you have provided is invalid"
+      }
+    }
+  }
+]

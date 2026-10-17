@@ -1,0 +1,10 @@
+{
+  "server": "devvm-rec-d84193",
+  "server_v6": "devvm-rec-d84193-b",
+  "missing": "devvm-rec-d84193-absent",
+  "key": "devvm-rec-d84193",
+  "key_dup": "devvm-rec-d84193-dup",
+  "pubkey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdDOiwcDAcfwtvmTFkBOudzCPqpxlZ/yV7SbzpZe2I5 devvm-rec-d84193",
+  "selector": "devvm=true,devvm-template=record",
+  "per_page": 1
+}

@@ -105,6 +105,7 @@ internal/session/   per-machine forward daemon (owns the exec) + client + transp
                     relays; bridge.go = URL classify/bind/deliver (browser bridge)
 internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
+internal/provider/  cloud providers: Provider interface + hetzner/ (plain REST) + fake/
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
 internal/auth/      login orchestration, URL bridge, callback-as-forward
 internal/bootstrap/ the guest steps of `setup`: EnsureUser, prereqs (install on managed /

@@ -1,0 +1,178 @@
+[
+  {
+    "method": "POST",
+    "path": "/servers/170855058/actions/poweroff",
+    "status": 201,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313755",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313755,
+        "command": "stop_server",
+        "started": "2026-10-17T04:02:17Z",
+        "finished": "2026-10-17T04:02:24Z",
+        "progress": 100,
+        "status": "success",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  }
+]
