@@ -220,7 +220,7 @@ func (a *App) completeAnyMachine(cmd *cobra.Command, args []string, toComplete s
 // shell scripts do their own filtering — except that `devvm __complete
 // attach h/` is also read directly (the menu bar app, the roadmap's live
 // check), so "the hub's machines" must be what comes back for `h/`. The
-// names come from listMachines: confs, hub tables, the cache — never a
+// names come from listMachines: confs, saved forwards, the cache — never a
 // dial, so completion of a sleeping hub costs nothing.
 func withPrefix(names []string, prefix string) []string {
 	if prefix == "" {

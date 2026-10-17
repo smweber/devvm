@@ -17,7 +17,8 @@ func writeConf(t *testing.T, dir, name, raw string) {
 	}
 }
 
-// A hub conf with [machines.NAME] tables loads, validates, and survives Save
+// A hub conf with old [machines.NAME] tables (read only to seed saved
+// forwards, see ports.go) loads, validates, and survives Save
 // (which strips zero-int and default lines by column-0 regex; the nested
 // tables are indented and must come through untouched).
 func TestHubConfRoundTrip(t *testing.T) {
@@ -81,7 +82,7 @@ func TestValidateHub(t *testing.T) {
 	}{
 		{"bare hub", hub(func(m *Machine) {}), ""},
 		{"no host", hub(func(m *Machine) { m.SSHHost = "" }), "ssh_host"},
-		{"ports", hub(func(m *Machine) { m.Ports = []string{"3000"} }), "ports"},
+		{"ports", hub(func(m *Machine) { m.LegacyPorts = []string{"3000"} }), "ports"},
 		{"memory", hub(func(m *Machine) { m.Memory = 1024 }), "memory"},
 		{"disk", hub(func(m *Machine) { m.Disk = 10 }), "disk"},
 		{"repos", hub(func(m *Machine) { m.Repos = []string{"a/b"} }), "repos"},
@@ -89,7 +90,7 @@ func TestValidateHub(t *testing.T) {
 		{"default hook ok", hub(func(m *Machine) { m.BootstrapHook = DefaultBootstrapHook }), ""},
 		{"github keys", hub(func(m *Machine) { m.AuthorizedKeysGithub = []string{"a"} }), "authorized_keys_github"},
 		{"harden", hub(func(m *Machine) { m.Harden = true }), "harden"},
-		{"several named", hub(func(m *Machine) { m.Ports = []string{"1"}; m.Memory = 1 }), "ports, memory"},
+		{"several named", hub(func(m *Machine) { m.LegacyPorts = []string{"1"}; m.Memory = 1 }), "ports, memory"},
 		{"mosh ok", hub(func(m *Machine) { m.Transport = TransportMosh }), ""},
 		{"tables ok", hub(func(m *Machine) { m.Machines = map[string]HubMachine{"web": {Ports: []string{"1"}}} }), ""},
 		{"bad table name", hub(func(m *Machine) { m.Machines = map[string]HubMachine{"a/b": {}} }), "[machines.a/b]"},
@@ -187,16 +188,13 @@ func TestLoadHubMachine(t *testing.T) {
 	if m.SSHHost != "u@host" || m.SSHPort != 2222 || m.Identity != "~/.ssh/k" {
 		t.Errorf("hub ssh fields not carried: %+v", m)
 	}
-	if len(m.Ports) != 1 || m.Ports[0] != "3000" {
-		t.Errorf("table ports not carried: %v", m.Ports)
-	}
 	if err := m.Save(dir); err == nil {
-		t.Error("Save on a hub-machine record should refuse (the table lives in the hub conf)")
+		t.Error("Save on a hub-machine record should refuse (it is derived from the hub conf)")
 	}
 
 	// A machine with no table is still a valid reference: resolve never asks
 	// the hub whether it exists.
-	if m2, err := LoadHubMachine(dir, "h/api"); err != nil || len(m2.Ports) != 0 {
+	if m2, err := LoadHubMachine(dir, "h/api"); err != nil || m2.Name != "h/api" {
 		t.Errorf("untabled machine: m=%+v err=%v", m2, err)
 	}
 	if _, err := LoadHubMachine(dir, "r/web"); err == nil || !strings.Contains(err.Error(), "not a hub") {

@@ -198,17 +198,20 @@ func (a *App) reposCmd() *cobra.Command {
 	return c
 }
 
-// portsCmd groups per-machine port forwarding: add/rm/list mutate the conf,
-// up/down drive the live forwards.
+// portsCmd groups per-machine port forwarding: add/rm/list edit this host's
+// saved forwards (<State>/ports/NAME, never the conf), up/down drive the live
+// forwards.
 func (a *App) portsCmd() *cobra.Command {
 	c := &cobra.Command{Use: "ports", Short: "Manage a machine's port forwards"}
 
+	var ephemeral bool
 	add := &cobra.Command{
 		Use:   "add NAME HOST:GUEST",
 		Short: "Forward host port HOST -> guest GUEST (auto-bumps on conflict)",
 		Args:  cobra.ExactArgs(2),
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPort(args[0], args[1]) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPort(args[0], args[1], ephemeral) },
 	}
+	add.Flags().BoolVar(&ephemeral, "ephemeral", false, "forward now without saving it (lasts as long as the forward daemon)")
 	rm := &cobra.Command{
 		Use:   "rm NAME HOST:GUEST",
 		Short: "Remove a configured forward + tear it down",
@@ -304,7 +307,7 @@ func (a *App) deleteCmd() *cobra.Command {
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], force) },
 	}
 	c.Flags().BoolVar(&force, "force", false,
-		"hub: delete even if it has [machines.*] entries or live forward daemons (stops them)")
+		"hub: delete even if this host has saved forwards or live forward daemons for its machines (drops/stops them)")
 	a.machineArg(c)
 	c.ValidArgsFunction = a.completeAnyMachine // delete takes a hub too
 	return c

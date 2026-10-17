@@ -88,10 +88,15 @@ func serveOwnerDaemon(t *testing.T, configDir config.Paths, name string, resp ma
 	return od
 }
 
-func saveRemote(t *testing.T, dir, name string, ports ...string) {
+// saveRemote registers an adopted remote and saves ports as this host's
+// forwards for it.
+func saveRemote(t *testing.T, paths config.Paths, name string, ports ...string) {
 	t.Helper()
-	m := &config.Machine{Name: name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: ports}
-	if err := m.Save(dir); err != nil {
+	m := &config.Machine{Name: name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example"}
+	if err := m.Save(paths.Config); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePorts(paths, name, ports); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -102,7 +107,7 @@ func saveRemote(t *testing.T, dir, name string, ports ...string) {
 func TestUnportDropsOnlyTheRightOwner(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "box", "3000")
+	saveRemote(t, a.Paths, "box", "3000")
 	list := session.Response{OK: true, State: session.StateUp, Forwards: []session.Forward{
 		{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf, session.OwnerConnection}},
 		{Host: 1455, Guest: 1455, Owners: []string{session.OwnerTTL}},
@@ -125,8 +130,8 @@ func TestUnportDropsOnlyTheRightOwner(t *testing.T) {
 	if !strings.Contains(out.String(), "localhost:3000 stays up: still held by connection") {
 		t.Errorf("output lacks the surviving owner:\n%s", out.String())
 	}
-	if m, _ := config.LoadAny(a.Paths.Config, "box"); len(m.Ports) != 0 {
-		t.Errorf("conf still lists %v", m.Ports)
+	if saved, _ := config.LoadPorts(a.Paths, "box"); len(saved) != 0 {
+		t.Errorf("ports file still lists %v", saved)
 	}
 
 	od.mu.Lock()
@@ -158,9 +163,9 @@ func TestUnportDropsOnlyTheRightOwner(t *testing.T) {
 func TestTunnelDownLeavesAHeldDaemon(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "held", "3000")
-	saveRemote(t, a.Paths.Config, "free", "3000")
-	saveRemote(t, a.Paths.Config, "old", "3000")
+	saveRemote(t, a.Paths, "held", "3000")
+	saveRemote(t, a.Paths, "free", "3000")
+	saveRemote(t, a.Paths, "old", "3000")
 	held := serveOwnerDaemon(t, a.Paths, "held", map[string]session.Response{
 		session.OpDown: {OK: true, Sessions: 1},
 	}, false)
@@ -200,7 +205,7 @@ func TestTunnelDownLeavesAHeldDaemon(t *testing.T) {
 func TestPortsListShowsOwners(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "box", "3000")
+	saveRemote(t, a.Paths, "box", "3000")
 	serveOwnerDaemon(t, a.Paths, "box", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Sessions: 2, Forwards: []session.Forward{
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf, session.OwnerConnection}},
@@ -239,9 +244,9 @@ func TestPortsListShowsOwners(t *testing.T) {
 // `down` (ports configured) or `-`, never `up:0`.
 func TestStatusPlainCountsConfOwnersOnly(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "mixed", "3000")
-	saveRemote(t, a.Paths.Config, "sessonly", "3000")
-	saveRemote(t, a.Paths.Config, "bare")
+	saveRemote(t, a.Paths, "mixed", "3000")
+	saveRemote(t, a.Paths, "sessonly", "3000")
+	saveRemote(t, a.Paths, "bare")
 	serveOwnerDaemon(t, a.Paths, "mixed", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Forwards: []session.Forward{
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf}},
@@ -278,7 +283,7 @@ func TestRestartDaemonsCyclesSessionHeldDaemon(t *testing.T) {
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "held")
+	saveRemote(t, a.Paths, "held")
 	od := serveOwnerDaemon(t, a.Paths, "held", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Version: "v0.0.1", Sessions: 1, Forwards: []session.Forward{
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConnection}},
@@ -305,7 +310,7 @@ func TestRestartDaemonsDoesNotRespawnAfterPortsDown(t *testing.T) {
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "downed", "3000")
+	saveRemote(t, a.Paths, "downed", "3000")
 	od := serveOwnerDaemon(t, a.Paths, "downed", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Version: "v0.0.1", Sessions: 1, Forwards: []session.Forward{
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConnection}}, // configured port, not conf-owned

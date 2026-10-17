@@ -40,6 +40,7 @@ type statusRow struct {
 	disk    int // GiB (smol conf spec)
 	host    string
 	fwds    fwdSummary
+	saved   bool   // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
 	note    string // e.g. "unregistered"
 	m       *config.Machine
 }
@@ -135,7 +136,7 @@ func plainForwards(r statusRow) string {
 	switch {
 	case r.fwds.daemon && r.fwds.conf > 0:
 		return fmt.Sprintf("%s:%d", r.fwds.state, r.fwds.conf)
-	case r.m != nil && len(r.m.Ports) > 0:
+	case r.saved:
 		return "down"
 	default:
 		return "-"
@@ -186,7 +187,7 @@ func (a *App) renderVerboseDetail(r statusRow) {
 	if r.hub != "" && r.name != r.hub {
 		// The HOST column carries the hub; the backend the hub reported for
 		// the machine has nowhere else to show in the human table. A row the
-		// hub did not name (this host's table or daemon only) has none.
+		// hub did not name (this host's saved forwards or daemon only) has none.
 		if r.backend == config.BackendHub {
 			fmt.Fprintf(a.Stdout, "    backend: unknown (hub %s does not list it)\n", r.hub)
 		} else {
@@ -255,6 +256,8 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 			name: sm.Name, backend: config.BackendSmol,
 			state:  smolStateLabel(sm.State != "not created", sm.State == "running"),
 			exists: sm.State != "not created", running: sm.State == "running",
+			// No `saved`: a stray file under an unregistered name reads `-`,
+			// as listMachines ignores stray local files too.
 			note: "unregistered", fwds: a.forwardSummary(sm.Name),
 		})
 	}
@@ -281,8 +284,8 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 // reports for a machine); `-v` prints the reported backend under the row.
 // The
 // machine set is the union of what the hub listed (fresh, or cached when it
-// did not answer) and what this host knows on its own — a [machines.NAME]
-// table, a live run/HUB@NAME.sock — so a laptop-side forward for a machine
+// did not answer) and what this host knows on its own — saved forwards
+// (ports/HUB@NAME), a live run/HUB@NAME.sock — so a laptop-side forward for a machine
 // the hub no longer lists still shows, with state `?` (the hub answered and
 // did not name it; `delete HUB/NAME` clears it) and backend `hub` (nothing
 // reported one). State and backend otherwise come from the hub's row, the
@@ -301,10 +304,7 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 	for _, r := range l.rows {
 		byName[r.name], names[r.name] = r, true
 	}
-	for n := range hub.Machines {
-		names[n] = true
-	}
-	for _, display := range liveHubSockets(a.Paths) {
+	for _, display := range append(savedHubPorts(a.Paths), liveHubSockets(a.Paths)...) {
 		if h, n, _, _ := config.SplitHubName(display); h == hub.Name {
 			names[n] = true
 		}
@@ -318,7 +318,8 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 		display := config.JoinHubName(hub.Name, n)
 		r := statusRow{
 			name: display, hub: hub.Name, host: hub.SSHHost,
-			m: &config.Machine{Name: display, Hub: hub, Backend: config.BackendHub, Ports: hub.Machines[n].Ports},
+			m:     &config.Machine{Name: display, Hub: hub, Backend: config.BackendHub},
+			saved: a.hasSavedPorts(display),
 		}
 		if hr, ok := byName[n]; ok {
 			r.backend, r.state = hr.backend, hr.state
@@ -354,8 +355,16 @@ func smolSnapshot() smolMachines {
 	return s
 }
 
+// hasSavedPorts reports whether this host has saved forwards for name,
+// which is what lets --plain say `down` for a stopped VM: the list is on
+// the host, so no daemon or guest needs to answer.
+func (a *App) hasSavedPorts(name string) bool {
+	saved, _ := a.savedPorts(name)
+	return len(saved) > 0
+}
+
 func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
-	r := statusRow{name: m.Name, backend: m.Backend, m: m, mem: m.Memory, disk: m.Disk, host: m.SSHHost}
+	r := statusRow{name: m.Name, backend: m.Backend, m: m, mem: m.Memory, disk: m.Disk, host: m.SSHHost, saved: a.hasSavedPorts(m.Name)}
 	if m.Backend == config.BackendSmol {
 		if !smols.available {
 			r.state = "?"

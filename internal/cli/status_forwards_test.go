@@ -12,24 +12,24 @@ import (
 // The plain forward column is the menu bar app's only signal for "forwards are
 // down or stuck reconnecting", so its four shapes are pinned here.
 func TestPlainForwards(t *testing.T) {
-	withPorts := &config.Machine{Name: "m", Ports: []string{"8080:8080"}}
+	// saved is "this host has a ports file for it" (config.LoadPorts).
 	noPorts := &config.Machine{Name: "m"}
 	for _, tc := range []struct {
 		name string
 		row  statusRow
 		want string
 	}{
-		{"daemon up", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2, conf: 2}}, "up:2"},
-		{"daemon reconnecting", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1, conf: 1}}, "reconnecting:1"},
+		{"daemon up", statusRow{m: noPorts, saved: true, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2, conf: 2}}, "up:2"},
+		{"daemon reconnecting", statusRow{m: noPorts, saved: true, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1, conf: 1}}, "reconnecting:1"},
 		// N counts conf owners only (browser-bridge.md §8).
-		{"conf plus session forwards", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 3, conf: 1}}, "up:1"},
+		{"conf plus session forwards", statusRow{m: noPorts, saved: true, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 3, conf: 1}}, "up:1"},
 		// up:0 / reconnecting:0 are never emitted: a daemon with no conf
 		// forward reads like no daemon at all.
 		{"daemon idle with nothing configured", statusRow{m: noPorts, fwds: fwdSummary{daemon: true, state: session.StateUp}}, "-"},
 		{"session-only forwards, nothing configured", statusRow{m: noPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2}}, "-"},
-		{"session-only forwards, ports configured", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2}}, "down"},
-		{"reconnecting with no conf forward", statusRow{m: withPorts, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1}}, "down"},
-		{"ports configured, no daemon", statusRow{m: withPorts}, "down"},
+		{"session-only forwards, ports configured", statusRow{m: noPorts, saved: true, fwds: fwdSummary{daemon: true, state: session.StateUp, n: 2}}, "down"},
+		{"reconnecting with no conf forward", statusRow{m: noPorts, saved: true, fwds: fwdSummary{daemon: true, state: session.StateReconnecting, n: 1}}, "down"},
+		{"ports configured, no daemon", statusRow{m: noPorts, saved: true}, "down"},
 		{"nothing configured", statusRow{m: noPorts}, "-"},
 		{"unregistered smol (no conf)", statusRow{}, "-"},
 	} {
@@ -72,7 +72,10 @@ func TestSinceHuman(t *testing.T) {
 // machine (a --watch re-emit would otherwise spawn N+1 subprocesses).
 func TestRowForSmolUsesSnapshot(t *testing.T) {
 	a := &App{Paths: testPaths(t.TempDir())}
-	m := &config.Machine{Name: "vm", Backend: config.BackendSmol, Ports: []string{"80:80"}}
+	m := &config.Machine{Name: "vm", Backend: config.BackendSmol}
+	if err := config.SavePorts(a.Paths, "vm", []string{"80:80"}); err != nil {
+		t.Fatal(err)
+	}
 	if got := a.rowFor(m, smolMachines{available: false}).state; got != "?" {
 		t.Errorf("smolvm missing: state = %q, want ?", got)
 	}
@@ -80,9 +83,11 @@ func TestRowForSmolUsesSnapshot(t *testing.T) {
 	if r := a.rowFor(m, snap); r.state != "running" || !r.running || !r.exists || plainForwards(r) != "down" {
 		t.Errorf("running vm: row = %+v, forwards %q", r, plainForwards(r))
 	}
+	// Stopped, with no daemon to ask: still `down`, since the saved list
+	// is on this host.
 	snap.state["vm"] = "stopped"
-	if got := a.rowFor(m, snap).state; got != "stopped" {
-		t.Errorf("stopped vm: state = %q", got)
+	if r := a.rowFor(m, snap); r.state != "stopped" || plainForwards(r) != "down" {
+		t.Errorf("stopped vm: state = %q, forwards %q, want stopped/down", r.state, plainForwards(r))
 	}
 	delete(snap.state, "vm")
 	if got := a.rowFor(m, snap).state; got != "dormant" {

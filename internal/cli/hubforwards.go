@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,7 +14,7 @@ import (
 
 // Hub forwards (docs/proposals/hub.md §7, roadmap step 6). `ports … HUB/NAME`
 // runs here, on this host: the forwards are this host's own, inherently per
-// client, so they are recorded in the hub conf's [machines.NAME] table and
+// client, so they are saved in this host's ports file for HUB@NAME and
 // carried by this host's daemon for HUB@NAME, whose hubTransport holds one
 // `__session NAME` on the hub. The hub's daemon owns the only agent exec;
 // this host never spawns one into a hub VM.
@@ -84,27 +85,44 @@ func (a *App) resolveForwardsConf(name string) (*config.Machine, backend.Backend
 	return a.resolve(name)
 }
 
-// editPorts rewrites a machine's configured ports. A local machine saves
-// its own conf. A hub machine's ports are its [machines.NAME] table in the
-// hub conf, which every machine on that hub shares, so the edit re-reads
-// the table and saves under the hub conf's flock (config.UpdateHubMachine):
-// two `ports add` for different machines on one hub must both land. m.Ports
-// is refreshed to what was saved.
+// savedPorts is a machine's saved forwards on this host (config.LoadPorts),
+// the list `start` and `ports up` bring up. It is the only place the CLI
+// reads them: the daemon never does, it gets each forward from a client.
+func (a *App) savedPorts(name string) ([]string, error) {
+	return config.LoadPorts(a.Paths, name)
+}
+
+// editPorts rewrites a machine's saved forwards, local or HUB/NAME alike,
+// under the file's lock (config.LockPorts): two `ports add` for one machine
+// must both land, as two for machines on one hub did under the old hub-conf
+// flock. A machine whose conf (its hub's, for HUB/NAME) existed when the
+// edit began but is gone once the lock is held was deleted meanwhile;
+// `delete` removes the conf before it clears the file under this lock, so
+// the edit refuses rather than leave a stray file behind. An unregistered
+// smol VM has no conf to check. An edit that changes nothing writes nothing.
 func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
-	if !m.IsHubMachine() {
-		m.Ports = edit(m.Ports)
-		return m.Save(a.Paths.Config)
+	conf := m.Name
+	if m.IsHubMachine() {
+		conf = m.Hub.Name
 	}
-	machine := m.HubMachineName()
-	h, err := config.UpdateHubMachine(a.Paths.Config, m.Hub.Name, machine, func(hm *config.HubMachine) error {
-		hm.Ports = edit(hm.Ports)
-		return nil
-	})
+	registered := config.Exists(a.Paths.Config, conf)
+	unlock, err := config.LockPorts(a.Paths, m.Name)
 	if err != nil {
 		return err
 	}
-	m.Hub, m.Ports = h, h.Machines[machine].Ports
-	return nil
+	defer unlock()
+	if registered && !config.Exists(a.Paths.Config, conf) {
+		return fmt.Errorf("'%s' was deleted while its forwards were being edited", conf)
+	}
+	before, err := a.savedPorts(m.Name)
+	if err != nil {
+		return err
+	}
+	after := edit(slices.Clone(before))
+	if slices.Equal(before, after) {
+		return nil
+	}
+	return config.SavePorts(a.Paths, m.Name, after)
 }
 
 // dialForwards dials the machine's forward daemon. A hub machine's daemon
@@ -124,18 +142,17 @@ func (a *App) dialForwards(m *config.Machine, wait time.Duration) (*session.Clie
 }
 
 // startHubMachine is `start HUB/NAME`: the proxied start, then this host's
-// own configured forwards (hub.md §3). The hub's start only knows the hub's
-// conf; the laptop's forwards live in its table here.
+// own saved forwards (hub.md §3). The hub's start only knows the hub's
+// forwards; the laptop's are in its own ports file.
 func (a *App) startHubMachine(cmd *cobra.Command, args []string) error {
 	if err := a.proxy(cmd, args); err != nil {
 		return err
 	}
-	m, err := config.LoadHubMachine(a.Paths.Config, args[0])
-	if err != nil {
+	if _, err := config.LoadHubMachine(a.Paths.Config, args[0]); err != nil {
 		return err
 	}
-	if len(m.Ports) == 0 {
-		return nil
+	if saved, err := a.savedPorts(args[0]); err != nil || len(saved) == 0 {
+		return err
 	}
 	return a.tunnelUpWait(args[0], runningPollTimeout)
 }

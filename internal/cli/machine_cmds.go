@@ -92,8 +92,12 @@ func (a *App) runStart(name string) error {
 	if err := b.PowerStart(); err != nil {
 		return err
 	}
-	// Forwards follow the VM: resume configured ones on start.
-	if len(m.Ports) > 0 {
+	// Forwards follow the VM: resume the saved ones on start.
+	saved, err := a.savedPorts(m.Name)
+	if err != nil {
+		return err
+	}
+	if len(saved) > 0 {
 		return a.tunnelUpWait(name, runningPollTimeout) // smolvm may still say "starting"
 	}
 	return nil
@@ -213,6 +217,9 @@ func (a *App) runDelete(name string, force bool) error {
 		if err := config.Remove(a.Paths.Config, name); err != nil {
 			return err
 		}
+		if err := a.forgetHostState(name); err != nil {
+			return err
+		}
 		session.RemoveLock(a.Paths, name) // only now: see RemoveLock
 		fmt.Fprintf(a.Stdout, "devvm: removed registry entry for '%s' (was dormant)\n", name)
 		return nil
@@ -249,8 +256,33 @@ func (a *App) runDelete(name string, force bool) error {
 	if err := config.Remove(a.Paths.Config, name); err != nil {
 		return err
 	}
+	if err := a.forgetHostState(name); err != nil {
+		return err
+	}
 	session.RemoveLock(a.Paths, name) // only now: see RemoveLock
 	fmt.Fprintf(a.Stdout, "devvm: removed '%s'\n", name)
+	return nil
+}
+
+// forgetHostState removes what this host remembers about a machine besides
+// its registry entry and run files (reapRunFiles): today its saved forwards
+// (<State>/ports/NAME). It is the one place `delete` clears host state, so a
+// later machine of the same name starts clean (config.md §9 item 6); the
+// managed marker and the pinned known_hosts entry join it here. Run after
+// the machine and its conf are gone, so a failed delete keeps its forwards,
+// and under the ports file's lock, so a `ports add` that was waiting on it
+// finds the conf gone and refuses (editPorts) instead of writing the file
+// back. A file left by a failure here is cleared by the next `create` of
+// the name.
+func (a *App) forgetHostState(name string) error {
+	unlock, err := config.LockPorts(a.Paths, name)
+	if err != nil {
+		return fmt.Errorf("%s: clear saved forwards: %w", name, err)
+	}
+	defer unlock()
+	if err := config.RemovePorts(a.Paths, name); err != nil {
+		return fmt.Errorf("%s: clear saved forwards: %w", name, err)
+	}
 	return nil
 }
 
@@ -266,12 +298,13 @@ func (a *App) reapRunFiles(name string) {
 // deleteHubMachine is `delete HUB/NAME`: the hub owns the machine's registry
 // entry, so the deregistration is a proxied `delete NAME` there, first —
 // a failed remote delete leaves the laptop side intact. Then this host's own
-// daemon for it is stopped and its [machines.NAME] table dropped from the
-// hub conf. The one confirmation is the hub's: its delete prompts through
-// the forwarded terminal before destroying a real VM (and refuses with no
-// terminal), so a second prompt here would only ask the same question
-// twice. --force is not forwarded: it is this host's flag for deleting a
-// hub conf that still has tables, and means nothing for a machine on a hub.
+// daemon for it is stopped and its host state (saved forwards) dropped;
+// the hub conf is never written. The one confirmation is the hub's: its
+// delete prompts through the forwarded terminal before destroying a real VM
+// (and refuses with no terminal), so a second prompt here would only ask the
+// same question twice. --force is not forwarded: it is this host's flag for
+// deleting a hub this host still has forwards for, and means nothing for a
+// machine on a hub.
 func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	hub, machine := m.Hub, m.HubMachineName()
 	p, ok := b.(backend.Proxier)
@@ -283,15 +316,11 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	}
 	a.reapRunFiles(m.Name)
 	dropFromHubCache(a.Paths, hub.Name, machine)
-	if _, recorded := hub.Machines[machine]; recorded {
-		// Under the hub conf's flock: every machine on the hub shares the
-		// file (config.UpdateHubMachine). An emptied table is dropped.
-		if _, err := config.UpdateHubMachine(a.Paths.Config, hub.Name, machine, func(hm *config.HubMachine) error {
-			hm.Ports = nil
-			return nil
-		}); err != nil {
-			return err
-		}
+	saved, _ := a.savedPorts(m.Name)
+	if err := a.forgetHostState(m.Name); err != nil {
+		return err
+	}
+	if len(saved) > 0 {
 		fmt.Fprintf(a.Stdout, "devvm: dropped this host's forwards for '%s'\n", m.Name)
 	}
 	return nil
@@ -299,16 +328,24 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 
 // deleteHub is `delete HUB`: the hub was only ever registered, never shaped,
 // so this removes one conf file and touches nothing on the host. It refuses
-// while any [machines.*] table or live run/HUB@*.sock exists (hub.md §2):
-// the tables are the laptop's forwards for machines that still exist on the
-// hub, and a live daemon holds forwards the conf removal would orphan.
-// --force stops those daemons and removes the conf anyway. The refusal runs
+// while this host has saved forwards for a machine on it (a ports file
+// HUB@NAME) or a live run/HUB@*.sock (hub.md §2): the saved forwards are
+// the laptop's for machines that still exist on the hub, and a live daemon
+// holds forwards the conf removal would orphan. --force stops those daemons,
+// drops those saved forwards and removes the conf anyway. The refusal runs
 // before the prompt, so a scripted delete fails fast. (Step 6, which adds
 // the daemons, changes nothing here: liveHubSockets already sees them.)
 func (a *App) deleteHub(m *config.Machine, force bool) error {
-	var held []string
-	for name := range m.Machines {
-		held = append(held, "[machines."+name+"]")
+	var held, saved []string
+	names, err := config.SavedPortsNames(a.Paths)
+	if err != nil {
+		return err
+	}
+	for _, display := range names {
+		if hub, _, ok, _ := config.SplitHubName(display); ok && hub == m.Name {
+			saved = append(saved, display)
+			held = append(held, "saved forwards for "+display)
+		}
 	}
 	var live []string
 	for _, display := range liveHubSockets(a.Paths) {
@@ -339,6 +376,13 @@ func (a *App) deleteHub(m *config.Machine, force bool) error {
 	}
 	if err := config.Remove(a.Paths.Config, m.Name); err != nil {
 		return err
+	}
+	// After the conf: a `ports add HUB/X` waiting on X's lock then finds
+	// the hub gone and writes nothing back (editPorts).
+	for _, display := range append(saved, m.Name) {
+		if err := a.forgetHostState(display); err != nil {
+			return err
+		}
 	}
 	for _, display := range reaped {
 		session.RemoveLock(a.Paths, display) // only now: see RemoveLock

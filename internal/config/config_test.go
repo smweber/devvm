@@ -150,7 +150,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Backend:              BackendRemoteUnmanaged,
 		SSHHost:              "devbox3",
 		Transport:            TransportMosh,
-		Ports:                []string{"3000", "5901", "8080:80"},
+		LegacyPorts:          []string{"3000", "5901", "8080:80"},
 		MoshServer:           "/home/linuxbrew/.linuxbrew/bin/mosh-server",
 		AuthorizedKeysGithub: []string{"alice", "bob"},
 	}
@@ -173,8 +173,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if got.BootstrapHook != DefaultBootstrapHook {
 		t.Errorf("BootstrapHook default = %q, want default", got.BootstrapHook)
 	}
-	if len(got.Ports) != 3 || got.Ports[2] != "8080:80" {
-		t.Errorf("Ports lost: %v", got.Ports)
+	// A not-yet-migrated `ports` list survives a Save (MigratePorts may
+	// still need it), though nothing but the migration reads it.
+	if len(got.LegacyPorts) != 3 || got.LegacyPorts[2] != "8080:80" {
+		t.Errorf("legacy ports lost: %v", got.LegacyPorts)
 	}
 	if len(got.AuthorizedKeysGithub) != 2 {
 		t.Errorf("AuthorizedKeysGithub lost: %v", got.AuthorizedKeysGithub)

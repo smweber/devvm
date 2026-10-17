@@ -20,24 +20,31 @@ import (
 	"github.com/smweber/devvm/internal/session"
 )
 
-// hubPorts reads the hub conf's [machines.NAME] ports as saved.
+// hubPorts reads this host's saved forwards for HUB/NAME (its ports file,
+// <State>/ports/HUB@NAME); ok is whether the file exists.
 func hubPorts(t *testing.T, a *App, hub, machine string) ([]string, bool) {
 	t.Helper()
-	h, err := config.Load(a.Paths.Config, hub)
-	if err != nil {
-		t.Fatal(err)
+	display := config.JoinHubName(hub, machine)
+	if filepath.Base(a.Paths.PortsPath(display)) != hub+"@"+machine {
+		t.Fatalf("ports file for %s is %s, want the runtime form", display, a.Paths.PortsPath(display))
 	}
-	hm, ok := h.Machines[machine]
-	return hm.Ports, ok
+	_, err := os.Stat(a.Paths.PortsPath(display))
+	ports, lerr := config.LoadPorts(a.Paths, display)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	return ports, err == nil
 }
 
 // `ports add/rm/list/up/down` on HUB/NAME run on this host (hub.md §7):
-// the mapping lands in the hub conf's [machines.NAME] table, the forward is
+// the mapping lands in this host's ports file for h@web, the forward is
 // asked of this host's daemon for h@web, and nothing dials the hub (the
 // daemon's __session does that, and here a fake daemon serves the socket).
 func TestHubPortsRunLaptopSide(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t))}
-	sshLog, _ := fakeHub(t, a) // [machines.web] ports = ["3000"]
+	sshLog, _ := fakeHub(t, a) // saved forwards for h/web: 3000
+	hubConf := filepath.Join(config.MachinesDir(a.Paths.Config), "h.toml")
+	confBefore, _ := os.ReadFile(hubConf)
 	od := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpAdd: {OK: true, Host: 4001, Bumped: true},
 		session.OpList: {OK: true, State: session.StateUp, Forwards: []session.Forward{
@@ -51,7 +58,7 @@ func TestHubPortsRunLaptopSide(t *testing.T) {
 		t.Fatalf("ports add: %v\n%s", err, a.Stderr)
 	}
 	if got, _ := hubPorts(t, a, "h", "web"); !slices.Equal(got, []string{"3000", "4000"}) {
-		t.Errorf("table after add = %v", got)
+		t.Errorf("saved after add = %v", got)
 	}
 	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 4000 || adds[0].Host != 4000 {
 		t.Errorf("adds = %+v", adds)
@@ -64,7 +71,7 @@ func TestHubPortsRunLaptopSide(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, _ := hubPorts(t, a, "h", "web"); !slices.Equal(got, []string{"3000", "4000"}) {
-		t.Errorf("table after a repeat add = %v", got)
+		t.Errorf("saved after a repeat add = %v", got)
 	}
 
 	if err := runTree(t, a, "ports", "list", "h/web"); err != nil {
@@ -81,18 +88,21 @@ func TestHubPortsRunLaptopSide(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, _ := hubPorts(t, a, "h", "web"); !slices.Equal(got, []string{"3000"}) {
-		t.Errorf("table after rm = %v", got)
+		t.Errorf("saved after rm = %v", got)
 	}
 	if rms := od.requests(session.OpRemove); len(rms) != 1 || rms[0].Guest != 4000 || rms[0].Owner != session.OwnerConf {
 		t.Errorf("removes = %+v", rms)
 	}
-	// The last mapping gone, the table goes too (delete HUB refuses while
+	// The last mapping gone, the file goes too (delete HUB refuses while
 	// one exists).
 	if err := runTree(t, a, "ports", "rm", "h/web", "3000"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := hubPorts(t, a, "h", "web"); ok {
-		t.Error("an empty [machines.web] table was left behind")
+		t.Error("an empty ports file for h/web was left behind")
+	}
+	if confAfter, _ := os.ReadFile(hubConf); string(confAfter) != string(confBefore) {
+		t.Errorf("a ports verb wrote the hub conf:\n%s", confAfter)
 	}
 
 	if err := runTree(t, a, "ports", "down", "h/web"); err != nil {
@@ -108,7 +118,7 @@ func TestHubPortsRunLaptopSide(t *testing.T) {
 }
 
 // `ports up HUB/NAME` asks this host's daemon for every mapping in the
-// machine's table.
+// machine's ports file.
 func TestHubPortsUp(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t))}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000", "8443:443"}})
@@ -127,10 +137,10 @@ func TestHubPortsUp(t *testing.T) {
 	}
 }
 
-// Two concurrent `ports add` for different machines on one hub both land:
-// every machine on a hub shares the hub conf, Save is atomic but not
-// serialized, and the flock around the read-modify-write is what keeps one
-// edit from dropping the other.
+// Two concurrent `ports add` for different machines on one hub both land.
+// They once shared the hub conf and needed a flock; each machine now has
+// its own ports file, so the edits never meet, and the hub conf is never
+// written (nor any lock file left beside it).
 func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
 	writeHub(t, a, "h", nil)
@@ -145,7 +155,7 @@ func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 		go func(m string) {
 			defer wg.Done()
 			for i := 0; i < n; i++ {
-				if err := a.runPort(m, fmt.Sprint(20000+i)); err != nil {
+				if err := a.runPort(m, fmt.Sprint(20000+i), false); err != nil {
 					errs <- fmt.Errorf("%s: %w", m, err)
 				}
 			}
@@ -159,20 +169,16 @@ func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 	for _, m := range []string{"a", "b"} {
 		got, _ := hubPorts(t, a, "h", m)
 		if len(got) != n {
-			t.Errorf("[machines.%s] has %d ports, want %d (a lost update): %v", m, len(got), n, got)
+			t.Errorf("h/%s has %d saved ports, want %d (a lost update): %v", m, len(got), n, got)
 		}
 	}
-	// The lock is a dotfile ending in .lock: never a machine, watch noise.
-	names, _ := config.List(a.Paths.Config)
-	if !slices.Equal(names, []string{"h"}) {
-		t.Errorf("config.List = %v", names)
-	}
-	if !isWatchNoise(filepath.Join(config.MachinesDir(a.Paths.Config), ".h.toml.lock")) {
-		t.Error("the hub conf lock would wake status --watch")
+	entries, _ := os.ReadDir(config.MachinesDir(a.Paths.Config))
+	if len(entries) != 1 || entries[0].Name() != "h.toml" {
+		t.Errorf("machines/ holds %v, want only h.toml", entries)
 	}
 }
 
-// A live run/h@web.sock alone (no table, no cache) makes h/web a machine:
+// A live run/h@web.sock alone (nothing saved, no cache) makes h/web a machine:
 // a daemon for a hub machine can exist with no entry anywhere else.
 func TestListMachinesSeesHubSocket(t *testing.T) {
 	a := newTestApp(t)
@@ -238,8 +244,8 @@ func TestSessionRefusesHubMachine(t *testing.T) {
 }
 
 // update cycles a hub machine's daemon (run/h@web.sock) like a local one:
-// stopped, waited out, and its configured forwards (the [machines.web]
-// table) brought back on the replacement.
+// stopped, waited out, and its saved forwards (ports/h@web)
+// brought back on the replacement.
 func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 	old := daemonGoneTimeout
 	daemonGoneTimeout = 2 * time.Second

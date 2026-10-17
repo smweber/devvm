@@ -109,7 +109,7 @@ func TestWatchHubPipeOverflowRespawns(t *testing.T) {
 	}
 }
 
-// --local is this host only: hub confs are skipped, their tables with them,
+// --local is this host only: hub confs are skipped, their saved forwards with them,
 // and nothing is dialed. It is what a hub runs for its callers, so a hub
 // with hubs of its own never fans out.
 func TestStatusLocalSkipsHubs(t *testing.T) {
@@ -178,7 +178,7 @@ func TestHubListingArgv(t *testing.T) {
 		t.Errorf("ssh line:\n%s\nwant\n%s", lines[0], want)
 	}
 	// The fake devvm prints no rows, so the hub answered with an empty
-	// listing: reachable, and the tabled machine is `?` (the hub did not
+	// listing: reachable, and the saved-forwards machine is `?` (the hub did not
 	// name it), with this host's forwards column.
 	if got := a.Stdout.(*bytes.Buffer).String(); got != "h\thub\treachable\t-\nh/web\thub\t?\tdown\n" {
 		t.Errorf("plain =\n%s", got)
@@ -412,15 +412,15 @@ func TestDeleteHubMachineDropsCacheRow(t *testing.T) {
 	}
 }
 
-// Completion of `HUB/` lists the hub's machines from the cache and the
-// tables, never by dialing.
+// Completion of `HUB/` lists the hub's machines from the cache and this
+// host's saved forwards, never by dialing.
 func TestCompleteHubPrefix(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
 	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
-	writeHub(t, a, "h", map[string][]string{"api": nil})
+	writeHub(t, a, "h", map[string][]string{"api": {"80"}})
 	if err := writeHubCache(a.Paths, "h", []hubRow{{"web", "smol", "running", "-"}, {"db", "smol", "stopped", "-"}}); err != nil {
 		t.Fatal(err)
 	}

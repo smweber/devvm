@@ -137,8 +137,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   (`$XDG_CONFIG_HOME/devvm`) holds only the user's files (`machines/`,
   `config.toml`); this host's own state lives in `$XDG_STATE_HOME/devvm`
   (`~/.local/state/devvm`): `run/` (daemon sockets, logs, locks, `changed`),
-  `cache/` (hub listings), the pinned `known_hosts`, and the ssh
-  ControlMaster sockets `c-%C` (short for macOS's sun_path). State helpers
+  `cache/` (hub listings), `ports/` (saved forwards, below), the pinned
+  `known_hosts`, and the ssh ControlMaster sockets `c-%C` (short for macOS's
+  sun_path). State helpers
   are methods on `Paths`, so a config dir can't be passed where state is
   meant. `--state-dir` overrides; a non-default `--config-dir` alone means the
   pre-split layout (state inside it), so a test or second registry stays
@@ -149,10 +150,31 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   (`Dial`/`Existing`) use such an old-layout daemon where it is, never
   spawning a sibling (one-exec rule); `update` cycles it unless it is
   reconnecting, and `delete` reaps both layouts.
+- **Saved forwards are host state** (config.md §5): `<State>/ports/NAME`, one
+  mapping per line in `ports add` syntax (`GUEST` or `HOST:GUEST`; `#` and
+  blank lines skipped), `HUB@NAME` for a hub machine, 0600 in a 0700 dir,
+  written atomically; an emptied list removes the file; every
+  read-modify-write (and `delete`'s removal) holds `config.LockPorts`
+  (`ports/.NAME.lock`, never unlinked). Never in a conf: the
+  CLI alone reads it (`start`/`ports up` push one Add per line, `ports list`'s
+  `configured:` block, `--plain`'s `down`), and **the daemon never reads it**
+  (it keeps forwards in memory; clients push adds). `ports add` saves
+  (`--ephemeral` doesn't), `ports rm` drops a line, and `delete` clears it
+  through `forgetHostState`, the one helper for "everything this host
+  remembers about NAME". `config.MigratePorts` seeds the dir **once per
+  host** (only while `ports/` doesn't exist) from old confs' `ports` and hub
+  confs' `[machines.NAME]` tables (decoded leniently, not via `Load`), never
+  writing a conf; per-dir rather than per-file so a list dropped here can't
+  be re-seeded. It is all or nothing: any failure leaves no `ports/`, every
+  ports entry point returns the error, and the next call retries (nothing
+  else creates the dir). Those conf fields are
+  otherwise dead (decoded so old confs parse; `validateHub` still refuses
+  `ports` on a hub). The owner kind stays `conf` (a compatibility surface).
 - **Change marker**: every state-changing command and daemon transition calls
   `config.TouchChanged` (a *write* to `run/changed`, because kqueue ignores
   utimes); `status --plain --watch` (fsnotify on config's `machines/` + state's
-  `run/`) re-emits on it. Rule: a new state-changing command gets `defer
+  `run/`) re-emits on it, so a write elsewhere in state (a `ports/` file) is
+  seen only through the marker. Rule: a new state-changing command gets `defer
   config.TouchChanged(a.Paths)`. `Machine.Save` is atomic (temp + rename) so
   the watcher never reads a half-written conf.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
@@ -209,11 +231,13 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Hubs** (`docs/proposals/hub.md`): a hub is a conf with `backend = "hub"`,
   reached like a remote box and never shaped like one (it needs only `devvm` and
   `smolvm`). Its VMs are addressed `HUB/NAME` and have **no conf of their own**
-  on the laptop: the record is derived from the hub conf (laptop-side state such
-  as ports lives in its `[machines.NAME]` table), so the hub's registry is the
-  only one. Runtime files (daemon socket, log, lock) use `HUB@NAME`, because
-  `run/HUB/NAME.sock` would name a directory; only `config.RuntimeName` and
-  `DisplayName` convert between the forms. Commands **proxy**: the cli rebuilds
+  on the laptop: the record is derived from the hub conf, and the laptop's own
+  state for one (its saved forwards, `<State>/ports/HUB@NAME`) is host state
+  like any machine's; the hub conf is never written after `create`, so the
+  hub's registry is the only one. Runtime files (daemon socket, log, lock)
+  use `HUB@NAME`, because `run/HUB/NAME.sock` would name a directory; only
+  `config.RuntimeName` and `DisplayName` convert between the forms. Commands
+  **proxy**: the cli rebuilds
   the leaf's argv with the hub-side name and runs `env DEVVM_NO_SUBSCRIBE=1
   devvm …` over the hub's ssh. The env var keeps a proxied attach/shell/auth
   from subscribing on the hub, since the laptop subscribes through its own

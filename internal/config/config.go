@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"github.com/BurntSushi/toml"
 )
@@ -70,10 +69,11 @@ func ValidName(name string) error {
 	return nil
 }
 
-// HubMachine is the laptop-side state for one machine on a hub: the
-// `[machines.NAME]` table in the hub's conf. Ports (this host's own forwards,
-// inherently per client) is the only field; everything else about the machine
-// lives in the hub's registry, which is the single source of truth.
+// HubMachine is an old hub conf's `[machines.NAME]` table, which held this
+// host's forwards for a machine on the hub. Those are host state now
+// (<State>/ports/HUB@NAME, see ports.go): the table is read only so
+// MigratePorts can seed from it once, and nothing writes it. The loader that
+// still accepts it goes with config.md step 5.
 type HubMachine struct {
 	Ports []string `toml:"ports,omitempty"` // "HOST:GUEST" or bare "PORT"
 }
@@ -87,7 +87,7 @@ type Machine struct {
 
 	// Hub is set only on a hub-machine record (LoadHubMachine): the loaded conf
 	// of the hub the machine lives on. Such a record is synthesized, never
-	// written — the hub's [machines.NAME] table is the only thing on disk.
+	// written; this host's only state for it is its saved-forwards file.
 	Hub *Machine `toml:"-"`
 
 	Backend string `toml:"backend"`
@@ -113,8 +113,14 @@ type Machine struct {
 
 	// shared
 	Repos         []string `toml:"repos,omitempty"`
-	Ports         []string `toml:"ports,omitempty"` // "HOST:GUEST" or bare "PORT"
 	BootstrapHook string   `toml:"bootstrap_hook,omitempty"`
+
+	// LegacyPorts is the old per-box `ports` list. Saved forwards are host
+	// state now (<State>/ports/NAME, see ports.go), so devvm never reads this
+	// except for MigratePorts' one-time seed, and validateHub's refusal of a
+	// hub carrying it. It is still decoded so old confs parse, and a Save
+	// keeps what was loaded rather than dropping a list not yet migrated.
+	LegacyPorts []string `toml:"ports,omitempty"`
 
 	// ssh key seeding / hardening
 	AuthorizedKeys       []string `toml:"authorized_keys,omitempty"`
@@ -122,10 +128,8 @@ type Machine struct {
 	Harden               bool     `toml:"harden,omitempty"`
 	Fail2ban             bool     `toml:"fail2ban,omitempty"`
 
-	// hub backend only: one table per machine this host has laptop-side state
-	// for, keyed by the machine's name on the hub. Kept in the hub's own conf
-	// (no second registry tree) so `delete HUB` is one file and List stays a
-	// plain directory read.
+	// hub backend only: the old per-machine tables (see HubMachine), read only
+	// to seed saved forwards once.
 	Machines map[string]HubMachine `toml:"machines,omitempty"`
 }
 
@@ -227,7 +231,7 @@ func (m *Machine) validateHub() error {
 	// transport (and mosh_server) are deliberately not on this list: they steer
 	// the interactive hop to the hub, which a proxied attach/shell rides.
 	var bad []string
-	if len(m.Ports) > 0 {
+	if len(m.LegacyPorts) > 0 {
 		bad = append(bad, "ports")
 	}
 	if m.Memory != 0 {
@@ -255,8 +259,8 @@ func (m *Machine) validateHub() error {
 		bad = append(bad, "fail2ban")
 	}
 	if len(bad) > 0 {
-		return fmt.Errorf("hub %q is not a machine: it cannot carry %s (forwards and setup belong to the machines on it, as [machines.NAME] tables)",
-			m.Name, strings.Join(bad, ", "))
+		return fmt.Errorf("hub %q is not a machine: it cannot carry %s (forwards and setup belong to the machines on it, e.g. 'devvm ports add %s/NAME')",
+			m.Name, strings.Join(bad, ", "), m.Name)
 	}
 	for name := range m.Machines {
 		if err := ValidName(name); err != nil {
@@ -336,9 +340,9 @@ func Load(configDir, name string) (*Machine, error) {
 // meant to stay hand-editable, so we lead with a header like the old confs.
 func (m *Machine) Save(configDir string) error {
 	if m.IsHubMachine() {
-		// The record is derived from the hub's conf; the only persistent part
-		// is its [machines.NAME] table, which callers edit on the hub conf.
-		return fmt.Errorf("%s is a machine on hub %s; save the hub's conf instead", m.Name, m.Hub.Name)
+		// The record is derived from the hub's conf and has nothing of its
+		// own to save (its forwards are host state: SavePorts).
+		return fmt.Errorf("%s is a machine on hub %s; it has no conf of its own", m.Name, m.Hub.Name)
 	}
 	if err := ValidName(m.Name); err != nil {
 		return err
@@ -424,16 +428,9 @@ func Exists(configDir, name string) bool {
 
 // Remove deletes a machine's conf file (idempotent).
 func Remove(configDir, name string) error {
-	// A hub's conf-edit lock goes with it (none for a machine). The conf is
-	// removed while holding that lock and the lock file unlinked before it
-	// is released, so a `ports add HUB/NAME` blocked on it wakes to find no
-	// conf rather than re-creating one mid-delete.
-	if lock, err := os.OpenFile(hubConfLockPath(configDir, name), os.O_RDWR, 0); err == nil {
-		defer lock.Close()
-		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err == nil {
-			defer os.Remove(hubConfLockPath(configDir, name))
-		}
-	}
+	// An older build's hub-conf edit lock (machines/.HUB.toml.lock) goes
+	// with the hub: nothing takes it any more, and it would linger forever.
+	_ = os.Remove(filepath.Join(MachinesDir(configDir), "."+name+".toml.lock"))
 	err := os.Remove(confPath(configDir, name))
 	if os.IsNotExist(err) {
 		return nil
@@ -469,16 +466,6 @@ func SplitPort(mapping string) (host, guest string) {
 		return h, g
 	}
 	return mapping, mapping
-}
-
-// HasPort reports whether the exact mapping string is already configured.
-func (m *Machine) HasPort(mapping string) bool {
-	for _, p := range m.Ports {
-		if p == mapping {
-			return true
-		}
-	}
-	return false
 }
 
 // HasRepo reports whether the exact repo spec is already configured.

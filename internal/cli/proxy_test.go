@@ -151,6 +151,7 @@ func sshLines(t *testing.T, log string) []string {
 func TestProxyRebuildsArgv(t *testing.T) {
 	a := newTestApp(t)
 	sshLog, argvLog := fakeHub(t, a)
+	paths := a.Paths // --config-dir alone below moves a.Paths.State to the config dir
 	pinTTY(t, false)
 	cases := []struct {
 		argv []string
@@ -204,9 +205,10 @@ func TestProxyRebuildsArgv(t *testing.T) {
 	if _, err := os.Stat(a.Paths.ChangedPath()); err == nil {
 		t.Error("repos list touched the change marker")
 	}
-	// start HUB/NAME proxies, then brings up this host's configured
-	// forwards for the machine (its [machines.web] table: 3000) on this
-	// host's daemon for h@web (hub.md §3).
+	// start HUB/NAME proxies, then brings up this host's saved forwards
+	// for the machine (ports/h@web: 3000) on this host's daemon for h@web
+	// (hub.md §3). Back to the state dir fakeHub saved them in.
+	a.Paths = paths
 	od := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpAdd:  {OK: true, Host: 3000},
 		session.OpList: {OK: true, State: session.StateUp},

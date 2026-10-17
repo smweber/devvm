@@ -28,17 +28,18 @@ func fakeSSH(t *testing.T, body string) (log string) {
 	return log
 }
 
-func writeHub(t *testing.T, a *App, name string, tables map[string][]string) {
+// writeHub registers a hub and, per entry of saved, this host's saved
+// forwards for HUB/NAME (<State>/ports/HUB@NAME; an empty list saves none).
+func writeHub(t *testing.T, a *App, name string, saved map[string][]string) {
 	t.Helper()
 	h := config.NewHub(name, "u@"+name+".example")
-	if len(tables) > 0 {
-		h.Machines = map[string]config.HubMachine{}
-		for m, ports := range tables {
-			h.Machines[m] = config.HubMachine{Ports: ports}
-		}
-	}
 	if err := h.Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
+	}
+	for m, ports := range saved {
+		if err := config.SavePorts(a.Paths, config.JoinHubName(name, m), ports); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -51,17 +52,17 @@ func TestResolveHubMachineNeverDials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveAny: %v", err)
 	}
-	if !m.IsHubMachine() || m.Hub.Name != "h" || m.Ports[0] != "3000" || b.Kind() != config.BackendHub {
+	if !m.IsHubMachine() || m.Hub.Name != "h" || b.Kind() != config.BackendHub {
 		t.Errorf("record = %+v backend %q", m, b.Kind())
 	}
 	if _, err := os.Stat(log); !os.IsNotExist(err) {
 		data, _ := os.ReadFile(log)
 		t.Errorf("resolve dialed the hub:\n%s", data)
 	}
-	// A hub the user has not registered, and a machine with no table, both
+	// A hub the user has not registered, and a machine with no saved forwards, both
 	// resolve from the conf alone (or fail on it alone).
 	if _, _, err := a.resolveAny("h/api"); err != nil {
-		t.Errorf("untabled machine: %v", err)
+		t.Errorf("machine with nothing saved: %v", err)
 	}
 	if _, _, err := a.resolveAny("nope/web"); err == nil {
 		t.Error("unknown hub should fail")
@@ -122,7 +123,11 @@ func TestListMachinesUnion(t *testing.T) {
 	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
-	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "api": nil})
+	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "api": {"80"}})
+	// Saved forwards for a hub that is not registered list nothing.
+	if err := config.SavePorts(a.Paths, "gone/x", []string{"1"}); err != nil {
+		t.Fatal(err)
+	}
 	// A broken conf is still a name (status renders it as such).
 	if err := os.WriteFile(filepath.Join(config.MachinesDir(a.Paths.Config), "bad.toml"), []byte("backend = \"nope\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -255,7 +260,7 @@ func TestStatusPlainHubRows(t *testing.T) {
 		t.Errorf("status dialed the hub %d times, want once:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
 	// The hub row is `unreachable` when its listing fails; a hub machine known
-	// only from this host's own [machines.web] table has no backend or state
+	// only from this host's own saved forwards (ports/h@web) has no backend or state
 	// to report, and its forwards column is this host's own (ports configured,
 	// no daemon → down). Column 1 is `h/web`, nothing else is new.
 	want := "h\thub\tunreachable\t-\nh/web\thub\tunreachable\tdown\n"
@@ -264,12 +269,14 @@ func TestStatusPlainHubRows(t *testing.T) {
 	}
 }
 
-func TestDeleteHubMachineDropsTable(t *testing.T) {
+func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 	a := newTestApp(t)
 	a.Stdout = new(bytes.Buffer)
 	pinTTY(t, false)
 	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "api": {"80"}})
+	hubConf := filepath.Join(config.MachinesDir(a.Paths.Config), "h.toml")
+	confBefore, _ := os.ReadFile(hubConf)
 	// The hub's delete runs first and is the one that confirms (through the
 	// forwarded tty); when it refuses — here, exit 1 — nothing local changes
 	// and its status comes back as the proxied exit.
@@ -279,26 +286,27 @@ func TestDeleteHubMachineDropsTable(t *testing.T) {
 	if !errors.As(err, &pe) || pe.code != 1 {
 		t.Fatalf("delete h/web with the hub refusing: err = %v, want proxyExit 1", err)
 	}
-	h, err := config.Load(a.Paths.Config, "h")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, still := h.Machines["web"]; !still || len(h.Machines) != 2 {
-		t.Errorf("a refused delete changed the tables: %v", h.Machines)
+	if got, _ := config.SavedPortsNames(a.Paths); !slices.Equal(got, []string{"h/api", "h/web"}) {
+		t.Errorf("a refused delete changed the saved forwards: %v", got)
 	}
 	if lines := sshLines(t, log); len(lines) != 1 || lines[0] != wantSSH(a, false, "delete", "web") {
 		t.Errorf("proxied delete argv:\n%s\nwant\n%s", strings.Join(lines, "\n"), wantSSH(a, false, "delete", "web"))
 	}
-	// With the hub agreeing, the table goes; a machine with no local state
-	// is still proxied (its registry entry is the hub's), and just drops
-	// nothing here.
+	// With the hub agreeing, its ports file goes (and the hub conf is
+	// never written); a machine with no local state is still proxied (its
+	// registry entry is the hub's), and just drops nothing here.
 	fakeSSH(t, "exit 0")
 	if err := a.runDelete("h/web", false); err != nil {
 		t.Fatalf("delete h/web: %v", err)
 	}
-	h, _ = config.Load(a.Paths.Config, "h")
-	if _, still := h.Machines["web"]; still || len(h.Machines) != 1 {
-		t.Errorf("tables after delete: %v", h.Machines)
+	if got, _ := config.SavedPortsNames(a.Paths); !slices.Equal(got, []string{"h/api"}) {
+		t.Errorf("saved forwards after delete: %v", got)
+	}
+	if !strings.Contains(a.Stdout.(*bytes.Buffer).String(), "dropped this host's forwards for 'h/web'") {
+		t.Errorf("output = %q", a.Stdout)
+	}
+	if confAfter, _ := os.ReadFile(hubConf); string(confAfter) != string(confBefore) {
+		t.Errorf("delete h/web wrote the hub conf:\n%s", confAfter)
 	}
 	if err := a.runDelete("h/other", false); err != nil {
 		t.Errorf("delete of an unrecorded machine: err = %v", err)
@@ -368,7 +376,7 @@ func TestCreateHubRefusesShapingFlags(t *testing.T) {
 	}
 }
 
-// `delete HUB` refuses while a [machines.*] table or a live run/HUB@*.sock
+// `delete HUB` refuses while saved forwards (ports/HUB@*) or a live run/HUB@*.sock
 // exists, before any prompt, so it is scriptable and never orphans forwards.
 func TestDeleteHubRefusesWhileHeld(t *testing.T) {
 	a := newTestApp(t)
@@ -376,14 +384,16 @@ func TestDeleteHubRefusesWhileHeld(t *testing.T) {
 	a.Stdout = new(bytes.Buffer)
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
 	err := a.runDelete("h", false)
-	if err == nil || !strings.Contains(err.Error(), "[machines.web]") || !strings.Contains(err.Error(), "--force") {
-		t.Fatalf("delete with a table: err = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "saved forwards for h/web") || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("delete with saved forwards: err = %v", err)
 	}
 	if !config.Exists(a.Paths.Config, "h") {
 		t.Fatal("refused delete removed the conf")
 	}
-	// A live daemon socket alone is enough to refuse, even with no table.
-	writeHub(t, a, "h", nil)
+	// A live daemon socket alone is enough to refuse, even with nothing saved.
+	if err := config.RemovePorts(a.Paths, "h/web"); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.Paths.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +416,7 @@ func TestDeleteHubRefusesWhileHeld(t *testing.T) {
 		t.Fatalf("unheld delete should reach the prompt: err = %v", err)
 	}
 	// --force skips the refusal (and would also reach the prompt).
-	writeHub(t, a, "h", map[string][]string{"web": nil})
+	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
 	err = a.runDelete("h", true)
 	if err == nil || strings.Contains(err.Error(), "--force") {
 		t.Fatalf("--force should bypass the refusal: err = %v", err)

@@ -323,7 +323,7 @@ func (a *App) restartDaemon(res *restartResult, name string, cl *session.Client)
 		skip("forward daemon is reconnecting; not restarted, it picks up the new binary next time it is started")
 		return
 	}
-	configured := anyConfiguredForward(a.Paths.Config, name, st.Forwards)
+	configured := anyConfiguredForward(a.Paths, name, st.Forwards)
 	if err := cl.Stop(); err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: %s: stop forwards: %v\n", name, err)
 		res.failed = append(res.failed, name)
@@ -356,16 +356,16 @@ func (a *App) restartDaemon(res *restartResult, name string, cl *session.Client)
 }
 
 // anyConfiguredForward reports whether at least one of the daemon's
-// forwards is conf-owned and maps a guest port listed in the machine's conf,
-// i.e. whether `ports up` after a stop recreates what was up, and nothing
-// the user took down.
-func anyConfiguredForward(configDir, name string, fwds []session.Forward) bool {
-	m, err := config.LoadAny(configDir, name)
+// forwards is conf-owned and maps a guest port in the machine's saved
+// forwards, i.e. whether `ports up` after a stop recreates what was up, and
+// nothing the user took down (or added --ephemeral).
+func anyConfiguredForward(paths config.Paths, name string, fwds []session.Forward) bool {
+	saved, err := config.LoadPorts(paths, name)
 	if err != nil {
 		return false
 	}
 	configured := map[int]bool{}
-	for _, mapping := range m.Ports {
+	for _, mapping := range saved {
 		if _, guest, err := parseMapping(mapping); err == nil {
 			configured[guest] = true
 		}

@@ -307,10 +307,7 @@ func TestRunUpdatePinnedVersionMissingAsset(t *testing.T) {
 
 func TestRestartDaemonsSkipsMachinesWithoutDaemon(t *testing.T) {
 	a := &App{Paths: testPaths(t.TempDir()), Stdout: io.Discard, Stderr: io.Discard}
-	m := &config.Machine{Name: "box", Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}
-	if err := m.Save(a.Paths.Config); err != nil {
-		t.Fatal(err)
-	}
+	saveRemote(t, a.Paths, "box", "8080:8080")
 	if res := a.restartDaemons(); len(res.cycled)+len(res.skipped)+len(res.failed) != 0 {
 		t.Errorf("touched %+v with no daemon running", res)
 	}
@@ -462,10 +459,7 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
 	for _, name := range []string{"reconn", "unconf", "stuck", "fresh"} {
-		m := &config.Machine{Name: name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}
-		if err := m.Save(a.Paths.Config); err != nil {
-			t.Fatal(err)
-		}
+		saveRemote(t, a.Paths, name, "8080:8080")
 	}
 	fwd := []session.Forward{{Host: 8080, Guest: 8080}}
 	reconn := serveFakeDaemon(t, a.Paths, "reconn", session.Response{State: session.StateReconnecting, Forwards: fwd})
@@ -476,9 +470,7 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 	Version = "v9.9.9"
 	t.Cleanup(func() { Version = oldVersion })
 	fresh2 := serveFakeDaemon(t, a.Paths, "fresh2", session.Response{State: session.StateUp, Version: "v9.9.9", Forwards: fwd})
-	if err := (&config.Machine{Name: "fresh2", Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}).Save(a.Paths.Config); err != nil {
-		t.Fatal(err)
-	}
+	saveRemote(t, a.Paths, "fresh2", "8080:8080")
 
 	res := a.restartDaemons()
 	if reconn.stops != 0 || fresh2.stops != 0 {

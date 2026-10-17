@@ -109,7 +109,7 @@ func answers(path string) bool {
 
 // HubRuntimeNames is every HUB/NAME with a run file on this host (a
 // daemon's socket, lock or log, a master): what `delete HUB` must reap,
-// whether or not a daemon is running or a [machines.NAME] table exists.
+// whether or not a daemon is running or saved forwards exist.
 func HubRuntimeNames(p config.Paths, hub string) []string {
 	prefix := config.RuntimeName(config.JoinHubName(hub, ""))
 	var matches []string

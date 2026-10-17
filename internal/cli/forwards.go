@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,12 +30,8 @@ func parseMapping(mapping string) (pref, guest int, err error) {
 	return pref, guest, nil
 }
 
-// findMapping returns the configured mapping equivalent to (pref, guest), so
+// findMappingIn returns the saved mapping equivalent to (pref, guest), so
 // "8080" and "8080:8080" name the same forward.
-func findMapping(m *config.Machine, pref, guest int) (string, bool) {
-	return findMappingIn(m.Ports, pref, guest)
-}
-
 func findMappingIn(ports []string, pref, guest int) (string, bool) {
 	for _, p := range ports {
 		if h, g, err := parseMapping(p); err == nil && h == pref && g == guest {
@@ -68,27 +65,26 @@ func sinceHuman(t time.Time) string {
 	}
 }
 
-func (a *App) runPort(name, mapping string) error {
-	defer config.TouchChanged(a.Paths) // wake `status --watch`
+func (a *App) runPort(name, mapping string, ephemeral bool) error {
+	defer config.TouchChanged(a.Paths) // wake `status --watch`: the ports file or a live forward changed
 	m, b, err := a.resolveForwards(name)
 	if err != nil {
 		return err
 	}
-	return a.addPort(m, b, mapping)
+	return a.addPort(m, b, mapping, ephemeral)
 }
 
-// addPort records a mapping in the conf and, if the VM is running, brings the
-// forward up. Recording comes first: adding a port is a conf edit that must
+// addPort saves a mapping to this host's ports file and, if the VM is
+// running, brings the forward up. Saving comes first: adding a port must
 // work on a stopped box too; only the live bind needs the VM running.
-func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) error {
+// ephemeral skips the save, so the forward lasts only as long as the
+// daemon; it still needs a running VM, having nowhere to wait.
+func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string, ephemeral bool) error {
 	pref, guest, err := parseMapping(mapping)
 	if err != nil {
 		return err
 	}
-	if _, ok := findMapping(m, pref, guest); !ok || m.IsHubMachine() {
-		// A hub machine re-checks under the hub conf's lock: the table read
-		// at resolve may be stale by now. A mapping already there writes
-		// nothing (config.UpdateHubMachine saves only a change).
+	if !ephemeral {
 		if err := a.editPorts(m, func(ports []string) []string {
 			if _, ok := findMappingIn(ports, pref, guest); ok {
 				return ports
@@ -98,13 +94,19 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 			return err
 		}
 	}
+	// An --ephemeral forward is still a conf-owned Add (`owner=conf` in
+	// `ports list`): the owner kinds are a compatibility surface the menubar
+	// parses, and a conf owner is what `ports down`/`ports rm` already drop.
 	if err := requireRunningForForwards(m, b, 0); err != nil {
+		if ephemeral {
+			return err
+		}
 		fmt.Fprintf(a.Stdout, "devvm: recorded %s; forwards come up on 'devvm start %s'\n", mapping, m.Name)
 		return nil
 	}
 	cl, err := session.Dial(a.Paths, m.Name)
 	if err != nil {
-		if m.IsHubMachine() {
+		if m.IsHubMachine() && !ephemeral {
 			// Recorded either way; the hub said why it could not forward now
 			// (a stopped VM, an unreachable hub), and `start`/`ports up`
 			// brings it up later.
@@ -120,31 +122,35 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 	return nil
 }
 
-// runUnport is `ports rm` (browser-bridge.md §4). On a configured mapping
-// it drops the conf entry and the forward's conf owner; the forward itself
-// goes only if no other owner holds it. On a guest port that is not in the
-// conf but has a live daemon-only forward it drops that forward's ttl owner
-// (a bridge callback). It never drops a connection owner: that belongs to
-// whoever holds the session, and goes when the session does.
+// runUnport is `ports rm` (browser-bridge.md §4). On a saved mapping it
+// drops the line from the ports file and the forward's conf owner; the
+// forward itself goes only if no other owner holds it. On a guest port that
+// is not saved but has a live daemon-only forward it drops that forward's
+// ttl owner (a bridge callback). It never drops a connection owner: that
+// belongs to whoever holds the session, and goes when the session does.
 func (a *App) runUnport(name, mapping string) error {
-	defer config.TouchChanged(a.Paths) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`: the ports file or a live forward changed
 	m, _, err := a.resolveForwardsConf(name)
 	if err != nil {
 		return err
 	}
+	saved, err := a.savedPorts(name)
+	if err != nil {
+		return err
+	}
 	// Match by parsed ports ("8080" == "8080:8080"); an unparseable argument
-	// can still remove an identical hand-edited conf entry by exact string.
+	// can still remove an identical hand-edited line by exact string.
 	configured, guest := mapping, 0
 	if pref, g, perr := parseMapping(mapping); perr == nil {
-		found, ok := findMapping(m, pref, g)
+		found, ok := findMappingIn(saved, pref, g)
 		if !ok {
-			return a.unportUnconfigured(name, m, mapping, g)
+			return a.unportUnconfigured(name, saved, mapping, g)
 		}
 		configured, guest = found, g
-	} else if !m.HasPort(mapping) {
-		return fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
+	} else if !slices.Contains(saved, mapping) {
+		return fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, saved)
 	}
-	// Drop the mapping from the conf.
+	// Drop the mapping from the ports file.
 	if err := a.editPorts(m, func(ports []string) []string {
 		var kept []string
 		for _, p := range ports {
@@ -170,10 +176,11 @@ func (a *App) runUnport(name, mapping string) error {
 	return nil
 }
 
-// unportUnconfigured handles `ports rm` of a guest port the conf does not
-// list: only a live forward with a ttl owner can be removed that way.
-func (a *App) unportUnconfigured(name string, m *config.Machine, mapping string, guest int) error {
-	notConfigured := fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
+// unportUnconfigured handles `ports rm` of a guest port the ports file does
+// not list: only a live forward with a ttl owner (or a stale conf owner) can
+// be removed that way.
+func (a *App) unportUnconfigured(name string, saved []string, mapping string, guest int) error {
+	notConfigured := fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, saved)
 	cl, err := session.Existing(a.Paths, name)
 	if err != nil {
 		return notConfigured
@@ -187,8 +194,9 @@ func (a *App) unportUnconfigured(name string, m *config.Machine, mapping string,
 			continue
 		}
 		// A ttl owner (a bridge callback) is what `ports rm` exists to drop
-		// here. A conf owner the conf no longer names (a hand edit, or a
-		// pre-owner daemon, which removes outright) is stale and goes too.
+		// here. A conf owner the ports file no longer names (a hand edit, an
+		// --ephemeral add, or a pre-owner daemon, which removes outright) is
+		// stale and goes too.
 		// A connection owner is never ours to drop.
 		var drop string
 		switch {
@@ -253,17 +261,22 @@ func ttlLeft(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
-// runPortsList shows the machine's configured forwards plus any that are live.
+// runPortsList shows the machine's saved forwards plus any that are live.
+// The saved block keeps its "configured:" header: it is the same list, only
+// stored on this host now.
 func (a *App) runPortsList(name string) error {
-	m, _, err := a.resolveForwardsConf(name)
+	if _, _, err := a.resolveForwardsConf(name); err != nil {
+		return err
+	}
+	saved, err := a.savedPorts(name)
 	if err != nil {
 		return err
 	}
-	if len(m.Ports) == 0 {
+	if len(saved) == 0 {
 		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 	} else {
 		fmt.Fprintln(a.Stdout, "configured:")
-		for _, p := range m.Ports {
+		for _, p := range saved {
 			fmt.Fprintf(a.Stdout, "  %s\n", p)
 		}
 	}
@@ -278,10 +291,10 @@ func (a *App) runPortsListAll() error {
 	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %-12s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE", "OWNER")
 	any := false
 	for _, name := range a.listMachines() {
-		m, err := config.LoadAny(a.Paths.Config, name)
-		if err != nil {
+		if _, err := config.LoadAny(a.Paths.Config, name); err != nil {
 			continue
 		}
+		saved, _ := a.savedPorts(name)
 		// guest port -> daemon-owned forward, if a daemon is up for this machine.
 		// A pending forward (daemon reconnecting) shows its host port but not "up".
 		live := map[int]session.Forward{}
@@ -292,7 +305,7 @@ func (a *App) runPortsListAll() error {
 				}
 			}
 		}
-		for _, p := range m.Ports {
+		for _, p := range saved {
 			any = true
 			_, guestStr := config.SplitPort(p)
 			guest, _ := strconv.Atoi(guestStr)
@@ -381,7 +394,11 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if len(m.Ports) == 0 {
+	saved, err := a.savedPorts(name)
+	if err != nil {
+		return err
+	}
+	if len(saved) == 0 {
 		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 		return nil
 	}
@@ -392,7 +409,7 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 	if err != nil {
 		return err
 	}
-	for _, mapping := range m.Ports {
+	for _, mapping := range saved {
 		pref, guest, perr := parseMapping(mapping)
 		if perr != nil {
 			fmt.Fprintf(a.Stderr, "devvm: skipping %q: %v\n", mapping, perr)

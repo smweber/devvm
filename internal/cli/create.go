@@ -30,7 +30,8 @@ type createSpec struct {
 
 	// Optional fields the interactive wizard offers (no flags; use the dedicated
 	// subcommands or edit the conf for the scripted path). Repos/Ports apply to any
-	// backend; the rest are remote-only (harden is remote-managed only).
+	// backend but a hub (Ports are saved as this host's state, config.SavePorts,
+	// not in the conf); the rest are remote-only (harden is remote-managed only).
 	Repos      []string
 	Ports      []string
 	KeysGithub []string
@@ -94,11 +95,34 @@ func (a *App) runCreate(s createSpec) error {
 		if err := a.checkHubVersion(context.Background(), b, m); err != nil {
 			return err
 		}
+		// Clear forwards a same-named predecessor left for machines on it
+		// (its conf removed by hand, never `delete`), before the conf
+		// exists: they would come back as this hub's, and make `delete
+		// HUB` refuse.
+		stale, err := config.SavedPortsNames(a.Paths)
+		if err != nil {
+			return err
+		}
+		for _, display := range stale {
+			if hub, _, ok, _ := config.SplitHubName(display); ok && hub == m.Name {
+				if err := a.forgetHostState(display); err != nil {
+					return err
+				}
+			}
+		}
 		if err := m.Save(a.Paths.Config); err != nil {
 			return err
 		}
 		a.printCreateNext(m)
 		return nil
+	}
+	// Forwards are host state, not conf (config.md §5). Writing the list
+	// always, empty included, also clears a stale file a same-named
+	// predecessor left (a hand-removed conf never ran `delete`). Before the
+	// conf, so a failure here registers nothing; the VM provisionResource
+	// made (smol) stays, and the error names the mappings to re-add by hand.
+	if err := a.editPorts(m, func([]string) []string { return s.Ports }); err != nil {
+		return fmt.Errorf("save forwards %v for '%s' (not registered): %w", s.Ports, m.Name, err)
 	}
 	if err := m.Save(a.Paths.Config); err != nil {
 		return err
@@ -164,6 +188,7 @@ func (s createSpec) machine() (*config.Machine, error) {
 		m.AuthorizedKeysGithub = s.KeysGithub
 		m.Harden = s.Harden
 		m.Fail2ban = s.Fail2ban
+		m.LegacyPorts = s.Ports // only so validateHub names it; never saved
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		if s.SSHHost == "" {
 			return nil, fmt.Errorf("remote backend needs --ssh-host")
@@ -187,7 +212,6 @@ func (s createSpec) machine() (*config.Machine, error) {
 		return nil, fmt.Errorf("invalid backend %q (want smol|remote-managed|remote-unmanaged|hub)", s.Backend)
 	}
 	m.Repos = s.Repos
-	m.Ports = s.Ports
 	if s.BootstrapHook != "" {
 		m.BootstrapHook = s.BootstrapHook
 	}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -13,7 +14,7 @@ import (
 // global `ports list`, and completion. It unions
 //
 //   - config.List: every local conf, hubs included (a hub has a row of its own);
-//   - HUB/NAME for every [machines.NAME] table in a hub conf;
+//   - HUB/NAME for every saved-forwards file ports/HUB@NAME (savedHubPorts);
 //   - HUB/NAME for every name in the hub's cached listing (cachedHubMachines);
 //   - HUB/NAME for every live run/HUB@NAME.sock.
 //
@@ -39,11 +40,16 @@ func (a *App) listMachines() []string {
 		if err != nil || !m.IsHub() {
 			continue // a broken conf is still listed (status shows it as such)
 		}
-		for mn := range m.Machines {
-			add(config.JoinHubName(n, mn))
-		}
 		for _, mn := range cachedHubMachines(a.Paths, n) {
 			add(config.JoinHubName(n, mn))
+		}
+	}
+	// Only for a hub that is still registered: a stray file for a deleted
+	// hub would list a machine nothing can reach. Live sockets are listed
+	// regardless, as before, since a running daemon is a real thing.
+	for _, n := range savedHubPorts(a.Paths) {
+		if hub, _, _, _ := config.SplitHubName(n); slices.Contains(local, hub) {
+			add(n)
 		}
 	}
 	for _, n := range liveHubSockets(a.Paths) {
@@ -61,6 +67,21 @@ func cachedHubMachines(paths config.Paths, hub string) []string {
 	var names []string
 	for _, r := range readHubCache(paths, hub) {
 		names = append(names, r.name)
+	}
+	return names
+}
+
+// savedHubPorts lists HUB/NAME for every hub machine this host has saved
+// forwards for. Local names are skipped: their machines come from
+// config.List (a stray local file must not make a conf-less name look like
+// a broken conf).
+func savedHubPorts(paths config.Paths) []string {
+	var names []string
+	saved, _ := config.SavedPortsNames(paths) // a hint here; the ports verbs report a failed migration
+	for _, n := range saved {
+		if _, _, ok, err := config.SplitHubName(n); ok && err == nil {
+			names = append(names, n)
+		}
 	}
 	return names
 }

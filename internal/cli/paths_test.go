@@ -71,7 +71,7 @@ func TestStateDirForSymlinkedDefault(t *testing.T) {
 func TestPortsUpUsesOldLayoutDaemon(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	saveRemote(t, a.Paths.Config, "box", "3000")
+	saveRemote(t, a.Paths, "box", "3000")
 	od := serveOwnerDaemon(t, config.LegacyPaths(a.Paths.Config), "box", map[string]session.Response{
 		session.OpAdd: {OK: true, Host: 3000},
 	}, false)
@@ -103,7 +103,7 @@ func TestRestartDaemonsCyclesOldLayoutDaemon(t *testing.T) {
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: &out}
-	saveRemote(t, a.Paths.Config, "box") // no ports: stopped, not respawned
+	saveRemote(t, a.Paths, "box") // no ports: stopped, not respawned
 	legacy := config.LegacyPaths(a.Paths.Config)
 	od := serveOwnerDaemon(t, legacy, "box", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Version: "v0.0.1"},
