@@ -7,9 +7,11 @@ file wins for sequencing and the design doc wins for mechanism.
 
 Status, 2026-10-17: the **hubs + browser bridge** plan (`hub.md` v3.4,
 `browser-bridge.md` v2.6) landed in full as v0.1.13–v0.1.15. The **config
-redesign** (`config.md` v3.1) is in progress, steps 1–3 landed. After it:
-the known issues below, then the ssh agent exec for remote boxes, then the
-provider backend (`providers.md`).
+redesign** (`config.md` v3.1) is in progress, steps 1–3 landed. **In
+parallel** since 2026-10-17, in its own jj workspace: the provider
+backend's independent steps 0–1 (`providers.md` v1.2; see below). After the
+redesign: the known issues below, then the ssh agent exec for remote boxes,
+then provider steps 2–4.
 
 The long form of this file (per-step live-test lists and the detailed
 "what shipped differently" notes for hub steps 1–9) is in git history before
@@ -45,6 +47,30 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
 - Steps 4 (`setup` + templates, `--adopt`), 5 (new loader + `config` noun),
   6 (hand migration of the three hosts, release) to come.
 
+## Provider backend, steps 0–1 (in parallel, since 2026-10-17)
+
+`providers.md` "Implementation order" owns its five steps. Steps **0** (status
+truthfulness: `run/refresh` + hidden `__refresh`, remote boxes probed by a
+ControlMaster check then a 2s TCP connect, `cache/reach/NAME` with
+verified-at, `status -v` last-contact text, sixth `--plain` field, the
+`menuWillOpen` Swift line) and **1** (the `Provider` interface and the
+Hetzner REST client under `internal/provider`, a fake, tests against
+responses recorded from the user's **test project**, no CLI) depend on
+nothing in the config redesign, so they run now, in the jj workspace
+`providers` (`../devvm-providers`), with the usual loop (Opus implements,
+fresh Opus reviews, one commit per step, no push). Order: **1 first** (no
+shared files), then 0. Step 0 touches `status.go`, `status_watch.go` and
+`backend/ssh.go`, which config steps 3–5 also touch: it is rebased onto
+master when it lands and the config session is told. The token for the
+test project is at `~/.local/state/devvm/providers/hetzner.token` (0600,
+the path §1 names); the client reads `HCLOUD_TOKEN` first, then that file.
+Steps **2–4** (token command, discovery, lifecycle, live test) wait for the
+redesign: they build on resolve's source list, templates, `setup` and
+`config check`.
+
+- Step 1: in progress.
+- Step 0: to come.
+
 ## After the config redesign (agreed order)
 
 1. **Known issues** (below), the real ones first: `cp-out` > 11 MiB on smol,
@@ -54,7 +80,8 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
    `auth`, `BROWSER` plumbing on remote boxes (bridge §5), deletion of
    `--auth` and the second agent socket. Deferred from the bridge plan
    because hub VMs never needed it; a provider backend does.
-3. **Provider backend** (`providers.md`; constraints in `config.md` §9).
+3. **Provider backend, steps 2–4** (`providers.md`; constraints in
+   `config.md` §9; steps 0–1 land in parallel, above).
 4. **Mac tests** when at the laptop: the v0.1.14 menubar changes (drop shelf,
    Tab completion, save panel), the step 3 fifth-column Swift change, and a
    Mac as a smol hub (`smolvm machine create` and `open` from an sshd
