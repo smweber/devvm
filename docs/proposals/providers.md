@@ -1,7 +1,8 @@
 # Proposal: provider backends (devvm creates and destroys cloud VMs)
 
-Status: draft v1.1, 2026-10-17, from a design discussion with the user
-(v1.1: token stored by the CLI, cache-first watch; see the review log). Not
+Status: draft v1.2, 2026-10-17, from a design discussion with the user
+(v1.1: token stored by the CLI, cache-first watch; v1.2: refresh on demand,
+remote boxes probed; see the review log). Not
 scheduled. It **depends on `config.md`** (the config redesign) having landed
 and the three hosts having migrated (`config.md` §8); `config.md` §9 records
 the constraints that redesign keeps for this one. First provider: Hetzner
@@ -206,48 +207,95 @@ that matters, and shares `backend/ssh.go`:
   exactly right. Optional later: a `host_template = "{name}.tail.ts.net"`
   provider key. Not in v1.
 
-### 5. Status, cache and `--plain`
+### 5. Status: cached, refreshed on demand, and true for remotes too
 
 `status --watch` is event-driven today: it re-emits on fsnotify events for
 the config and state dirs and on blocks from each hub's held listing pipe,
 and it never polls (`status_watch.go`). A provider has no pipe and nothing
 that pushes, so provider rows must not be fetched on the snapshot path, or
 every daemon touch of `run/` would cost an HTTP round trip and, offline, a
-deadline.
+deadline. The same reasoning is why a `remote` entry reports `reachable`
+without ever being probed (`status.go:107`), which the user finds a lie.
+This section fixes both with one mechanism, and **no background polling**:
+nothing in devvm needs a remote or provider box's state except a human
+looking at it, so the state is fetched when a human looks.
 
-- **Cache-first in watch mode.** Provider rows in `status --watch` come from
-  the per-source cache (`cache/provider-hetzner.list`, the hub cache's
-  shape) and never from a live call on the snapshot path. The cache refreshes
-  two ways:
-  - a **timer in the watch loop, every 60s**, only while a provider is
-    configured and a token is present (one small HTTPS `GET` per provider per
-    minute, no persistent connection; Hetzner allows 3600 requests/hour per
-    project);
-  - **immediately after devvm's own lifecycle commands.** `create`,
-    `delete`, `start` and `stop` already hold the API's answer, so they write
-    it into the cache and `TouchChanged`; the menu updates within the
-    debounce window, as for a smol VM today. Only a change made in the
-    Hetzner console lags, by up to a minute.
-- **One-shot `status`** (no `--watch`) makes the live call with the hub
-  listing's deadline and falls back to the cache on failure: a human typed
-  it and wants fresh. `status --local` skips providers as it skips hubs.
-- **When the source can't be read** (no token, no network, API error), the
-  cached rows are shown with their last-known state and `status -v` names
-  the source and the reason (`hetzner: no token (devvm providers token
-  hetzner)`, `hetzner: listing failed, cached 3m ago`). In `--plain` the
-  state is `?`, an existing token, **not** `unreachable`, which on a hub row
-  means "the hub didn't answer" and here would read as "the box is down".
-  Forwards for a provider box are its daemon's over ssh and show regardless
-  (§4), so a running `attach` keeps its tile.
-- **`--plain` rows:** backend column `hetzner`; state ∈ {running, stopped,
-  starting, stopping, ?} mapped from Hetzner's `status` (`initializing`,
-  `starting` → starting; `off` → stopped; `deleting`, `rebuilding`,
-  `migrating`, `unknown` → `?`). The fifth column is `managed`/`unmanaged`
-  from the label. No new tokens, so the Swift app needs no change. Note that
-  this is **more truthful than a `remote` entry**, which reports
-  `reachable` unconditionally (devvm never probes remotes, `status.go:107`);
-  a provider row carries real power state.
-- `status -v` shows server type, location, address and the cache age.
+**Cache-first.** Provider rows and remote reachability in `status --watch`
+come from per-source caches (`cache/provider-hetzner.list` in the hub
+cache's shape; `cache/reach/NAME` for a remote box: state, verified-at, and
+the reason on failure) and never from a live call on the snapshot path.
+The caches are refreshed by exactly three things:
+
+- **A refresh request.** The hidden `devvm __refresh` writes `run/refresh`,
+  as `TouchChanged` writes `run/changed`. The watcher sees it (it already
+  watches `run/`) and runs **one live round**: probe every remote and list
+  every provider in parallel under the hub listing's deadline, update the
+  caches, emit a block. A round in flight is joined, not restarted, and the
+  marker is coalesced by the existing 200ms debounce, so a double click
+  costs one round. **The menu bar app calls `__refresh` from
+  `menuWillOpen`** (`MenuBar.swift:142`): the menu opens at once on cached
+  rows and updates one block later, worst case the deadline (2s). That is
+  the one-line Swift change; block handling is unchanged.
+- **One-shot `status`** (no `--watch`) runs the live round inline before
+  printing and falls back to the caches on failure: a human typed it and
+  wants fresh. `status --local` skips remotes' probes and providers as it
+  skips hubs.
+- **devvm's own lifecycle commands.** `create`, `delete`, `start`, `stop`
+  and a successful `attach`/`shell`/`setup` already know the answer, so they
+  write it into the cache and `TouchChanged`; the menu updates within the
+  debounce window, as for a smol VM today.
+
+Between refreshes the rows are as old as the last one, and say so.
+
+**Remote boxes get a real state**, using only tokens the Swift app already
+knows from hub rows:
+
+- `reachable`: a live ControlMaster, or the last probe succeeded;
+- `unreachable`: no live master and the last probe failed;
+- `?`: never probed, or not probeable (below).
+
+The probe is cheap and never a full ssh. In order: `ssh -O check` against the
+box's master socket in the state dir (local, milliseconds; a live master
+means the box answered ssh's last keepalive, and a remote box's daemon
+holds one whenever it has forwards, so those boxes are verified for free);
+otherwise `ssh -G host` to resolve the alias and a **TCP connect** to the
+resolved host:port with a 2s timeout, no handshake, no auth, no process. An
+alias with `ProxyJump`/`ProxyCommand` is not dialled (the dial would test
+the wrong host) and stays `?` unless a master is live. A sleeping Tailscale
+peer shows `unreachable` until it wakes, which is accurate.
+
+**Last contact is shown.** Each cache row carries when the state was last
+verified and how (`master`, `probe`, `api`, or the lifecycle command).
+`status -v` prints `reachable, verified 12s ago (master)` or `unreachable
+since 14:02 (connect timed out)`; the menu shows the same text under the
+row. In `--plain` nothing new is added to the first five columns, so
+parsers are unaffected; the verified-at goes after them as a sixth field
+the app may read.
+
+**Provider rows in `--plain`:** backend column `hetzner`; state ∈ {running,
+stopped, starting, stopping, ?} mapped from Hetzner's `status`
+(`initializing`, `starting` → starting; `off` → stopped; `deleting`,
+`rebuilding`, `migrating`, `unknown` → `?`). The fifth column is
+`managed`/`unmanaged` from the label. A provider row carries real power
+state, so it is at least as truthful as a probed remote.
+
+**When a source can't be read** (no token, no network, API error, probe
+error), the cached rows are shown with their last-known state and age, and
+`status -v` names the source and the reason (`hetzner: no token (devvm
+providers token hetzner)`, `hetzner: listing failed, cached 3m ago`). For a
+provider the `--plain` state is `?`, **not** `unreachable`, which would read
+as "the box is down"; for a remote box a failed probe *is* `unreachable`,
+because that is exactly what was tested. Forwards for either are the
+daemon's over ssh and show regardless (§4), so a running `attach` keeps its
+tile.
+
+`status -v` shows, additionally, a provider box's server type, location and
+address.
+
+**Scope note.** The remote probe and last-contact display do not depend on
+providers or on the config redesign and can land first, on their own: they
+touch `sshBackend.Status`, `status.go`, the watcher's `run/refresh` handling
+and one line of Swift. The provider listing then rides the same refresh.
 
 ### 6. Hubs
 
@@ -330,13 +378,18 @@ A fresh cloud box is `create web --backend hetzner`, `attach web`, and later
 
 ## Implementation order
 
+0. **Status truthfulness, standalone** (§5): `run/refresh` + `__refresh`,
+   the remote probe (master check, then TCP connect), `cache/reach/NAME`
+   with verified-at, `status -v` and the sixth `--plain` field, the
+   `menuWillOpen` call in the app. Ships before and independently of the
+   rest.
 1. **Provider interface and the Hetzner client** (`internal/provider`,
    `internal/provider/hetzner`) with a fake and tests against recorded
    responses. No CLI.
 2. **Token and discovery**: the token file and `providers token`; the
-   provider source in resolve and in `status` (cache-first in watch mode with
-   the 60s timer), the `hetzner` backend value built on `sshBackend`,
-   `--plain` mapping, `config check` for `[providers.*]`.
+   provider source in resolve and in the §5 refresh round and caches, the
+   `hetzner` backend value built on `sshBackend`, `--plain` mapping,
+   `config check` for `[providers.*]`.
 3. **Lifecycle**: `create --backend hetzner` through `setup`, `delete` with
    cleanup, `start`/`stop` with the billing warning and the unmanaged
    confirm; each writes the cache it just learned.
@@ -361,10 +414,20 @@ reopened:
   user first chose env-var-only, then preferred this once it was clear the
   menu bar app copies only `PATH` from the login shell (`Devvm.swift:34`)
   and would never see the variable.
-- **Watch cost:** cache-first with a 60s timer; lifecycle commands write
-  the cache (§5). Raised by the user ("will its loop be too heavy?").
+- **Watch cost:** cache-first, **no polling**; refreshed when the menu
+  opens (`__refresh`), on one-shot `status`, and by lifecycle commands (§5).
+  Raised by the user ("will its loop be too heavy?"); the user accepts the
+  latency of a refresh on click. A 60s timer (v1.1) was dropped for it.
+- **Remote `reachable`:** probed (master check, then TCP connect) and shown
+  with last-contact time (§5). The user: "it feels like a lie".
 
 ## Review log
+
+**v1.1 → v1.2** (2026-10-17, with the user): the 60s timer replaced by
+refresh on demand (`run/refresh`, called by the app's `menuWillOpen`);
+remote boxes probed cheaply and given `reachable`/`unreachable`/`?` for
+real; last-contact time cached and shown; step 0 added to ship that part
+first, standalone.
 
 **v1 → v1.1** (2026-10-17, with the user): token moved from `token_env` to a
 CLI-owned state-dir file with a first-use prompt and `providers token`
