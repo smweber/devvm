@@ -89,6 +89,11 @@ func (a *App) savedPorts(name string) ([]string, error) {
 	return config.LoadPorts(a.Paths, name)
 }
 
+// editPortsLockingHook, when set (tests only), runs in editPorts between
+// its "registered" read and taking the lock, so a test can race a delete
+// against exactly that window without sleeping.
+var editPortsLockingHook func()
+
 // editPorts rewrites a machine's saved forwards, local or HUB/NAME alike,
 // under the file's lock (config.LockPorts): two `ports add` for one machine
 // must both land, as two for machines on one hub did under the old hub-conf
@@ -99,6 +104,9 @@ func (a *App) savedPorts(name string) ([]string, error) {
 // changes nothing writes nothing.
 func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
 	registered := a.stillThere(m)
+	if editPortsLockingHook != nil {
+		editPortsLockingHook()
+	}
 	unlock, err := config.LockPorts(a.Paths, m.Name)
 	if err != nil {
 		return err

@@ -111,7 +111,7 @@ func TestMigratePorts(t *testing.T) {
 	if string(before) != string(after) {
 		t.Errorf("conf changed by the migration:\n%s", after)
 	}
-	if entries, _ := os.ReadDir(p.State); len(entries) != 1 {
+	if entries := stateEntries(p); len(entries) != 1 {
 		t.Errorf("temp dir left behind: %v", entries)
 	}
 
@@ -173,7 +173,7 @@ func TestMigratePortsFailsClosed(t *testing.T) {
 	if _, err := os.Stat(p.PortsDir()); !os.IsNotExist(err) {
 		t.Fatalf("a failed migration left a ports dir: %v", err)
 	}
-	if entries, _ := os.ReadDir(p.State); len(entries) != 0 {
+	if entries := stateEntries(p); len(entries) != 0 {
 		t.Errorf("temp dir left behind: %v", entries)
 	}
 	writePortsFile = orig
@@ -253,4 +253,17 @@ func TestLockPortsSerializesEdits(t *testing.T) {
 	if names, err := SavedPortsNames(p); err != nil || !slices.Equal(names, []string{"h/web"}) {
 		t.Errorf("SavedPortsNames = %v %v", names, err)
 	}
+}
+
+// stateEntries lists <State> but the migration's lock file, which is meant
+// to stay.
+func stateEntries(p Paths) []string {
+	entries, _ := os.ReadDir(p.State)
+	var out []string
+	for _, e := range entries {
+		if e.Name() != ".ports-migrate.lock" {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }

@@ -220,10 +220,18 @@ func TestWatchRefreshRunsOneRound(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no round started")
 	}
+	joined := make(chan struct{}, 8)
+	hook := func() { joined <- struct{}{} }
+	refreshJoinedHook.Store(&hook)
+	t.Cleanup(func() { refreshJoinedHook.Store(nil) })
 	if err := config.RequestRefresh(dir); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond) // past the debounce, round still held
+	select { // its debounce fired and it joined the round still held
+	case <-joined:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the request in flight never joined the round")
+	}
 	gate <- struct{}{}
 	out.next(t, "after 1\n")
 	out.none(t)

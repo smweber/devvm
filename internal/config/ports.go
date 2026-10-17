@@ -250,11 +250,19 @@ type legacyConf struct {
 // every file written. Any failure (an unreadable machines dir, a conf that
 // is not TOML, a failed write) returns an error with no ports dir created,
 // so every ports command fails until it is fixed and the next call retries;
-// nothing is ever seeded partly. Two racing first runs both build the same
-// tree: rename(2) replaces a destination dir only while it is empty, so the
-// loser's rename either fails (the winner's dir already holds a file, which
-// may be a `ports add` that must not be overwritten) or replaces an empty
-// dir with identical content. Either way the result is a seeded dir.
+// nothing is ever seeded partly.
+//
+// Once the directory exists it is never replaced. rename(2) replaces an
+// existing *empty* directory (Linux and macOS alike), so two unserialized
+// first runs could swap a freshly seeded dir out from under a caller that
+// had just resolved it to create its lock or ports file there (seen as
+// ENOENT on the macOS runner). So the build-and-rename runs under an
+// exclusive flock on <State>/.ports-migrate.lock, rechecking for the dir
+// once it holds the lock: only the first run builds, the rest find it. The
+// unlocked Stat up front stays a valid fast path because a dir that exists
+// was put there by a finished, locked rename (or by hand) and nothing
+// replaces it. The lock file is never unlinked (a waiter would hold a lock
+// nobody else sees).
 func MigratePorts(p Paths) error {
 	dir := p.PortsDir()
 	if _, err := os.Stat(dir); err == nil {
@@ -262,12 +270,25 @@ func MigratePorts(p Paths) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	names, err := legacyConfNames(p)
+	if err := os.MkdirAll(p.State, 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(p.State, ".ports-migrate.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("migrate saved forwards: %w", err)
 	}
-	if err := os.MkdirAll(p.State, 0o700); err != nil {
+	defer lock.Close() // closing releases the flock
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("migrate saved forwards: lock: %w", err)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		return nil // a racing first run finished while this one waited
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	names, err := legacyConfNames(p)
+	if err != nil {
+		return fmt.Errorf("migrate saved forwards: %w", err)
 	}
 	tmp, err := os.MkdirTemp(p.State, ".ports-*")
 	if err != nil {
@@ -301,10 +322,10 @@ func MigratePorts(p Paths) error {
 			}
 		}
 	}
+	// Under the lock no other devvm renames here, so dir is still absent
+	// (bar one made by hand this instant, which rename replaces only while
+	// it is empty, and refuses otherwise).
 	if err := os.Rename(tmp, dir); err != nil {
-		if _, serr := os.Stat(dir); serr == nil {
-			return nil // a racing first run got there first
-		}
 		return fmt.Errorf("migrate saved forwards: %w", err)
 	}
 	return nil

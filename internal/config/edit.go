@@ -48,7 +48,7 @@ func AppendEntry(p Paths, name string, e Entry) error {
 		return fmt.Errorf("%w:\n%v", ErrBrokenFile, err)
 	}
 	if _, ok := before.Entries[name]; ok {
-		return fmt.Errorf("%s already has [machines.%s]", path, name)
+		return fmt.Errorf("%s already has %s", path, MachineTable(name))
 	}
 	// Match the file's line ending: a file saved with CRLF (an editor on
 	// Windows, a git checkout with autocrlf) stays CRLF throughout.
@@ -70,10 +70,10 @@ func AppendEntry(p Paths, name string, e Entry) error {
 		return err // the new table itself is invalid (a bad host, say)
 	}
 	if !sameExcept(before, after, name) {
-		return fmt.Errorf("appending [machines.%s] would change other tables in %s; edit it with 'devvm config edit'", name, path)
+		return fmt.Errorf("appending %s would change other tables in %s; edit it with 'devvm config edit'", MachineTable(name), path)
 	}
 	if _, ok := after.Entries[name]; !ok {
-		return fmt.Errorf("appending [machines.%s] to %s did not add it; edit it with 'devvm config edit'", name, path)
+		return fmt.Errorf("appending %s to %s did not add it; edit it with 'devvm config edit'", MachineTable(name), path)
 	}
 	return writeConfigFile(path, b.Bytes())
 }
@@ -116,7 +116,7 @@ func PlanRemoveEntry(p Paths, name string) (*Edit, error) {
 		return nil, fmt.Errorf("%w:\n%v", ErrBrokenFile, err)
 	}
 	if _, ok := before.Entries[name]; !ok {
-		return nil, fmt.Errorf("%w: [machines.%s] in %s", ErrNotFound, name, path)
+		return nil, fmt.Errorf("%w: %s in %s", ErrNotFound, MachineTable(name), path)
 	}
 	out, err := cutTable(data, name)
 	if err != nil {
@@ -124,10 +124,10 @@ func PlanRemoveEntry(p Paths, name string) (*Edit, error) {
 	}
 	after, err := ParseFile(path, out)
 	if err != nil || !sameExcept(before, after, name) {
-		return nil, fmt.Errorf("%s: removing [machines.%s] would change other tables; remove it with 'devvm config edit'", path, name)
+		return nil, fmt.Errorf("%s: removing %s would change other tables; remove it with 'devvm config edit'", path, MachineTable(name))
 	}
 	if _, ok := after.Entries[name]; ok {
-		return nil, fmt.Errorf("%s: [machines.%s] is defined in a form this edit cannot remove; remove it with 'devvm config edit'", path, name)
+		return nil, fmt.Errorf("%s: %s is defined in a form this edit cannot remove; remove it with 'devvm config edit'", path, MachineTable(name))
 	}
 	return &Edit{path: path, from: data, data: out}, nil
 }
@@ -212,7 +212,7 @@ func sameExcept(a, b *File, name string) bool {
 // renderEntry is one table, in a fixed key order.
 func renderEntry(name string, e Entry) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[machines.%s]\n", tomlKey(name))
+	b.WriteString(MachineTable(name) + "\n")
 	fmt.Fprintf(&b, "backend = %s\n", tomlString(e.Backend))
 	if e.Managed != nil {
 		fmt.Fprintf(&b, "managed = %t\n", *e.Managed)
@@ -230,6 +230,13 @@ func renderEntry(name string, e Entry) string {
 		fmt.Fprintf(&b, "connect_timeout = %d\n", e.ConnectTimeout)
 	}
 	return b.String()
+}
+
+// MachineTable is the `[machines.NAME]` header for an entry name, quoted
+// as `config add` writes it: a name with a '.' (a hostname like mac.local)
+// would otherwise read back as a nested table.
+func MachineTable(name string) string {
+	return "[machines." + tomlKey(name) + "]"
 }
 
 var bareKeyRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -291,7 +298,7 @@ func cutTable(data []byte, name string) ([]byte, error) {
 		break
 	}
 	if start < 0 {
-		return nil, fmt.Errorf("no [machines.%s] header line", name)
+		return nil, fmt.Errorf("no %s header line", MachineTable(name))
 	}
 	// The table's own content ends at its last line that is neither blank
 	// nor a comment. After it: comment lines glued to it (no blank between)

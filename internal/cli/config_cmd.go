@@ -163,11 +163,10 @@ func (a *App) showConfig(f *config.File) {
 			showLine(w, "ipv4", "true", "default")
 		}
 	}
-	host, _ := os.Hostname()
 	for _, m := range f.Machines() {
 		e := f.Entries[m.Name]
-		fmt.Fprintf(w, "\n[machines.%s]", m.Name)
-		if m.IsHub() && m.Name == host {
+		fmt.Fprintf(w, "\n%s", config.MachineTable(m.Name))
+		if m.IsHub() && isThisHost(m.Name) {
 			fmt.Fprint(w, "  # (this host)")
 		}
 		fmt.Fprintln(w)
@@ -308,7 +307,7 @@ func collisionsIn(f *config.File, smols smolMachines) []string {
 	var out []string
 	for _, sm := range smols.list {
 		if _, ok := f.Entries[sm.Name]; ok {
-			out = append(out, fmt.Sprintf("[machines.%s] shadows the local smol VM '%s'; rename the entry, or remove the VM with 'smolvm machine rm --name %s'", sm.Name, sm.Name, sm.Name))
+			out = append(out, fmt.Sprintf("%s shadows the local smol VM '%s'; rename the entry, or remove the VM with 'smolvm machine rm --name %s'", config.MachineTable(sm.Name), sm.Name, sm.Name))
 		}
 	}
 	return out
@@ -450,6 +449,27 @@ func (a *App) configAddCmd() *cobra.Command {
 	return c
 }
 
+// hostname is os.Hostname, a var so a test can pose as a host whose name
+// is an FQDN.
+var hostname = os.Hostname
+
+// isThisHost reports whether an entry name names this host: the full
+// hostname or its short form (up to the first dot), since macOS and many
+// Linux hosts report an FQDN (mac.local, box.example.com) while the shared
+// file names the host by either. Cosmetic only (config.md §1): it labels a
+// hub row "(this host)", and nothing behaves differently for it.
+func isThisHost(name string) bool {
+	host, err := hostname()
+	if err != nil || host == "" {
+		return false
+	}
+	if strings.EqualFold(name, host) {
+		return true
+	}
+	short, _, _ := strings.Cut(host, ".")
+	return short != "" && strings.EqualFold(name, short)
+}
+
 // errHubNameConfig refuses HUB/NAME in the config noun: this host's file
 // has no entries for a hub's machines.
 func errHubNameConfig(name string) error {
@@ -498,7 +518,7 @@ func (a *App) runConfigAdd(name string, o configAddOpts, managedSet bool) error 
 		return err
 	}
 	defer config.TouchChanged(a.Paths)
-	fmt.Fprintf(a.Stdout, "devvm: added [machines.%s] to %s\n", name, a.Paths.FilePath())
+	fmt.Fprintf(a.Stdout, "devvm: added %s to %s\n", config.MachineTable(name), a.Paths.FilePath())
 	if f, err := config.LoadFile(a.Paths); err == nil {
 		for _, w := range a.collisions(f) {
 			if strings.HasPrefix(w, "[machines."+name+"]") {
@@ -686,9 +706,9 @@ func (a *App) runConfigRm(name string, force bool) error {
 		removeHubCache(a.Paths, name) // derived from the entry that just went
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("removed [machines.%s]; but: %s", name, strings.Join(failed, "; "))
+		return fmt.Errorf("removed %s; but: %s", config.MachineTable(name), strings.Join(failed, "; "))
 	}
-	fmt.Fprintf(a.Stdout, "devvm: removed [machines.%s] from %s\n", name, a.Paths.FilePath())
+	fmt.Fprintf(a.Stdout, "devvm: removed %s from %s\n", config.MachineTable(name), a.Paths.FilePath())
 	return nil
 }
 

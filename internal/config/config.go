@@ -203,7 +203,7 @@ func Load(p Paths, name string) (*Machine, error) {
 	}
 	m, ok := f.Entry(name)
 	if !ok {
-		return nil, fmt.Errorf("%w: [machines.%s] in %s", ErrNotFound, name, f.Path)
+		return nil, fmt.Errorf("%w: %s in %s", ErrNotFound, MachineTable(name), f.Path)
 	}
 	return m, nil
 }

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
@@ -173,8 +172,11 @@ func TestEditPortsConcurrentAndDeleted(t *testing.T) {
 	if err := writeEntry(a.Paths, config.NewHub("h", "u@h.example")); err != nil {
 		t.Fatal(err)
 	}
+	locking := make(chan struct{})
+	editPortsLockingHook = func() { close(locking) }
+	t.Cleanup(func() { editPortsLockingHook = nil })
 	go func() { done <- a.editPorts(m, func(p []string) []string { return append(p, "1") }) }()
-	time.Sleep(200 * time.Millisecond) // let it take its registered snapshot and block on the lock
+	<-locking // it took its registered snapshot and goes for the lock we hold
 	if err := config.RemoveEntry(a.Paths, "h"); err != nil {
 		t.Fatal(err)
 	}

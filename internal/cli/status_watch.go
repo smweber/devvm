@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -140,8 +141,17 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 	// write of it is a rename into place, which a watch on the file itself
 	// would lose. A devvm.toml that is a symlink into a dotfiles checkout
 	// is written in its target's dir, so that dir is watched too, and
-	// re-resolved on every config-dir event: a stow/chezmoi relink, or a
-	// devvm.toml that appears later as a link, moves the watch with it.
+	// re-resolved on every config-dir event and again once its debounce
+	// fires: a stow/chezmoi relink, or a devvm.toml that appears later as
+	// a link, moves the watch with it. The second look is for kqueue
+	// (macOS): it reports a new name in a watched dir but not a rename
+	// over a name it has seen, so a temp-link-then-rename relink shows up
+	// only as the temp link's Create, taken before the rename lands. An
+	// in-place `rm` + `ln -s` of devvm.toml produces no event at all
+	// there (fsnotify's kqueue watch on the entry holds the old target,
+	// which survives), so every debounce re-resolves: the next event of
+	// any kind (a run/ marker touch included) picks the new target up.
+	// inotify reports both forms directly.
 	// Config-dir events count only for devvm.toml (and its target), so an
 	// editor's swap files never cost a snapshot. Match writeConfigFile's
 	// and EnsureRuntimeDir's modes so nothing is loosened.
@@ -177,28 +187,46 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 
 	// target is devvm.toml's symlink target ("" when it is no link);
 	// targetDir its dir when that is a third directory, watched as well.
+	// Both are fully resolved (EvalSymlinks), so they are compared with
+	// the resolved config and run dirs: on macOS /tmp and /var are
+	// themselves links into /private, and a plain devvm.toml under one
+	// resolves to a path that is not fileName yet names the same file.
+	// Events from the target-dir watch carry its resolved path, the
+	// form target is in. retarget reports whether the target moved.
+	realDir := func(d string) string {
+		if r, err := filepath.EvalSymlinks(d); err == nil {
+			return filepath.Clean(r)
+		}
+		return d
+	}
+	cfgReal, runReal := realDir(cfgDir), realDir(runDir)
 	var target, targetDir string
-	retarget := func() {
+	retarget := func() bool {
 		t := ""
-		if r, err := filepath.EvalSymlinks(paths.FilePath()); err == nil && filepath.Clean(r) != fileName {
-			t = filepath.Clean(r)
+		if r, err := filepath.EvalSymlinks(paths.FilePath()); err == nil {
+			if r = filepath.Clean(r); r != fileName && r != filepath.Join(cfgReal, filepath.Base(fileName)) {
+				t = r
+			}
 		}
 		d := ""
 		if t != "" {
-			if d = filepath.Dir(t); d == cfgDir || d == runDir {
+			if d = filepath.Dir(t); d == cfgReal || d == runReal || d == cfgDir || d == runDir {
 				d = ""
 			}
 		}
 		if d != targetDir {
-			if targetDir != "" {
-				_ = w.Remove(targetDir)
-			}
+			// The new dir first, then the old: no window with neither.
 			if d != "" {
 				_ = w.Add(d)
 			}
+			if targetDir != "" {
+				_ = w.Remove(targetDir)
+			}
 			targetDir = d
 		}
+		moved := t != target
 		target = t
+		return moved
 	}
 	retarget()
 	relevant := func(name string) bool {
@@ -264,6 +292,7 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 	}
 
 	var pending <-chan time.Time // nil until an event arms the debounce
+	changed := false             // a relevant event is in the debounce window
 	refreshWanted := false       // a refresh request is in the debounce window
 	var roundDone chan struct{}  // the round in flight; nil (blocks forever) when idle
 	refreshPath := filepath.Clean(paths.RefreshPath())
@@ -276,11 +305,19 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 				return nil
 			}
 			if d := filepath.Dir(filepath.Clean(ev.Name)); d == cfgDir || filepath.Clean(ev.Name) == cfgDir {
-				retarget() // a relink (or a link appearing) moves the target watch
+				// A relink (or a link appearing) moves the target watch:
+				// now, and once more when the debounce fires (see top).
+				if retarget() {
+					changed = true
+				}
+				if pending == nil {
+					pending = time.After(debounce)
+				}
 			}
 			if !relevant(ev.Name) {
 				continue
 			}
+			changed = true
 			if refresh != nil && filepath.Clean(ev.Name) == refreshPath && !ev.Has(fsnotify.Remove) && !ev.Has(fsnotify.Rename) {
 				refreshWanted = true
 			}
@@ -295,6 +332,7 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 				pending = time.After(debounce)
 			}
 		case <-wake:
+			changed = true
 			if pending == nil {
 				pending = time.After(debounce)
 			}
@@ -311,15 +349,27 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 				}
 			}
 			retarget()
+			changed = true
 			if pending == nil {
 				pending = time.After(debounce)
 			}
 		case <-pending:
 			pending = nil
+			if retarget() { // cheap, and catches a relink kqueue did not report
+				changed = true
+			}
+			if !changed {
+				continue // only an unrelated config-dir file: no snapshot
+			}
+			changed = false
 			if refreshWanted && roundDone == nil {
 				done := make(chan struct{})
 				roundDone = done
 				go func() { defer close(done); refresh(ctx) }()
+			} else if refreshWanted {
+				if h := refreshJoinedHook.Load(); h != nil {
+					(*h)()
+				}
 			}
 			refreshWanted = false // started, or joined to the round in flight
 			if err := emit(); err != nil {
@@ -333,6 +383,12 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 		}
 	}
 }
+
+// refreshJoinedHook, when set (tests only), is called each time a refresh
+// request joins the round in flight instead of starting one, so a test can
+// wait for that rather than sleep past the debounce. Atomic: a watch
+// goroutine may outlive its test.
+var refreshJoinedHook atomic.Pointer[func()]
 
 // isWatchNoise filters runtime-dir entries that change without meaning a
 // state change: the daemon startup lock and the per-daemon stderr log.

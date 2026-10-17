@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -485,11 +484,10 @@ func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 	if listings == nil {
 		listings = a.fetchHubListings(context.Background(), hubs)
 	}
-	host, _ := os.Hostname()
 	for _, hub := range hubs {
 		hr := a.hubRows(hub, listings[hub.Name], f.Entries)
 		smols.shadow(&hr[0]) // the hub's own row: an entry like any other
-		if hub.Name == host {
+		if isThisHost(hub.Name) {
 			// Cosmetic only (config.md §1): the shared file names this host
 			// as a hub; nothing behaves differently for it.
 			hr[0].note = "this host"

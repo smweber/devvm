@@ -295,7 +295,19 @@ func TestWatchFollowsSymlinkRetarget(t *testing.T) {
 	if err := os.MkdirAll(a.Paths.Config, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dirA, dirB := t.TempDir(), t.TempDir()
+	// The targets live under a symlinked dir, as t.TempDir() does on macOS
+	// (/var -> /private/var): what EvalSymlinks returns is not the path the
+	// link names, and the watch must match events in the resolved form.
+	root := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), root); err != nil {
+		t.Fatal(err)
+	}
+	dirA, dirB := filepath.Join(root, "a"), filepath.Join(root, "b")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	fileA, fileB := filepath.Join(dirA, "devvm.toml"), filepath.Join(dirB, "devvm.toml")
 	entry := func(n string) string { return "[machines." + n + "]\nbackend = \"remote\"\nhost = \"" + n + "\"\n" }
 	row := func(n string) string { return n + "\tremote\t?\t-\tunmanaged\tverified=-\n" }

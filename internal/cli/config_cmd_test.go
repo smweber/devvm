@@ -224,15 +224,14 @@ func TestConfigCheck(t *testing.T) {
 }
 
 // `config show` prints the effective templates (fallbacks annotated) and
-// every entry, a hub named like this host marked as such.
+// every entry, a hub named like this host marked as such. The hostname is
+// faked: a real one may be an FQDN (macOS reports NAME.local), which the
+// fixture would otherwise have to quote.
 func TestConfigShow(t *testing.T) {
 	a := newTestApp(t)
-	host, err := os.Hostname()
-	if err != nil || config.ValidName(host) != nil {
-		t.Skip("hostname is not a valid machine name")
-	}
+	fakeHostname(t, "mac.local")
 	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/d\"\nmemory = 4096\n\n[templates.big]\nmemory = 8192\n\n"+
-		"[machines."+host+"]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"c:2222\"\n")
+		"[machines.mac]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"c:2222\"\n")
 	if err := runTree(t, a, "config", "show"); err != nil {
 		t.Fatal(err)
 	}
@@ -243,13 +242,61 @@ func TestConfigShow(t *testing.T) {
 		"[templates.big]  # unset fields fall back to [templates.default]",
 		"memory = 8192\n",
 		`hook = "cmd:/d"`, "# from default",
-		"[machines." + host + "]  # (this host)",
+		"[machines.mac]  # (this host)",
 		"[machines.cloud]\n", "managed = true\n", `host = "c:2222"`,
 		"from [templates.default]: the user setup creates",
 		"connect_timeout = 10", "# default",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("show lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// fakeHostname poses as a host named name for isThisHost.
+func fakeHostname(t *testing.T, name string) {
+	t.Helper()
+	orig := hostname
+	hostname = func() (string, error) { return name, nil }
+	t.Cleanup(func() { hostname = orig })
+}
+
+// The (this host) hint matches the full hostname or its short form, and a
+// dotted entry name (what `config add` writes for an FQDN) is shown quoted,
+// so the output still reads back as the one table it is.
+func TestConfigShowThisHost(t *testing.T) {
+	for _, tc := range []struct {
+		host, entry, header string
+		hint                bool
+	}{
+		{"mac.local", "mac", "[machines.mac]", true},
+		{"mac.local", "mac.local", `[machines."mac.local"]`, true},
+		{"box", "box", "[machines.box]", true},
+		{"box.example.com", "box.example", `[machines."box.example"]`, false},
+		{"macbook.local", "mac", "[machines.mac]", false},
+	} {
+		a := newTestApp(t)
+		fakeHostname(t, tc.host)
+		if err := runTree(t, a, "config", "add", tc.entry, "--backend", "hub", "--host", "h"); err != nil {
+			t.Fatalf("%s: add: %v", tc.entry, err)
+		}
+		data, err := os.ReadFile(a.Paths.FilePath())
+		if err != nil || !strings.Contains(string(data), tc.header+"\n") {
+			t.Errorf("%s: added %q, %v; want header %s", tc.entry, data, err, tc.header)
+		}
+		a.Stdout.(*bytes.Buffer).Reset()
+		if err := runTree(t, a, "config", "show"); err != nil {
+			t.Fatalf("%s: show: %v", tc.entry, err)
+		}
+		out := a.Stdout.(*bytes.Buffer).String()
+		if !strings.Contains(out, tc.header) {
+			t.Errorf("%s: show lacks %s:\n%s", tc.entry, tc.header, out)
+		}
+		if got := strings.Contains(out, tc.header+"  # (this host)"); got != tc.hint {
+			t.Errorf("host %s, entry %s: hint = %v, want %v:\n%s", tc.host, tc.entry, got, tc.hint, out)
+		}
+		if err := runTree(t, a, "config", "rm", tc.entry); err != nil {
+			t.Errorf("%s: rm: %v", tc.entry, err)
 		}
 	}
 }
