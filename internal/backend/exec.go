@@ -45,7 +45,13 @@ func runHost(ctx context.Context, o ExecOpts, hostArgv []string) error {
 // "Uploading …/payload.tar" line, scp's meter) that are noise on success but
 // the only diagnostic on failure.
 func quietHost(hostArgv []string) error {
-	cmd := exec.Command(hostArgv[0], hostArgv[1:]...)
+	return quietHostContext(context.Background(), hostArgv)
+}
+
+// quietHostContext is quietHost under ctx: cancelling it kills the command.
+func quietHostContext(ctx context.Context, hostArgv []string) error {
+	cmd := exec.CommandContext(ctx, hostArgv[0], hostArgv[1:]...)
+	cmd.WaitDelay = HostWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if msg := strings.TrimSpace(string(out)); msg != "" {

@@ -91,8 +91,11 @@ case "$sub" in
         ;;
     cp)
         # smolvm machine cp SRC NAME:DST — root-owned like the real thing.
-        src="$1"; dst="${2#*:}"
-        sudo cp -a "$src" "$dst"
+        # NAME:SRC DST downloads (read as root, written as the caller).
+        case "$1" in
+            *:*) sudo cat -- "${1#*:}" >"$2" ;;
+            *) src="$1"; dst="${2#*:}"; sudo cp -a "$src" "$dst" ;;
+        esac
         ;;
     exec)
         # `smolvm machine exec` boots a stopped VM; devvm relies on that in

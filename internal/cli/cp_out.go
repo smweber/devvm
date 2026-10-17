@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/spf13/cobra"
@@ -186,11 +189,18 @@ func copyOutWith(ctx context.Context, name string, srcs []string, dst string, o 
 	return nil
 }
 
-// downloadArchive streams one guest source to a host tar file. Streaming
+// downloadArchive fetches one guest source as a host tar file. Streaming
 // stdout is binary-safe on both transports, needs no guest staging or root,
 // and a failed download never touches DEST. The guest script's stderr is
 // captured so its refusal reads as the error, prefixed with the machine name.
+//
+// A backend.Downloader (smol) cannot stream it: smolvm caps a `machine exec`'s
+// streamed stdout at 11 MiB. There the tar is staged in the guest and pulled
+// with CopyOut (downloadStaged).
 func downloadArchive(ctx context.Context, b backend.Backend, name, src, archive string, recursive bool, stderr io.Writer) error {
+	if d, ok := b.(backend.Downloader); ok {
+		return downloadStaged(ctx, b, d, name, src, archive, recursive, stderr)
+	}
 	f, err := os.Create(archive)
 	if err != nil {
 		return err
@@ -200,13 +210,58 @@ func downloadArchive(ctx context.Context, b backend.Backend, name, src, archive 
 		"sh", "-c", copyOutScript, "devvm-cp-out", src, strconv.FormatBool(recursive))
 	closeErr := f.Close()
 	if err != nil {
-		if m := strings.TrimSpace(msg.String()); m != "" {
-			return fmt.Errorf("%s: %s", name, m)
-		}
-		return fmt.Errorf("download %s: %w", src, err)
+		return guestCopyError(name, &msg, fmt.Errorf("download %s: %w", src, err))
 	}
 	if msg.Len() > 0 {
 		stderr.Write(msg.Bytes())
 	}
 	return closeErr
+}
+
+// copyOutStagePrefix names cp-out's guest stage: a file in copyStageDir
+// (/var/tmp, which machine cp sees; /tmp is a tmpfs it does not).
+const copyOutStagePrefix = copyStageDir + "/devvm-cp-out-"
+
+// downloadStaged is downloadArchive through a guest stage: one exec writes
+// the tar to a file in copyStageDir, CopyOut pulls it to archive (still in
+// the host temp dir, so a failure never touches DEST), and one more exec
+// removes the stage. The host picks the stage's name rather than the guest's
+// mktemp, so the removal knows it on every path out, including an
+// interruption that cut the first exec short; it runs on a fresh context for
+// that reason, as copyArchive's does. The execs and the copy are sequential
+// one-shots, like cp-in's (the one-exec rule is about parallel execs).
+func downloadStaged(ctx context.Context, b backend.Backend, d backend.Downloader, name, src, archive string, recursive bool, stderr io.Writer) error {
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return err
+	}
+	stage := copyOutStagePrefix + hex.EncodeToString(rnd[:])
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := b.Run(cleanupCtx, backend.ExecOpts{Stdin: strings.NewReader(""), Stderr: stderr}, "rm", "-f", "--", stage); err != nil {
+			fmt.Fprintf(stderr, "devvm: could not clean up %s: %v\n", stage, err)
+		}
+	}()
+	var msg bytes.Buffer
+	if err := b.Run(ctx, backend.ExecOpts{Stdin: strings.NewReader(""), Stderr: &msg},
+		"sh", "-c", copyOutScript, "devvm-cp-out", src, strconv.FormatBool(recursive), stage); err != nil {
+		return guestCopyError(name, &msg, fmt.Errorf("archive %s in the guest: %w", src, err))
+	}
+	if err := d.CopyOut(ctx, stage, archive); err != nil {
+		return fmt.Errorf("download %s: %w", src, err)
+	}
+	if msg.Len() > 0 {
+		stderr.Write(msg.Bytes()) // tar warnings on an otherwise good archive
+	}
+	return nil
+}
+
+// guestCopyError is the guest script's own stderr as the error, prefixed
+// with the machine name, or fallback when it said nothing.
+func guestCopyError(name string, msg *bytes.Buffer, fallback error) error {
+	if m := strings.TrimSpace(msg.String()); m != "" {
+		return fmt.Errorf("%s: %s", name, m)
+	}
+	return fallback
 }

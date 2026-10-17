@@ -312,11 +312,19 @@ done
 `
 
 // copyOutScript is the guest half of cp-out: validate one source and stream it
-// as a tar on stdout. Kept beside copyArchiveScript so the ~ handling stays in
-// one place.
+// as a tar on stdout, or, given a staging path ($3, see downloadArchive),
+// write the tar there instead. Kept beside copyArchiveScript so the ~
+// handling stays in one place.
+//
+// The stage is created exclusively (noclobber) and private (umask 077) under
+// the name the host chose, so the host can always remove it, even when this
+// script never got to report back. A failed tar (a full disk) removes its
+// partial stage itself. sync before exiting: machine cp may read the overlay
+// from outside the guest's page cache (not yet verified on real smolvm).
 const copyOutScript = `set -eu
 cd "$HOME"
 src=$1
+stage=${3-}
 case "$src" in
   '~') src=$HOME ;;
   '~/'*) src="$HOME/${src#\~/}" ;;
@@ -335,5 +343,13 @@ fi
 if [ ! -f "$src" ] && [ ! -d "$src" ] && [ ! -L "$src" ]; then
   echo "$src is missing or has an unsupported file type" >&2; exit 1
 fi
-exec tar -cf - -C "$(dirname -- "$src")" -- "$(basename -- "$src")"
+if [ -z "$stage" ]; then
+  exec tar -cf - -C "$(dirname -- "$src")" -- "$(basename -- "$src")"
+fi
+umask 077
+( set -C; : > "$stage" )
+if ! tar -cf "$stage" -C "$(dirname -- "$src")" -- "$(basename -- "$src")"; then
+  rm -f -- "$stage"; exit 1
+fi
+sync
 `

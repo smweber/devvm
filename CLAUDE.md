@@ -509,7 +509,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **cp**: the upload archive is built in Go (no host tar, no xattr pax headers);
   the guest needs only a busybox-compatible `tar` (no `--no-same-owner`, no
   `realpath`). Staging is `/var/tmp` (`/tmp` is tmpfs-shadowed under `machine
-  cp`). Extraction guards for cp-out live in `cp_tar.go` and are tested with
+  cp`); smol cp-out stages its tar there too and pulls it with `machine cp`
+  (`backend.Downloader`), because smolvm caps exec stdout at 11 MiB. Extraction guards for cp-out live in `cp_tar.go` and are tested with
   hostile archives — keep them all-or-nothing. cp-in/cp-out run under
   `interruptible`: a signal kills the host command via the context, the
   spool is removed on the way out, and Execute re-raises the signal.

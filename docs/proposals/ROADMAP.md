@@ -183,8 +183,8 @@ redesign: they build on resolve's source list, templates, `setup` and
 
 ## After the config redesign (agreed order)
 
-1. **Known issues** (below), the real ones first: `cp-out` > 11 MiB on smol,
-   guest clock after host suspend, killed daemon orphaning its ControlMaster,
+1. **Known issues** (below), the real ones first: guest clock after host
+   suspend, killed daemon orphaning its ControlMaster,
    SIGINT leaking the cp spool, the cold-boot bridge retry.
 2. **The ssh agent exec for remote boxes** (bridge §1 "Remote"): thin remote
    `auth`, `BROWSER` plumbing on remote boxes (bridge §5), deletion of
@@ -245,10 +245,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 ## Known issues (pre-existing, found by live runs, not fixed)
 
-- **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
-  caps `machine exec` streamed stdout at 11534336 bytes, and `downloadArchive`
-  streams the tar over exec stdout. All-or-nothing, locally and proxied.
-  Needs `machine cp` out of the guest or chunking.
 - **A smol guest's clock does not resync after the host suspends** (1.6 days
   behind on the ThinkPad; apt refused "not valid yet"). `stop`/`start` fixes
   it. Candidate: `setup` enables guest time sync, or daemon come-up sets the

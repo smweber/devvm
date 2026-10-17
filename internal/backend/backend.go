@@ -118,6 +118,18 @@ type RootCopier interface {
 	CopiesAsRoot() bool
 }
 
+// Downloader is a backend that can pull a guest file onto the host without
+// streaming it over exec stdout (smol: `smolvm machine cp NAME:SRC DST`).
+// smolvm caps a `machine exec`'s streamed stdout at 11 MiB, so cp-out stages
+// its tar in the guest and pulls it with CopyOut instead. guestSrc is
+// absolute and overlay-backed (not under a guest tmpfs: see smol's Copy);
+// hostDst must not exist yet. Cancelling ctx kills the transfer. ssh and hub
+// backends stream (no cap), so they do not implement it. A capability, not a
+// backend name (config.md §9 item 1).
+type Downloader interface {
+	CopyOut(ctx context.Context, guestSrc, hostDst string) error
+}
+
 // AdoptHint is the one next step every refusal of an unmanaged smol VM
 // names: the handover, or the removal route.
 func AdoptHint(name string) string {

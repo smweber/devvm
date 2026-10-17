@@ -270,6 +270,16 @@ func (b *smolBackend) Copy(hostSrc, guestDst string) error {
 	return quietHost([]string{"smolvm", "machine", "cp", hostSrc, b.m.Name + ":" + guestDst})
 }
 
+// CopyOut downloads via `smolvm machine cp NAME:SRC DST`, the mirror of
+// Copy: the same overlay view (a file under a guest tmpfs is invisible), read
+// as root. Output is shown only on failure.
+func (b *smolBackend) CopyOut(ctx context.Context, guestSrc, hostDst string) error {
+	if err := needSmolvm(); err != nil {
+		return err
+	}
+	return quietHostContext(ctx, []string{"smolvm", "machine", "cp", b.m.Name + ":" + guestSrc, hostDst})
+}
+
 func (b *smolBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error {
 	if err := needSmolvm(); err != nil {
 		return err
