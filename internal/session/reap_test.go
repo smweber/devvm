@@ -90,10 +90,15 @@ func TestReapStopsDaemonAndKeepsLiveMaster(t *testing.T) {
 	if err := Reap(dir, "t", 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	// Reap's "gone" (WaitGone) is the socket unlinked, which is
+	// shutdown's last step but one: the marker touch and this goroutine's
+	// close(done) follow it, so done is waited for, briefly, not read at
+	// once (macOS CI caught it unclosed). A Reap that did not wait fails
+	// above: reapFiles refuses while the daemon still answers.
 	select {
 	case <-done:
-	default:
-		t.Fatal("Reap returned before the daemon was gone")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the daemon did not finish shutting down")
 	}
 	if exists(socketPath(dir, "t")) || exists(logPath(dir, "t")) {
 		t.Error("the stopped daemon's run files survived")
