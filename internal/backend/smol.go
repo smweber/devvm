@@ -271,8 +271,10 @@ func (b *smolBackend) Copy(hostSrc, guestDst string) error {
 }
 
 // CopyOut downloads via `smolvm machine cp NAME:SRC DST`, the mirror of
-// Copy: the same overlay view (a file under a guest tmpfs is invisible), read
-// as root. Output is shown only on failure.
+// Copy, read as root. Unlike an upload it reads the guest's live filesystem
+// from inside the guest (shown on real smolvm: a file just written needs no
+// sync, and even one on the guest's /tmp tmpfs is read). Output is shown
+// only on failure.
 func (b *smolBackend) CopyOut(ctx context.Context, guestSrc, hostDst string) error {
 	if err := needSmolvm(); err != nil {
 		return err

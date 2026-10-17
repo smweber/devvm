@@ -320,9 +320,9 @@ done
 // cp-in shape: mkdir never follows a pre-planted final symlink and fails if
 // the name exists, and -m 700 keeps the tar private. The host can always
 // remove it, even when this script never got to report back. A failed tar
-// (a full disk) removes its partial stage itself. The sync is a precaution:
-// machine cp may read the overlay from outside the guest's page cache; drop
-// it once machine cp is shown to read the live filesystem.
+// (a full disk) removes its partial stage itself. No sync: machine cp reads
+// the guest's live filesystem from inside the guest (shown on real smolvm,
+// even for a file on the guest's /tmp tmpfs).
 const copyOutScript = `set -eu
 cd "$HOME"
 src=$1
@@ -352,5 +352,4 @@ mkdir -m 700 -- "$stage"
 if ! tar -cf "$stage/a.tar" -C "$(dirname -- "$src")" -- "$(basename -- "$src")"; then
   rm -rf -- "$stage"; exit 1
 fi
-sync
 `

@@ -494,13 +494,24 @@ func (a *App) runCopyOutToTar(ctx context.Context, spec string, args []string, t
 	if err != nil {
 		return err
 	}
+	return copyOutToTar(ctx, b, name, src, o.recursive, a.Stdout, a.Stderr)
+}
+
+// copyOutToTar is runCopyOutToTar past its argument checks. Nothing reaches
+// stdout until the download is done, so a laptop that hangs up (^C) would
+// go unnoticed until then: a whole guest tar and machine cp, however large.
+// watchHangup cancels the download as soon as stdout's reader is gone, and
+// the cancel path kills machine cp and removes the guest stage.
+func copyOutToTar(ctx context.Context, b backend.Backend, name, src string, recursive bool, stdout, stderr io.Writer) error {
+	ctx, cancel := watchHangup(ctx, stdout)
+	defer cancel()
 	tmp, err := os.MkdirTemp("", "devvm-cp-out-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmp)
 	archive := filepath.Join(tmp, "payload.tar")
-	if err := downloadArchive(ctx, b, name, src, archive, o.recursive, a.Stderr); err != nil {
+	if err := downloadArchive(ctx, b, name, src, archive, recursive, stderr); err != nil {
 		return err
 	}
 	f, err := os.Open(archive)
@@ -508,9 +519,9 @@ func (a *App) runCopyOutToTar(ctx context.Context, spec string, args []string, t
 		return err
 	}
 	defer f.Close()
-	if _, err := io.WriteString(a.Stdout, tarMarker+"\n"); err != nil {
+	if _, err := io.WriteString(stdout, tarMarker+"\n"); err != nil {
 		return err
 	}
-	_, err = io.Copy(a.Stdout, f)
+	_, err = io.Copy(stdout, f)
 	return err
 }

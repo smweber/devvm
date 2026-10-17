@@ -224,8 +224,9 @@ func downloadStream(ctx context.Context, b backend.Backend, name, src, archive s
 }
 
 // copyOutStagePrefix names cp-out's guest stage: a directory in copyStageDir
-// (/var/tmp, which machine cp sees; /tmp is a tmpfs it does not) holding the
-// tar as a.tar.
+// holding the tar as a.tar. A download reads the guest's live filesystem, so
+// /tmp would do as well, but it is a RAM tmpfs (510 MiB on real smolvm) and
+// a large tar belongs on disk: /var/tmp.
 const copyOutStagePrefix = copyStageDir + "/devvm-cp-out-"
 
 // downloadStaged is downloadArchive through a guest stage: one exec writes
