@@ -185,6 +185,7 @@ func (a *App) rootCmd() *cobra.Command {
 	)...)
 	root.AddCommand(a.daemonCmd())  // hidden; falls under "Additional Commands"
 	root.AddCommand(a.sessionCmd()) // hidden: the hub side of hub forwards
+	root.AddCommand(a.refreshCmd()) // hidden: the menu bar app's "probe the remotes now"
 	return root
 }
 

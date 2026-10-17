@@ -13,6 +13,10 @@ import Foundation
 /// The fifth column says who owns the machine: managed | unmanaged |
 /// shadowed | - (hubs, and a hub machine whose hub is too old to say). It is
 /// optional: a CLI from before it emits four fields, which read as `-`.
+///
+/// A sixth column (`verified=<unix>:<how>` for a remote box, else `-` or
+/// `verified=-`) says when a remote box's state was last established; it
+/// is not read here yet.
 struct Machine {
     let name: String
     let backend: String
@@ -45,14 +49,19 @@ struct Machine {
     }
     var isUnreachable: Bool { state == "unreachable" }
 
-    /// Running smol VMs and remote hosts (which always report `reachable`;
-    /// devvm does not probe them, so this is "selectable", not "alive"). A
-    /// hub itself is neither: nothing is copied to or started on it.
+    /// Running smol VMs and remote hosts that answered their last probe
+    /// (`reachable`: a live ssh master, a TCP connect, or a command that just
+    /// got through). A remote box at `?` was never probed or cannot be (an
+    /// alias behind ProxyJump), so it stays selectable as it was before
+    /// devvm probed anything; `unreachable` is the one remote state that is
+    /// not. A hub itself is neither: nothing is copied to or started on it.
     /// Every action — start, stop, ports, copy in/out, the drop target —
     /// takes a hub machine by name (`h/web` is a machine name to every devvm
     /// command; its forwards are this Mac's own since devvm's hub forwards),
     /// so it is gated on isLive (copies, ports and the shelf on isUsable).
-    var isLive: Bool { !isHub && (state == "running" || state == "reachable") }
+    var isLive: Bool {
+        !isHub && (state == "running" || state == "reachable" || (state == "?" && backend.hasPrefix("remote-")))
+    }
     /// Live and devvm may copy into it and forward its ports.
     var isUsable: Bool { isLive && !needsAdopt }
     var isReconnecting: Bool { forwards.hasPrefix("reconnecting") }

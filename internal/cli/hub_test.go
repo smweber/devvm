@@ -264,7 +264,7 @@ func TestStatusPlainHubRows(t *testing.T) {
 	// only from this host's own saved forwards (ports/h@web) has no backend or state
 	// to report, and its forwards column is this host's own (ports configured,
 	// no daemon → down). Column 1 is `h/web`, nothing else is new.
-	want := "h\thub\tunreachable\t-\t-\nh/web\thub\tunreachable\tdown\t-\n"
+	want := "h\thub\tunreachable\t-\t-\t-\nh/web\thub\tunreachable\tdown\t-\t-\n"
 	if out.String() != want {
 		t.Errorf("plain =\n%s\nwant\n%s", out.String(), want)
 	}

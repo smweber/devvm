@@ -12,11 +12,12 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/reach"
 	"github.com/smweber/devvm/internal/session"
 )
 
 func (a *App) runExec(name string, argv []string) error {
-	_, b, err := a.resolveUnmanaged(name) // an unmanaged VM runs it as smolvm's default user (backend)
+	m, b, err := a.resolveUnmanaged(name) // an unmanaged VM runs it as smolvm's default user (backend)
 	if err != nil {
 		return err
 	}
@@ -27,54 +28,61 @@ func (a *App) runExec(name string, argv []string) error {
 	if len(argv) > 0 && argv[0] == "--" {
 		argv = argv[1:]
 	}
-	return b.Run(context.Background(), backend.ExecOpts{Login: true}, argv...)
+	err = b.Run(context.Background(), backend.ExecOpts{Login: true}, argv...)
+	a.noteContact(m, "exec", config.TransportSSH, err)
+	return err
 }
 
 // runShell opens a raw login shell (no tmux); runAttach joins the dev tmux
 // session. Both dispatch to the backend's Interactive surface, with the
 // transport (ssh|mosh) resolved from the flag or conf for remote machines,
-// and hold the browser bridge (bridgeSession) for as long as they run.
+// and hold the browser bridge (bridgeSession) for as long as they run. A
+// remote box that let one in is reachable as of its return (noteContact).
 func (a *App) runShell(name, transport string) error {
-	it, tr, release, err := a.interactive(name, transport, true)
+	m, it, tr, release, err := a.interactive(name, transport, true)
 	if err != nil {
 		return err
 	}
 	defer release()
-	return it.Shell(tr)
+	err = it.Shell(tr)
+	a.noteContact(m, "shell", tr, err)
+	return err
 }
 
 func (a *App) runAttach(name, transport string) error {
-	it, tr, release, err := a.interactive(name, transport, false)
+	m, it, tr, release, err := a.interactive(name, transport, false)
 	if err != nil {
 		return err
 	}
 	defer release()
-	return it.Attach(tr)
+	err = it.Attach(tr)
+	a.noteContact(m, "attach", tr, err)
+	return err
 }
 
 // allowUnmanaged is shell's: an unmanaged smol VM gets a plain login shell
 // (the backend's), never attach's dev tmux session. bridgeSession holds
 // nothing for one (bridged).
-func (a *App) interactive(name, transport string, allowUnmanaged bool) (backend.Interactive, string, func(), error) {
+func (a *App) interactive(name, transport string, allowUnmanaged bool) (*config.Machine, backend.Interactive, string, func(), error) {
 	resolve := a.resolve
 	if allowUnmanaged {
 		resolve = a.resolveUnmanaged
 	}
 	m, b, err := resolve(name)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, "", nil, err
 	}
 	it, ok := b.(backend.Interactive)
 	if !ok {
-		return nil, "", nil, fmt.Errorf("backend %q is not interactive", m.Backend)
+		return nil, nil, "", nil, fmt.Errorf("backend %q is not interactive", m.Backend)
 	}
 	tr, err := resolveTransport(m, transport)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, "", nil, err
 	}
 	// Subscribed (acked) before the session starts, so the first URL a
 	// program in it opens already reaches this host.
-	return it, tr, a.bridgeSession(m, b), nil
+	return m, it, tr, a.bridgeSession(m, b), nil
 }
 
 // resolveTransport picks the interactive transport: an explicit --transport flag
@@ -211,8 +219,8 @@ func (a *App) deleteStaleConf(name string) error {
 
 // forgetHostState removes what this host remembers about a machine besides
 // its registry entry and run files (reapRunFiles): its saved forwards
-// (<State>/ports/NAME), its managed marker (<State>/managed/NAME) and its
-// pinned host key in the isolated known_hosts. It is the one place `delete`
+// (<State>/ports/NAME), its managed marker (<State>/managed/NAME), its
+// reach cache (<State>/cache/reach/NAME) and its pinned host key in the isolated known_hosts. It is the one place `delete`
 // clears host state, so a later machine of the same name starts clean
 // (config.md §9 item 6: a server recreated under the same name and address
 // has a new host key). Run after the machine and its conf are gone, so a
@@ -237,6 +245,9 @@ func (a *App) forgetHostState(name string, m *config.Machine) error {
 		if err := config.RemoveManagedMarker(a.Paths, name); err != nil {
 			return fmt.Errorf("%s: clear managed marker: %w", name, err)
 		}
+	}
+	if err := reach.Remove(a.Paths, name); err != nil {
+		return fmt.Errorf("%s: clear reach cache: %w", name, err)
 	}
 	if m != nil {
 		if err := a.forgetHostKey(m); err != nil {

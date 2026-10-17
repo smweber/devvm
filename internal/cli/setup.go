@@ -424,6 +424,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 			}
 		}
 	}
+	a.noteContact(m, "setup", config.TransportSSH, nil) // every step above ran over ssh
 	// 8. Saved forwards (host state, config.md §5), unless they are the
 	// proxying laptop's.
 	if !o.savesPorts() {

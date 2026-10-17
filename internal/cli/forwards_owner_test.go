@@ -264,7 +264,7 @@ func TestStatusPlainCountsConfOwnersOnly(t *testing.T) {
 	if err := a.runStatusPlain(true); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"bare\tremote-unmanaged\treachable\t-\tunmanaged\n", "mixed\tremote-unmanaged\treachable\tup:1\tunmanaged\n", "sessonly\tremote-unmanaged\treachable\tdown\tunmanaged\n"} {
+	for _, want := range []string{"bare\tremote-unmanaged\t?\t-\tunmanaged\tverified=-\n", "mixed\tremote-unmanaged\t?\tup:1\tunmanaged\tverified=-\n", "sessonly\tremote-unmanaged\t?\tdown\tunmanaged\tverified=-\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("plain lacks %q:\n%s", want, out.String())
 		}

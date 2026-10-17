@@ -168,13 +168,13 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	}
 	got := a.Stdout.(*bytes.Buffer).String()
 	for _, want := range []string{
-		"made\tsmol\trunning\t-\tmanaged\n",
-		"found\tsmol\tstopped\t-\tunmanaged\n",
-		"legacy\tsmol\trunning\t-\tmanaged\n",
-		"cloud\tremote-unmanaged\treachable\t-\tshadowed\n",
-		"box\tremote-managed\treachable\t-\tmanaged\n",
-		"adopted\tremote-unmanaged\treachable\t-\tunmanaged\n",
-		"broken\t?\tbroken conf\t-\t-\n",
+		"made\tsmol\trunning\t-\tmanaged\t-\n",
+		"found\tsmol\tstopped\t-\tunmanaged\t-\n",
+		"legacy\tsmol\trunning\t-\tmanaged\t-\n",
+		"cloud\tremote-unmanaged\t?\t-\tshadowed\tverified=-\n",
+		"box\tremote-managed\t?\t-\tmanaged\tverified=-\n",
+		"adopted\tremote-unmanaged\t?\t-\tunmanaged\tverified=-\n",
+		"broken\t?\tbroken conf\t-\t-\t-\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plain lacks %q:\n%s", want, got)

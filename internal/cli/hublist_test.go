@@ -96,7 +96,7 @@ func TestWatchHubPipeOverflowRespawns(t *testing.T) {
 	out := newBlockWriter()
 	done := make(chan error, 1)
 	go func() { done <- a.watchWithHubs(ctx, out, 30*time.Millisecond) }()
-	out.until(t, "with the hub unreachable", func(b string) bool { return b == "h\thub\tunreachable\t-\t-\n" })
+	out.until(t, "with the hub unreachable", func(b string) bool { return b == "h\thub\tunreachable\t-\t-\t-\n" })
 	deadline := time.Now().Add(3 * time.Second)
 	for len(sshLines(t, log)) < 2 {
 		if time.Now().After(deadline) {
@@ -130,7 +130,7 @@ func TestStatusLocalSkipsHubs(t *testing.T) {
 	if err := a.runStatusPlain(true); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "box\tsmol\t?\t-\t-\n" {
+	if got := out.String(); got != "box\tsmol\t?\t-\t-\t-\n" {
 		t.Errorf("--local plain =\n%s", got)
 	}
 	if _, err := os.Stat(log); !os.IsNotExist(err) {
@@ -183,7 +183,7 @@ func TestHubListingArgv(t *testing.T) {
 	// The fake devvm prints no rows, so the hub answered with an empty
 	// listing: reachable, and the saved-forwards machine is `?` (the hub did not
 	// name it), with this host's forwards column.
-	if got := a.Stdout.(*bytes.Buffer).String(); got != "h\thub\treachable\t-\t-\nh/web\thub\t?\tdown\t-\n" {
+	if got := a.Stdout.(*bytes.Buffer).String(); got != "h\thub\treachable\t-\t-\t-\nh/web\thub\t?\tdown\t-\t-\n" {
 		t.Errorf("plain =\n%s", got)
 	}
 }
@@ -206,10 +206,10 @@ func TestStatusMergesHubRows(t *testing.T) {
 	if err := a.runStatusPlain(false); err != nil {
 		t.Fatal(err)
 	}
-	want := "h\thub\treachable\t-\t-\n" +
-		"h/api\tsmol\tstopped\t-\t-\n" +
-		"h/db\thub\t?\tdown\t-\n" +
-		"h/web\tsmol\trunning\tup:2\t-\n"
+	want := "h\thub\treachable\t-\t-\t-\n" +
+		"h/api\tsmol\tstopped\t-\t-\t-\n" +
+		"h/db\thub\t?\tdown\t-\t-\n" +
+		"h/web\tsmol\trunning\tup:2\t-\t-\n"
 	if out.String() != want {
 		t.Errorf("plain =\n%s\nwant\n%s", out.String(), want)
 	}
@@ -262,9 +262,9 @@ func TestStatusMergesHubRows(t *testing.T) {
 func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 	shortHubTimes(t, 300*time.Millisecond, 50*time.Millisecond)
 	cached := []hubRow{{"web", "smol", "running", "up:9", "-", ""}, {"api", "smol", "stopped", "-", "-", ""}}
-	want := "h\thub\tunreachable\t-\t-\n" +
-		"h/api\tsmol\tunreachable\t-\t-\n" +
-		"h/web\tsmol\tunreachable\tdown\t-\n"
+	want := "h\thub\tunreachable\t-\t-\t-\n" +
+		"h/api\tsmol\tunreachable\t-\t-\t-\n" +
+		"h/web\tsmol\tunreachable\tdown\t-\t-\n"
 	for _, tc := range []struct {
 		name, body string
 		within     time.Duration
@@ -345,7 +345,7 @@ func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Errorf("two hung hubs took %s", elapsed)
 		}
-		if got := out.String(); got != "h1\thub\tunreachable\t-\t-\nh2\thub\tunreachable\t-\t-\n" {
+		if got := out.String(); got != "h1\thub\tunreachable\t-\t-\t-\nh2\thub\tunreachable\t-\t-\t-\n" {
 			t.Errorf("plain =\n%s", got)
 		}
 	})
@@ -495,15 +495,15 @@ func TestWatchHubPipes(t *testing.T) {
 
 	// The first block already carries the hub's answer (the loop settles
 	// on the pipes before emitting), with this host's forwards column.
-	out.next(t, "h\thub\treachable\t-\t-\nh/web\tsmol\trunning\tdown\t-\n")
+	out.next(t, "h\thub\treachable\t-\t-\t-\nh/web\tsmol\trunning\tdown\t-\t-\n")
 	// The pipe hit EOF: the hub and its cached rows (the block it sent, not
 	// the stale cache from before) go unreachable, the hub's backend token
 	// kept…
 	out.until(t, "with the hub unreachable", func(b string) bool {
-		return b == "h\thub\tunreachable\t-\t-\nh/web\tsmol\tunreachable\tdown\t-\n"
+		return b == "h\thub\tunreachable\t-\t-\t-\nh/web\tsmol\tunreachable\tdown\t-\t-\n"
 	})
 	// …and the re-spawned pipe (after the backoff) brings it back.
-	out.until(t, "with the hub back", func(b string) bool { return b == "h\thub\treachable\t-\t-\nh/web\tsmol\trunning\tdown\t-\n" })
+	out.until(t, "with the hub back", func(b string) bool { return b == "h\thub\treachable\t-\t-\t-\nh/web\tsmol\trunning\tdown\t-\t-\n" })
 	// Two pipes so far, both the BatchMode proxy line for `status --plain
 	// --local --watch --exit-on-stdin-eof` (no -t: no terminal is ever
 	// wanted on a held pipe).
@@ -520,13 +520,13 @@ func TestWatchHubPipes(t *testing.T) {
 	// A hub conf created while watching gets a pipe of its own, no restart.
 	writeHub(t, a, "h2", nil)
 	out.until(t, "listing h2", func(b string) bool {
-		return strings.Contains(b, "h2\thub\treachable\t-\t-\nh2/web\tsmol\trunning\t-\t-\n") && strings.Contains(b, "h/web\tsmol\trunning\tdown\t-\n")
+		return strings.Contains(b, "h2\thub\treachable\t-\t-\t-\nh2/web\tsmol\trunning\t-\t-\t-\n") && strings.Contains(b, "h/web\tsmol\trunning\tdown\t-\t-\n")
 	})
 	// A local change still re-emits, with the hubs' latest blocks merged.
 	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
-	out.until(t, "with the local machine", func(b string) bool { return strings.HasPrefix(b, "box\tsmol\t?\t-\t-\nh\thub\treachable") })
+	out.until(t, "with the local machine", func(b string) bool { return strings.HasPrefix(b, "box\tsmol\t?\t-\t-\t-\nh\thub\treachable") })
 
 	// A deleted hub conf closes its pipe and drops its rows.
 	if err := config.Remove(a.Paths.Config, "h2"); err != nil {
@@ -602,7 +602,7 @@ func TestWatchHubPipeStdinEOF(t *testing.T) {
 	out := newBlockWriter()
 	done := make(chan error, 1)
 	go func() { done <- a.watchWithHubs(ctx, out, 30*time.Millisecond) }()
-	out.next(t, "h\thub\treachable\t-\t-\nh/web\tsmol\trunning\t-\t-\n")
+	out.next(t, "h\thub\treachable\t-\t-\t-\nh/web\tsmol\trunning\t-\t-\t-\n")
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the hub side saw EOF while the watcher was still running")
 	}
@@ -622,7 +622,7 @@ func TestWatchHubPipeStdinEOF(t *testing.T) {
 	out2 := newBlockWriter()
 	done2 := make(chan error, 1)
 	go func() { done2 <- a.watchWithHubs(ctx2, out2, 30*time.Millisecond) }()
-	out2.until(t, "with the hub unreachable", func(b string) bool { return strings.HasPrefix(b, "h\thub\tunreachable\t-\t-\n") })
+	out2.until(t, "with the hub unreachable", func(b string) bool { return strings.HasPrefix(b, "h\thub\tunreachable\t-\t-\t-\n") })
 	cancel2()
 	<-done2
 }

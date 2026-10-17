@@ -104,8 +104,26 @@ func TouchChanged(p Paths) {
 	_ = os.WriteFile(p.ChangedPath(), []byte(time.Now().Format(time.RFC3339Nano)+"\n"), 0o600)
 }
 
+// RefreshPath is the refresh request marker under the runtime dir
+// (providers.md §5): `devvm __refresh` writes it, and a `status --watch`
+// that sees it runs one live round (probe every remote box) instead of the
+// cache-only snapshot every other event gets. Nothing reads its content.
+func (p Paths) RefreshPath() string {
+	return filepath.Join(p.RuntimeDir(), "refresh")
+}
+
+// RequestRefresh writes the refresh marker, as TouchChanged writes the
+// change marker (and for the same kqueue reason, a write, not a touch).
+func RequestRefresh(p Paths) error {
+	if err := p.EnsureRuntimeDir(); err != nil {
+		return err
+	}
+	return os.WriteFile(p.RefreshPath(), []byte(time.Now().Format(time.RFC3339Nano)+"\n"), 0o600)
+}
+
 // CacheDir holds derived data that is safe to lose: per-hub listing caches
-// (`hub-HUB.list`, roadmap step 3). It is deliberately outside run/ so
+// (`hub-HUB.list`, roadmap step 3) and the remote boxes' reach
+// (`reach/NAME`, package reach). It is deliberately outside run/ so
 // `status --watch`, which watches run/ (and machines/), never sees its own
 // cache write and re-triggers.
 func (p Paths) CacheDir() string {

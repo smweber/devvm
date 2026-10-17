@@ -296,22 +296,27 @@ func (a *App) statusCmd() *cobra.Command {
 		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
 			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
 			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
+			"A remote box is probed first (a live ssh master, else a TCP connect: never a\n" +
+			"login) and is reachable, unreachable, or ? when never probed or behind a\n" +
+			"ProxyJump; -v says when and how it was last reached.\n" +
 			"Machines on a hub are listed as HUB/NAME with the state the hub reports\n" +
 			"(each hub is asked in parallel, with a short timeout; a hub that does not\n" +
 			"answer shows its last listing as 'unreachable'). --local lists this host\n" +
-			"only: no hub is read or dialed.\n" +
+			"only: no hub is read or dialed, and remote boxes show their last probe.\n" +
 			"--plain emits one tab-separated\n" +
-			"'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed' row per machine (no\n" +
+			"'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed<TAB>verified' row per machine (no\n" +
 			"headers or grouping) for scripts: state is one of running, stopped,\n" +
 			"reachable, unreachable, 'broken conf' or ?; forwards is up:N,\n" +
 			"reconnecting:N, down (ports configured, no daemon) or - (none configured);\n" +
 			"managed is managed, unmanaged (a smol VM devvm did not create, or an\n" +
 			"adopted remote host), shadowed (a registry entry hiding a local smol VM of\n" +
-			"the same name) or - (hubs, and machines on a hub too old to say).\n" +
+			"the same name) or - (hubs, and machines on a hub too old to say); verified\n" +
+			"is verified=<unix>:<how> or verified=- for a remote box, - otherwise.\n" +
 			"Consumers should treat any other token as unknown.\n" +
 			"--plain --watch keeps running and re-emits the whole listing, blank-line\n" +
 			"separated, whenever devvm changes a machine's state or a hub reports one\n" +
-			"(no polling). Changes made behind devvm's back — 'smolvm machine stop' run\n" +
+			"(no polling; remote boxes are probed at start and on 'devvm __refresh').\n" +
+			"Changes made behind devvm's back — 'smolvm machine stop' run\n" +
 			"directly, a VM crash — are not observed; re-run a plain status on demand\n" +
 			"for those.",
 		Args: cobra.MaximumNArgs(1),
@@ -339,7 +344,7 @@ func (a *App) statusCmd() *cobra.Command {
 		ValidArgsFunction: a.completeAnyMachine, // status takes a hub too
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
-	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed' per line")
+	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed<TAB>verified' per line")
 	c.Flags().BoolVar(&watch, "watch", false, "with --plain: re-emit the listing on every devvm-made change (event-driven, not polled)")
 	c.Flags().BoolVar(&local, "local", false, "this host only: skip every hub (what a hub runs for its own callers)")
 	// Hidden: the laptop's hub watch pipe sets it (hublist.go). Opt-in only,

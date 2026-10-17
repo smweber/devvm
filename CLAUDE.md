@@ -213,13 +213,19 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   seen only through the marker. Rule: a new state-changing command gets `defer
   config.TouchChanged(a.Paths)`. `Machine.Save` is atomic (temp + rename) so
   the watcher never reads a half-written conf.
+- **Reach cache + refresh** (`providers.md` §5, `internal/reach`): a remote row's state is
+  `cache/reach/NAME`, never a live call on the snapshot path. It is refreshed by one-shot `status`, by
+  `__refresh` (writes `run/refresh`; the watcher runs one round, joined if in flight) and by attach/shell/exec/bootstrap.
+  The probe is `ssh -O check`, then `ssh -G` + a 2s TCP connect: never a full ssh, never polled.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with state ∈ {running, stopped,
   reachable, unreachable, broken conf, ?}, forwards ∈ {up:N, reconnecting:N,
   down, -} and managed ∈ {managed, unmanaged, shadowed, -}. The fifth column
   is appended (≥4 fields must keep parsing): `shadowed` is a conf hiding a
   local smol VM of the same name, `-` is a hub, or a hub machine from a hub
-  too old to send it (never `unmanaged`, which nobody said). There is no
+  too old to send it (never `unmanaged`, which nobody said). A sixth column,
+  appended the same way, is `verified=<unix>:<how>` (or `verified=-`) on a
+  remote row and `-` on every other. There is no
   `dormant` (an old hub may still send it); so
   are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact] [ttl=9m42s]`,
   owner kinds `conf`/`connection`/`ttl`; parsers split on whitespace and read only

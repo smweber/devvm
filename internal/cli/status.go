@@ -10,6 +10,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/reach"
 	"github.com/smweber/devvm/internal/session"
 )
 
@@ -23,8 +24,8 @@ var statusGroups = []struct{ backend, title string }{
 
 // smolLifecycle is the state track shown in the verbose view; the live state
 // is highlighted. A smol VM either exists or it doesn't (no dormant state,
-// config.md §2), and remote backends always report reachable, so they get
-// no track.
+// config.md §2); a remote box's state is its reach (a line of its own under
+// the row), so it gets no track.
 var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
@@ -55,9 +56,10 @@ type statusRow struct {
 	cpus    int
 	host    string
 	fwds    fwdSummary
-	saved   bool   // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
-	managed string // the --plain fifth column: managed | unmanaged | shadowed | -
-	note    string // e.g. "no VM (stale conf)"
+	saved   bool         // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
+	managed string       // the --plain fifth column: managed | unmanaged | shadowed | -
+	note    string       // e.g. "no VM (stale conf)"
+	reach   *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
 	m       *config.Machine
 }
 
@@ -74,7 +76,7 @@ type fwdSummary struct {
 // listings), grouped by backend. verbose adds a lifecycle track, live smol
 // resource sizes, and per-machine forward detail. local stops at this host.
 func (a *App) runStatusAll(verbose, local bool) error {
-	rows := a.gatherRows(statusScope{local: local})
+	rows := a.gatherRows(statusScope{local: local, probe: !local})
 	if len(rows) == 0 {
 		fmt.Fprintln(a.Stdout, "No machines. Create one with 'devvm create'.")
 		return nil
@@ -106,7 +108,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 }
 
 // runStatusPlain emits one tab-separated row per machine — name, backend,
-// state, forward state and ownership — with no headers or grouping, so
+// state, forward state, ownership and last contact — with no headers or grouping, so
 // scripts can enumerate machines (e.g. every running smol VM) without
 // scraping the human-formatted table. The token sets are the format's
 // contract:
@@ -114,6 +116,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 //	state:    running | stopped | reachable | unreachable | broken conf | ?
 //	forwards: up:N | reconnecting:N | down | -
 //	managed:  managed | unmanaged | shadowed | -
+//	verified: verified=<unix>:<how> | verified=- | -
 //
 // The fifth column was appended (config.md §7), so a consumer reading four
 // fields still works. `unmanaged` is a smol VM devvm did not create (it
@@ -131,9 +134,18 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // answered. `down` means ports are configured but none is up (the normal
 // state of a stopped VM, so a UI should only flag it on a running machine);
 // `-` means nothing is configured.
-// `reachable` is what every remote reports (devvm does not probe them), and
-// `?` / `broken conf` mean the backend could not be asked / the conf did not
-// load. Consumers should treat any other token as "unknown", not fail.
+// A remote box (remote-managed, remote-unmanaged) is `reachable` when a
+// live ControlMaster answered or its last probe connected, `unreachable`
+// when its last probe failed, `?` when it was never probed or cannot be (an
+// alias behind ProxyJump/ProxyCommand): its reach cache, which this
+// listing refreshes with a live round first (providers.md §5). The sixth
+// column, appended like the fifth, is when and how that was last
+// established: `verified=<unix seconds>:<how>`, how ∈ {master, probe, or
+// the command that talked to the box: attach, shell, exec, bootstrap}, or
+// `verified=-` for a remote box with nothing established; every other row
+// has `-`. `?` / `broken conf` otherwise mean the backend could not be
+// asked / the conf did not load. Consumers should treat any other token as
+// "unknown", not fail.
 // `--watch` re-emits this listing on devvm-made changes (see watchStatus); the
 // format is the same, so a consumer parses one thing.
 //
@@ -143,7 +155,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // the cache) and this host's own forwards column. A consumer that wants to
 // group by hub splits column 1 on `/`. --local lists this host only.
 func (a *App) runStatusPlain(local bool) error {
-	for _, r := range a.gatherRows(statusScope{local: local}) {
+	for _, r := range a.gatherRows(statusScope{local: local, probe: !local}) {
 		fmt.Fprint(a.Stdout, plainLine(r))
 	}
 	return nil
@@ -160,7 +172,15 @@ func groupOf(r statusRow) string {
 
 // plainLine is one --plain row, shared by the one-shot listing and --watch.
 func plainLine(r statusRow) string {
-	return fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r), plainManaged(r))
+	return fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r), plainManaged(r), plainVerified(r))
+}
+
+// plainVerified renders the sixth column (see runStatusPlain).
+func plainVerified(r statusRow) string {
+	if r.reach == nil {
+		return "-"
+	}
+	return r.reach.Plain()
 }
 
 // plainManaged renders the fifth column (see runStatusPlain).
@@ -229,6 +249,9 @@ func rowNote(r statusRow) string {
 // renderVerboseDetail prints the lifecycle track and sizes (local smol) and
 // each live forward under a machine's row.
 func (a *App) renderVerboseDetail(r statusRow) {
+	if r.reach != nil {
+		fmt.Fprintf(a.Stdout, "    reach: %s\n", r.reach.Describe(time.Now()))
+	}
 	if r.backend == config.BackendSmol && r.exists && r.hub == "" {
 		fmt.Fprintf(a.Stdout, "    lifecycle: %s\n", lifecycleTrack(smolLifecycle, r.state))
 		if r.cpus > 0 {
@@ -264,8 +287,14 @@ func (a *App) renderVerboseDetail(r statusRow) {
 // *its* callers, so hubs never fan out). Otherwise every hub conf
 // contributes its rows — fetched now when listings is nil, or, under
 // --watch, the latest block from each held pipe.
+//
+// probe runs a live reach round over the remote boxes first (the one-shot
+// listing: a human typed it and wants fresh), in parallel with the hubs'
+// listings so the two cost one deadline. Without it, as on every --watch
+// snapshot, a remote row is its reach cache and nothing is dialled.
 type statusScope struct {
 	local    bool
+	probe    bool
 	hubs     []*config.Machine // the hub confs, when the caller already loaded them (--watch); nil loads them here
 	listings hubListings
 }
@@ -281,6 +310,17 @@ type statusScope struct {
 // listing settles each VM's ownership (the smol source's rule,
 // backend.SmolManaged) and carries its sizes.
 func (a *App) gatherRows(sc statusScope) []statusRow {
+	if sc.probe {
+		probed := make(chan struct{})
+		go func() { defer close(probed); a.reachRound(context.Background(), a.remoteConfs()) }()
+		if !sc.local && sc.listings == nil {
+			if sc.hubs == nil {
+				sc.hubs = a.hubConfs()
+			}
+			sc.listings = a.fetchHubListings(context.Background(), sc.hubs)
+		}
+		<-probed
+	}
 	var rows []statusRow
 	seen := map[string]bool{}
 	smols := smolSnapshot()
@@ -464,18 +504,16 @@ func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 	}
 	r.managed = ownership(m.Managed())
 	smols.shadow(&r)
-	b, err := backend.For(m, a.Paths)
-	if err != nil {
+	if _, err := backend.For(m, a.Paths); err != nil {
 		r.state = "broken conf"
 		return r
 	}
-	st, err := b.Status()
-	if err != nil {
-		r.state = "?"
-		return r
-	}
-	r.exists, r.running = st.Exists, st.Running
-	r.state = "reachable"
+	// The reach cache, never a live call: this runs on every --watch
+	// snapshot (gatherRows' probe is what refreshes it first).
+	e := reach.Read(a.Paths, m.Name)
+	r.reach = &e
+	r.exists, r.running = true, e.State == reach.Reachable
+	r.state = e.State
 	r.fwds = a.forwardSummary(m.Name)
 	return r
 }

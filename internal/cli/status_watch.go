@@ -41,7 +41,9 @@ func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
 		}()
 	}
 	if local {
-		return watchStatus(ctx, a.Paths, func() string { return a.plainSnapshot(statusScope{local: true}) }, a.Stdout, watchDebounce, nil)
+		// --local reads the reach cache and never probes, like the
+		// one-shot --local: it is what a hub runs for its callers.
+		return watchStatus(ctx, a.Paths, func() string { return a.plainSnapshot(statusScope{local: true}) }, a.Stdout, watchDebounce, nil, nil)
 	}
 	return a.watchWithHubs(ctx, a.Stdout, watchDebounce)
 }
@@ -60,9 +62,17 @@ func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Du
 		hw.sync(hubs)
 		return a.plainSnapshot(statusScope{hubs: hubs, listings: hw.listings()})
 	}
+	round := func(ctx context.Context) { a.reachRound(ctx, a.remoteConfs()) }
 	hw.sync(a.hubConfs())
+	// The opening round runs alongside the pipes' settle, inside the same
+	// first-block wait (both are bounded by the listing deadline), so the
+	// first block already carries probed remotes rather than a cache that
+	// may be days old.
+	probed := make(chan struct{})
+	go func() { defer close(probed); round(ctx) }()
 	hw.settle(ctx, hubTimes.deadline)
-	return watchStatus(ctx, a.Paths, snapshot, out, debounce, hw.wake)
+	<-probed
+	return watchStatus(ctx, a.Paths, snapshot, out, debounce, hw.wake, round)
 }
 
 // plainSnapshot renders the plain listing as one string so identical
@@ -85,7 +95,16 @@ func (a *App) plainSnapshot(sc statusScope) string {
 //
 // It sees only what devvm itself does. A `smolvm machine stop` run directly, a
 // VM crash, or a remote host going away leaves nothing on disk here, so a UI
-// should still re-run a plain status on demand (e.g. when its menu opens).
+// should still re-run a plain status on demand (e.g. when its menu opens),
+// or ask this watcher for a refresh (below).
+//
+// refresh, if not nil, is the live round (reachRound) that a refresh
+// request runs: a write of run/refresh (`devvm __refresh`) runs it once, in
+// the background, and the block it changes is emitted when it ends. Every
+// other event re-snapshots from the caches only, so a daemon touching run/
+// never costs a probe. A request that lands while a round is in flight
+// joins that round rather than starting another, and the debounce
+// coalesces a burst of requests, so a double click costs one round.
 //
 // Returns nil on ctx cancellation and on a write error, so a supervising
 // process sees a clean exit when it is the one that closed the pipe. (Execute
@@ -95,7 +114,7 @@ func (a *App) plainSnapshot(sc statusScope) string {
 // watch (verified on both inotify and kqueue), so it is recreated and
 // re-added, and any watcher error triggers a re-snapshot rather than being
 // treated as fatal — a long-running consumer must never go blind.
-func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string, out io.Writer, debounce time.Duration, wake <-chan struct{}) error {
+func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string, out io.Writer, debounce time.Duration, wake <-chan struct{}, refresh func(context.Context)) error {
 	// Both dirs (machines/ under config, run/ under state) must exist to be
 	// watched; an empty registry is a valid thing to
 	// watch (the first `create` is the change). Match Save's and
@@ -146,6 +165,9 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 	}
 
 	var pending <-chan time.Time // nil until an event arms the debounce
+	refreshWanted := false       // a refresh request is in the debounce window
+	var roundDone chan struct{}  // the round in flight; nil (blocks forever) when idle
+	refreshPath := filepath.Clean(paths.RefreshPath())
 	for {
 		select {
 		case <-ctx.Done():
@@ -158,6 +180,9 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 			// socket and marker are what matter there, so skip the noise.
 			if isWatchNoise(ev.Name) {
 				continue
+			}
+			if refresh != nil && filepath.Clean(ev.Name) == refreshPath && !ev.Has(fsnotify.Remove) && !ev.Has(fsnotify.Rename) {
+				refreshWanted = true
 			}
 			if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
 				for _, dir := range dirs {
@@ -190,6 +215,17 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string
 			}
 		case <-pending:
 			pending = nil
+			if refreshWanted && roundDone == nil {
+				done := make(chan struct{})
+				roundDone = done
+				go func() { defer close(done); refresh(ctx) }()
+			}
+			refreshWanted = false // started, or joined to the round in flight
+			if err := emit(); err != nil {
+				return nil
+			}
+		case <-roundDone:
+			roundDone = nil
 			if err := emit(); err != nil {
 				return nil
 			}

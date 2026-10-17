@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/reach"
 )
 
 type sshBackend struct {
@@ -210,14 +211,23 @@ func (b *sshBackend) lifecycleNoop(action string) error {
 	return nil
 }
 
+// Status probes a remote box (Probe, which also refreshes the reach cache)
+// rather than claiming it reachable unasked: it is what `status NAME`
+// shows, and a human asked. Running is "it answered". A hub's own conf is
+// reached through this backend too, but its state is its listing pipe's
+// (cli's hubRows), so it is not probed here.
 func (b *sshBackend) Status() (State, error) {
-	return State{
-		Name:    b.m.Name,
-		Backend: b.m.Backend,
-		Exists:  true,
-		Running: true,
-		Raw:     "ssh -> " + b.m.SSHHost,
-	}, nil
+	st := State{Name: b.m.Name, Backend: b.m.Backend, Exists: true, Raw: "ssh -> " + b.m.SSHHost}
+	if b.m.IsHub() {
+		st.Running = true
+		return st, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ProbeBudget)
+	defer cancel()
+	e := b.Probe(ctx)
+	st.Running = e.State == reach.Reachable
+	st.Raw += ": " + e.Describe(time.Now())
+	return st, nil
 }
 
 // Shell opens a raw interactive login shell over the chosen transport.

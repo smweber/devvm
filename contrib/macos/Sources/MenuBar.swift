@@ -148,6 +148,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
         // The watch stream only sees devvm-made changes; a VM stopped behind
         // devvm's back shows up here, on demand.
         Log.menu.notice("menu opened; refreshing status")
+        // Ask the watch child for a live round: remote boxes are probed only
+        // when someone looks (providers.md §5), and its next block carries
+        // the result. Fire-and-forget: `__refresh` only writes a marker.
+        devvm.run(["__refresh"]) { _ in }
         refresh.run(devvm, ["status", "--plain"], terminatePrevious: true) { [weak self] r in
             guard let self = self, r.ok else { return }
             let machines = parseStatusBlock(r.stdout)
