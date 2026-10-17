@@ -76,7 +76,7 @@ func LoginUser(ctx context.Context, b backend.Backend) (string, error) {
 // whether it created the user, i.e. whether the caller must switch the machine's
 // ssh_host to the dev user. No-op on other backends or non-root logins.
 func EnsureDevUser(ctx context.Context, b backend.Backend, m *config.Machine) (bool, error) {
-	if m.Backend != config.BackendRemoteManaged {
+	if !m.IsRemote() || !m.Managed() {
 		return false, nil
 	}
 	user, err := LoginUser(ctx, b)
@@ -141,7 +141,7 @@ func Prereqs(ctx context.Context, b backend.Backend, m *config.Machine) error {
 			"bash", "-lc", checkPrereqs, "_", m.Name)
 	}
 	script := managedRemotePrereqs
-	if m.Backend == config.BackendSmol {
+	if !m.IsRemote() {
 		script = smolPrereqs
 	}
 	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true},

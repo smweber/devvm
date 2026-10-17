@@ -70,7 +70,7 @@ func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Du
 func (a *App) plainSnapshot(sc statusScope) string {
 	var b []byte
 	for _, r := range a.gatherRows(sc) {
-		b = fmt.Appendf(b, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
+		b = append(b, plainLine(r)...)
 	}
 	return string(b)
 }

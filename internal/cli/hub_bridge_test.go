@@ -219,7 +219,7 @@ func TestBridgedMachines(t *testing.T) {
 		m    *config.Machine
 		want bool
 	}{
-		{&config.Machine{Name: "web", Backend: config.BackendSmol}, true},
+		{managedSmol("web"), true},
 		{&config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}, true},
 		{&config.Machine{Name: "box", Backend: config.BackendRemoteManaged}, false},
 		{&config.Machine{Name: "box", Backend: config.BackendRemoteUnmanaged}, false},

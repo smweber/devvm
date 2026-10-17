@@ -53,7 +53,7 @@ func (a *App) cpOutCmd() *cobra.Command {
 			} else if ok {
 				return a.runCopyOutHub(cmd.Context(), name, srcs, dst, o)
 			}
-			_, b, err := a.resolveLive(name)
+			_, b, err := a.resolve(name)
 			if err != nil {
 				return err
 			}

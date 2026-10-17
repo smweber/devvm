@@ -71,28 +71,30 @@ type shimReporter interface {
 	shimPath() string
 }
 
-// newTransport builds the right transport for a resolved machine.
+// newTransport builds the right transport for a resolved machine, chosen
+// by the record's predicates rather than its backend string (config.md §9
+// item 1): anything reached over ssh gets native forwards, so a future
+// provider backend needs no case here.
 func newTransport(ctx context.Context, m *config.Machine, b backend.Backend) (transport, error) {
-	switch m.Backend {
-	case config.BackendSmol:
-		return newSmolTransport(ctx, m, b)
-	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
+	switch {
+	case m.IsHub():
+		return nil, fmt.Errorf("%s is a hub, not a machine; forwards go to HUB/NAME", m.Name)
+	case m.IsHubMachine():
+		// A machine on a hub: forwards ride one `__session` on the hub, whose
+		// daemon holds the only agent exec (hub.md §7).
+		hs, ok := b.(backend.HubSessioner)
+		if !ok {
+			return nil, fmt.Errorf("%s: hub backend does not expose a session", m.Name)
+		}
+		return newHubTransport(m.Name, hs.SSHConn(), hs.SessionArgv())
+	case m.IsRemote():
 		conn, ok := b.(backend.SSHConnector)
 		if !ok {
 			return nil, fmt.Errorf("remote backend does not expose a connector")
 		}
 		return newSSHTransport(conn.SSHConn())
-	case config.BackendHub:
-		// A machine on a hub: forwards ride one `__session` on the hub, whose
-		// daemon holds the only agent exec (hub.md §7). A hub itself has no
-		// forwards.
-		hs, ok := b.(backend.HubSessioner)
-		if !ok || !m.IsHubMachine() {
-			return nil, fmt.Errorf("%s is a hub, not a machine; forwards go to HUB/NAME", m.Name)
-		}
-		return newHubTransport(m.Name, hs.SSHConn(), hs.SessionArgv())
 	default:
-		return nil, fmt.Errorf("no forward transport for backend %q", m.Backend)
+		return newSmolTransport(ctx, m, b)
 	}
 }
 

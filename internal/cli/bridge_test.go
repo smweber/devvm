@@ -53,7 +53,7 @@ func TestBridgeSessionSubscribes(t *testing.T) {
 	fb := &fakeBridge{}
 	calls := stubBridge(t, fb, nil)
 	a, _ := bridgeApp(t)
-	release := a.bridgeSession(&config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{})
+	release := a.bridgeSession(managedSmol("web"), &statusBackend{})
 	if len(*calls) != 1 || (*calls)[0] != "web" || fb.subscribed != 1 || fb.closed != 0 {
 		t.Fatalf("calls %v, subscribed %d, closed %d", *calls, fb.subscribed, fb.closed)
 	}
@@ -76,8 +76,8 @@ func TestBridgeSessionSkipped(t *testing.T) {
 		b     backend.Backend
 		wants int
 	}{
-		{"DEVVM_NO_SUBSCRIBE=1", "1", &config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{}, 0},
-		{"DEVVM_NO_SUBSCRIBE=0 subscribes", "0", &config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{}, 1},
+		{"DEVVM_NO_SUBSCRIBE=1", "1", managedSmol("web"), &statusBackend{}, 0},
+		{"DEVVM_NO_SUBSCRIBE=0 subscribes", "0", managedSmol("web"), &statusBackend{}, 1},
 		{"remote", "", &config.Machine{Name: "box", Backend: config.BackendRemoteManaged}, &statusBackend{}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,7 +110,7 @@ func TestBridgeSessionStoppedVMIsANotice(t *testing.T) {
 	}
 	t.Cleanup(func() { openBridgeSession = old })
 	a, errBuf := bridgeApp(t)
-	a.bridgeSession(&config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{runningAfter: -1})()
+	a.bridgeSession(managedSmol("web"), &statusBackend{runningAfter: -1})()
 	want := "devvm: browser bridge unavailable: web was not running when this session started; re-attach (or run 'devvm shell web') for browser opens\n"
 	if errBuf.String() != want {
 		t.Fatalf("notice = %q, want %q", errBuf.String(), want)
@@ -124,7 +124,7 @@ func TestBridgeSessionStoppedVMIsANotice(t *testing.T) {
 // own words; vmNotRunning must keep recognizing them.
 func TestVMNotRunningMatchesRefusal(t *testing.T) {
 	shrinkRunningPoll(t)
-	m := &config.Machine{Name: "web", Backend: config.BackendSmol}
+	m := managedSmol("web")
 	err := requireRunningForForwards(m, &statusBackend{runningAfter: -1}, 0)
 	if !vmNotRunning(err) {
 		t.Fatalf("vmNotRunning(%v) = false", err)
@@ -143,7 +143,7 @@ func TestBridgeSessionFailureIsANotice(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	a, errBuf := bridgeApp(t)
 	stubBridge(t, &fakeBridge{}, errors.New("forward daemon for 'web' did not come up"))
-	a.bridgeSession(&config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{})()
+	a.bridgeSession(managedSmol("web"), &statusBackend{})()
 	if !strings.Contains(errBuf.String(), "browser bridge unavailable (forward daemon for 'web' did not come up)") {
 		t.Fatalf("notice = %q", errBuf.String())
 	}
@@ -151,7 +151,7 @@ func TestBridgeSessionFailureIsANotice(t *testing.T) {
 	a, errBuf = bridgeApp(t)
 	fb := &fakeBridge{subErr: errors.New("subscribe: no reply")}
 	stubBridge(t, fb, nil)
-	a.bridgeSession(&config.Machine{Name: "web", Backend: config.BackendSmol}, &statusBackend{})()
+	a.bridgeSession(managedSmol("web"), &statusBackend{})()
 	if fb.closed != 1 || !strings.Contains(errBuf.String(), "browser bridge unavailable (subscribe: no reply)") {
 		t.Fatalf("closed %d, notice %q", fb.closed, errBuf.String())
 	}
@@ -166,4 +166,12 @@ func TestTTLLeft(t *testing.T) {
 	if got := ttlLeft(-1); got != "expiring" {
 		t.Errorf("ttlLeft(past) = %q", got)
 	}
+}
+
+// managedSmol is a smol record its discovery source settled as managed
+// (devvm made it): what every smol path that installs or shapes assumes.
+func managedSmol(name string) *config.Machine {
+	m := &config.Machine{Name: name, Backend: config.BackendSmol}
+	m.SetManaged(true)
+	return m
 }

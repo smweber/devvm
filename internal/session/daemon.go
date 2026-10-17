@@ -340,21 +340,49 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 	}
 	_ = os.Remove(sock) // clear a stale socket (nobody answered it, and we hold the lock)
 
-	// A stopped smol VM is never dialed — not on reconnect and not on the
-	// first dial either: exec'ing into it could boot a machine the user
-	// deliberately stopped, and it can't hold forwards anyway. `devvm start`
-	// brings the forwards back via tunnelUp.
-	vmRunning := func() bool {
-		if m.Backend != config.BackendSmol {
-			return true
+	// A discovered machine (smol, backend.Refresher) is asked again before
+	// every dial, the first included. A stopped VM is never dialed: exec'ing
+	// into it could boot a machine the user deliberately stopped, and it
+	// can't hold forwards anyway (`devvm start` brings the forwards back via
+	// tunnelUp). And Managed is re-settled each time (config.md §2): the VM
+	// may have been deleted and recreated under the same name while this
+	// daemon slept, and the transport must then refuse to install into it.
+	// The fresh record goes to a fresh backend; m and b stay untouched. An
+	// unmanaged answer stops here, before any exec: the transport would
+	// otherwise run agentbin's probes in a VM devvm does not own before its
+	// install gate refused, and reconnect treats ErrUnmanaged as final.
+	settle := func() (*config.Machine, backend.Backend, error) {
+		r, ok := b.(backend.Refresher)
+		if !ok {
+			return m, b, nil
 		}
-		st, err := b.Status()
-		return err != nil || st.Running
+		fresh, running, err := r.Refresh()
+		if err != nil {
+			return nil, nil, err
+		}
+		if !running {
+			return nil, nil, errVMNotRunning
+		}
+		if !fresh.Managed() {
+			return nil, nil, fmt.Errorf("%s: %w (recreated outside devvm?); not dialing it", m.Name, backend.ErrUnmanaged)
+		}
+		fb, err := backend.For(fresh, paths)
+		if err != nil {
+			return nil, nil, err
+		}
+		return fresh, fb, nil
 	}
-	if !vmRunning() {
+	dialFresh := func() (transport, error) {
+		fm, fb, err := settle()
+		if err != nil {
+			return nil, err
+		}
+		return newTransport(ctx, fm, fb)
+	}
+	tr, err := dialFresh()
+	if errors.Is(err, errVMNotRunning) {
 		return fmt.Errorf("%w; start it first", errVMNotRunning)
 	}
-	tr, err := newTransport(ctx, m, b)
 	if err != nil {
 		return err
 	}
@@ -366,13 +394,7 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 	// The socket is live and dialable; let any queued starter in to see that.
 	lock.Close()
 
-	dial := func() (transport, error) {
-		if !vmRunning() {
-			return nil, errVMNotRunning
-		}
-		return newTransport(ctx, m, b)
-	}
-	d := newDaemon(paths, m.Name, version, tr, dial)
+	d := newDaemon(paths, m.Name, version, tr, dialFresh)
 	d.ln, d.sockInfo = ln, info
 	go d.serveControl()
 	d.loop()
@@ -619,6 +641,12 @@ func (d *daemon) reconnect() bool {
 			tr, err := d.dialInterruptible()
 			switch {
 			case errors.Is(err, errStopped):
+				return false
+			case errors.Is(err, backend.ErrUnmanaged):
+				// Not transient: the VM under this name is no longer one devvm
+				// made, and no backoff makes it one. Exit rather than redial
+				// it every 30s for as long as conf forwards are held.
+				d.logf("%s: %v; exiting", d.name, err)
 				return false
 			case errors.Is(err, errVMNotRunning):
 				if !loggedNotRunning {

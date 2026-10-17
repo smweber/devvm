@@ -17,9 +17,11 @@ into a box only when needed (see the agent note below). It began as a ~2,100-lin
 bash script; comments often explain *why* a behavior exists because it was
 hard-won there.
 
-**Backend axes.** `Managed()` = smol || remote-managed (devvm owns the OS:
-installs prereqs, may harden, pins known_hosts). `IsRemote()` = both `remote-*`
-(reached over ssh). The old per-machine `unmanaged` bool is gone — the backend
+**Backend axes.** `Managed()` = remote-managed, or a smol VM devvm created
+(settled by discovery from the managed marker, below) — devvm owns the OS:
+installs prereqs, may harden, pins known_hosts. `IsRemote()` = both `remote-*`
+(reached over ssh). Code decides on these predicates, not by comparing the
+backend string (config.md §9). The old per-machine `unmanaged` bool is gone — the backend
 value carries it. A `transport` field (`ssh`|`mosh`) steers only the interactive
 connection on remote backends; forwards are always native `ssh -L`.
 
@@ -137,7 +139,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   (`$XDG_CONFIG_HOME/devvm`) holds only the user's files (`machines/`,
   `config.toml`); this host's own state lives in `$XDG_STATE_HOME/devvm`
   (`~/.local/state/devvm`): `run/` (daemon sockets, logs, locks, `changed`),
-  `cache/` (hub listings), `ports/` (saved forwards, below), the pinned
+  `cache/` (hub listings), `ports/` (saved forwards, below), `managed/` (the
+  managed markers, below), the pinned
   `known_hosts`, and the ssh ControlMaster sockets `c-%C` (short for macOS's
   sun_path). State helpers
   are methods on `Paths`, so a config dir can't be passed where state is
@@ -161,7 +164,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   (it keeps forwards in memory; clients push adds). `ports add` saves
   (`--ephemeral` doesn't), `ports rm` drops a line, and `delete` clears it
   through `forgetHostState`, the one helper for "everything this host
-  remembers about NAME". `config.MigratePorts` seeds the dir **once per
+  remembers about NAME" (ports file, managed marker, and the pinned
+  `known_hosts` entry, kept while another registered machine uses the same
+  host). `config.MigratePorts` seeds the dir **once per
   host** (only while `ports/` doesn't exist) from old confs' `ports` and hub
   confs' `[machines.NAME]` tables (decoded leniently, not via `Load`), never
   writing a conf; per-dir rather than per-file so a list dropped here can't
@@ -170,6 +175,35 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   else creates the dir). Those conf fields are
   otherwise dead (decoded so old confs parse; `validateHub` still refuses
   `ports` on a hub). The owner kind stays `conf` (a compatibility surface).
+- **Discovery and the managed marker** (config.md §2): a name with a conf uses
+  it (a remote box never runs smolvm; a conf shadows a local smol VM of the
+  same name). Any other name goes to `backend.Discover`, an ordered list of
+  sources, first match wins; smol is the only one: one `smolvm machine ls
+  --json` (existence, state, sizes, `created_at`, pinned by
+  `backend/testdata`), the row kept on the backend (`SmolRow`, so `status -v`
+  needs no guest exec). **The source settles `Managed`** on the record:
+  managed iff `<State>/managed/NAME` holds the VM's `created_at`; a stale
+  marker (VM recreated by raw smolvm) or a row with no `created_at` is
+  unmanaged. `Managed()` is a field read and never execs. `create` writes
+  the marker. Until step 5, an old per-machine smol conf with no marker is
+  treated as managed and gets one (the hand-migration aid; never overrides an
+  existing marker). The daemon re-settles through `backend.Refresher` before
+  every dial, first included, on a copy of the record (by the same rule,
+  conf included), so a VM recreated while it slept turns unmanaged: the
+  dial stops before any exec and the daemon exits (`ErrUnmanaged` is final
+  in reconnect; the transport's install gate is the backstop). A VM gone
+  since reads as not running. `created_at` is normalized to a decimal
+  integer before compare/write. A conf whose smol VM is gone is "not found"
+  (`delete` drops it).
+- **Unmanaged smol VMs do little**: `status`, `start`, `stop`, and
+  `shell`/`exec` as smolvm's default user over a plain `machine exec` (no
+  sudo, no `BROWSER`, no tmux, nothing installed: `resolveUnmanaged`).
+  Everything else goes through `resolve`, whose `requireManaged` refuses in
+  one line (`backend.AdoptHint`: `setup --adopt NAME`, marked as coming in
+  the next release until step 4, or `smolvm machine rm` + `create`);
+  `bridged()` requires `Managed()`; `delete` refuses and points at `smolvm
+  machine rm`. `ports rm`/`ports list` are host-side only (`portsRecord`),
+  so a stray ports file can always be listed and emptied.
 - **Change marker**: every state-changing command and daemon transition calls
   `config.TouchChanged` (a *write* to `run/changed`, because kqueue ignores
   utimes); `status --plain --watch` (fsnotify on config's `machines/` + state's
@@ -178,8 +212,13 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   config.TouchChanged(a.Paths)`. `Machine.Save` is atomic (temp + rename) so
   the watcher never reads a half-written conf.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
-  `name\tbackend\tstate\tforwards` with state ∈ {running, stopped, dormant,
-  reachable, broken conf, ?} and forwards ∈ {up:N, reconnecting:N, down, -}; so
+  `name\tbackend\tstate\tforwards\tmanaged` with state ∈ {running, stopped,
+  reachable, unreachable, broken conf, ?}, forwards ∈ {up:N, reconnecting:N,
+  down, -} and managed ∈ {managed, unmanaged, shadowed, -}. The fifth column
+  is appended (≥4 fields must keep parsing): `shadowed` is a conf hiding a
+  local smol VM of the same name, `-` is a hub, or a hub machine from a hub
+  too old to send it (never `unmanaged`, which nobody said). There is no
+  `dormant` (an old hub may still send it); so
   are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact] [ttl=9m42s]`,
   owner kinds `conf`/`connection`/`ttl`; parsers split on whitespace and read only
   the first four tokens plus `(pending)`, so anything new goes after them), `devvm
@@ -217,7 +256,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `keys {add,rm,list,dedupe}`, and `defaults {list,set,unset,path}` (global, so its
   leaves take a KEY not a NAME). NAME is always the **first positional of the leaf**
   (`devvm repos add NAME REPO`) so completion and "first arg = machine" hold at any
-  depth. Single-action verbs (create/provision/start/stop/deprovision/delete/attach/…)
+  depth. Single-action verbs (create/start/stop/delete/attach/…)
   stay flat, but `--help` clusters them into Lifecycle/Connect/Configure groups in an
   explicit lifecycle order via `cobra.EnableCommandSorting=false` + `AddGroup`/`GroupID`
   (see `rootCmd`). `repos add` records
@@ -282,7 +321,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `$HOME`-resolved (never hardcode `/home/dev`). Managed boxes get a root-owned
   `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
   install, gated behind explicit consent (`auth --install-agent` or a prompt) so
-  devvm never writes to an adopted box unasked. `Install` returns the paths to use
+  devvm never writes to an adopted box unasked. The posture is keyed on
+  `Managed()` alone. The smol transport's install gate **fails** when
+  `!Managed()` (a detached daemon can't ask anyone), so nothing is installed
+  into a smol VM devvm did not create. `Install` returns the paths to use
   (agent and shim). On smol, `bootstrap` installs agent + shim and writes
   `/etc/profile.d/devvm.sh` (`bootstrap.Browser`), so profile.d never names a
   missing file; smol `create`/`bootstrap` **fail** if that install fails. smol
@@ -296,19 +338,15 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   dev with sudo). `Harden` pins `AllowUsers` to the actual connection user and
   refuses to run as root (it would write `PermitRootLogin no` + `AllowUsers
   root` — a lockout).
-- **Vocabulary — don't re-conflate these.** `provision` means **allocate a
-  resource** (the VM/disk); `deprovision` frees it while keeping the registry entry.
-  The **`bootstrap-hook`** (conf `bootstrap_hook`, was `provision`) is the *user
-  setup step* the `bootstrap` phase runs (prereqs + hardening + hook). So
-  `provision` = make the box exist; `bootstrap-hook` = shape it.
-- **Lifecycle states** are **derived, not stored**: a machine is *dormant* when its
-  conf exists but the backend resource doesn't (`config.Exists ∧ ¬backend.Exists()`).
-  `provision` allocates a dormant box (+ bootstrap); `deprovision` returns a live box
-  to dormant (destroys disk, keeps conf); `delete` on a dormant box just deregisters.
-  `resolveLive`/`requireProvisioned` (`resolve.go`) guard the commands that need a
-  live box so they fail with a clear next step. Remote backends report
-  `Exists()==true` always, so provision/deprovision no-op there **until the hetzner
-  backend** adds real API-backed create/destroy.
+- **Vocabulary — don't re-conflate these.** `create` allocates the resource (the
+  VM/disk) and writes the managed marker; `delete` destroys it. The
+  **`bootstrap-hook`** (conf `bootstrap_hook`) is the *user setup step* the
+  `bootstrap` phase runs (prereqs + hardening + hook). So `create` = make the
+  box exist; `bootstrap-hook` = shape it.
+- **Lifecycle states**: a machine exists or it doesn't. There is **no dormant
+  state** and no `provision`/`deprovision` (config.md §2): a smol VM is
+  running or stopped, a remote box is reachable. Rebuilding is `delete` then
+  `create`.
 - **Bootstrap-hook**: may be `url:`, `cmd:`, or `none`; the built-in default is
   **`none`** (nothing personal baked into the binary). Each box's hook is resolved
   once at create time (flag > `config.toml` `bootstrap_hook` > built-in) and written

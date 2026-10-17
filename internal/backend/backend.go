@@ -6,6 +6,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -74,7 +75,7 @@ type Backend interface {
 func For(m *config.Machine, paths config.Paths) (Backend, error) {
 	switch m.Backend {
 	case config.BackendSmol:
-		return &smolBackend{m: m}, nil
+		return &smolBackend{m: m, paths: paths}, nil
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
 		return &sshBackend{m: m, paths: paths}, nil
 	case config.BackendHub:
@@ -87,6 +88,39 @@ func For(m *config.Machine, paths config.Paths) (Backend, error) {
 	default:
 		return nil, fmt.Errorf("machine %q has unsupported backend %q", m.Name, m.Backend)
 	}
+}
+
+// Refresher is a backend whose record is discovered rather than configured
+// (smol): Refresh asks its discovery source again and returns a fresh copy
+// of the record, Managed re-settled, and whether the box runs (m is nil
+// when it no longer exists, which also reads as not running). The session
+// daemon calls it at start and before every reconnect dial (config.md §2,
+// §9 item 3: the re-read asks the backend, never a marker file directly).
+// A backend without it (ssh, hub) always counts as running, with the
+// record it was built from.
+type Refresher interface {
+	Refresh() (m *config.Machine, running bool, err error)
+}
+
+// ErrUnmanaged is what the backend says when asked to shape a local VM devvm
+// did not create (config.md §2). The cli refuses such commands first, with
+// the `setup --adopt` hint; this is the backstop.
+var ErrUnmanaged = errors.New("this smol VM was not created by devvm (unmanaged)")
+
+// RootCopier is a backend whose Copy leaves files owned by root (smol:
+// `smolvm machine cp` writes into the overlay as root), so a caller that
+// hands the file to the guest user must make it readable first. A
+// capability, not a backend name (config.md §9 item 1).
+type RootCopier interface {
+	CopiesAsRoot() bool
+}
+
+// AdoptHint is the one next step every refusal of an unmanaged smol VM
+// names. `setup --adopt` lands in the release after this one (config.md
+// step 4, which drops the parenthetical); until then the removal route is
+// the one that works today.
+func AdoptHint(name string) string {
+	return fmt.Sprintf("hand it over with 'devvm setup --adopt %s' (coming in the next release), or remove it with 'smolvm machine rm --name %s' and 'devvm create %s'", name, name, name)
 }
 
 // Interactive is the connect surface every backend implements. Shell opens a raw

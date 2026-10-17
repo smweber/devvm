@@ -130,7 +130,7 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string, ephe
 // belongs to whoever holds the session, and goes when the session does.
 func (a *App) runUnport(name, mapping string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`: the ports file or a live forward changed
-	m, _, err := a.resolveForwardsConf(name)
+	m, err := a.portsRecord(name)
 	if err != nil {
 		return err
 	}
@@ -261,11 +261,40 @@ func ttlLeft(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
+// portsRecord is what `ports rm` and `ports list` need: a valid name and
+// the record editPorts keys its lock and deletion check on, read host-side
+// only. No VM is asked whether it exists, runs or is managed, so a stray
+// ports file for a VM devvm did not create, or for one that is gone, can
+// still be listed and emptied (nothing else would ever remove it: delete
+// refuses such a VM). A HUB/NAME needs its hub conf, as before; a bare name
+// uses its conf when it has one and a bare record otherwise.
+func (a *App) portsRecord(name string) (*config.Machine, error) {
+	if ok, err := hubMachineArg([]string{name}); err != nil {
+		return nil, err
+	} else if ok {
+		return config.LoadHubMachine(a.Paths.Config, name)
+	}
+	if err := config.ValidName(name); err != nil {
+		return nil, err
+	}
+	m, err := config.Load(a.Paths.Config, name)
+	if errors.Is(err, config.ErrNotFound) {
+		return &config.Machine{Name: name}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := requireMachine(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // runPortsList shows the machine's saved forwards plus any that are live.
 // The saved block keeps its "configured:" header: it is the same list, only
 // stored on this host now.
 func (a *App) runPortsList(name string) error {
-	if _, _, err := a.resolveForwardsConf(name); err != nil {
+	if _, err := a.portsRecord(name); err != nil {
 		return err
 	}
 	saved, err := a.savedPorts(name)
@@ -433,7 +462,7 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 }
 
 // requireRunningForForwards refuses to spawn a forward daemon for a stopped
-// smol VM. resolveLive only checks the VM is provisioned; the daemon's first
+// smol VM. resolve only checks the VM exists; the daemon's first
 // transport would exec into the machine, and smolvm's exec may boot one the
 // user deliberately stopped. (The daemon guards its reconnect dials the same
 // way; this catches the initial dial before a daemon exists.)
@@ -443,8 +472,8 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 // a moment. Failing there would tell the user to start a VM they just started.
 // `ports add`/`ports up` pass 0 so a deliberately stopped VM answers at once.
 func requireRunningForForwards(m *config.Machine, b backend.Backend, wait time.Duration) error {
-	if m.Backend != config.BackendSmol {
-		return nil
+	if m.IsRemote() {
+		return nil // ssh never boots anything; a hub machine's hub refuses for itself
 	}
 	deadline := time.Now().Add(wait)
 	for {

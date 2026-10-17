@@ -90,15 +90,19 @@ func TestValidate(t *testing.T) {
 func TestManagedAndRemote(t *testing.T) {
 	tests := []struct {
 		backend           string
+		settled           bool // SetManaged(true), as the smol discovery source does for a VM devvm made
 		managed, isRemote bool
 	}{
-		{BackendSmol, true, false},
-		{BackendRemoteManaged, true, true},
-		{BackendRemoteUnmanaged, false, true},
-		{BackendHub, false, true}, // reached like a remote box, never shaped
+		{BackendSmol, false, false, false}, // unsettled: a VM devvm did not create, until a source says otherwise
+		{BackendSmol, true, true, false},
+		{BackendRemoteManaged, false, true, true},
+		{BackendRemoteUnmanaged, false, false, true},
+		{BackendRemoteUnmanaged, true, false, true}, // the smol bit means nothing off smol
+		{BackendHub, false, false, true},            // reached like a remote box, never shaped
 	}
 	for _, tt := range tests {
 		m := &Machine{Backend: tt.backend}
+		m.SetManaged(tt.settled)
 		if m.Managed() != tt.managed {
 			t.Errorf("%s: Managed()=%v want %v", tt.backend, m.Managed(), tt.managed)
 		}

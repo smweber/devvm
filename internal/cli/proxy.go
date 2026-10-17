@@ -42,8 +42,7 @@ import (
 // defer config.TouchChanged. delete is absent because it is not dispatched
 // through proxy(): runDelete proxies it itself and already defers the touch.
 var proxiedStateVerbs = map[string]bool{
-	"create": true, "provision": true, "deprovision": true,
-	"start": true, "stop": true,
+	"create": true, "start": true, "stop": true,
 }
 
 // stdinIsTTY and stdoutIsTTY decide `ssh -t` (hub.md §4): the hub side gets
@@ -90,9 +89,8 @@ func (a *App) hubOr(local func(cmd *cobra.Command, args []string) error) func(*c
 }
 
 // hubOrStopForwards is hubOr for the verbs that leave the VM down or gone
-// on the hub (stop, deprovision): once the proxied command succeeds, this
-// host's daemon for HUB/NAME is stopped too, as runStop and runDeprovision
-// stop a local one. Left running it would find `__session` refusing the
+// on the hub (stop): once the proxied command succeeds, this host's daemon
+// for HUB/NAME is stopped too, as runStop stops a local one. Left running it would find `__session` refusing the
 // stopped VM and redial for good, every attempt (up to every 30s) an ssh
 // master, a login shell and a `devvm __session` on the hub. `start
 // HUB/NAME` brings it back (startHubMachine); `delete HUB/NAME` stops it

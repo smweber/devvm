@@ -169,12 +169,15 @@ func (a *App) hostOpener() session.SessionOptions {
 }
 
 // bridged reports whether attach/shell/auth hold a subscription for m: a
-// local smol machine (its daemon's agent exec carries events), or a machine
-// on a hub, through this host's daemon for HUB@NAME, whose relay subscribes
-// on the hub daemon (hub.md §8). Remote boxes wait for the ssh agent exec
-// (bridge §1, "Remote", deferred).
+// local smol machine devvm manages (its daemon's agent exec carries
+// events), or a machine on a hub, through this host's daemon for HUB@NAME,
+// whose relay subscribes on the hub daemon (hub.md §8; the hub refuses a
+// VM it does not manage). A smol VM devvm did not create gets no bridge:
+// subscribing would spawn a daemon whose transport installs the agent
+// (config.md §2). Remote boxes wait for the ssh agent exec (bridge §1,
+// "Remote", deferred).
 func bridged(m *config.Machine) bool {
-	return m.Backend == config.BackendSmol || m.IsHubMachine()
+	return m.IsHubMachine() || (!m.IsRemote() && m.Managed())
 }
 
 // bridgeSession opens the browser bridge for an interactive session and

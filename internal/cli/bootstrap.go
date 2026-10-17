@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) runBootstrap(name string) error {
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -19,7 +19,7 @@ func (a *App) runBootstrap(name string) error {
 	// then rewrite ssh_host so this run (and everything after) connects as dev —
 	// otherwise the hook, keys, and repos all land in /root and harden would
 	// lock the box.
-	if m.Backend == config.BackendRemoteManaged {
+	if m.IsRemote() && m.Managed() {
 		created, err := bootstrap.EnsureDevUser(ctx, b, m)
 		if err != nil {
 			return err
@@ -70,7 +70,7 @@ func (a *App) runBootstrap(name string) error {
 }
 
 func (a *App) runLockdown(name string) error {
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}

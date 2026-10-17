@@ -90,7 +90,7 @@ func LoadHubMachine(configDir, name string) (*Machine, error) {
 
 // LoadAny loads a local conf or, for a HUB/NAME reference, the hub-machine
 // record. It is the file-level counterpart of the cli's resolve (which adds
-// the unregistered-smol fallback and a backend).
+// discovery of local smol VMs and a backend).
 func LoadAny(configDir, name string) (*Machine, error) {
 	if _, _, ok, err := SplitHubName(name); err != nil {
 		return nil, err

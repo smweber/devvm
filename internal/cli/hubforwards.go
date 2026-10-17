@@ -47,7 +47,7 @@ func (a *App) runSession(name string) error {
 	} else if ok {
 		return fmt.Errorf("%s is the hub side of hub forwards and takes a machine on this host, not %s (hubs do not chain)", backend.SessionCmd, name)
 	}
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -61,22 +61,11 @@ func (a *App) runSession(name string) error {
 	return session.Relay(conn, a.stdin(), a.Stdout)
 }
 
-// resolveForwards is resolveLive for the ports verbs, which also act on a
+// resolveForwards is resolve for the ports verbs, which also act on a
 // machine on a hub: their forwards are this host's (hub.md §7). A HUB/NAME
 // resolves from the hub conf alone, never dialing; whether the machine
 // exists and runs is the hub's answer when the daemon's __session starts.
 func (a *App) resolveForwards(name string) (*config.Machine, backend.Backend, error) {
-	if ok, err := hubMachineArg([]string{name}); err != nil {
-		return nil, nil, err
-	} else if ok {
-		return a.resolveAny(name)
-	}
-	return a.resolveLive(name)
-}
-
-// resolveForwardsConf is resolve for the conf-only ports verbs (rm, list):
-// no provisioned check, a hub machine allowed.
-func (a *App) resolveForwardsConf(name string) (*config.Machine, backend.Backend, error) {
 	if ok, err := hubMachineArg([]string{name}); err != nil {
 		return nil, nil, err
 	} else if ok {

@@ -30,9 +30,12 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 	// The agent and the BROWSER shim, in one install, before the exec that
 	// runs the agent (browser-bridge.md §5): a smol box whose daemon is up
 	// has both, which is what `attach` relies on the moment it subscribes.
-	// smol is managed, so no approval gate (nil) and a root /usr/local/bin
-	// install.
-	paths, err := agentbin.Install(ctx, b, m, nil)
+	// A managed VM gets the root /usr/local/bin install with no prompt. The
+	// gate fails for one devvm did not create (config.md §2): this runs in
+	// a detached daemon, nobody could consent, and m is the record the
+	// daemon re-settled for this very dial, so a VM recreated under the
+	// same name while the daemon slept is refused here too.
+	paths, err := agentbin.Install(ctx, b, m, smolInstallGate(m))
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +54,17 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 	t := &smolTransport{agent: agent, mux: mux, evCh: make(chan bridgeRequest), paths: paths}
 	go serveEvents(mux, t.evCh)
 	return t, nil
+}
+
+// smolInstallGate is the approve callback of the smol transport's install:
+// agentbin calls it only when something would be written.
+func smolInstallGate(m *config.Machine) func() error {
+	return func() error {
+		if !m.Managed() {
+			return fmt.Errorf("%s: %w; refusing to install the agent: %s", m.Name, backend.ErrUnmanaged, backend.AdoptHint(m.Name))
+		}
+		return nil
+	}
 }
 
 // maxEventStreams bounds the guest's event streams in flight at once, from

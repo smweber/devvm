@@ -277,28 +277,6 @@ func (a *App) stopCmd() *cobra.Command {
 	return c
 }
 
-func (a *App) provisionCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "provision NAME",
-		Short: "Allocate a dormant machine's resource + bootstrap it",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runProvision(args[0]) }),
-	}
-	a.machineArg(c)
-	return c
-}
-
-func (a *App) deprovisionCmd() *cobra.Command {
-	var yes bool
-	c := &cobra.Command{
-		Use:   "deprovision NAME",
-		Short: "Destroy the resource but keep the registry entry (rebuild with 'provision')",
-		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runDeprovision(args[0], yes) }),
-	}
-	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
-	a.machineArg(c)
-	return c
-}
-
 func (a *App) deleteCmd() *cobra.Command {
 	var force bool
 	c := &cobra.Command{
@@ -325,11 +303,15 @@ func (a *App) statusCmd() *cobra.Command {
 			"(each hub is asked in parallel, with a short timeout; a hub that does not\n" +
 			"answer shows its last listing as 'unreachable'). --local lists this host\n" +
 			"only: no hub is read or dialed.\n" +
-			"--plain emits one tab-separated 'name<TAB>backend<TAB>state<TAB>forwards' row\n" +
-			"per machine (no headers or grouping) for scripts: state is one of running,\n" +
-			"stopped, dormant, reachable, unreachable, 'broken conf' or ?; forwards is\n" +
-			"up:N, reconnecting:N, down (ports configured, no daemon) or - (none\n" +
-			"configured). Consumers should treat any other token as unknown.\n" +
+			"--plain emits one tab-separated\n" +
+			"'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed' row per machine (no\n" +
+			"headers or grouping) for scripts: state is one of running, stopped,\n" +
+			"reachable, unreachable, 'broken conf' or ?; forwards is up:N,\n" +
+			"reconnecting:N, down (ports configured, no daemon) or - (none configured);\n" +
+			"managed is managed, unmanaged (a smol VM devvm did not create, or an\n" +
+			"adopted remote host), shadowed (a registry entry hiding a local smol VM of\n" +
+			"the same name) or - (hubs, and machines on a hub too old to say).\n" +
+			"Consumers should treat any other token as unknown.\n" +
 			"--plain --watch keeps running and re-emits the whole listing, blank-line\n" +
 			"separated, whenever devvm changes a machine's state or a hub reports one\n" +
 			"(no polling). Changes made behind devvm's back — 'smolvm machine stop' run\n" +
@@ -360,7 +342,7 @@ func (a *App) statusCmd() *cobra.Command {
 		ValidArgsFunction: a.completeAnyMachine, // status takes a hub too
 	}
 	c.Flags().BoolVarP(&verbose, "verbose", "v", false, "expand lifecycle, live resources, and forwards")
-	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards' per line")
+	c.Flags().BoolVar(&plain, "plain", false, "machine-readable: 'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed' per line")
 	c.Flags().BoolVar(&watch, "watch", false, "with --plain: re-emit the listing on every devvm-made change (event-driven, not polled)")
 	c.Flags().BoolVar(&local, "local", false, "this host only: skip every hub (what a hub runs for its own callers)")
 	// Hidden: the laptop's hub watch pipe sets it (hublist.go). Opt-in only,

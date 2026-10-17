@@ -94,8 +94,12 @@ func hubListOpts(stdin io.Reader, stdout io.Writer) backend.ExecOpts {
 
 // hubRow is one row of a hub's --plain listing: a bare hub-side name and the
 // tokens as the hub emitted them, passed through and never interpreted, so a
-// newer hub's new token reaches this host's consumer intact.
-type hubRow struct{ name, backend, state, forwards string }
+// newer hub's new token reaches this host's consumer intact. managed is the
+// fifth column (config.md §7), `-` from a hub too old to send it: never
+// `unmanaged`, which that hub did not say. rest is anything a newer hub
+// sends past the fifth column, raw (tab-joined), kept so the cache round
+// trips it rather than truncating rows to what this build knows.
+type hubRow struct{ name, backend, state, forwards, managed, rest string }
 
 // parseHubRows reads --plain rows out of text. Anything that is not a row is
 // dropped: a login-shell banner, a blank line, a row whose name is not a bare
@@ -108,9 +112,15 @@ func parseHubRows(text string) []hubRow {
 		if len(f) < 3 || config.ValidName(f[0]) != nil {
 			continue
 		}
-		r := hubRow{name: f[0], backend: f[1], state: f[2], forwards: "-"}
+		r := hubRow{name: f[0], backend: f[1], state: f[2], forwards: "-", managed: "-"}
 		if len(f) > 3 {
 			r.forwards = f[3]
+		}
+		if len(f) > 4 && f[4] != "" {
+			r.managed = f[4]
+		}
+		if len(f) > 5 {
+			r.rest = strings.Join(f[5:], "\t")
 		}
 		rows = append(rows, r)
 	}
@@ -192,7 +202,7 @@ func (a *App) runHubList(ctx context.Context, hub *config.Machine) ([]hubRow, er
 }
 
 // The cache. cache/hub-HUB.list holds the hub's --plain rows verbatim, one
-// per line (`name<TAB>backend<TAB>state<TAB>forwards`, bare hub-side names in
+// per line (`name<TAB>backend<TAB>state<TAB>forwards<TAB>managed`, bare hub-side names in
 // column 1): the grammar the hub already speaks, so cachedHubMachines reads
 // column 1 with no second format to keep in step.
 
@@ -203,7 +213,11 @@ func hubCachePath(paths config.Paths, hub string) string {
 func hubCacheText(rows []hubRow) string {
 	var b strings.Builder
 	for _, r := range rows {
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, r.forwards)
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s", r.name, r.backend, r.state, r.forwards, r.managed)
+		if r.rest != "" {
+			b.WriteString("\t" + r.rest)
+		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }

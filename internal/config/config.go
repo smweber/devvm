@@ -53,8 +53,8 @@ const (
 // config.toml — see Defaults.
 const DefaultBootstrapHook = "none"
 
-// ErrNotFound is returned by Load when no conf file exists for a name. Callers
-// that also know about live-but-unregistered smol VMs handle that fallback.
+// ErrNotFound is returned by Load when no conf file exists for a name. The
+// cli then asks discovery (backend.Discover), which finds local smol VMs.
 var ErrNotFound = errors.New("machine not registered")
 
 // nameRe mirrors valid_name in bin/devvm: names land in file paths and process
@@ -104,10 +104,10 @@ type Machine struct {
 	Transport  string `toml:"transport,omitempty"` // ssh (default) | mosh
 	MoshServer string `toml:"mosh_server,omitempty"`
 
-	// smol backend. Memory (MiB) and Disk (GiB) are a provisioning spec: read at
-	// create and (re)provision, but the live VM is the source of truth once it
-	// exists — `status` reports the VM's actual sizes, and editing these here only
-	// takes effect on the next provision (e.g. after a deprovision).
+	// smol backend. Memory (MiB) and Disk (GiB) are a creation spec, read only
+	// at create: smolvm's own record is the source of truth once the VM
+	// exists (`status` reads its sizes from `smolvm machine ls`), and editing
+	// these here changes nothing.
 	Memory int `toml:"memory,omitempty"` // MiB
 	Disk   int `toml:"disk,omitempty"`   // GiB
 
@@ -131,10 +131,18 @@ type Machine struct {
 	// hub backend only: the old per-machine tables (see HubMachine), read only
 	// to seed saved forwards once.
 	Machines map[string]HubMachine `toml:"machines,omitempty"`
+
+	// smolManaged is a smol record's Managed bit, settled once by the
+	// discovery source that produced the record (backend's smol source: the
+	// managed marker against the VM's created_at, config.md §2) and never
+	// stored. Unsettled means unmanaged, so a record nobody settled can
+	// never be taken for one devvm may install into.
+	smolManaged bool
 }
 
-// NewSmol returns a defaulted smol machine. Used for the "live but unregistered
-// smol VM" fallback load_machine kept, so pre-registry VMs still work.
+// NewSmol returns a defaulted smol machine record: create's, and the one the
+// smol discovery source builds for a VM with no conf. Unmanaged until the
+// source settles it (SetManaged).
 func NewSmol(name string) *Machine {
 	m := &Machine{Name: name, Backend: BackendSmol}
 	m.applyDefaults()
@@ -280,11 +288,26 @@ func (m *Machine) IsHub() bool {
 func (m *Machine) IsHubMachine() bool { return m.Hub != nil }
 
 // Managed reports whether devvm owns this box's OS and lifecycle — it installs
-// prereqs, may harden, and pins known_hosts. smol and remote-managed are managed;
-// adopted remote-unmanaged hosts are not (devvm only checks them, never modifies).
+// prereqs, may harden, and pins known_hosts. remote-managed is managed and
+// adopted remote-unmanaged hosts are not (devvm only checks them, never
+// modifies). A smol VM is managed only when its discovery source said so
+// (SetManaged): one devvm created, never one it merely found (config.md §2).
+// A plain field read: it never execs or reads a file.
 func (m *Machine) Managed() bool {
-	return m.Backend == BackendSmol || m.Backend == BackendRemoteManaged
+	switch m.Backend {
+	case BackendRemoteManaged:
+		return true
+	case BackendSmol:
+		return m.smolManaged
+	default:
+		return false
+	}
 }
+
+// SetManaged settles a smol record's Managed bit. Only a discovery source
+// calls it (and tests); it is meaningless on other backends, whose bit is
+// their backend value.
+func (m *Machine) SetManaged(managed bool) { m.smolManaged = managed }
 
 // IsRemote reports whether the box is reached over the ssh transport (both
 // remote-* backends, and a hub — its ssh fields drive the hop to it). Drives

@@ -30,7 +30,7 @@ var installAgent = agentbin.Install
 // never gets a profile.d write, and a hub machine is bootstrapped by its
 // hub, which runs this itself.
 func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
-	if m.Backend != config.BackendSmol {
+	if m.IsRemote() || !m.Managed() {
 		return nil
 	}
 	p, err := installAgent(ctx, b, m, nil)

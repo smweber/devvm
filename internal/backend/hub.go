@@ -122,7 +122,7 @@ func (b *hubBackend) refused(verb string) error {
 }
 
 // The lifecycle verbs are proxied by the cli from the parsed command, not
-// through these: `deprovision --yes` and friends carry flags a Power* call
+// through these: `delete --force` and friends carry flags a Power* call
 // cannot, and the hub's own confirm prompts run through the forwarded tty.
 func (b *hubBackend) PowerStart() error  { return b.refused("start") }
 func (b *hubBackend) PowerStop() error   { return b.refused("stop") }

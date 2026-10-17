@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/smweber/devvm/internal/backend"
 	"strings"
 	"testing"
 	"time"
@@ -79,18 +80,23 @@ func TestRowForSmolUsesSnapshot(t *testing.T) {
 	if got := a.rowFor(m, smolMachines{available: false}).state; got != "?" {
 		t.Errorf("smolvm missing: state = %q, want ?", got)
 	}
-	snap := smolMachines{available: true, state: map[string]string{"vm": "running", "other": "stopped"}}
+	snap := smolMachines{available: true, byName: map[string]backend.SmolMachine{
+		"vm":    {Name: "vm", State: "running", MemoryMiB: 2048, StorageGB: 20, CPUs: 4, CreatedAt: "100"},
+		"other": {Name: "other", State: "stopped"},
+	}}
 	if r := a.rowFor(m, snap); r.state != "running" || !r.running || !r.exists || plainForwards(r) != "down" {
 		t.Errorf("running vm: row = %+v, forwards %q", r, plainForwards(r))
 	}
+	// Sizes are smolvm's, for a stopped VM too (config.md §3).
 	// Stopped, with no daemon to ask: still `down`, since the saved list
 	// is on this host.
-	snap.state["vm"] = "stopped"
-	if r := a.rowFor(m, snap); r.state != "stopped" || plainForwards(r) != "down" {
-		t.Errorf("stopped vm: state = %q, forwards %q, want stopped/down", r.state, plainForwards(r))
+	snap.byName["vm"] = backend.SmolMachine{Name: "vm", State: "stopped", MemoryMiB: 2048, StorageGB: 20, CPUs: 4, CreatedAt: "100"}
+	if r := a.rowFor(m, snap); r.state != "stopped" || plainForwards(r) != "down" || r.mem != 2048 || r.disk != 20 || r.cpus != 4 {
+		t.Errorf("stopped vm: row = %+v, forwards %q, want stopped/down with sizes", r, plainForwards(r))
 	}
-	delete(snap.state, "vm")
-	if got := a.rowFor(m, snap).state; got != "dormant" {
-		t.Errorf("unknown vm: state = %q, want dormant", got)
+	// No dormant state: a conf whose VM is gone is a stale conf, `?`.
+	delete(snap.byName, "vm")
+	if r := a.rowFor(m, snap); r.state != "?" || plainManaged(r) != "-" || r.note == "" {
+		t.Errorf("unknown vm: row = %+v, want ? / - with a note", r)
 	}
 }

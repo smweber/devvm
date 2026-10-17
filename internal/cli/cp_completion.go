@@ -14,14 +14,17 @@ import (
 )
 
 func (a *App) completeCopyGuestPath(ctx context.Context, name, prefix string) ([]string, cobra.ShellCompDirective) {
-	// Load registered machines directly: resolveLive's smol discovery probes
-	// have no context and could block completion before the timed query starts.
-	m, err := config.Load(a.Paths.Config, name)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	b, err := backend.For(m, a.Paths)
-	if err != nil {
+	// A registered remote box is built from its conf directly: resolve has
+	// no context and nothing for it to add. Anything else is a local smol VM,
+	// resolved like cp itself (one `smolvm machine ls`, local and quick):
+	// the record must have Managed settled, since the exec user depends on
+	// it, and cp refuses a VM devvm did not create, so completion does too.
+	var b backend.Backend
+	if m, err := config.Load(a.Paths.Config, name); err == nil && m.IsRemote() {
+		if b, err = backend.For(m, a.Paths); err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+	} else if _, b, err = a.resolve(name); err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	ctx, cancel := context.WithTimeout(ctx, completeTimeout())

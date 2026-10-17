@@ -12,11 +12,29 @@ import (
 )
 
 // resolve loads a machine and its backend for the verbs that act *on* a
-// machine (attach, exec, ports, keys, bootstrap, lifecycle, …). It refuses a
-// hub: a hub is reached like a remote box but is never shaped, so every one of
-// those verbs fails here, in one place, with the same message. `status` and
-// `delete`, which do apply to a hub, use resolveAny.
+// machine (attach, ports, keys, bootstrap, auth, cp, …). It refuses a hub:
+// a hub is reached like a remote box but is never shaped, so every one of
+// those verbs fails here, in one place, with the same message. It also
+// refuses a local smol VM devvm did not create (requireManaged): only
+// status, start, stop, shell and exec reach one of those (resolveUnmanaged),
+// and `delete` refuses it on its own. `status` and `delete`, which do apply
+// to a hub, use resolveAny.
 func (a *App) resolve(name string) (*config.Machine, backend.Backend, error) {
+	m, b, err := a.resolveUnmanaged(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := requireManaged(m); err != nil {
+		return nil, nil, err
+	}
+	return m, b, nil
+}
+
+// resolveUnmanaged is resolve without the managed gate, for the few verbs
+// an unmanaged smol VM supports (config.md §2): status, start, stop, and
+// shell/exec as smolvm's own default user. The backend itself keeps those
+// hands-off (plain `machine exec`, nothing installed).
+func (a *App) resolveUnmanaged(name string) (*config.Machine, backend.Backend, error) {
 	m, b, err := a.resolveAny(name)
 	if err != nil {
 		return nil, nil, err
@@ -46,9 +64,36 @@ func requireMachine(m *config.Machine) error {
 	return nil
 }
 
+// requireManaged refuses a local VM devvm did not create (config.md §2):
+// attach, cp, ports, auth, bootstrap, repos and the browser bridge all
+// assume devvm's `dev` user, tmux socket and agent, none of which such a VM
+// has, and none of which devvm may put there unasked. Remote boxes are
+// never refused here: an adopted remote host has its own, consented,
+// posture (agentInstallApprover). A machine on a hub is refused by its
+// hub, which holds the marker.
+func requireManaged(m *config.Machine) error {
+	if m.IsRemote() || m.Managed() {
+		return nil
+	}
+	return fmt.Errorf("'%s' is a smol VM devvm did not create; %s", m.Name, backend.AdoptHint(m.Name))
+}
+
+// errStaleConf is resolveAny's "not found" for an old per-machine smol conf
+// whose VM does not exist (there is no dormant state any more). delete
+// catches it to drop the conf; everything else just reports it.
+type errStaleConf struct{ m *config.Machine }
+
+func (e *errStaleConf) Error() string {
+	return fmt.Sprintf("machine '%s' not found: no smol VM by that name (its old conf is stale; 'devvm delete %s' drops it, then 'devvm create %s')",
+		e.m.Name, e.m.Name, e.m.Name)
+}
+
 // resolveAny loads a machine, a hub, or a HUB/NAME hub-machine record and its
-// backend, applying load_machine's fallback: an unregistered name that smolvm
-// knows about is treated as a smol machine, so pre-registry VMs keep working.
+// backend. A name with a registry entry uses that entry (a remote box or a
+// hub runs no smolvm command; an entry also shadows a local smol VM of the
+// same name, which status reports). Any other name goes to discovery
+// (backend.Discover: today, one `smolvm machine ls --json`), whose source
+// settles Managed on the record.
 //
 // HUB/NAME is dispatched here, not in a root interceptor: every leaf already
 // calls resolve, and cobra cannot find the first positional before parsing
@@ -74,46 +119,32 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 		if err2 := config.ValidName(name); err2 != nil {
 			return nil, nil, err2
 		}
-		if backend.SmolExists(name) {
-			m = config.NewSmol(name)
-		} else {
-			return nil, nil, fmt.Errorf("unknown machine %q (no conf); run 'devvm status'", name)
+		d, ok, err := backend.Discover(a.Paths, name)
+		if err != nil {
+			return nil, nil, err
 		}
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown machine %q; run 'devvm status', or 'devvm create %s' to make it", name, name)
+		}
+		return d.Machine, d.Backend, nil
 	} else if err != nil {
 		return nil, nil, err
 	}
+	if !m.IsRemote() {
+		// An old per-machine smol conf (step 5 drops them): the VM is still
+		// smolvm's, so the smol source decides whether it exists and settles
+		// Managed, with the conf as its migration hint.
+		b, ok, err := backend.ResolveSmolConf(a.Paths, m)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			return nil, nil, &errStaleConf{m: m}
+		}
+		return m, b, nil
+	}
 	b, err := backend.For(m, a.Paths)
 	if err != nil {
-		return nil, nil, err
-	}
-	return m, b, nil
-}
-
-// requireProvisioned errors if a registered machine has no live backend resource
-// — a "dormant" box (conf exists, but the VM/host doesn't, e.g. after
-// `deprovision`). It lets commands that need a running box fail with a clear next
-// step instead of deep inside smolvm/exec. Remote backends report Exists()==true
-// always, so this is a no-op there.
-func requireProvisioned(m *config.Machine, b backend.Backend) error {
-	ok, err := b.Exists()
-	if err != nil {
-		return err // e.g. smolvm not installed — surface the real cause, not "dormant"
-	}
-	if !ok {
-		return fmt.Errorf("'%s' is not provisioned — run 'devvm provision %s'", m.Name, m.Name)
-	}
-	return nil
-}
-
-// resolveLive is resolve plus requireProvisioned, for the commands that need a
-// running box. Note it adds one `smolvm machine status` probe, which lands on the
-// exec/shell/forward hot path — cheap, but not free.
-func (a *App) resolveLive(name string) (*config.Machine, backend.Backend, error) {
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := requireProvisioned(m, b); err != nil {
 		return nil, nil, err
 	}
 	return m, b, nil

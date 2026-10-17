@@ -166,7 +166,6 @@ func TestProxyRebuildsArgv(t *testing.T) {
 			[]string{"exec", "web", "sh", "-c", `echo "$HOME" it's 'a b' $X`, "h/web"}},
 		{[]string{"--config-dir", a.Paths.Config, "stop", "h/web"}, []string{"stop", "web"}},
 		{[]string{"--state-dir", a.Paths.State, "stop", "h/web"}, []string{"stop", "web"}},
-		{[]string{"--config-dir", a.Paths.Config, "deprovision", "h/web", "--yes"}, []string{"deprovision", "web", "--yes"}},
 		{[]string{"create", "h/api", "--backend", "smol", "--yes", "-m", "512", "-d", "1"},
 			[]string{"create", "api", "--backend=smol", "--disk=1", "--memory=512", "--yes"}},
 		{[]string{"repos", "add", "h/web", "--no-clone", "o/r", "https://x.example/a b.git"},
@@ -517,14 +516,14 @@ func TestProxyReposAddPromptsOnTTY(t *testing.T) {
 	}
 }
 
-// stop and deprovision HUB/NAME stop this host's daemon for the machine
+// stop HUB/NAME stops this host's daemon for the machine
 // once the hub has done its part, as a local stop does: left running it
 // would redial a stopped VM's `__session` for good. A hub-side failure
 // leaves the daemon alone.
 func TestHubStopStopsLaptopDaemon(t *testing.T) {
 	a := newTestApp(t)
 	fakeHub(t, a)
-	for _, argv := range [][]string{{"stop", "h/web"}, {"deprovision", "h/web", "--yes"}} {
+	for _, argv := range [][]string{{"stop", "h/web"}} {
 		od := serveOwnerDaemon(t, a.Paths, "h/web", nil, true)
 		t.Setenv("FAKE_DEVVM_EXIT", "1")
 		var pe *proxyExit

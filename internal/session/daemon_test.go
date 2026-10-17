@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/smweber/devvm/internal/agentrpc"
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 )
 
@@ -622,6 +623,29 @@ func TestDaemonVMNotRunningWaitsWithoutFailing(t *testing.T) {
 	waitFor(t, "state back up once the VM runs", func() bool { s, _ := d.status(); return s == StateUp })
 	d.triggerStop()
 	waitDone(t, done, "stop")
+}
+
+// An unmanaged answer on reconnect is final (config.md §2): the VM under
+// this name is no longer one devvm made, so the daemon exits after one
+// dial instead of redialing it with conf forwards held.
+func TestDaemonUnmanagedOnReconnectExits(t *testing.T) {
+	_, guest := echoServer(t)
+	d := newTestDaemon(t)
+	first := d.tr.(*fakeTransport)
+	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
+		t.Fatal(err)
+	}
+	var dials atomic.Int32
+	d.dial = func() (transport, error) {
+		dials.Add(1)
+		return nil, fmt.Errorf("web: %w", backend.ErrUnmanaged)
+	}
+	done := runLoop(d)
+	first.die()
+	waitDone(t, done, "exit on an unmanaged VM")
+	if n := dials.Load(); n != 1 {
+		t.Errorf("dialed %d times, want 1", n)
+	}
 }
 
 func TestDaemonPingReportsVersion(t *testing.T) {

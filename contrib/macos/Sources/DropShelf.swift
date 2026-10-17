@@ -86,8 +86,9 @@ final class DropShelf: NSObject {
 
     /// Follows a status snapshot: one tile per live machine (hub machines
     /// included: cp-in takes `HUB/NAME` like any name), in status order.
+    /// A smol VM devvm did not create gets none: its cp-in refuses.
     func update(_ machines: [Machine]) {
-        let live = machines.filter { $0.isLive }
+        let live = machines.filter { $0.isUsable }
         let names = live.map { $0.name }
         for name in Array(tiles.keys) where !names.contains(name) {
             tiles[name]?.removeFromSuperview()

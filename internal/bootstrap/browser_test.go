@@ -123,7 +123,7 @@ func TestBrowserSmolOnly(t *testing.T) {
 	t.Cleanup(func() { installAgent = old })
 
 	rb := &recBackend{}
-	if err := Browser(context.Background(), rb, &config.Machine{Name: "web", Backend: config.BackendSmol}); err != nil {
+	if err := Browser(context.Background(), rb, managedSmol("web")); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(installs, ",") != "web" {
@@ -132,6 +132,15 @@ func TestBrowserSmolOnly(t *testing.T) {
 	if len(rb.runs) != 1 || rb.users[0] != "root" || rb.runs[0][0] != "sh" ||
 		rb.runs[0][2] != writeProfileScript(backend.ManagedShimPath) {
 		t.Fatalf("runs = %q as %q, want the profile.d write as root", rb.runs, rb.users)
+	}
+
+	// A smol VM devvm did not create gets nothing either (config.md §2).
+	installs, rb = nil, &recBackend{}
+	if err := Browser(context.Background(), rb, &config.Machine{Name: "found", Backend: config.BackendSmol}); err != nil {
+		t.Fatal(err)
+	}
+	if len(installs) != 0 || len(rb.runs) != 0 {
+		t.Errorf("unmanaged smol: installs %v, runs %q; want none", installs, rb.runs)
 	}
 
 	for _, be := range []string{config.BackendRemoteManaged, config.BackendRemoteUnmanaged} {
@@ -145,4 +154,12 @@ func TestBrowserSmolOnly(t *testing.T) {
 			t.Errorf("%s: installs=%v runs=%q, want nothing touched", be, installs, rb.runs)
 		}
 	}
+}
+
+// managedSmol is a smol record its discovery source settled as managed
+// (devvm made it): what every smol path that installs or shapes assumes.
+func managedSmol(name string) *config.Machine {
+	m := &config.Machine{Name: name, Backend: config.BackendSmol}
+	m.SetManaged(true)
+	return m
 }

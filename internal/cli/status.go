@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,25 +21,43 @@ var statusGroups = []struct{ backend, title string }{
 	{config.BackendHub, "hub"}, // every hub's own row followed by its machines, whatever backend the hub reports for them
 }
 
-// smolLifecycle is the derived-state track shown in the verbose view; the live
-// state is highlighted. Remote backends have no dormant/stopped split (they
-// always report reachable), so they get no track.
-var smolLifecycle = []string{"dormant", "running", "stopped"}
+// smolLifecycle is the state track shown in the verbose view; the live state
+// is highlighted. A smol VM either exists or it doesn't (no dormant state,
+// config.md §2), and remote backends always report reachable, so they get
+// no track.
+var smolLifecycle = []string{"running", "stopped"}
+
+// The --plain fifth column (config.md §7): who owns the machine.
+const (
+	ownManaged   = "managed"   // devvm made it (smol: the marker matches) or shapes it (remote-managed)
+	ownUnmanaged = "unmanaged" // a smol VM devvm did not create, or an adopted remote host
+	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM of the same name
+	ownNone      = "-"         // hubs; a hub machine whose hub did not say; a row nothing settled
+)
+
+func ownership(managed bool) string {
+	if managed {
+		return ownManaged
+	}
+	return ownUnmanaged
+}
 
 // statusRow is one machine's resolved status for rendering.
 type statusRow struct {
 	name    string
 	backend string
-	state   string // dormant | running | stopped | reachable | unreachable | broken conf | ?
+	state   string // running | stopped | reachable | unreachable | broken conf | ?
 	hub     string // the hub this row belongs to (its own row included); "" for a local machine
 	exists  bool
 	running bool
-	mem     int // MiB (smol conf spec)
-	disk    int // GiB (smol conf spec)
+	mem     int // MiB (smol: smolvm's own record)
+	disk    int // GiB (smol: smolvm's own record)
+	cpus    int
 	host    string
 	fwds    fwdSummary
 	saved   bool   // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
-	note    string // e.g. "unregistered"
+	managed string // the --plain fifth column: managed | unmanaged | shadowed | -
+	note    string // e.g. "no VM (stale conf)"
 	m       *config.Machine
 }
 
@@ -90,12 +106,23 @@ func (a *App) runStatusAll(verbose, local bool) error {
 }
 
 // runStatusPlain emits one tab-separated row per machine — name, backend,
-// state, and forward state — with no headers or grouping, so scripts can
-// enumerate machines (e.g. every running smol VM) without scraping the
-// human-formatted table. The token sets are the format's contract:
+// state, forward state and ownership — with no headers or grouping, so
+// scripts can enumerate machines (e.g. every running smol VM) without
+// scraping the human-formatted table. The token sets are the format's
+// contract:
 //
-//	state:    running | stopped | dormant | reachable | unreachable | broken conf | ?
+//	state:    running | stopped | reachable | unreachable | broken conf | ?
 //	forwards: up:N | reconnecting:N | down | -
+//	managed:  managed | unmanaged | shadowed | -
+//
+// The fifth column was appended (config.md §7), so a consumer reading four
+// fields still works. `unmanaged` is a smol VM devvm did not create (it
+// supports status/start/stop/shell/exec only; `setup --adopt` hands it
+// over) or an adopted remote host; `shadowed` is a registry entry hiding a
+// local smol VM of the same name (the entry wins for every command); `-` is
+// a hub, or a machine on a hub too old to emit the column: never
+// `unmanaged`, which would be a claim nobody made. `dormant` is gone (a
+// smol VM exists or it doesn't), though an older hub may still send it.
 //
 // N is the number of configured (`conf`-owned) forwards the daemon holds; a
 // forward only a session or a ttl holds is not counted (browser-bridge.md
@@ -117,7 +144,7 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // group by hub splits column 1 on `/`. --local lists this host only.
 func (a *App) runStatusPlain(local bool) error {
 	for _, r := range a.gatherRows(statusScope{local: local}) {
-		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r))
+		fmt.Fprint(a.Stdout, plainLine(r))
 	}
 	return nil
 }
@@ -129,6 +156,19 @@ func groupOf(r statusRow) string {
 		return config.BackendHub
 	}
 	return r.backend
+}
+
+// plainLine is one --plain row, shared by the one-shot listing and --watch.
+func plainLine(r statusRow) string {
+	return fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n", r.name, r.backend, r.state, plainForwards(r), plainManaged(r))
+}
+
+// plainManaged renders the fifth column (see runStatusPlain).
+func plainManaged(r statusRow) string {
+	if r.managed == "" {
+		return ownNone
+	}
+	return r.managed
 }
 
 // plainForwards renders the machine-readable forward column (see runStatusPlain).
@@ -146,14 +186,8 @@ func plainForwards(r statusRow) string {
 func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
 	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s\n", "NAME", "STATE", "MEM", "DISK", "FWDS")
 	for _, r := range rows {
-		mem, disk := r.mem, r.disk
-		if verbose && r.running {
-			if lm, ld, ok := a.smolLiveResources(r.name, r.m); ok {
-				mem, disk = lm, ld
-			}
-		}
-		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s\n",
-			r.name, r.state, memHuman(mem), diskHuman(disk), fwdsCount(r.fwds))
+		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s%s\n",
+			r.name, r.state, memHuman(r.mem), diskHuman(r.disk), fwdsCount(r.fwds), rowNote(r))
 		if verbose {
 			a.renderVerboseDetail(r)
 		}
@@ -171,18 +205,35 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 	}
 	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
 	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds))
+		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s%s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds), rowNote(r))
 		if verbose {
 			a.renderVerboseDetail(r)
 		}
 	}
 }
 
-// renderVerboseDetail prints the lifecycle track (registered smol) and each live
-// forward under a machine's row.
+// rowNote is the human table's trailing remark: a VM devvm did not create
+// (with what hands it over), an entry shadowing a VM, a stale conf.
+func rowNote(r statusRow) string {
+	switch {
+	case r.note != "":
+		return "  (" + r.note + ")"
+	case r.hub == "" && r.managed == ownUnmanaged && r.backend == config.BackendSmol:
+		return "  (unmanaged: " + backend.AdoptHint(r.name) + ")"
+	case r.managed == ownShadowed:
+		return "  (shadows a local smol VM of the same name)"
+	}
+	return ""
+}
+
+// renderVerboseDetail prints the lifecycle track and sizes (local smol) and
+// each live forward under a machine's row.
 func (a *App) renderVerboseDetail(r statusRow) {
-	if r.backend == config.BackendSmol && r.note == "" && r.hub == "" {
+	if r.backend == config.BackendSmol && r.exists && r.hub == "" {
 		fmt.Fprintf(a.Stdout, "    lifecycle: %s\n", lifecycleTrack(smolLifecycle, r.state))
+		if r.cpus > 0 {
+			fmt.Fprintf(a.Stdout, "    resources: %d CPUs\n", r.cpus)
+		}
 	}
 	if r.hub != "" && r.name != r.hub {
 		// The HOST column carries the hub; the backend the hub reported for
@@ -219,14 +270,16 @@ type statusScope struct {
 	listings hubListings
 }
 
-// gatherRows resolves every local machine listMachines knows plus any
-// live-but-unregistered smol VM into a statusRow, then (unless local) each
-// hub's block: its own row and a row per machine on it (hubRows).
+// gatherRows resolves every local machine listMachines knows plus every
+// local smol VM into a statusRow, then (unless local) each hub's block: its
+// own row and a row per machine on it (hubRows).
 //
 // smolvm is listed once per call and every smol row is derived from that one
 // listing (rather than the backend's per-machine Status probe): a snapshot is
 // re-taken on every --watch event, and N+1 `smolvm machine ls` subprocesses
-// per change would be the polling this command exists to avoid.
+// per change would be the polling this command exists to avoid. The same
+// listing settles each VM's ownership (the smol source's rule,
+// backend.SmolManaged) and carries its sizes.
 func (a *App) gatherRows(sc statusScope) []statusRow {
 	var rows []statusRow
 	seen := map[string]bool{}
@@ -238,7 +291,9 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 		seen[name] = true
 		m, err := config.Load(a.Paths.Config, name)
 		if err != nil {
-			rows = append(rows, statusRow{name: name, backend: "?", state: "broken conf"})
+			r := statusRow{name: name, backend: "?", state: "broken conf", managed: ownNone}
+			smols.shadow(&r)
+			rows = append(rows, r)
 			continue
 		}
 		if m.IsHub() {
@@ -246,20 +301,21 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 		}
 		rows = append(rows, a.rowFor(m, smols))
 	}
-	// Live smol VMs not in the registry. They can still have a daemon (ports
-	// added by hand), so the forward column is real for them too.
+	// Local smol VMs with no registry entry: discovered, the common case
+	// once confs go (config.md §2). One devvm made reads managed and can
+	// hold forwards; any other reads unmanaged, and a stray ports file for
+	// it reads `-`, since nothing may bring its forwards up.
 	for _, sm := range smols.list {
 		if seen[sm.Name] {
 			continue
 		}
-		rows = append(rows, statusRow{
-			name: sm.Name, backend: config.BackendSmol,
-			state:  smolStateLabel(sm.State != "not created", sm.State == "running"),
-			exists: sm.State != "not created", running: sm.State == "running",
-			// No `saved`: a stray file under an unregistered name reads `-`,
-			// as listMachines ignores stray local files too.
-			note: "unregistered", fwds: a.forwardSummary(sm.Name),
-		})
+		managed := backend.SmolManaged(a.Paths, sm, false)
+		r := smolRow(statusRow{name: sm.Name, backend: config.BackendSmol, managed: ownership(managed)}, sm)
+		r.fwds = a.forwardSummary(sm.Name)
+		if managed {
+			r.saved = a.hasSavedPorts(sm.Name)
+		}
+		rows = append(rows, r)
 	}
 	if sc.local {
 		return rows
@@ -273,7 +329,9 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 		listings = a.fetchHubListings(context.Background(), hubs)
 	}
 	for _, hub := range hubs {
-		rows = append(rows, a.hubRows(hub, listings[hub.Name])...)
+		hr := a.hubRows(hub, listings[hub.Name])
+		smols.shadow(&hr[0]) // the hub's own row: a registry entry like any other
+		rows = append(rows, hr...)
 	}
 	return rows
 }
@@ -298,7 +356,7 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 	if !l.fresh {
 		state = "unreachable"
 	}
-	rows := []statusRow{{name: hub.Name, backend: config.BackendHub, hub: hub.Name, state: state, host: hub.SSHHost, m: hub}}
+	rows := []statusRow{{name: hub.Name, backend: config.BackendHub, hub: hub.Name, state: state, host: hub.SSHHost, m: hub, managed: ownNone}}
 	byName := map[string]hubRow{}
 	names := map[string]bool{}
 	for _, r := range l.rows {
@@ -321,8 +379,12 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 			m:     &config.Machine{Name: display, Hub: hub, Backend: config.BackendHub},
 			saved: a.hasSavedPorts(display),
 		}
+		r.managed = ownNone
 		if hr, ok := byName[n]; ok {
-			r.backend, r.state = hr.backend, hr.state
+			// The hub's own word on ownership (its marker), passed through;
+			// a hub too old for the column said nothing, which is `-`.
+			r.backend, r.state, r.managed = hr.backend, hr.state, hr.managed
+			// "dormant" only from a hub older than the dormant state's removal.
 			r.exists, r.running = hr.state != "dormant", hr.state == "running"
 		} else {
 			r.backend, r.state = config.BackendHub, "?"
@@ -340,19 +402,37 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 type smolMachines struct {
 	available bool // smolvm is installed; otherwise every smol row is "?"
 	list      []backend.SmolMachine
-	state     map[string]string
+	byName    map[string]backend.SmolMachine
 }
 
 func smolSnapshot() smolMachines {
-	s := smolMachines{available: backend.SmolAvailable(), state: map[string]string{}}
+	s := smolMachines{available: backend.SmolAvailable(), byName: map[string]backend.SmolMachine{}}
 	if !s.available {
 		return s
 	}
 	s.list, _ = backend.SmolList()
 	for _, sm := range s.list {
-		s.state[sm.Name] = sm.State
+		s.byName[sm.Name] = sm
 	}
 	return s
+}
+
+// shadow marks a registry entry's row when a local smol VM has the same
+// name (config.md §2): the entry wins for every command and the VM gets no
+// row of its own, so the collision is said here rather than hidden.
+func (s smolMachines) shadow(r *statusRow) {
+	if _, ok := s.byName[r.name]; ok {
+		r.managed = ownShadowed
+	}
+}
+
+// smolRow fills a row's state and sizes from the VM's listing row: sizes are
+// smolvm's own (config.md §3), for running and stopped VMs alike.
+func smolRow(r statusRow, sm backend.SmolMachine) statusRow {
+	r.exists, r.running = true, sm.Running()
+	r.state = smolStateLabel(sm)
+	r.mem, r.disk, r.cpus = sm.MemoryMiB, sm.StorageGB, sm.CPUs
+	return r
 }
 
 // hasSavedPorts reports whether this host has saved forwards for name,
@@ -365,17 +445,25 @@ func (a *App) hasSavedPorts(name string) bool {
 
 func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 	r := statusRow{name: m.Name, backend: m.Backend, m: m, mem: m.Memory, disk: m.Disk, host: m.SSHHost, saved: a.hasSavedPorts(m.Name)}
-	if m.Backend == config.BackendSmol {
+	if !m.IsRemote() {
+		// An old per-machine smol conf (until step 5): the VM is smolvm's.
+		r.managed = ownNone
 		if !smols.available {
 			r.state = "?"
 			return r
 		}
-		st, ok := smols.state[m.Name]
-		r.exists, r.running = ok && st != "not created", st == "running"
-		r.state = smolStateLabel(r.exists, r.running)
+		sm, ok := smols.byName[m.Name]
+		if !ok {
+			r.state, r.note = "?", "no VM: stale conf, 'devvm delete "+m.Name+"' drops it"
+			return r
+		}
+		r = smolRow(r, sm)
+		r.managed = ownership(backend.SmolManaged(a.Paths, sm, true))
 		r.fwds = a.forwardSummary(m.Name)
 		return r
 	}
+	r.managed = ownership(m.Managed())
+	smols.shadow(&r)
 	b, err := backend.For(m, a.Paths)
 	if err != nil {
 		r.state = "broken conf"
@@ -392,16 +480,13 @@ func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 	return r
 }
 
-// smolStateLabel maps a backend snapshot to one of the derived lifecycle states.
-func smolStateLabel(exists, running bool) string {
-	switch {
-	case !exists:
-		return "dormant"
-	case running:
+// smolStateLabel is a listed VM's state token: running, or stopped for
+// anything else smolvm reports (a VM it lists exists).
+func smolStateLabel(sm backend.SmolMachine) string {
+	if sm.Running() {
 		return "running"
-	default:
-		return "stopped"
 	}
+	return "stopped"
 }
 
 // forwardSummary asks a machine's daemon for its state and forward count; a
@@ -422,43 +507,8 @@ func (a *App) forwardSummary(name string) fwdSummary {
 	return fwdSummary{daemon: true, state: state, n: len(st.Forwards), conf: st.ConfCount(), since: st.Since}
 }
 
-// smolLiveResources reads a running smol VM's actual memory (MiB) and root-fs
-// size (GiB) with one quick guest exec. Best-effort: it is skipped when a session
-// daemon already holds the machine's persistent exec (smolvm serializes poorly
-// across parallel execs — the one-exec rule), and any error yields ok=false so
-// the caller falls back to the conf spec.
-func (a *App) smolLiveResources(name string, m *config.Machine) (memMiB, diskGiB int, ok bool) {
-	if m == nil {
-		return 0, 0, false
-	}
-	if _, err := session.Existing(a.Paths, name); err == nil {
-		return 0, 0, false // a daemon owns the exec; don't risk a parallel one
-	}
-	b, err := backend.For(m, a.Paths)
-	if err != nil {
-		return 0, 0, false
-	}
-	const script = `printf '%s %s\n' ` +
-		`"$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo)" ` +
-		`"$(df -BG / | awk 'NR==2{gsub(/G/,"",$2); print $2}')"`
-	var buf bytes.Buffer
-	if err := b.Run(context.Background(), backend.ExecOpts{Stdout: &buf, Stderr: io.Discard}, "sh", "-c", script); err != nil {
-		return 0, 0, false
-	}
-	parts := strings.Fields(buf.String())
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	mem, e1 := strconv.Atoi(parts[0])
-	dsk, e2 := strconv.Atoi(parts[1])
-	if e1 != nil || e2 != nil {
-		return 0, 0, false
-	}
-	return mem, dsk, true
-}
-
 // runStatus is the single-machine drill-in: always detailed (state, lifecycle,
-// live sizes for smol, and live forwards).
+// smolvm's sizes and ownership for smol, and live forwards).
 func (a *App) runStatus(name string) error {
 	m, b, err := a.resolveAny(name) // a hub and a hub machine both have a status
 	if err != nil {
@@ -467,27 +517,27 @@ func (a *App) runStatus(name string) error {
 	if m.IsHubMachine() {
 		return a.runStatusHubMachine(m)
 	}
-	st, err := b.Status()
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
-	if m.Backend == config.BackendSmol {
-		state := smolStateLabel(st.Exists, st.Running)
-		fmt.Fprintf(a.Stdout, "  lifecycle: %s\n", lifecycleTrack(smolLifecycle, state))
-		mem, disk := m.Memory, m.Disk
-		if st.Running {
-			if lm, ld, ok := a.smolLiveResources(name, m); ok {
-				mem, disk = lm, ld
-			}
+	if sm, ok := backend.SmolRow(b); ok {
+		// The row resolve already listed: state, sizes and ownership with no
+		// second `smolvm machine ls`, and no guest exec (a stopped VM has
+		// sizes too).
+		fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
+		fmt.Fprintf(a.Stdout, "  lifecycle: %s\n", lifecycleTrack(smolLifecycle, smolStateLabel(sm)))
+		fmt.Fprintf(a.Stdout, "  resources: %d CPUs, %s RAM, %s disk\n", sm.CPUs, memHuman(sm.MemoryMiB), diskHuman(sm.StorageGB))
+		if m.Managed() {
+			fmt.Fprintln(a.Stdout, "  managed: yes (created by devvm)")
+		} else {
+			fmt.Fprintf(a.Stdout, "  managed: no (not created by devvm: status, start, stop, shell and exec only; %s)\n", backend.AdoptHint(m.Name))
 		}
-		fmt.Fprintf(a.Stdout, "  resources: %s RAM, %s disk\n", memHuman(mem), diskHuman(disk))
 	} else {
-		raw := st.Raw
-		if !st.Exists {
-			raw = "dormant (not provisioned)"
+		// A registry entry: no smolvm call (a shadowed VM shows in the
+		// listing's fifth column, not here).
+		st, err := b.Status()
+		if err != nil {
+			return err
 		}
-		fmt.Fprintf(a.Stdout, "  state: %s\n", raw)
+		fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
+		fmt.Fprintf(a.Stdout, "  state: %s\n", st.Raw)
 	}
 	a.forwardReport(name)
 	return nil

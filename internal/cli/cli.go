@@ -93,7 +93,7 @@ func Execute() int {
 
 // Command groups, so `--help` clusters the surface by concern instead of one flat
 // alphabetical list. Ordered lifecycle: setup → run → teardown, with the symmetric
-// pairs bracketing (create/delete outer, provision/deprovision inner, start/stop).
+// pairs bracketing (create/delete outer, start/stop inner).
 const (
 	groupLifecycle = "lifecycle"
 	groupConnect   = "connect"
@@ -157,12 +157,10 @@ func (a *App) rootCmd() *cobra.Command {
 
 	root.AddCommand(group(groupLifecycle,
 		a.createCmd(),
-		a.provisionCmd(),
 		a.bootstrapCmd(),
 		a.lockdownCmd(),
 		a.startCmd(),
 		a.stopCmd(),
-		a.deprovisionCmd(),
 		a.deleteCmd(),
 	)...)
 	root.AddCommand(group(groupConnect,

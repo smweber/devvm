@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/smweber/devvm/internal/backend"
-	"github.com/smweber/devvm/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -136,7 +135,7 @@ func (a *App) runCopyIn(ctx context.Context, name string, srcs []string, dst str
 	if err != nil {
 		return err
 	}
-	_, b, err := a.resolveLive(name)
+	_, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -204,7 +203,7 @@ func copyArchive(ctx context.Context, b backend.Backend, name, archive string, b
 	if err := b.Copy(archive, stage+"/payload.tar"); err != nil {
 		return fmt.Errorf("upload archive: %w", err)
 	}
-	if b.Kind() == config.BackendSmol {
+	if rc, ok := b.(backend.RootCopier); ok && rc.CopiesAsRoot() {
 		// smolvm cp creates files as root. The private parent directory still
 		// restricts access to the guest user while they read the archive.
 		if err := b.Run(ctx, backend.ExecOpts{User: "root", Stderr: stderr},

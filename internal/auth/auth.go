@@ -82,7 +82,7 @@ type Options struct {
 // machine is thin too, but its auth runs on the hub (the cli proxies it
 // with this host subscribed), so it never reaches Run here. Remote boxes
 // keep the private session until the ssh agent exec ships.
-func Thin(m *config.Machine) bool { return m.Backend == config.BackendSmol }
+func Thin(m *config.Machine) bool { return !m.IsRemote() }
 
 // Run logs in the requested tools on m: the thin path where the daemon has
 // events, the private session everywhere else.

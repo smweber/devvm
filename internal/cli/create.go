@@ -60,15 +60,17 @@ func (a *App) runCreate(s createSpec) error {
 	if err := config.ValidName(s.Name); err != nil {
 		return err
 	}
-	if config.Exists(a.Paths.Config, s.Name) || backend.SmolExists(s.Name) {
-		// A registered smol with no live VM is dormant — point at provision, since
-		// create won't overwrite the existing conf.
-		if config.Exists(a.Paths.Config, s.Name) && !backend.SmolExists(s.Name) {
-			if ex, _ := config.Load(a.Paths.Config, s.Name); ex != nil && ex.Backend == config.BackendSmol {
-				return fmt.Errorf("machine '%s' already exists (dormant; run 'devvm provision %s')", s.Name, s.Name)
-			}
+	// A registry entry refuses the name whatever it is (it would shadow the
+	// new VM, config.md §2), and so does a local smol VM of that name, made
+	// by devvm or not: smolvm cannot rename one.
+	if config.Exists(a.Paths.Config, s.Name) {
+		if ex, _ := config.Load(a.Paths.Config, s.Name); ex != nil && !ex.IsRemote() && !backend.SmolExists(s.Name) {
+			return fmt.Errorf("machine '%s' has a stale conf with no VM; 'devvm delete %s' drops it first", s.Name, s.Name)
 		}
 		return fmt.Errorf("machine '%s' already exists", s.Name)
+	}
+	if backend.SmolExists(s.Name) {
+		return fmt.Errorf("machine '%s' already exists (a local smol VM)", s.Name)
 	}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		return err
@@ -105,7 +107,7 @@ func (a *App) runCreate(s createSpec) error {
 		}
 		for _, display := range stale {
 			if hub, _, ok, _ := config.SplitHubName(display); ok && hub == m.Name {
-				if err := a.forgetHostState(display); err != nil {
+				if err := a.forgetHostState(display, nil); err != nil {
 					return err
 				}
 			}
@@ -134,25 +136,45 @@ func (a *App) runCreate(s createSpec) error {
 	return nil
 }
 
-// provisionResource allocates the backend resource, leaving it running. It is the
-// shared allocation step for both `create` (new entry) and `provision` (dormant
-// entry). smol calls SmolCreate (create + start); adopt/remote backends just
-// probe reachability — the future hetzner backend adds API-backed create here.
+// provisionResource allocates the backend resource, leaving it running: create's
+// allocation step. smol calls SmolCreate (create + start) and writes the
+// managed marker; adopt/remote backends just probe reachability — the future
+// hetzner backend adds API-backed create here.
 func (a *App) provisionResource(m *config.Machine) error {
-	switch m.Backend {
-	case config.BackendSmol:
-		if !backend.SmolAvailable() {
-			return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
-		}
-		disk := m.Disk
-		if disk <= 0 {
-			disk = backend.SmolDefaultDiskGiB
-		}
-		fmt.Fprintf(a.Stdout, "Using %d MiB RAM, %d GiB disk.\n", m.Memory, disk)
-		return backend.SmolCreate(m.Name, m.Memory, m.Disk)
-	default:
+	if m.IsRemote() {
 		return a.probeRemote(m)
 	}
+	if !backend.SmolAvailable() {
+		return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
+	}
+	disk := m.Disk
+	if disk <= 0 {
+		disk = backend.SmolDefaultDiskGiB
+	}
+	fmt.Fprintf(a.Stdout, "Using %d MiB RAM, %d GiB disk.\n", m.Memory, disk)
+	if err := backend.SmolCreate(m.Name, m.Memory, m.Disk); err != nil {
+		return err
+	}
+	return a.markManaged(m.Name)
+}
+
+// markManaged writes the managed marker for a smol VM devvm just made
+// (config.md §2): the VM's created_at, read back from smolvm, so a VM later
+// deleted and recreated under the same name behind devvm's back is never
+// mistaken for this one. A failure leaves the VM made but unmanaged, which
+// the error says; nothing is installed into it.
+func (a *App) markManaged(name string) error {
+	sm, ok, err := backend.SmolLookup(name)
+	if err == nil && !ok {
+		err = fmt.Errorf("smolvm does not list it")
+	}
+	if err == nil {
+		err = config.WriteManagedMarker(a.Paths, name, string(sm.CreatedAt))
+	}
+	if err != nil {
+		return fmt.Errorf("created VM '%s' but could not mark it managed: %w; %s", name, err, backend.AdoptHint(name))
+	}
+	return nil
 }
 
 // machine builds and validates the registry entry from the gathered spec.

@@ -2,8 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -12,7 +16,7 @@ import (
 )
 
 func (a *App) runExec(name string, argv []string) error {
-	_, b, err := a.resolveLive(name)
+	_, b, err := a.resolveUnmanaged(name) // an unmanaged VM runs it as smolvm's default user (backend)
 	if err != nil {
 		return err
 	}
@@ -31,7 +35,7 @@ func (a *App) runExec(name string, argv []string) error {
 // transport (ssh|mosh) resolved from the flag or conf for remote machines,
 // and hold the browser bridge (bridgeSession) for as long as they run.
 func (a *App) runShell(name, transport string) error {
-	it, tr, release, err := a.interactive(name, transport)
+	it, tr, release, err := a.interactive(name, transport, true)
 	if err != nil {
 		return err
 	}
@@ -40,7 +44,7 @@ func (a *App) runShell(name, transport string) error {
 }
 
 func (a *App) runAttach(name, transport string) error {
-	it, tr, release, err := a.interactive(name, transport)
+	it, tr, release, err := a.interactive(name, transport, false)
 	if err != nil {
 		return err
 	}
@@ -48,8 +52,15 @@ func (a *App) runAttach(name, transport string) error {
 	return it.Attach(tr)
 }
 
-func (a *App) interactive(name, transport string) (backend.Interactive, string, func(), error) {
-	m, b, err := a.resolveLive(name)
+// allowUnmanaged is shell's: an unmanaged smol VM gets a plain login shell
+// (the backend's), never attach's dev tmux session. bridgeSession holds
+// nothing for one (bridged).
+func (a *App) interactive(name, transport string, allowUnmanaged bool) (backend.Interactive, string, func(), error) {
+	resolve := a.resolve
+	if allowUnmanaged {
+		resolve = a.resolveUnmanaged
+	}
+	m, b, err := resolve(name)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -85,12 +96,15 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 
 func (a *App) runStart(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolveUnmanaged(name)
 	if err != nil {
 		return err
 	}
 	if err := b.PowerStart(); err != nil {
 		return err
+	}
+	if requireManaged(m) != nil {
+		return nil // no forwards on a VM devvm did not create (nothing to resume)
 	}
 	// Forwards follow the VM: resume the saved ones on start.
 	saved, err := a.savedPorts(m.Name)
@@ -105,7 +119,7 @@ func (a *App) runStart(name string) error {
 
 func (a *App) runStop(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	_, b, err := a.resolveLive(name)
+	_, b, err := a.resolveUnmanaged(name)
 	if err != nil {
 		return err
 	}
@@ -117,88 +131,13 @@ func (a *App) runStop(name string) error {
 	return b.PowerStop()
 }
 
-// runProvision allocates the resource for a dormant machine (conf exists, no VM)
-// and bootstraps it — the inverse of deprovision, and the resource half of create.
-func (a *App) runProvision(name string) error {
-	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	if m.IsRemote() {
-		fmt.Fprintf(a.Stderr,
-			"devvm: '%s' is a remote host; devvm does not manage its resource lifecycle yet (no-op).\n", name)
-		return nil
-	}
-	ok, err := b.Exists()
-	if err != nil {
-		return err
-	}
-	if ok {
-		return fmt.Errorf("'%s' is already provisioned (use 'start' to power it on)", name)
-	}
-	// A hand-edited conf can omit memory (Save strips zero ints, Load doesn't
-	// re-default it), which would allocate with --mem 0. Re-check as create does.
-	if m.Backend == config.BackendSmol && m.Memory < 512 {
-		return fmt.Errorf("smol machine '%s' needs memory >= 512 (MiB) in its conf (got %d)", name, m.Memory)
-	}
-	if err := a.provisionResource(m); err != nil {
-		return err
-	}
-	if err := a.runBootstrap(name); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.Stdout, "devvm: provisioned '%s'\n", name)
-	return nil
-}
-
-// runDeprovision destroys a machine's resource (disk/VM) but keeps its registry
-// entry, so it can be rebuilt later with `provision`. It's the middle rung between
-// stop (resource kept) and delete (entry gone too).
-func (a *App) runDeprovision(name string, yes bool) error {
-	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	if m.IsRemote() {
-		fmt.Fprintf(a.Stderr,
-			"devvm: '%s' is a remote host; devvm does not manage its resource lifecycle yet (no-op).\n", name)
-		return nil
-	}
-	ok, err := b.Exists()
-	if err != nil {
-		return err
-	}
-	if !ok {
-		fmt.Fprintf(a.Stdout, "devvm: '%s' is already dormant (not provisioned)\n", name)
-		return nil
-	}
-	if !yes {
-		confirmed, cerr := confirm(fmt.Sprintf("Destroy '%s' disk but keep its registry entry?", name))
-		if cerr != nil {
-			return cerr
-		}
-		if !confirmed {
-			return fmt.Errorf("aborted")
-		}
-	}
-	// Reap forwards (stop the daemon) before tearing down the resource, so no dead
-	// forward squats a host port — same as stop.
-	if cl, derr := session.Existing(a.Paths, name); derr == nil {
-		_ = cl.Stop()
-	}
-	if err := b.PowerDelete(); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.Stdout,
-		"devvm: deprovisioned '%s' (registry entry kept; 'devvm provision %s' to rebuild)\n", name, name)
-	return nil
-}
-
 func (a *App) runDelete(name string, force bool) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, b, err := a.resolveAny(name)    // delete applies to hubs and hub machines too
+	var stale *errStaleConf
+	if errors.As(err, &stale) {
+		return a.deleteStaleConf(name)
+	}
 	if err != nil {
 		return err
 	}
@@ -208,24 +147,14 @@ func (a *App) runDelete(name string, force bool) error {
 	if m.IsHub() {
 		return a.deleteHub(m, force)
 	}
-	// A dormant machine (conf but no resource) has nothing to destroy — just drop
-	// the registry entry, no scary confirm. On an Exists() error, fall through to
-	// the normal path so the real cause surfaces (don't silently remove a conf for
-	// a resource we couldn't probe).
-	if ok, exErr := b.Exists(); exErr == nil && !ok {
-		a.reapRunFiles(name)
-		if err := config.Remove(a.Paths.Config, name); err != nil {
-			return err
-		}
-		if err := a.forgetHostState(name); err != nil {
-			return err
-		}
-		session.RemoveLock(a.Paths, name) // only now: see RemoveLock
-		fmt.Fprintf(a.Stdout, "devvm: removed registry entry for '%s' (was dormant)\n", name)
-		return nil
-	}
 	switch {
-	case m.Backend == config.BackendSmol:
+	case !m.IsRemote():
+		// devvm destroys only what it made (config.md §2): a VM it merely
+		// discovered is smolvm's to remove, as a config entry will be
+		// `config rm`'s.
+		if !m.Managed() {
+			return fmt.Errorf("'%s' is a smol VM devvm did not create; remove it with 'smolvm machine rm --name %s'", name, name)
+		}
 		ok, err := confirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
 		if err != nil {
 			return err
@@ -237,7 +166,7 @@ func (a *App) runDelete(name string, force bool) error {
 		if err := b.PowerDelete(); err != nil {
 			return err
 		}
-	case m.IsRemote():
+	default:
 		// Adopted (unmanaged) hosts only lose their registry entry; the box is
 		// left untouched, so confirm we're not expected to tear anything down.
 		if !m.Managed() {
@@ -256,7 +185,7 @@ func (a *App) runDelete(name string, force bool) error {
 	if err := config.Remove(a.Paths.Config, name); err != nil {
 		return err
 	}
-	if err := a.forgetHostState(name); err != nil {
+	if err := a.forgetHostState(name, m); err != nil {
 		return err
 	}
 	session.RemoveLock(a.Paths, name) // only now: see RemoveLock
@@ -264,17 +193,38 @@ func (a *App) runDelete(name string, force bool) error {
 	return nil
 }
 
+// deleteStaleConf is `delete` of an old per-machine smol conf whose VM is
+// gone (what used to be "dormant"): nothing to destroy, so no prompt; the
+// conf and this host's state for the name go.
+func (a *App) deleteStaleConf(name string) error {
+	a.reapRunFiles(name)
+	if err := config.Remove(a.Paths.Config, name); err != nil {
+		return err
+	}
+	if err := a.forgetHostState(name, nil); err != nil {
+		return err
+	}
+	session.RemoveLock(a.Paths, name) // only now: see RemoveLock
+	fmt.Fprintf(a.Stdout, "devvm: removed stale registry entry for '%s' (it had no VM)\n", name)
+	return nil
+}
+
 // forgetHostState removes what this host remembers about a machine besides
-// its registry entry and run files (reapRunFiles): today its saved forwards
-// (<State>/ports/NAME). It is the one place `delete` clears host state, so a
-// later machine of the same name starts clean (config.md §9 item 6); the
-// managed marker and the pinned known_hosts entry join it here. Run after
-// the machine and its conf are gone, so a failed delete keeps its forwards,
-// and under the ports file's lock, so a `ports add` that was waiting on it
-// finds the conf gone and refuses (editPorts) instead of writing the file
-// back. A file left by a failure here is cleared by the next `create` of
-// the name.
-func (a *App) forgetHostState(name string) error {
+// its registry entry and run files (reapRunFiles): its saved forwards
+// (<State>/ports/NAME), its managed marker (<State>/managed/NAME) and its
+// pinned host key in the isolated known_hosts. It is the one place `delete`
+// clears host state, so a later machine of the same name starts clean
+// (config.md §9 item 6: a server recreated under the same name and address
+// has a new host key). Run after the machine and its conf are gone, so a
+// failed delete keeps its state, and under the ports file's lock, so a
+// `ports add` that was waiting on it finds the conf gone and refuses
+// (editPorts) instead of writing the file back. A ports file left by a
+// failure here is cleared by the next `create` of the name; a marker is
+// rewritten by it.
+//
+// m is the deleted record, for its pin; nil when there is none to drop (a
+// smol VM, a hub machine, a stale conf). See forgetHostKey.
+func (a *App) forgetHostState(name string, m *config.Machine) error {
 	unlock, err := config.LockPorts(a.Paths, name)
 	if err != nil {
 		return fmt.Errorf("%s: clear saved forwards: %w", name, err)
@@ -283,7 +233,102 @@ func (a *App) forgetHostState(name string) error {
 	if err := config.RemovePorts(a.Paths, name); err != nil {
 		return fmt.Errorf("%s: clear saved forwards: %w", name, err)
 	}
+	if _, _, onHub, _ := config.SplitHubName(name); !onHub {
+		if err := config.RemoveManagedMarker(a.Paths, name); err != nil {
+			return fmt.Errorf("%s: clear managed marker: %w", name, err)
+		}
+	}
+	if m != nil {
+		if err := a.forgetHostKey(m); err != nil {
+			return fmt.Errorf("%s: clear pinned host key: %w", name, err)
+		}
+	}
 	return nil
+}
+
+// forgetHostKey drops the host key devvm pinned for m in its isolated
+// known_hosts (only managed ssh boxes are pinned, sshFlags). The entry is
+// keyed by the host ssh actually connects to, so it is asked (`ssh -G`
+// resolves an alias in the user's ssh config, and a non-22 port), and
+// `ssh-keygen -R` removes it, hashed or not. It is kept while another
+// registered machine still reaches the same host and port: known_hosts is
+// per host, not per machine name, and that machine's pin is the same line.
+func (a *App) forgetHostKey(m *config.Machine) error {
+	if !m.IsRemote() || !m.Managed() || m.SSHHost == "" {
+		return nil
+	}
+	kh := a.Paths.KnownHostsPath()
+	if _, err := os.Stat(kh); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	key := knownHostsKey(m)
+	names, _ := config.List(a.Paths.Config)
+	for _, n := range names {
+		if n == m.Name {
+			continue
+		}
+		if o, err := config.Load(a.Paths.Config, n); err == nil && o.IsRemote() && o.Managed() && knownHostsKey(o) == key {
+			return nil
+		}
+	}
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		return nil // nothing could have pinned it without ssh either
+	}
+	if out, err := exec.Command("ssh-keygen", "-R", key, "-f", kh).CombinedOutput(); err != nil {
+		return fmt.Errorf("ssh-keygen -R %s: %v: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	_ = os.Remove(kh + ".old") // ssh-keygen's backup; the state dir keeps no history
+	return nil
+}
+
+// knownHostsKey is the known_hosts name ssh records for m. It asks `ssh -G`
+// (local: it only evaluates config) with the same port option real
+// connections pass (sshFlags adds -o Port only when it is neither 22 nor 0,
+// so an alias's own `Port` in ssh config wins), and reads back what ssh
+// would key the pin by: HostKeyAlias when set (bare, as ssh stores it),
+// else the resolved hostname, bracketed with the port when that is not 22.
+// If -G fails, the destination's own host part and the conf's port stand in.
+func knownHostsKey(m *config.Machine) string {
+	host := m.SSHHost
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	port := m.SSHPort
+	if port == 0 {
+		port = 22
+	}
+	alias := ""
+	args := []string{"-G"}
+	if m.SSHPort != 22 && m.SSHPort != 0 {
+		args = append(args, "-o", fmt.Sprintf("Port=%d", m.SSHPort))
+	}
+	if out, err := exec.Command("ssh", append(args, m.SSHHost)...).Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			k, v, ok := strings.Cut(strings.TrimSpace(line), " ")
+			if !ok {
+				continue
+			}
+			switch k {
+			case "hostname":
+				host = v
+			case "port":
+				if p, err := strconv.Atoi(v); err == nil {
+					port = p
+				}
+			case "hostkeyalias":
+				if v != "none" {
+					alias = v
+				}
+			}
+		}
+	}
+	if alias != "" {
+		return alias
+	}
+	if port != 22 {
+		return fmt.Sprintf("[%s]:%d", host, port)
+	}
+	return host
 }
 
 // reapRunFiles stops a machine's forward daemon, if one runs, and removes
@@ -317,7 +362,7 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 	a.reapRunFiles(m.Name)
 	dropFromHubCache(a.Paths, hub.Name, machine)
 	saved, _ := a.savedPorts(m.Name)
-	if err := a.forgetHostState(m.Name); err != nil {
+	if err := a.forgetHostState(m.Name, nil); err != nil {
 		return err
 	}
 	if len(saved) > 0 {
@@ -380,7 +425,7 @@ func (a *App) deleteHub(m *config.Machine, force bool) error {
 	// After the conf: a `ports add HUB/X` waiting on X's lock then finds
 	// the hub gone and writes nothing back (editPorts).
 	for _, display := range append(saved, m.Name) {
-		if err := a.forgetHostState(display); err != nil {
+		if err := a.forgetHostState(display, nil); err != nil {
 			return err
 		}
 	}

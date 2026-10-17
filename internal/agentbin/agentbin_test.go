@@ -88,7 +88,7 @@ func (g *fakeGuest) Run(_ context.Context, o backend.ExecOpts, argv ...string) e
 // One call installs agent and shim; a second is a no-op (sha match on both).
 func TestInstallAgentAndShimIdempotent(t *testing.T) {
 	g := newFakeGuest()
-	m := &config.Machine{Name: "web", Backend: config.BackendSmol}
+	m := managedSmol("web")
 	p, err := Install(context.Background(), g, m, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -242,4 +242,12 @@ func TestInstallRefusesHubMachine(t *testing.T) {
 	if _, err := Install(context.Background(), nil, m, nil); !errors.Is(err, ErrHubMachine) {
 		t.Fatalf("Install on a hub machine = %v, want ErrHubMachine", err)
 	}
+}
+
+// managedSmol is a smol record its discovery source settled as managed
+// (devvm made it): what every smol path that installs or shapes assumes.
+func managedSmol(name string) *config.Machine {
+	m := &config.Machine{Name: name, Backend: config.BackendSmol}
+	m.SetManaged(true)
+	return m
 }

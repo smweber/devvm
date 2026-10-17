@@ -19,7 +19,7 @@ import (
 // installed and no agent exec is spawned (the daemon holds the only one).
 // Remote boxes keep the private agent session (auth.Run branches).
 func (a *App) runAuth(name, tool string, installAgent bool) error {
-	m, b, err := a.resolveLive(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}

@@ -57,11 +57,23 @@ func smolAttachArgv() []string {
 // login semantics are unchanged — only the starting directory is fixed.
 // BROWSER rides the exec's Env (browserEnv); the login shell's profile.d
 // leaves it alone (its guard skips a BROWSER already set).
+//
+// An unmanaged VM gets smolvm's own default user's login shell (bash if it
+// has one, else sh) and nothing of devvm's: no BROWSER, no shim, no tmux.
 func (b *smolBackend) Shell(string) error {
 	if err := needSmolvm(); err != nil {
 		return err
 	}
+	if !b.m.Managed() {
+		return b.Run(context.Background(), ExecOpts{TTY: true}, unmanagedShellArgv()...)
+	}
 	return b.Run(context.Background(), ExecOpts{TTY: true, Env: browserEnv()}, smolShellArgv()...)
+}
+
+// unmanagedShellArgv is Shell's guest command on a VM devvm did not create:
+// home, then a login shell, assuming nothing but sh.
+func unmanagedShellArgv() []string {
+	return []string{"sh", "-c", `cd "$HOME" 2>/dev/null; command -v bash >/dev/null 2>&1 && exec bash -l; exec sh -l`}
 }
 
 // Attach joins the dev tmux session, starting a persistent keeper first if
@@ -74,6 +86,11 @@ func (b *smolBackend) Shell(string) error {
 func (b *smolBackend) Attach(string) error {
 	if err := needSmolvm(); err != nil {
 		return err
+	}
+	if !b.m.Managed() {
+		// The cli refuses first (resolve); this keeps the backend from
+		// starting a keeper as a `dev` user an unmanaged VM need not have.
+		return ErrUnmanaged
 	}
 	if err := RequireGuestTmux(b, b.m); err != nil {
 		return err

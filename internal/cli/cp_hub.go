@@ -212,7 +212,7 @@ func (a *App) runCopyInFromTar(ctx context.Context, spec string, args []string, 
 		return fmt.Errorf("destination must not be empty")
 	}
 	o.asDir = asDir
-	_, b, err := a.resolveLive(name)
+	_, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -487,7 +487,7 @@ func (a *App) runCopyOutToTar(ctx context.Context, spec string, args []string, t
 	if src == "" {
 		return fmt.Errorf("source must not be empty")
 	}
-	_, b, err := a.resolveLive(name)
+	_, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}

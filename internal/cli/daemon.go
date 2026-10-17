@@ -19,7 +19,7 @@ func (a *App) daemonCmd() *cobra.Command {
 			// machine; its transport is a __session on the hub, never an
 			// agent exec (hub.md §7). resolve refuses hub machines for every
 			// other verb, so they are let through here explicitly.
-			m, b, err := a.resolveForwardsConf(args[0])
+			m, b, err := a.resolveForwards(args[0])
 			if err != nil {
 				return err
 			}

@@ -9,11 +9,22 @@ import Foundation
 /// hub reported, or `unreachable` for every row of a hub that did not answer
 /// (its last listing, so the machines stay visible). The forwards column of
 /// a hub machine is this Mac's own.
+///
+/// The fifth column says who owns the machine: managed | unmanaged |
+/// shadowed | - (hubs, and a hub machine whose hub is too old to say). It is
+/// optional: a CLI from before it emits four fields, which read as `-`.
 struct Machine {
     let name: String
     let backend: String
-    let state: String    // running | stopped | dormant | reachable | unreachable | broken conf | ?
+    let state: String    // running | stopped | reachable | unreachable | broken conf | ?
     let forwards: String // up:N | reconnecting:N | down | -
+    var managed: String = "-" // managed | unmanaged | shadowed | -
+
+    /// A smol VM devvm did not create: devvm will start, stop and open a
+    /// shell in it, but copies, ports and the drop shelf refuse until it is
+    /// handed over (`devvm setup --adopt NAME`). Smol only: an adopted
+    /// remote host is `unmanaged` too and does all of those.
+    var needsAdopt: Bool { backend == "smol" && managed == "unmanaged" }
 
     /// A hub's own row: a host machines live on, not a machine. Never a
     /// drop target, never started or stopped. The backend alone does not
@@ -40,8 +51,10 @@ struct Machine {
     /// Every action — start, stop, ports, copy in/out, the drop target —
     /// takes a hub machine by name (`h/web` is a machine name to every devvm
     /// command; its forwards are this Mac's own since devvm's hub forwards),
-    /// so it is gated on isLive alone.
+    /// so it is gated on isLive (copies, ports and the shelf on isUsable).
     var isLive: Bool { !isHub && (state == "running" || state == "reachable") }
+    /// Live and devvm may copy into it and forward its ports.
+    var isUsable: Bool { isLive && !needsAdopt }
     var isReconnecting: Bool { forwards.hasPrefix("reconnecting") }
     var forwardsUp: Bool { forwards.hasPrefix("up:") && forwardCount > 0 }
     var forwardCount: Int {
@@ -51,7 +64,10 @@ struct Machine {
 
     var stateWords: String {
         switch state {
-        case "running", "stopped", "dormant", "reachable", "unreachable": return state
+        case "running", "stopped", "reachable", "unreachable": return state
+        // Only from a hub older than the dormant state's removal: a VM it
+        // has a conf for but no disk, off like a stopped one.
+        case "dormant": return "stopped (no VM)"
         case "broken conf": return "broken conf"
         default: return "unknown"
         }
@@ -70,7 +86,7 @@ struct Machine {
     /// (which `unreachable` is: the hub did not say).
     var glyph: String {
         if isLive { return "●" }
-        if state == "stopped" || state == "dormant" { return "○" }
+        if state == "stopped" || state == "dormant" { return "○" } // dormant: an old hub's word
         return "◌"
     }
 
@@ -88,7 +104,8 @@ func parseStatusBlock(_ text: String) -> [Machine] {
     for line in text.split(separator: "\n") {
         let f = line.split(separator: "\t", omittingEmptySubsequences: false).map { String($0) }
         guard f.count >= 3, !f[0].isEmpty else { continue }
-        out.append(Machine(name: f[0], backend: f[1], state: f[2], forwards: f.count > 3 ? f[3] : "-"))
+        out.append(Machine(name: f[0], backend: f[1], state: f[2], forwards: f.count > 3 ? f[3] : "-",
+                           managed: f.count > 4 && !f[4].isEmpty ? f[4] : "-"))
     }
     return out
 }
