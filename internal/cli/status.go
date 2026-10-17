@@ -323,13 +323,21 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 			hostW = len(r.host)
 		}
 	}
-	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s\n", "NAME", "STATE", hostW, "HOST", "FWDS")
-	for _, r := range rows {
-		note := rowNote(r)
+	// providers.md §3: with -v a stopped server's state reads
+	// "stopped (billing)", since it still bills (never in --plain).
+	state := func(r statusRow) string {
 		if verbose && r.m != nil && r.m.IsProvider() && r.state == provider.StateStopped {
-			note = "  (stopped, still billed)" + note // providers.md §3: a stopped server still bills
+			return r.state + " (billing)"
 		}
-		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-*s %s%s\n", r.name, r.state, hostW, r.host, fwdsCount(r.fwds), note)
+		return r.state
+	}
+	stateW := 12
+	for _, r := range rows {
+		stateW = max(stateW, len(state(r)))
+	}
+	fmt.Fprintf(a.Stdout, "  %-16s %-*s %-*s %s\n", "NAME", stateW, "STATE", hostW, "HOST", "FWDS")
+	for _, r := range rows {
+		fmt.Fprintf(a.Stdout, "  %-16s %-*s %-*s %s%s\n", r.name, stateW, state(r), hostW, r.host, fwdsCount(r.fwds), rowNote(r))
 		if verbose {
 			a.renderVerboseDetail(r)
 		}

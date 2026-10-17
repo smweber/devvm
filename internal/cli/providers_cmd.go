@@ -104,7 +104,7 @@ func (a *App) readAndSaveToken(name string) (provider.Provider, error) {
 	if err := writeTokenFile(path, tok); err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(a.Stdout, "devvm: saved the %s token to %s (its project has %d servers)\n", providerTitle(name), tildePath(path), len(servers))
+	fmt.Fprintf(a.Stdout, "devvm: saved the %s token to %s (its project has %s)\n", providerTitle(name), tildePath(path), countServers(len(servers)))
 	return cl, nil
 }
 

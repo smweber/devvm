@@ -672,3 +672,138 @@ func TestSmolCreateRefusesPlacement(t *testing.T) {
 		}
 	}
 }
+
+// start waits for ssh before resuming forwards: the API says running long
+// before sshd listens, and a daemon spawned then dies on its first dial.
+// One "waiting" line; "already running" probes too (one probe when up).
+func TestProviderStartWaitsForSSH(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	shrinkReachWait(t, 2*time.Second, 10*time.Millisecond)
+	count := filepath.Join(t.TempDir(), "n")
+	log := fakeRemote(t, `case "$last" in "'true'")
+  n=$(cat `+count+` 2>/dev/null || echo 0); n=$((n+1)); echo $n > `+count+`
+  [ $n -le 2 ] && { echo "ssh: connect to host 192.0.2.90 port 22: Connection refused" >&2; exit 255; };;
+esac`)
+	p := withFakeHetzner(t, a, "", false)
+	addServer(t, p, "box", "192.0.2.90", provider.StateStopped, true)
+	if err := runTree(t, a, "start", "box"); err != nil {
+		t.Fatalf("start: %v\n%s", err, a.Stderr)
+	}
+	if w := a.Stderr.(*bytes.Buffer).String(); strings.Count(w, "waiting up to") != 1 {
+		t.Errorf("stderr = %q, want one waiting line", w)
+	}
+	data, _ := os.ReadFile(log)
+	if n := strings.Count(string(data), "dev@192.0.2.90 'true'"); n != 3 {
+		t.Errorf("%d probes, want 3 (two refused):\n%s", n, data)
+	}
+	if e := reach.Read(a.Paths, "box"); e.State != reach.Reachable {
+		t.Errorf("reach = %+v", e)
+	}
+	// Already running: one probe, no wait line.
+	if err := runTree(t, a, "start", "box"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(log)
+	if n := strings.Count(string(data), "dev@192.0.2.90 'true'"); n != 4 || strings.Contains(a.Stderr.(*bytes.Buffer).String(), "waiting") {
+		t.Errorf("already running: %d probes, stderr %q", n, a.Stderr)
+	}
+	// A box that never answers: start says so and how to bring the forwards up.
+	fakeRemote(t, `echo "ssh: connect to host 192.0.2.90 port 22: Connection refused" >&2; exit 255`)
+	if err := runTree(t, a, "start", "box"); err == nil || !strings.Contains(err.Error(), "'box' is running, but cannot reach") ||
+		!strings.Contains(err.Error(), "devvm ports up box") {
+		t.Errorf("never answers: %v", err)
+	}
+}
+
+// stop forgets the last contact (an off box answers nothing), and an
+// unmanaged server's billing line points at the console, not at delete.
+func TestProviderStopClearsReach(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	fakeSSH(t, "exit 0")
+	p := withFakeHetzner(t, a, "", false)
+	addServer(t, p, "box", "192.0.2.91", provider.StateRunning, true)
+	addServer(t, p, "prod", "192.0.2.92", provider.StateRunning, false)
+	reach.Record(a.Paths, "box", "exec")
+	if err := runTree(t, a, "stop", "box"); err != nil {
+		t.Fatal(err)
+	}
+	if e := reach.Read(a.Paths, "box"); e.State == reach.Reachable {
+		t.Errorf("a stopped box still reads %+v", e)
+	}
+	if err := runTree(t, a, "stop", "prod", "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "prod is stopped but still billed; delete it in the Hetzner console to stop billing") || strings.Contains(w, "devvm delete prod") {
+		t.Errorf("unmanaged billing line = %q", w)
+	}
+}
+
+// An interrupt during create's setup kills its ssh (the context) and
+// names the server and the two ways on, rather than exiting silently.
+func TestProviderCreateInterrupted(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	fakeRemote(t, "")
+	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n", false)
+	p.AddKey("scott", testPubKey)
+	old := interruptContext
+	interruptContext = func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, cancel
+	}
+	t.Cleanup(func() { interruptContext = old })
+	err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
+	row := cachedRow(a, "web")
+	if err == nil || row == nil || !strings.Contains(err.Error(), fmt.Sprintf("'web' was created (server %d at %s; it bills) but setup was interrupted", row.ID, row.Address)) ||
+		!strings.Contains(err.Error(), "run: devvm setup web or devvm delete web") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// Root flags typed before a leaf that skips flag parsing (exec, keys add)
+// are applied, not taken for the machine name; CMD's own flags after NAME
+// are left alone.
+func TestRootFlagsBeforeRawLeaves(t *testing.T) {
+	a := newTestApp(t)
+	cfg, state := filepath.Join(shortTempDir(t), "c"), filepath.Join(shortTempDir(t), "s")
+	b := newTestApp(t)
+	b.Paths = config.Paths{Config: cfg, State: state}
+	writeEntry(b.Paths, config.NewRemote("web", false, "u@web.example"))
+	log := fakeSSH(t, "exit 0")
+	if err := runTree(t, a, "--config-dir", cfg, "--state-dir="+state, "exec", "web", "--", "echo", "--config-dir", "z"); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if a.Paths.Config != cfg || a.Paths.State != state {
+		t.Errorf("paths = %+v", a.Paths)
+	}
+	data, _ := os.ReadFile(log)
+	if !strings.Contains(string(data), "u@web.example") || !strings.Contains(string(data), `'\''echo'\'' '\''--config-dir'\'' '\''z'\''`) {
+		t.Errorf("ssh:\n%s\nout %q err %q", data, a.Stdout, a.Stderr)
+	}
+	a = newTestApp(t)
+	if err := runTree(t, a, "--config-dir", cfg, "keys", "add", "web", testPubKey); err != nil && strings.Contains(err.Error(), "invalid machine name") {
+		t.Fatalf("keys add: %v", err)
+	}
+	if a.Paths.Config != cfg {
+		t.Errorf("keys add paths = %+v", a.Paths)
+	}
+	if _, _, err := splitRootFlags([]string{"--config-dir"}); err == nil {
+		t.Error("a root flag with no value accepted")
+	}
+}
+
+// The small words: one server, the no-terminal confirm names --yes.
+func TestProviderWording(t *testing.T) {
+	if countServers(1) != "1 server" || countServers(3) != "3 servers" {
+		t.Error("countServers")
+	}
+	old := askConfirm
+	askConfirm = func(string) (bool, error) { return false, errors.New("no terminal for confirmation; aborting") }
+	t.Cleanup(func() { askConfirm = old })
+	if _, err := confirmYes("x?"); err == nil || !strings.Contains(err.Error(), "pass --yes") {
+		t.Errorf("confirmYes: %v", err)
+	}
+}

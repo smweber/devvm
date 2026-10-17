@@ -380,6 +380,9 @@ fail2ban = true
 	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring memory (not applicable to a remote box)") {
 		t.Errorf("warning = %q", w)
 	}
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "devvm: 'cloud' is set up\n") {
+		t.Errorf("no completion line: %q", out)
+	}
 	// Every step above ran over ssh, so the box is a verified contact now.
 	if e := reach.Read(a.Paths, "cloud"); e.State != reach.Reachable || e.How != "setup" {
 		t.Errorf("setup recorded %+v, want reachable/setup", e)
@@ -533,6 +536,10 @@ func TestProbeSSH(t *testing.T) {
 		`printf '@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n@@@@@\nHost key verification failed.\n' >&2; exit 255`: "REMOTE HOST IDENTIFICATION HAS CHANGED",
 		`echo "Host key verification failed." >&2; exit 255`:                                      "Host key verification failed",
 		`echo "Received disconnect from 1.2.3.4: Too many authentication failures" >&2; exit 255`: "Too many authentication failures",
+		// Local: this host's ssh, never the box, so never worth the wait.
+		`echo "ControlPath too long ('/x/c-abc' >= 108 bytes)" >&2; exit 255`:   "ControlPath too long",
+		`echo "sh: 1: cloudflared: command not found" >&2; exit 255`:            "command not found",
+		`echo "/x/config: line 3: Bad configuration option: foo" >&2; exit 255`: "Bad configuration option",
 	} {
 		fakeSSH(t, body)
 		start := time.Now()

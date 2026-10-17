@@ -188,7 +188,7 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 		return fmt.Errorf("'%s' is a smol VM devvm did not create; remove it with 'smolvm machine rm --name %s'", name, name)
 	}
 	if !yes {
-		ok, err := askConfirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
+		ok, err := confirmYes(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
 		if err != nil {
 			return err
 		}

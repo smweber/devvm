@@ -225,10 +225,19 @@ func lockProviderCache(p config.Paths, name string) (func(), error) {
 	return func() { f.Close() }, nil // closing drops the lock
 }
 
-// providerUnmanagedErr is the one refusal for a provider server without the
-// devvm=true label (providers.md §2, §8): no verb but status, shell and
-// exec touches one, and no flag promotes it.
+// providerUnmanagedErr is the refusal for a provider server without the
+// devvm=true label (providers.md §2, §8): no verb but status, start, stop,
+// shell and exec touches one. The handover is the label, set in the
+// provider's console.
 func providerUnmanagedErr(m *config.Machine) error {
+	return fmt.Errorf("'%s' is a %s server devvm does not manage (no %s=%s label): only status, start, stop, shell and exec work; set the label in the %s console to hand it over",
+		m.Name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
+}
+
+// providerNoPromoteErr is setup's (and setup --adopt's) refusal of the
+// same server: setup is how a smol VM is promoted, and a provider server
+// never is (§2), whatever the flags.
+func providerNoPromoteErr(m *config.Machine) error {
 	return fmt.Errorf("'%s' is a %s server without the %s=%s label: devvm never promotes a provider server; set the %s=%s label in the %s console",
 		m.Name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue,
 		provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
@@ -491,8 +500,16 @@ func providerSourceLine(name string, c providerCache, now time.Time) string {
 	case c.fetched.IsZero():
 		return fmt.Sprintf("%s: never listed (a one-shot 'devvm status' lists it)", name)
 	default:
-		return fmt.Sprintf("%s: listed %s ago (%d servers)", name, sinceAt(c.fetched, now), len(c.servers))
+		return fmt.Sprintf("%s: listed %s ago (%s)", name, sinceAt(c.fetched, now), countServers(len(c.servers)))
 	}
+}
+
+// countServers is "1 server", "3 servers".
+func countServers(n int) string {
+	if n == 1 {
+		return "1 server"
+	}
+	return fmt.Sprintf("%d servers", n)
 }
 
 // sinceAt is a compact age: 12s, 3m, 5h, 2d.

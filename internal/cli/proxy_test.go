@@ -157,9 +157,10 @@ func TestProxyRebuildsArgv(t *testing.T) {
 		argv []string
 		want []string
 	}{
-		// (--config-dir before `exec` is not a case: exec disables flag
-		// parsing, so cobra hands it a root flag placed there as an argument,
-		// for local machines too.)
+		// exec disables flag parsing, so the root's flags typed before it
+		// reach it as arguments; it applies and strips them (leafArgs).
+		{[]string{"--config-dir", a.Paths.Config, "exec", "h/web", "--", "true"},
+			[]string{"exec", "web", "--", "true"}},
 		{[]string{"exec", "h/web", "--", "echo", "--config-dir", "x"},
 			[]string{"exec", "web", "--", "echo", "--config-dir", "x"}},
 		{[]string{"exec", "h/web", "sh", "-c", `echo "$HOME" it's 'a b' $X`, "h/web"},

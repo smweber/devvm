@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -136,20 +137,38 @@ func (a *App) rootCmd() *cobra.Command {
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// A leaf that disables flag parsing (exec, keys add) gets the
+			// root's own flags typed before it as arguments: apply them
+			// here, as parsing would have, and the leaf strips them
+			// (leafArgs).
+			if cmd.DisableFlagParsing {
+				set, _, err := splitRootFlags(args)
+				if err != nil {
+					return err
+				}
+				for _, kv := range set {
+					if err := cmd.Root().PersistentFlags().Set(kv[0], kv[1]); err != nil {
+						return err
+					}
+				}
+			}
 			// --config-dir alone, naming another dir, keeps an isolated
 			// instance (a test, a second registry) self-contained, its
 			// state still inside it as before the split, rather than
 			// sharing this host's run/ with the real one. Naming the
 			// default dir is not isolation: a pre-split `update` re-execs
 			// its successor with exactly that, and the successor must
-			// cycle daemons into the real state dir.
-			fl := cmd.Flags()
+			// cycle daemons into the real state dir. (The root's set, not
+			// the leaf's: the same flags, and the only one a leaf that
+			// skips parsing has.)
+			fl := cmd.Root().PersistentFlags()
 			if fl.Changed("config-dir") && !fl.Changed("state-dir") {
 				a.Paths.State = stateDirFor(a.Paths.Config)
 			}
 			config.MigrateState(a.Paths)
 			a.noteOldLayout(hiddenCmd(cmd))
+			return nil
 		},
 	}
 	root.PersistentFlags().StringVar(&a.Paths.Config, "config-dir", a.Paths.Config,
@@ -238,6 +257,40 @@ func (a *App) noteOldLayout(quiet bool) {
 
 // hiddenCmd reports whether cmd, or a parent, is hidden (cobra's own
 // __complete is too): the machinery, not a command a person typed.
+// rootFlags are the root's persistent flags, each taking a value.
+var rootFlags = []string{"config-dir", "state-dir"}
+
+// splitRootFlags peels the root's flags (--config-dir X, --state-dir=Y)
+// off the front of a leaf's raw args. cobra hands a DisableFlagParsing
+// leaf everything after its own name unparsed, including root flags typed
+// before it (`devvm --config-dir X exec NAME -- cmd`); only the front is
+// read, so CMD's own flags after NAME are never touched.
+func splitRootFlags(args []string) (set [][2]string, rest []string, err error) {
+	for len(args) > 0 {
+		k, v, eq := strings.Cut(strings.TrimPrefix(args[0], "--"), "=")
+		if !strings.HasPrefix(args[0], "--") || !slices.Contains(rootFlags, k) {
+			break
+		}
+		if eq {
+			args = args[1:]
+		} else {
+			if len(args) < 2 {
+				return nil, nil, fmt.Errorf("flag needs an argument: --%s", k)
+			}
+			v, args = args[1], args[2:]
+		}
+		set = append(set, [2]string{k, v})
+	}
+	return set, args, nil
+}
+
+// leafArgs is a DisableFlagParsing leaf's args without the root flags the
+// root's PersistentPreRunE already applied.
+func leafArgs(args []string) []string {
+	_, rest, _ := splitRootFlags(args)
+	return rest
+}
+
 func hiddenCmd(cmd *cobra.Command) bool {
 	for c := cmd; c != nil; c = c.Parent() {
 		if c.Hidden {

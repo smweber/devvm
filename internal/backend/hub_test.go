@@ -75,7 +75,7 @@ func fakeSSHLog(t *testing.T) string {
 func TestHubBackendRunIsProxiedExec(t *testing.T) {
 	hub := config.NewHub("h", "u@host")
 	rec := &config.Machine{Name: "h/web", Hub: hub, Backend: config.BackendHub, SSHHost: hub.SSHHost}
-	b, err := For(rec, config.LegacyPaths(t.TempDir()))
+	b, err := For(rec, config.LegacyPaths(shortTempDir(t))) // a ControlPath ssh can bind
 	if err != nil {
 		t.Fatal(err)
 	}

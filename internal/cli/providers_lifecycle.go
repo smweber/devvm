@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/charmbracelet/huh"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/provider/hetzner"
+	"github.com/smweber/devvm/internal/reach"
 	"github.com/smweber/devvm/internal/session"
 )
 
@@ -39,6 +42,24 @@ func (a *App) lifecycleClient(pn string) (provider.Provider, error) {
 		cl, err = a.askProviderToken(pn, err)
 	}
 	return cl, err
+}
+
+// confirmYes is askConfirm for a verb with --yes: no terminal says so.
+func confirmYes(q string) (bool, error) {
+	ok, err := askConfirm(q)
+	if err != nil {
+		return false, fmt.Errorf("%w (pass --yes to skip the confirmation)", err)
+	}
+	return ok, nil
+}
+
+// interruptContext is the context a long, interruptible step (create's
+// setup, start's wait) runs under: cancelled on SIGINT/SIGTERM, so the ssh
+// children it runs are killed (exec.CommandContext) and the command can
+// say what it left behind instead of dying silently. A var so a test can
+// hand in a cancelled one.
+var interruptContext = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // askConfirm is the y/N prompt the lifecycle verbs use (confirm, on the
@@ -176,7 +197,13 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	// name it resolved; this record is the one just created): reachForSetup
 	// waits for ssh and creates the user as root, shape does the rest.
 	o := setupOpts{resolved: &t, fresh: true, tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}}
-	if err := a.shape(context.Background(), m, b, t, o); err != nil {
+	sctx, stop := interruptContext()
+	defer stop()
+	if err := a.shape(sctx, m, b, t, o); err != nil {
+		if sctx.Err() != nil {
+			return fmt.Errorf("'%s' was created (server %d at %s; it bills) but setup was interrupted; %s",
+				s.Name, srv.ID, srv.Address, next)
+		}
 		if holder != "" && holder != "?" && hostKeyMismatch(err) {
 			next = fmt.Sprintf("the pinned host key for %s is kept for the entry [machines.%s], which reaches the same address; if that pin is stale, clear it with 'ssh-keygen -R %s -f %s', then %s",
 				pinKey, holder, pinKey, a.Paths.KnownHostsPath(), next)
@@ -425,7 +452,7 @@ func (a *App) ensureProviderKey(cl provider.Provider, pn string, pl config.Place
 func (a *App) deleteProviderBox(m *config.Machine, yes bool) error {
 	srv, pn := m.Server, m.Backend
 	if !yes {
-		ok, err := askConfirm(fmt.Sprintf("Delete %s server '%s' (%s in %s, %s, server %d) and its disk (irreversible)?",
+		ok, err := confirmYes(fmt.Sprintf("Delete %s server '%s' (%s in %s, %s, server %d) and its disk (irreversible)?",
 			providerTitle(pn), m.Name, srv.Type, srv.Location, orDash(srv.Address), srv.ID))
 		if err != nil {
 			return err
@@ -478,8 +505,17 @@ func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
 		verb, want = "start", provider.StateRunning
 	}
 	billing := func() {
-		if !on {
+		if on {
+			return
+		}
+		// An off box answers nothing: the last contact would read as a
+		// live "reachable, verified 22s ago" until the next probe.
+		_ = reach.Remove(a.Paths, m.Name)
+		if m.Managed() {
 			fmt.Fprintf(a.Stderr, "devvm: %s is stopped but still billed; devvm delete %s frees it\n", m.Name, m.Name)
+		} else {
+			// delete refuses a server devvm did not make: the console is the way.
+			fmt.Fprintf(a.Stderr, "devvm: %s is stopped but still billed; delete it in the %s console to stop billing\n", m.Name, providerTitle(pn))
 		}
 	}
 	if srv.State == want {
@@ -491,7 +527,7 @@ func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
 		return nil
 	}
 	if !m.Managed() && !yes {
-		ok, err := askConfirm(fmt.Sprintf("'%s' is a %s server devvm did not make (no %s=%s label; %s, %s): really %s it?",
+		ok, err := confirmYes(fmt.Sprintf("'%s' is a %s server devvm did not make (no %s=%s label; %s, %s): really %s it?",
 			m.Name, providerTitle(pn), provider.LabelManaged, provider.LabelManagedValue, srv.State, orDash(srv.Address), verb))
 		if err != nil {
 			return err
@@ -527,13 +563,26 @@ func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
 }
 
 // resumeProviderForwards is start's forwards step for a provider box, as
-// for smol: the saved forwards come up (pending until sshd answers, then
-// bound by the daemon's reconnect). From the cache: resolve's Get, merged,
-// is the newest answer there is, and the daemon reads only the cache too.
+// for smol. The API says running as soon as the server boots, well before
+// sshd listens, and a daemon spawned then exits on its first dial; so it
+// first waits for ssh as setup does (waitSSH: bounded, one "waiting" line,
+// only "unreachable" retried, no root adoption: a managed box has its
+// user), which costs one probe when sshd is up already. Then the saved
+// forwards, from the cache: resolve's Get, merged, is the newest answer
+// there is, and the daemon reads only the cache too.
 func (a *App) resumeProviderForwards(m *config.Machine) error {
 	if !m.Managed() {
-		return nil // no forwards on a server devvm did not make
+		return nil // no forwards on a server devvm did not make, and no known user
 	}
+	ctx, stop := interruptContext()
+	defer stop()
+	switch r, err := a.waitSSH(ctx, m); {
+	case err != nil:
+		return fmt.Errorf("'%s' is running, but %w; 'devvm ports up %s' brings its forwards up once it answers", m.Name, err, m.Name)
+	case r == reachDenied:
+		return fmt.Errorf("'%s' is running, but ssh to %s was refused (permission denied)", m.Name, m.SSHHost)
+	}
+	a.noteContact(m, "start", config.TransportSSH, nil)
 	saved, err := a.savedPorts(m.Name)
 	if err != nil || len(saved) == 0 {
 		return err

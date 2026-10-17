@@ -131,9 +131,14 @@ func (a *App) execCmd() *cobra.Command {
 		Short:              "Run a command as the dev user",
 		Args:               cobra.MinimumNArgs(2),
 		DisableFlagParsing: true, // pass CMD's own flags through untouched
-		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
-			return a.runExec(args[0], args[1:])
-		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if args = leafArgs(args); len(args) < 2 {
+				return fmt.Errorf("requires at least 2 arg(s), only received %d", len(args))
+			}
+			return a.hubOr(func(cmd *cobra.Command, args []string) error {
+				return a.runExec(args[0], args[1:])
+			})(cmd, args)
+		},
 	}
 	return c
 }
@@ -386,9 +391,14 @@ func (a *App) keysCmd() *cobra.Command {
 		Short:              "Add a client pubkey (remote machines)",
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: true, // pass --from-github through untouched
-		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
-			return a.runAuthorizeKey(args[0], args[1:])
-		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if args = leafArgs(args); len(args) < 1 {
+				return fmt.Errorf("requires at least 1 arg(s), only received 0")
+			}
+			return a.hubOr(func(cmd *cobra.Command, args []string) error {
+				return a.runAuthorizeKey(args[0], args[1:])
+			})(cmd, args)
+		},
 	}
 	list := &cobra.Command{
 		Use:   "list NAME",

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -161,6 +162,9 @@ func (b *sshBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error 
 	if err := needCmd("ssh"); err != nil {
 		return err
 	}
+	if err := b.checkControlPaths(); err != nil {
+		return err
+	}
 	connect := o.ConnectTimeout
 	if connect <= 0 {
 		connect = SSHConnectTimeoutFor(b.m)
@@ -187,8 +191,39 @@ func (b *sshBackend) Spawn(ctx context.Context, o ExecOpts, argv ...string) (*Se
 	if err := needCmd("ssh"); err != nil {
 		return nil, err
 	}
+	if err := b.checkControlPaths(); err != nil {
+		return nil, err
+	}
 	host := append(b.base(), b.m.SSHHost, remoteCommand(o, rootWrap(o, argv)))
 	return spawnHost(ctx, host)
+}
+
+// sunPathMax is sizeof(sockaddr_un.sun_path): 108 on Linux, 104 on macOS
+// and the BSDs.
+func sunPathMax() int {
+	if runtime.GOOS == "linux" {
+		return 108
+	}
+	return 104
+}
+
+// controlPathErr refuses a ControlPath ssh could not bind, before ssh is
+// run: ssh finds out only at connect time, as an exit 255 a bounded wait
+// would otherwise retry for its whole budget. %C expands to a 40-hex hash,
+// and a master binds the path plus "." and 16 random characters first.
+func controlPathErr(path string) error {
+	n := len(strings.ReplaceAll(path, "%C", strings.Repeat("0", 40)))
+	if n+17 >= sunPathMax() {
+		return fmt.Errorf("state dir path too long for ssh ControlPath (%d bytes); use a shorter --state-dir or XDG_STATE_HOME", n)
+	}
+	return nil
+}
+
+// checkControlPaths checks the master Run and Spawn share
+// (paths.ControlPath). The daemon's own master is under run/, which is
+// shorter than or equal to the state dir's.
+func (b *sshBackend) checkControlPaths() error {
+	return controlPathErr(b.paths.ControlPath())
 }
 
 // rootWrap prefixes sudo when the caller wants root: an ssh host's login user is

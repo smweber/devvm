@@ -237,7 +237,11 @@ func (a *App) setupCmd() *cobra.Command {
 			"user is created). Precedence: flag > --template > [templates.default] > built-in.",
 		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			o.noteSet(cmd.Flags())
-			return a.runSetup(args[0], o)
+			if err := a.runSetup(args[0], o); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Stdout, "devvm: '%s' is set up\n", args[0])
+			return nil
 		}),
 	}
 	a.machineArg(c)
@@ -273,7 +277,7 @@ func (a *App) runSetup(name string, o setupOpts) error {
 		return err
 	}
 	if m.IsProvider() && !m.Managed() {
-		return providerUnmanagedErr(m) // --adopt or not: a provider server is never promoted
+		return providerNoPromoteErr(m) // --adopt or not: a provider server is never promoted
 	}
 	if m.IsRemote() {
 		if o.Adopt && m.IsProvider() {
@@ -324,7 +328,9 @@ func (a *App) runSetup(name string, o setupOpts) error {
 		o.fresh = true
 		fmt.Fprintf(a.Stderr, "devvm: '%s' is managed by devvm now\n", name)
 	}
-	return a.shape(context.Background(), m, b, t, o)
+	ctx, stop := interruptContext()
+	defer stop()
+	return a.shape(ctx, m, b, t, o)
 }
 
 // loginUser is the user part of a remote record's ssh destination ("" for
@@ -629,6 +635,10 @@ var fatalSSHMarks = []string{
 	"REMOTE HOST IDENTIFICATION HAS CHANGED",
 	"Host key verification failed",
 	"Too many authentication failures",
+	// Local failures: this host's ssh or its config, never the box.
+	"ControlPath too long",
+	"command not found",
+	"Bad configuration option",
 }
 
 // fatalSSH returns the stderr line carrying a fatal mark, or "".
@@ -669,7 +679,11 @@ func (a *App) waitSSH(ctx context.Context, m *config.Machine) (reachResult, erro
 			fmt.Fprintf(a.Stderr, "devvm: waiting up to %s for ssh to %s...\n", setupReachBudget, m.SSHHost)
 			noted = true
 		}
-		time.Sleep(setupReachInterval)
+		select {
+		case <-ctx.Done(): // an interrupt: stop waiting at once
+			return reachDown, ctx.Err()
+		case <-time.After(setupReachInterval):
+		}
 	}
 }
 

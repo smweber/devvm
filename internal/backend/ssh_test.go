@@ -1,6 +1,14 @@
 package backend
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/smweber/devvm/internal/config"
+)
 
 func TestParseConnectTimeout(t *testing.T) {
 	for _, tc := range []struct {
@@ -55,5 +63,48 @@ func TestSCPTargetBracketsIPv6(t *testing.T) {
 		if got := scpTarget(tc.dest, "/var/tmp/x"); got != tc.want {
 			t.Errorf("scpTarget(%q) = %q, want %q", tc.dest, got, tc.want)
 		}
+	}
+}
+
+// shortTempDir is a temp dir short enough for an ssh ControlPath under it
+// (t.TempDir's names alone can push c-%C past sun_path).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "devvm-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return dir
+}
+
+// A ControlPath ssh could not bind (the master's path plus ".", 16
+// characters, inside sun_path) is refused before ssh runs, naming its
+// length; a normal state dir passes.
+func TestControlPathTooLong(t *testing.T) {
+	if err := controlPathErr("/home/dev/.local/state/devvm/c-%C"); err != nil {
+		t.Fatalf("a normal state dir: %v", err)
+	}
+	long := "/" + strings.Repeat("x", 60) + "/c-%C" // 40-hex %C: 104 bytes
+	err := controlPathErr(long)
+	if err == nil || !strings.Contains(err.Error(), "state dir path too long for ssh ControlPath (104 bytes)") ||
+		!strings.Contains(err.Error(), "--state-dir or XDG_STATE_HOME") {
+		t.Fatalf("long: %v", err)
+	}
+	// Run refuses it without running ssh at all.
+	dir := shortTempDir(t)
+	log := filepath.Join(dir, "ssh.log")
+	os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\necho ran >> "+log+"\n"), 0o755)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	state := filepath.Join(dir, strings.Repeat("s", 80))
+	b := &sshBackend{m: config.NewRemote("x", true, "dev@x.example"), paths: config.LegacyPaths(state)}
+	if err := b.Run(context.Background(), ExecOpts{}, "true"); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("ssh ran")
 	}
 }

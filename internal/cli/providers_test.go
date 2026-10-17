@@ -285,7 +285,11 @@ func TestProviderRefusals(t *testing.T) {
 		{"attach", "prod"}, {"setup", "prod"}, {"setup", "--adopt", "prod"}, {"keys", "list", "prod"},
 		{"repos", "list", "prod"}, {"ports", "up", "prod"}, {"auth", "prod"}, {"cp-in", "prod", "providers_test.go"},
 	} {
-		if err := runTree(t, a, argv...); err == nil || !strings.Contains(err.Error(), "never promotes a provider server") {
+		want := "devvm does not manage (no devvm=true label): only status, start, stop, shell and exec work"
+		if argv[0] == "setup" {
+			want = "never promotes a provider server" // setup alone is the promotion path
+		}
+		if err := runTree(t, a, argv...); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%v: %v", argv, err)
 		}
 	}
@@ -367,7 +371,7 @@ func TestProviderStatusRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = a.Stdout.(*bytes.Buffer).String()
-	for _, want := range []string{"hetzner: listing failed, cached ", "ago (hetzner: GET /servers: 503", "server: cx23 in nbg1, 3.3.3.3", "(stopped, still billed)", "contact: none recorded yet", "(shadows a hetzner server of the same name)"} {
+	for _, want := range []string{"hetzner: listing failed, cached ", "ago (hetzner: GET /servers: 503", "server: cx23 in nbg1, 3.3.3.3", "stopped (billing)", "contact: none recorded yet", "(shadows a hetzner server of the same name)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("-v lacks %q:\n%s", want, out)
 		}
