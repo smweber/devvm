@@ -81,8 +81,46 @@ Steps **2–4** (token command, discovery, lifecycle, live test) wait for the
 redesign: they build on resolve's source list, templates, `setup` and
 `config check`.
 
-- Step 1: in progress.
-- Step 0: to come.
+- **Step 1 landed 2026-10-17** (`providers` bookmark; onto master with step
+  0): `internal/provider` (`Provider` interface as §7, `KeyEnsurer`,
+  `ErrConflict`/`ErrNotFound` sentinels, `Managed`, state tokens),
+  `internal/provider/hetzner` (plain REST, pagination, action polling that
+  rejects unknown statuses, 30s/16 MB limits, errors with status+code+message,
+  no retry, `Token()` = `HCLOUD_TOKEN` then the state-dir file,
+  `EnsureSSHKey` resolving a 409 by fingerprint), `internal/provider/fake`
+  (same rules, `CallCount`, `CreateErr`). Fixtures recorded once against
+  the user's test project (two throwaway cx23 + a key, deleted and the
+  project verified empty); two hand-written (429, action error). Real API
+  drift: servers carry top-level `location`, no `datacenter`. `Create` may
+  return a server *and* an error (it bills): callers must handle both.
+  `Spec.IPv6Only` (zero value = v4, §1's default). `Power(off)` is hard
+  poweroff (graceful can hang; keep). Follow-up: the next recording should
+  use a throwaway key (fixtures hold the user's real pubkey + a released IP;
+  not secret, but persistent).
+- **Step 0 landed 2026-10-17** (same bookmark): `internal/reach` cache
+  (`<State>/cache/reach/NAME`, `key=value`, atomic; garbled → `?`),
+  `backend/ssh_reach.go` probe (daemon master `run/NAME.master` → shared
+  `c-%C` via `ssh -O check` → `ssh -G` → 2s TCP; ProxyJump/ProxyCommand ⇒
+  `?`; a `?` or a deadline cut never overwrites a recorded state),
+  `cli/reach.go` (round: 16 parallel, 5s; `noteContact` from exec/shell/
+  attach/bootstrap; hidden `__refresh` writes `run/refresh`),
+  `status`: one-shot probes, `--local`/`--watch` read the cache, the watch
+  runs a round at start and on `run/refresh` only (tested: `TouchChanged`
+  runs zero rounds), sixth `--plain` field `verified=<unix>:<how>` or `-`
+  (hub rows pass a newer hub's through), `-v` last-contact text,
+  `config.Machine.Probeable()` (a method, per config.md §9). Shared
+  ControlMaster gains `ServerAliveInterval=30/CountMax=3` so a box that
+  died during sleep can't show a stale `reachable (master)`. Swift (blind):
+  `?` remote stays live with glyph "◌"; the app does **not** call
+  `__refresh` (its one-shot `status` on menu open already probes;
+  providers.md v1.3). Reviews: Opus ×2 per step, Fable design review at the
+  boundary (ship). **Rebase onto master after config step 4**: contact hook
+  → end of `setup`'s `shape` (how=`setup`); `remoteConfs()` → the new
+  loader's remote entries (step 5); Status.swift live check →
+  `backend != "smol" && !isHub` when the column becomes `remote` (step 5).
+- Steps 2–4: after the redesign. Notes for step 3 from review: put a
+  deadline on `Create`; `stop` should `Get` first and skip an already-off
+  server; step 2 warns on a token file mode wider than 0600.
 
 ## After the config redesign (agreed order)
 
