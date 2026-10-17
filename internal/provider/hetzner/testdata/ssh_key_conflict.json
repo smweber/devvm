@@ -38,5 +38,33 @@
         }
       }
     }
+  },
+  {
+    "note": "hand-written: the lookup by fingerprint after the recorded 409; the answer is the key ssh_key_upload.json created",
+    "method": "GET",
+    "path": "/ssh_keys?fingerprint=cd%3Af9%3A73%3A3c%3A58%3A28%3Aad%3A44%3Aed%3Aa8%3A86%3A03%3A87%3Ae1%3A8c%3Ae8",
+    "status": 200,
+    "response": {
+      "ssh_keys": [
+        {
+          "id": 131413975,
+          "name": "devvm-rec-d84193",
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEdDOiwcDAcfwtvmTFkBOudzCPqpxlZ/yV7SbzpZe2I5 devvm-rec-d84193",
+          "fingerprint": "cd:f9:73:3c:58:28:ad:44:ed:a8:86:03:87:e1:8c:e8",
+          "labels": {},
+          "created": "2026-10-17T04:01:31Z"
+        }
+      ],
+      "meta": {
+        "pagination": {
+          "last_page": 1,
+          "next_page": null,
+          "page": 1,
+          "per_page": 25,
+          "previous_page": null,
+          "total_entries": 1
+        }
+      }
+    }
   }
 ]

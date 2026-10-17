@@ -1,6 +1,7 @@
 package hetzner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,7 +24,7 @@ import (
 
 func managedSpec(m recordMeta) provider.Spec {
 	return provider.Spec{
-		Name: m.Server, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key, IPv4: true,
+		Name: m.Server, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key,
 		Labels: map[string]string{provider.LabelManaged: provider.LabelManagedValue, provider.LabelTemplate: "record"},
 	}
 }
@@ -71,9 +72,15 @@ func TestSSHKeyUploadFindConflict(t *testing.T) {
 	if err != nil || found.ID != k.ID {
 		t.Fatalf("find: %+v, %v", found, err)
 	}
-	_, err = replay(t, "ssh_key_conflict").EnsureSSHKey(ctx, m.KeyDup, m.PubKey)
-	if ae := apiErr(t, err); ae.Status != http.StatusConflict || ae.Code != "uniqueness_error" {
-		t.Fatalf("conflict: %+v", ae)
+	// Same material under a second name: the 409 resolves to the key the
+	// project already holds, found by fingerprint.
+	dup, err := replay(t, "ssh_key_conflict").EnsureSSHKey(ctx, m.KeyDup, m.PubKey)
+	if err != nil || dup.ID != k.ID || dup.Name != m.Key {
+		t.Fatalf("conflict: %+v, %v", dup, err)
+	}
+	_, err = replay(t, "ssh_key_conflict_unresolved").EnsureSSHKey(ctx, m.KeyDup, m.PubKey)
+	if ae := apiErr(t, err); ae.Status != http.StatusConflict || ae.Code != "uniqueness_error" || !errors.Is(err, provider.ErrConflict) {
+		t.Fatalf("unresolved conflict: %+v", ae)
 	}
 }
 
@@ -106,7 +113,7 @@ func TestCreateWaitsForActions(t *testing.T) {
 func TestCreateV6Only(t *testing.T) {
 	m := loadMeta(t)
 	s, err := replay(t, "create_v6").Create(context.Background(), provider.Spec{
-		Name: m.ServerV6, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key,
+		Name: m.ServerV6, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key, IPv6Only: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +134,109 @@ func TestCreateConflict(t *testing.T) {
 	}
 	if ae := apiErr(t, err); ae.Status != http.StatusConflict || ae.Code != "uniqueness_error" || ae.Message == "" {
 		t.Fatalf("got %+v", ae)
+	}
+	if !errors.Is(err, provider.ErrConflict) || errors.Is(err, provider.ErrNotFound) {
+		t.Fatalf("sentinels: %v", err)
+	}
+}
+
+// Once the POST succeeded the server exists and bills, so every later
+// failure must hand it back with the error.
+func TestCreateActionErrorReturnsServer(t *testing.T) {
+	m := loadMeta(t)
+	s, err := replay(t, "create_action_error").Create(context.Background(), managedSpec(m))
+	var ae *ActionError
+	if !errors.As(err, &ae) || ae.Command != "create_server" || ae.Code != "action_failed" {
+		t.Fatalf("err = %v", err)
+	}
+	if s == nil || s.Name != m.Server || s.ID == 0 {
+		t.Fatalf("server = %+v, want the one that was created", s)
+	}
+}
+
+func TestCreateRereadErrorReturnsServer(t *testing.T) {
+	m := loadMeta(t)
+	s, err := replay(t, "create_reread_error").Create(context.Background(), managedSpec(m))
+	if ae := apiErr(t, err); ae.Status != http.StatusServiceUnavailable {
+		t.Fatalf("got %+v", ae)
+	}
+	if s == nil || s.Name != m.Server || s.ID == 0 {
+		t.Fatalf("server = %+v, want the one that was created", s)
+	}
+}
+
+func TestCreateCancelledReturnsServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"server":{"id":5,"name":"web","status":"initializing"},"action":{"id":7,"command":"create_server","status":"running"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"action":{"id":7,"command":"create_server","status":"running"}}`))
+	}))
+	defer srv.Close()
+	c := New("test-token", WithBaseURL(srv.URL), WithPollInterval(5*time.Millisecond))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	s, err := c.Create(ctx, provider.Spec{Name: "web"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	if s == nil || s.ID != 5 || s.State != provider.StateStarting {
+		t.Fatalf("server = %+v", s)
+	}
+}
+
+func TestWaitRejectsUnexpectedStatus(t *testing.T) {
+	for _, status := range []string{"", "paused"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"action":{"id":7,"command":"start_server","status":"` + status + `"}}`))
+		}))
+		c := New("test-token", WithBaseURL(srv.URL), WithPollInterval(time.Millisecond))
+		// No deadline: before the fix this spun forever.
+		err := c.Power(context.Background(), 1, true)
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "unexpected status") {
+			t.Fatalf("status %q: err = %v", status, err)
+		}
+	}
+}
+
+func TestFingerprintMatchesHetzner(t *testing.T) {
+	m := loadMeta(t)
+	k, err := replay(t, "ssh_key_upload").EnsureSSHKey(context.Background(), m.Key, m.PubKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, err := Fingerprint(m.PubKey)
+	if err != nil || fp != k.Fingerprint {
+		t.Fatalf("Fingerprint = %q, %v; Hetzner says %q", fp, err, k.Fingerprint)
+	}
+}
+
+func TestNotFoundSentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"server not found"}}`))
+	}))
+	defer srv.Close()
+	err := New("test-token", WithBaseURL(srv.URL)).Delete(context.Background(), 1)
+	if !errors.Is(err, provider.ErrNotFound) || errors.Is(err, provider.ErrConflict) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestResponseTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte(" "), maxBody+1))
+	}))
+	defer srv.Close()
+	_, err := New("test-token", WithBaseURL(srv.URL)).List(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "response too large") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

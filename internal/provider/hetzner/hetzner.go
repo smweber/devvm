@@ -6,6 +6,9 @@ package hetzner
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,6 +86,17 @@ type APIError struct {
 	Message string
 }
 
+// Is maps Hetzner's codes onto the provider sentinels.
+func (e *APIError) Is(target error) bool {
+	switch target {
+	case provider.ErrConflict:
+		return e.Code == "uniqueness_error" || e.Status == http.StatusConflict
+	case provider.ErrNotFound:
+		return e.Code == "not_found" || e.Status == http.StatusNotFound
+	}
+	return false
+}
+
 func (e *APIError) Error() string {
 	msg := e.Message
 	if e.Code == "" && msg == "" {
@@ -113,6 +127,9 @@ func (e *ActionError) Error() string {
 	return fmt.Sprintf("hetzner: action %s (%d) failed: %s: %s", e.Command, e.ID, e.Code, e.Message)
 }
 
+// maxBody caps a response body; a full server page is well under 1 MB.
+const maxBody = 16 << 20
+
 // do sends one request. path is relative to the base and may carry a query;
 // it never contains the token, so it is safe in errors.
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
@@ -140,9 +157,14 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		return fmt.Errorf("hetzner: %s %s: %w", method, path, unwrapURL(err))
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return fmt.Errorf("hetzner: %s %s: reading response: %w", method, path, err)
+	}
+	if len(raw) > maxBody {
+		// Read one byte past the cap so an oversized answer is an error, not
+		// a silently truncated body that fails to decode with a vaguer one.
+		return fmt.Errorf("hetzner: %s %s: response too large (over %d bytes)", method, path, maxBody)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		ae := &APIError{Method: method, Path: path, Status: resp.StatusCode}
@@ -366,7 +388,7 @@ func (c *Client) Create(ctx context.Context, s provider.Spec) (*provider.Server,
 		"location":           s.Location,
 		"start_after_create": true,
 		"public_net": map[string]bool{
-			"enable_ipv4": s.IPv4,
+			"enable_ipv4": !s.IPv6Only,
 			"enable_ipv6": true,
 		},
 	}
@@ -384,15 +406,19 @@ func (c *Client) Create(ctx context.Context, s provider.Spec) (*provider.Server,
 	if err := c.do(ctx, http.MethodPost, "/servers", req, &resp); err != nil {
 		return nil, err
 	}
+	// From here on the server exists and bills: every failure hands it back
+	// with the error, so the caller can name it rather than lose track of it.
+	created := resp.Server.server()
 	for _, a := range append([]apiAction{resp.Action}, resp.NextActions...) {
 		if err := c.wait(ctx, a); err != nil {
-			srv := resp.Server.server()
-			// The server exists: hand it back with the error so the caller
-			// can name it (it bills) rather than lose track of it.
-			return &srv, err
+			return &created, err
 		}
 	}
-	return c.getByID(ctx, resp.Server.ID)
+	srv, err := c.getByID(ctx, resp.Server.ID)
+	if err != nil {
+		return &created, err
+	}
+	return srv, nil
 }
 
 // Delete deletes the server and waits for the action.
@@ -435,6 +461,12 @@ func (c *Client) wait(ctx context.Context, a apiAction) error {
 				ae.Code, ae.Message = a.Error.Code, a.Error.Message
 			}
 			return ae
+		case "running":
+		default:
+			// Only "running" means poll again: an empty or new status (a
+			// malformed answer, an API change) would otherwise spin until
+			// the caller's deadline, or forever without one.
+			return fmt.Errorf("hetzner: action %s (%d): unexpected status %q", a.Command, a.ID, a.Status)
 		}
 		t := time.NewTimer(c.poll)
 		select {
@@ -473,21 +505,59 @@ func (c *Client) EnsureSSHKey(ctx context.Context, name, pubkey string) (*provid
 	var resp struct {
 		SSHKey apiSSHKey `json:"ssh_key"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/ssh_keys", map[string]string{"name": name, "public_key": pubkey}, &resp); err != nil {
+	err = c.do(ctx, http.MethodPost, "/ssh_keys", map[string]string{"name": name, "public_key": pubkey}, &resp)
+	if IsCode(err, "uniqueness_error") {
+		// The same key material is already in the project under another
+		// name (Hetzner keys are unique by fingerprint too): that key works
+		// for create just as well, so use it rather than fail.
+		fp, ferr := Fingerprint(pubkey)
+		if ferr != nil {
+			return nil, err
+		}
+		if k, ferr := c.findSSHKeyBy(ctx, "fingerprint", fp); ferr == nil && k != nil {
+			return k, nil
+		}
+		return nil, err
+	}
+	if err != nil {
 		return nil, err
 	}
 	return resp.SSHKey.key(), nil
 }
 
+// Fingerprint is the MD5 fingerprint Hetzner reports for a public key:
+// colon-separated lower-case hex of the decoded key blob.
+func Fingerprint(pubkey string) (string, error) {
+	f := strings.Fields(pubkey)
+	if len(f) < 2 {
+		return "", fmt.Errorf("hetzner: malformed public key")
+	}
+	blob, err := base64.StdEncoding.DecodeString(f[1])
+	if err != nil {
+		return "", fmt.Errorf("hetzner: malformed public key: %w", err)
+	}
+	sum := md5.Sum(blob)
+	parts := make([]string, len(sum))
+	for i, b := range sum {
+		parts[i] = hex.EncodeToString([]byte{b})
+	}
+	return strings.Join(parts, ":"), nil
+}
+
 func (c *Client) findSSHKey(ctx context.Context, name string) (*provider.SSHKey, error) {
+	return c.findSSHKeyBy(ctx, "name", name)
+}
+
+// findSSHKeyBy looks a key up by an exact name or fingerprint filter.
+func (c *Client) findSSHKeyBy(ctx context.Context, field, value string) (*provider.SSHKey, error) {
 	var resp struct {
 		SSHKeys []apiSSHKey `json:"ssh_keys"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/ssh_keys?name="+url.QueryEscape(name), nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/ssh_keys?"+field+"="+url.QueryEscape(value), nil, &resp); err != nil {
 		return nil, err
 	}
 	for _, k := range resp.SSHKeys {
-		if k.Name == name {
+		if (field == "name" && k.Name == value) || (field == "fingerprint" && k.Fingerprint == value) {
 			return k.key(), nil
 		}
 	}

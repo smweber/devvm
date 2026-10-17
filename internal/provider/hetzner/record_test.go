@@ -113,7 +113,8 @@ func TestRecord(t *testing.T) {
 	}
 
 	rec.use("ssh_key_upload")
-	if _, err := c.EnsureSSHKey(ctx, m.Key, m.PubKey); err != nil {
+	key, err := c.EnsureSSHKey(ctx, m.Key, m.PubKey)
+	if err != nil {
 		t.Fatal(err)
 	}
 	rec.use("ssh_key_find")
@@ -121,12 +122,15 @@ func TestRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec.use("ssh_key_conflict")
-	if _, err := c.EnsureSSHKey(ctx, m.KeyDup, m.PubKey); err == nil {
-		t.Fatal("uploading the same key under a second name succeeded")
+	// The upload is refused (409) and the client falls back to the key the
+	// project already holds under m.Key. ssh_key_conflict_unresolved.json is
+	// hand-written from this one and is not re-recorded.
+	if k, err := c.EnsureSSHKey(ctx, m.KeyDup, m.PubKey); err != nil || k.ID != key.ID {
+		t.Fatalf("same key under a second name: %+v, %v", k, err)
 	}
 
 	spec := provider.Spec{
-		Name: m.Server, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key, IPv4: true,
+		Name: m.Server, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key,
 		Labels: map[string]string{provider.LabelManaged: provider.LabelManagedValue, provider.LabelTemplate: "record"},
 	}
 	rec.use("create")
@@ -136,7 +140,7 @@ func TestRecord(t *testing.T) {
 	}
 	rec.use("create_v6")
 	if _, err := c.Create(ctx, provider.Spec{
-		Name: m.ServerV6, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key,
+		Name: m.ServerV6, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key, IPv6Only: true,
 	}); err != nil {
 		t.Fatal(err)
 	}

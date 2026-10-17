@@ -8,6 +8,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"time"
 
@@ -31,8 +32,9 @@ type Server struct {
 }
 
 // Spec is what Create needs. SSHKey is the name of a key already in the
-// project (EnsureSSHKey puts it there). IPv4 false makes a v6-only server,
-// which Hetzner bills less for.
+// project (EnsureSSHKey puts it there). IPv6Only makes a server with no
+// public IPv4, which Hetzner bills less for; the zero value has one, matching
+// the `ipv4 = true` default (providers.md §1).
 type Spec struct {
 	Name     string
 	Type     string
@@ -40,7 +42,7 @@ type Spec struct {
 	Location string
 	SSHKey   string
 	Labels   map[string]string
-	IPv4     bool
+	IPv6Only bool
 }
 
 // SSHKey is a public key stored in the provider project, referenced by name
@@ -74,6 +76,15 @@ type Provider interface {
 type KeyEnsurer interface {
 	EnsureSSHKey(ctx context.Context, name, pubkey string) (*SSHKey, error)
 }
+
+// Sentinels both implementations return (wrapped), so callers and CLI tests
+// can branch with errors.Is whether they hold the real client or the fake.
+var (
+	// ErrConflict: the name (or key material) is already used in the project.
+	ErrConflict = errors.New("already exists")
+	// ErrNotFound: the server or key id doesn't exist.
+	ErrNotFound = errors.New("not found")
+)
 
 // Labels devvm sets at create. LabelManaged=LabelManagedValue is the managed
 // marker; LabelTemplate is informational only (nothing reads it).

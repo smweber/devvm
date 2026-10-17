@@ -1,0 +1,483 @@
+[
+  {
+    "method": "POST",
+    "path": "/servers",
+    "request": {
+      "image": "ubuntu-24.04",
+      "labels": {
+        "devvm": "true",
+        "devvm-template": "record"
+      },
+      "location": "nbg1",
+      "name": "devvm-rec-d84193",
+      "public_net": {
+        "enable_ipv4": true,
+        "enable_ipv6": true
+      },
+      "server_type": "cx23",
+      "ssh_keys": [
+        "devvm-rec-d84193"
+      ],
+      "start_after_create": true
+    },
+    "status": 201,
+    "response": {
+      "server": {
+        "id": 170855058,
+        "name": "devvm-rec-d84193",
+        "status": "initializing",
+        "server_type": {
+          "id": 114,
+          "name": "cx23",
+          "architecture": "x86",
+          "cores": 2,
+          "cpu_type": "shared",
+          "category": "cost_optimized",
+          "deprecated": false,
+          "deprecation": null,
+          "description": "CX 23",
+          "disk": 40,
+          "memory": 4,
+          "prices": [
+            {
+              "location": "fsn1",
+              "price_hourly": {
+                "gross": "0.0088000000000000",
+                "net": "0.0088000000"
+              },
+              "price_monthly": {
+                "gross": "5.4900000000000000",
+                "net": "5.4900000000"
+              },
+              "included_traffic": 21990232555520,
+              "price_per_tb_traffic": {
+                "gross": "1.0000000000000000",
+                "net": "1.0000000000"
+              }
+            },
+            {
+              "location": "hel1",
+              "price_hourly": {
+                "gross": "0.0088000000000000",
+                "net": "0.0088000000"
+              },
+              "price_monthly": {
+                "gross": "5.4900000000000000",
+                "net": "5.4900000000"
+              },
+              "included_traffic": 21990232555520,
+              "price_per_tb_traffic": {
+                "gross": "1.0000000000000000",
+                "net": "1.0000000000"
+              }
+            },
+            {
+              "location": "nbg1",
+              "price_hourly": {
+                "gross": "0.0088000000000000",
+                "net": "0.0088000000"
+              },
+              "price_monthly": {
+                "gross": "5.4900000000000000",
+                "net": "5.4900000000"
+              },
+              "included_traffic": 21990232555520,
+              "price_per_tb_traffic": {
+                "gross": "1.0000000000000000",
+                "net": "1.0000000000"
+              }
+            }
+          ],
+          "storage_type": "local",
+          "locations": [
+            {
+              "id": 1,
+              "name": "fsn1",
+              "available": true,
+              "recommended": false,
+              "deprecation": null
+            },
+            {
+              "id": 2,
+              "name": "nbg1",
+              "available": true,
+              "recommended": false,
+              "deprecation": null
+            },
+            {
+              "id": 3,
+              "name": "hel1",
+              "available": true,
+              "recommended": true,
+              "deprecation": null
+            }
+          ]
+        },
+        "location": {
+          "id": 2,
+          "name": "nbg1",
+          "description": "Nuremberg DC Park 1",
+          "city": "Nuremberg",
+          "country": "DE",
+          "latitude": 49.452102,
+          "longitude": 11.076665,
+          "network_zone": "eu-central"
+        },
+        "image": {
+          "id": 161547269,
+          "type": "system",
+          "name": "ubuntu-24.04",
+          "architecture": "x86",
+          "bound_to": null,
+          "created_from": null,
+          "deprecated": null,
+          "deprecation": null,
+          "description": "Ubuntu 24.04",
+          "disk_size": 5,
+          "image_size": null,
+          "labels": {},
+          "os_flavor": "ubuntu",
+          "os_version": "24.04",
+          "protection": {
+            "delete": false
+          },
+          "rapid_deploy": true,
+          "status": "available",
+          "created": "2024-04-25T13:26:27Z",
+          "deleted": null
+        },
+        "iso": null,
+        "primary_disk_size": 40,
+        "labels": {
+          "devvm": "true",
+          "devvm-template": "record"
+        },
+        "protection": {
+          "delete": false,
+          "rebuild": false
+        },
+        "backup_window": null,
+        "rescue_enabled": false,
+        "locked": false,
+        "placement_group": null,
+        "public_net": {
+          "firewalls": [],
+          "floating_ips": [],
+          "ipv4": {
+            "id": 156018699,
+            "ip": "46.224.214.28",
+            "blocked": false,
+            "dns_ptr": "static.28.214.224.46.clients.your-server.de"
+          },
+          "ipv6": {
+            "id": 156018700,
+            "ip": "2a01:4f8:1c19:5eeb::/64",
+            "blocked": false,
+            "dns_ptr": []
+          }
+        },
+        "private_net": [],
+        "load_balancers": [],
+        "volumes": [],
+        "included_traffic": 0,
+        "ingoing_traffic": 0,
+        "outgoing_traffic": 0,
+        "created": "2026-10-17T04:01:32Z"
+      },
+      "root_password": null,
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      },
+      "next_actions": [
+        {
+          "id": 662009086313338,
+          "command": "start_server",
+          "started": "2026-10-17T04:01:32Z",
+          "finished": null,
+          "progress": 0,
+          "status": "running",
+          "resources": [
+            {
+              "id": 170855058,
+              "type": "server"
+            }
+          ],
+          "error": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313337",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313337",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313337",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 50,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313337",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 50,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313337",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 50,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313337",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313337,
+        "command": "create_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": "2026-10-17T04:01:37Z",
+        "progress": 100,
+        "status": "success",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          },
+          {
+            "id": 161547269,
+            "type": "image"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313338",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313338,
+        "command": "start_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313338",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313338,
+        "command": "start_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313338",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313338,
+        "command": "start_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": null,
+        "progress": 0,
+        "status": "running",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/actions/662009086313338",
+    "status": 200,
+    "response": {
+      "action": {
+        "id": 662009086313338,
+        "command": "start_server",
+        "started": "2026-10-17T04:01:32Z",
+        "finished": "2026-10-17T04:01:42Z",
+        "progress": 100,
+        "status": "success",
+        "resources": [
+          {
+            "id": 170855058,
+            "type": "server"
+          }
+        ],
+        "error": null
+      }
+    }
+  },
+  {
+    "note": "hand-written: the re-read after the actions succeeded fails",
+    "method": "GET",
+    "path": "/servers/170855058",
+    "status": 503,
+    "response": {
+      "error": {
+        "code": "unavailable",
+        "message": "service unavailable",
+        "details": {}
+      }
+    }
+  }
+]

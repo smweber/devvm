@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/smweber/devvm/internal/provider"
@@ -20,11 +21,11 @@ func TestFakeLifecycle(t *testing.T) {
 	if _, err := p.EnsureSSHKey(ctx, "k", "ssh-ed25519 BBBB"); err == nil {
 		t.Fatal("different key under the same name accepted")
 	}
-	if _, err := p.EnsureSSHKey(ctx, "k2", "ssh-ed25519 AAAA"); err == nil {
-		t.Fatal("same key under a second name accepted")
+	if k, err := p.EnsureSSHKey(ctx, "k2", "ssh-ed25519 AAAA"); err != nil || k.Name != "k" {
+		t.Fatalf("same key under a second name: %+v, %v", k, err)
 	}
 
-	spec := provider.Spec{Name: "web", Type: "cx23", SSHKey: "k", IPv4: true,
+	spec := provider.Spec{Name: "web", Type: "cx23", SSHKey: "k",
 		Labels: map[string]string{provider.LabelManaged: provider.LabelManagedValue}}
 	s, err := p.Create(ctx, spec)
 	if err != nil {
@@ -33,8 +34,19 @@ func TestFakeLifecycle(t *testing.T) {
 	if !provider.Managed(*s) || s.State != provider.StateRunning || s.Address == "" {
 		t.Fatalf("created %+v", s)
 	}
-	if _, err := p.Create(ctx, spec); err == nil {
-		t.Fatal("duplicate name accepted")
+	if _, err := p.Create(ctx, spec); !errors.Is(err, provider.ErrConflict) {
+		t.Fatalf("duplicate name: %v", err)
+	}
+	if strings.Contains(s.Address, ":") {
+		t.Fatalf("default spec got a v6-only address %q", s.Address)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := p.Create(cancelled, provider.Spec{Name: "other"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled create: %v", err)
+	}
+	if got, _ := p.Get(ctx, "other"); got != nil {
+		t.Fatal("cancelled create made a server")
 	}
 	s.Labels[provider.LabelManaged] = "false" // must not reach the store
 	got, _ := p.Get(ctx, "web")
@@ -47,13 +59,22 @@ func TestFakeLifecycle(t *testing.T) {
 	if got, _ := p.Get(ctx, "web"); got.State != provider.StateStopped {
 		t.Fatalf("after poweroff state = %q", got.State)
 	}
-	p.Add(provider.Server{Name: "prod"})
+	prod, err := p.Add(provider.Server{Name: "prod", State: provider.StateStopped})
+	if err != nil || prod.Status != "off" {
+		t.Fatalf("add: %+v, %v", prod, err)
+	}
+	if _, err := p.Add(provider.Server{Name: "prod"}); !errors.Is(err, provider.ErrConflict) {
+		t.Fatalf("duplicate add: %v", err)
+	}
 	all, _ := p.List(ctx)
 	if len(all) != 2 || provider.Managed(all[1]) {
 		t.Fatalf("list = %+v", all)
 	}
 	if err := p.Delete(ctx, s.ID); err != nil {
 		t.Fatal(err)
+	}
+	if err := p.Delete(ctx, s.ID); !errors.Is(err, provider.ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
 	}
 	if got, err := p.Get(ctx, "web"); got != nil || err != nil {
 		t.Fatalf("after delete: %v, %v", got, err)
@@ -62,7 +83,7 @@ func TestFakeLifecycle(t *testing.T) {
 	if _, err := p.List(ctx); err == nil {
 		t.Fatal("Err not returned")
 	}
-	if p.Calls["Get"] != 3 {
-		t.Fatalf("Calls[Get] = %d", p.Calls["Get"])
+	if n := p.CallCount("Get"); n != 4 {
+		t.Fatalf("CallCount(Get) = %d", n)
 	}
 }
