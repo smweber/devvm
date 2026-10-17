@@ -26,6 +26,41 @@ policy lives in `browser-bridge.md` §3–4 only.
 Already shipped and assumed here: daemon reconnect, `status --plain --watch`,
 `devvm update`, the macOS menu bar app (`contrib/macos`), v0.1.11.
 
+## Config redesign (after v0.1.15)
+
+`config.md` (draft v3.1) is the next plan; its "Implementation order" owns
+the sequencing of its six steps, and this section records what landed. Same
+loop as the hub steps: Opus implements, Opus reviews, live test on the
+ThinkPad, one `jj commit` per step, no release before step 6. After it
+lands this file is trimmed (the per-step live lists and the long
+"shipped differently" bullets go to git history) and gets the agreed order
+of follow-up work: the known issues below first, then the ssh agent exec
+for remote boxes (thin `auth` + `BROWSER` there), then the provider
+backend (`providers.md`).
+
+- **Step 1 landed 2026-10-17**: `config.Paths{Config, State}`; `run/`,
+  `cache/`, `known_hosts` and the ssh ControlMaster sockets (`c-%C`) move
+  to `$XDG_STATE_HOME/devvm`. The migration moves files with link+unlink
+  (never replacing one) and leaves a live daemon's run files alone; session
+  clients find an old-layout daemon where it is, so an upgrade by
+  `install.sh` never spawns a sibling daemon (the review's blocker).
+  Live-tested on the ThinkPad with a v0.1.15 daemon holding forwards.
+- **Step 2 landed 2026-10-17**: saved forwards are `<State>/ports/NAME`
+  (`HUB@NAME` for hub machines), edited under a per-name flock, seeded once
+  from every conf by an all-or-nothing migration that never writes a conf.
+  `ports add` saves by default (`--ephemeral` opts out). `UpdateHubMachine`
+  and the hub-conf flock are gone: **shared decision 6 below is superseded**
+  (hub.md §2 still describes the tables; to be fixed with the trim).
+  `delete` clears host state through `forgetHostState`.
+- **Step 3 in review 2026-10-17**: one `smolvm machine ls --json` snapshot
+  in resolve (`created_at` is Unix seconds, confirmed on smolvm 1.16.1);
+  managed marker `<State>/managed/NAME`; unmanaged smol VMs limited to
+  status/start/stop/shell/exec; `provision`/`deprovision`/dormant removed;
+  fifth `--plain` column (`managed|unmanaged|shadowed|-`) with its Swift
+  change built blind.
+- Steps 4 (`setup` + templates, `--adopt`), 5 (new loader + `config` noun)
+  and 6 (hand migration, release) to come.
+
 ## Progress
 
 **Milestone A landed 2026-09-15**: steps 1–4 are four commits on `master`
@@ -537,8 +572,11 @@ this list only names the decisions.
    `auth` stops spawning its own on smol. Remote boxes keep `auth`'s private
    session (ssh has no one-exec limit) until the ssh agent exec ships.
 5. **`--plain` changes ship with their Swift change** in the same PR.
-6. **Hub-machine state lives in the hub's conf** (hub §2): `[machines.NAME]`
-   tables in `machines/HUB.toml`, `ports` the only field. No `hubs/` tree.
+6. ~~**Hub-machine state lives in the hub's conf** (hub §2): `[machines.NAME]`
+   tables in `machines/HUB.toml`, `ports` the only field. No `hubs/` tree.~~
+   **Superseded by config step 2 (2026-10-17):** a laptop's saved forwards
+   for `HUB/NAME` are host state in `$XDG_STATE_HOME/devvm/ports/HUB@NAME`,
+   like every other machine's.
 
 ## Steps
 
