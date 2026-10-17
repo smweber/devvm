@@ -245,14 +245,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 ## Known issues (pre-existing, found by live runs, not fixed)
 
-- **An external `devvm exec` storm can exhaust a fake-smolvm hub.** On
-  2026-10-17 the cloud hub received ~7,800 `exec web -- … toggledark dark`
-  calls in two hours (one per second, from outside devvm's own code: an
-  appearance-sync hook on a client), each a real login shell on the box
-  (the fake's guest is the host), until apt and sshd were OOM-killed. devvm
-  itself has no rate limit on proxied `exec`; the real question is what
-  client sent them.
-
 - **`cp-out` of more than 11 MiB from a real smol VM fails**: smolvm 1.16.1
   caps `machine exec` streamed stdout at 11534336 bytes, and `downloadArchive`
   streams the tar over exec stdout. All-or-nothing, locally and proxied.
@@ -268,6 +260,10 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 Cosmetic or accepted:
 
+- An external `devvm exec` storm (~7,800 calls in two hours from a client's
+  hook) OOM-killed the fake-smolvm cloud hub. Not devvm's to fix: every hub
+  exec is a login shell by design, and a rate limit would only make the
+  external client's calls fail (decided 2026-10-17).
 - `keys add` dedup strips the target's *own* `id_*.pub`, so a loopback
   `self` machine breaks its own `ssh localhost`.
 - `^C` on a `-t` proxied command reports "cannot reach hub" (ssh's 255 is
