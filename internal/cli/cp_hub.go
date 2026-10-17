@@ -137,6 +137,9 @@ func (a *App) runCopyInHub(ctx context.Context, name string, srcs []string, dst 
 	argv := hubCopyInArgv(m.HubMachineName(), dst, o)
 	eo := backend.ExecOpts{BatchMode: true, Stdin: f, Stdout: io.Discard, Stderr: a.Stderr}
 	if err := a.exitStatus(m, p.Proxy(ctx, eo, argv...)); err != nil {
+		if uploadedAll(f) {
+			return &afterUpload{err: err} // an interruption now may not stop the hub
+		}
 		return err
 	}
 	copyTargets(a.Stderr, bases, dst, o.asDir || len(bases) > 1, "%s -> "+name+":%s")

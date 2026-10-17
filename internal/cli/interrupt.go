@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,9 +14,28 @@ import (
 // disposition, so the parent sees a death by that signal (a shell script
 // looping over copies stops on ^C) rather than an ordinary exit status;
 // 128+sig is the status should the re-raise not end the process.
-type interrupted struct{ sig syscall.Signal }
+type interrupted struct {
+	sig  syscall.Signal
+	note string // what the interruption could not stop (afterUpload)
+}
 
-func (e *interrupted) Error() string { return "interrupted (" + e.sig.String() + ")" }
+func (e *interrupted) Error() string {
+	msg := "interrupted (" + e.sig.String() + ")"
+	if e.note != "" {
+		msg += " " + e.note
+	}
+	return msg
+}
+
+// afterUpload marks a hub cp-in's failure once ssh had read the whole
+// archive: the hub's `cp-in --from-tar -` may then have the complete
+// stream, and goes on to place it whatever happens here, so an
+// interruption says so instead of implying nothing was copied. Without a
+// signal it is just err.
+type afterUpload struct{ err error }
+
+func (e *afterUpload) Error() string { return e.err.Error() }
+func (e *afterUpload) Unwrap() error { return e.err }
 
 // interruptSignals are what interruptible catches: ^C, kill, and a hangup
 // (a closed terminal, or an ssh -t session's end on a hub).
@@ -32,11 +53,32 @@ var interruptSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGH
 //
 // A signal that arrives once fn already succeeded changes nothing: the
 // work is done, so the command exits 0.
+//
+// Only signals the process does not ignore are caught: Notify would
+// re-enable an ignored one, so `nohup devvm cp-in` would die on SIGHUP and
+// a copy backgrounded with & (the shell ignores SIGINT for it) on the
+// terminal's ^C. Execute's re-raise relies on this too: the default
+// disposition it restores is the one the process started with.
 func interruptible(parent context.Context, fn func(ctx context.Context) error) error {
+	catch := caughtSignals()
+	if len(catch) == 0 {
+		return fn(parent)
+	}
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, interruptSignals...)
+	signal.Notify(sigs, catch...)
 	defer signal.Stop(sigs)
 	return runInterruptible(parent, sigs, fn)
+}
+
+// caughtSignals is interruptSignals minus those this process ignores.
+func caughtSignals() []os.Signal {
+	var catch []os.Signal
+	for _, s := range interruptSignals {
+		if !signal.Ignored(s) {
+			catch = append(catch, s)
+		}
+	}
+	return catch
 }
 
 // runInterruptible is interruptible with the signal source given, for tests.
@@ -76,5 +118,21 @@ func runInterruptible(parent context.Context, sigs <-chan os.Signal, fn func(ctx
 	if !ok {
 		ss = syscall.SIGINT
 	}
-	return &interrupted{sig: ss}
+	ie := &interrupted{sig: ss}
+	var au *afterUpload
+	if errors.As(err, &au) {
+		ie.note = "after upload; the hub may still complete the copy"
+	}
+	return ie
+}
+
+// uploadedAll reports whether f, handed to a child as its stdin, was read
+// to its end: the child shares f's file offset.
+func uploadedAll(f *os.File) bool {
+	off, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && off >= info.Size()
 }

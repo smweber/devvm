@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -162,5 +163,64 @@ func waitFile(t *testing.T, path string, exited <-chan error) {
 			t.Fatalf("%s never appeared", path)
 		case <-tick.C:
 		}
+	}
+}
+
+// A signal the process was started ignoring (nohup's SIGHUP, the SIGINT a
+// shell ignores for a & job) is left ignored: interruptible does not catch
+// it, so it neither interrupts the copy nor, once caught and released,
+// comes back with its default disposition and kills the next one.
+func TestInterruptibleLeavesIgnoredSignals(t *testing.T) {
+	signal.Ignore(syscall.SIGHUP)
+	defer signal.Reset(syscall.SIGHUP)
+	for _, s := range caughtSignals() {
+		if s == syscall.SIGHUP {
+			t.Fatal("an ignored SIGHUP is caught")
+		}
+	}
+	ran := false
+	if err := interruptible(context.Background(), func(context.Context) error {
+		ran = true
+		return syscall.Kill(os.Getpid(), syscall.SIGHUP) // ignored: nothing happens
+	}); err != nil || !ran {
+		t.Fatalf("err = %v, ran = %v", err, ran)
+	}
+	if !signal.Ignored(syscall.SIGHUP) {
+		t.Error("SIGHUP is no longer ignored after a copy")
+	}
+}
+
+// A hub cp-in interrupted once ssh had read the whole archive says the
+// hub may still finish; without a signal its error is the plain one.
+func TestInterruptedAfterUpload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "payload.tar")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if uploadedAll(f) {
+		t.Fatal("an unread archive reads as uploaded")
+	}
+	if _, err := io.Copy(io.Discard, f); err != nil {
+		t.Fatal(err)
+	}
+	if !uploadedAll(f) {
+		t.Fatal("a fully read archive does not read as uploaded")
+	}
+	boom := &exitCode{code: 1}
+	sigs := make(chan os.Signal, 1)
+	sigs <- syscall.SIGINT
+	err = runInterruptible(context.Background(), sigs, func(context.Context) error { return &afterUpload{err: boom} })
+	if err == nil || err.Error() != "interrupted (interrupt) after upload; the hub may still complete the copy" {
+		t.Errorf("err = %v", err)
+	}
+	err = runInterruptible(context.Background(), make(chan os.Signal), func(context.Context) error { return &afterUpload{err: boom} })
+	var ec *exitCode
+	if !errors.As(err, &ec) || err.Error() != boom.Error() {
+		t.Errorf("without a signal: err = %v, want the hub's exit status", err)
 	}
 }

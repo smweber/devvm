@@ -68,6 +68,7 @@ func (t *sshTransport) startMaster() error {
 	// fresh master is started.
 	if _, err := os.Stat(t.conn.ControlPath); err == nil {
 		if t.masterAlive() {
+			fmt.Fprintf(os.Stderr, "devvm: a master already answered on %s (orphaned); asking it to exit\n", t.conn.ControlPath)
 			_ = t.control("exit")
 			t.waitMasterGone()
 		}
@@ -206,6 +207,10 @@ func (t *sshTransport) masterAlive() bool {
 // waitMasterGone waits, bounded by controlTimeout, for a master told to
 // exit to stop answering: `-O exit` returns once the request is acked, and
 // a `-M` started before the old master unlinked its socket would degrade.
+// A wedged orphan that still answers after that (controlTimeout plus one
+// more check) is left in place: the new -M then degrades, startMaster
+// fails with "did not take", and the daemon's reconnect retries. Accepted;
+// killing a process found only by its socket is not this code's to do.
 func (t *sshTransport) waitMasterGone() {
 	for deadline := time.Now().Add(controlTimeout); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		if !t.masterAlive() {

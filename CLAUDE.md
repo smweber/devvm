@@ -144,7 +144,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   relies on that) and unlinks only its own (`ownsSocket`: inode check *plus* a
   dial — ext4/APFS reuse inode numbers, tmpfs doesn't, which hid the bug
   locally). Binds run outside `d.mu`: an `ssh -O forward` against a wedged
-  master must not freeze `list`/`ping`.
+  master must not freeze `list`/`ping`. SIGTERM/INT/HUP run the same
+  shutdown as a client stop (later signals are absorbed); SIGKILL orphans
+  the ssh master, which the next start `-O exit`s and never adopts; a
+  SIGKILLed smol daemon's exec is not covered.
 - **Config vs state** (`config.Paths{Config, State}`): the config dir
   (`$XDG_CONFIG_HOME/devvm`) holds only the user's file, `devvm.toml` (safe
   to symlink into dotfiles); this host's own state lives in `$XDG_STATE_HOME/devvm`
@@ -505,7 +508,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   the guest needs only a busybox-compatible `tar` (no `--no-same-owner`, no
   `realpath`). Staging is `/var/tmp` (`/tmp` is tmpfs-shadowed under `machine
   cp`). Extraction guards for cp-out live in `cp_tar.go` and are tested with
-  hostile archives — keep them all-or-nothing.
+  hostile archives — keep them all-or-nothing. cp-in/cp-out run under
+  `interruptible`: a signal kills the host command via the context, the
+  spool is removed on the way out, and Execute re-raises the signal.
 
 ## Releases
 

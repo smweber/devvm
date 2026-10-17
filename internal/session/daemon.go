@@ -346,6 +346,11 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 		return nil
 	}
 	_ = os.Remove(sock) // clear a stale socket (nobody answered it, and we hold the lock)
+	// Signalled while waiting for the lock: stop before dialing, rather than
+	// start a master or an exec only to close it.
+	if s, ok := pendingSignal(sigs); ok {
+		return fmt.Errorf("%v before startup; not serving", s)
+	}
 
 	// A discovered machine (smol, backend.Refresher) is asked again before
 	// every dial, the first included. A stopped VM is never dialed: exec'ing
@@ -395,11 +400,9 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 	}
 	// Signalled during the first dial: release what it made and go, before
 	// any socket exists.
-	select {
-	case s := <-sigs:
+	if s, ok := pendingSignal(sigs); ok {
 		tr.Close()
 		return fmt.Errorf("%v during startup; not serving", s)
-	default:
 	}
 	ln, info, err := listenControl(sock)
 	if err != nil {
@@ -428,6 +431,16 @@ func daemonSignals() (<-chan os.Signal, func()) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	return sigs, func() { signal.Stop(sigs) }
+}
+
+// pendingSignal takes a signal already received, without waiting.
+func pendingSignal(sigs <-chan os.Signal) (os.Signal, bool) {
+	select {
+	case s := <-sigs:
+		return s, true
+	default:
+		return nil, false
+	}
 }
 
 // run serves the control socket and supervises until a stop, an idle exit

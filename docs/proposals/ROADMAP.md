@@ -289,9 +289,10 @@ Cosmetic or accepted:
   PATH decides the opener.
 - Cancelling a private-session `auth cloud` logs a yamux ping warning and
   prints both "opening on host" and "opened on host".
-- Killing a laptop-side `cp-in` after the archive is fully written does not
-  abort it (no pty, no SIGINT propagation; "nothing created" holds only for
-  an early kill).
+- Killing a laptop-side `cp-in HUB/NAME` after the archive is fully written
+  does not abort it (no pty, no SIGINT propagation; "nothing created" holds
+  only for an early kill). The laptop then says "interrupted after upload;
+  the hub may still complete the copy".
 - A process backgrounded in a detached `exec` did *not* die with that exec
   on the ThinkPad, contrary to the Environments note of the long form.
 

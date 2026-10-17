@@ -127,8 +127,11 @@ func (a *App) attachCmd() *cobra.Command {
 
 func (a *App) execCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:                "exec NAME CMD...",
-		Short:              "Run a command as the dev user",
+		Use:   "exec NAME CMD...",
+		Short: "Run a command as the dev user",
+		Long: "Run a command as the dev user in a login shell on the machine.\n" +
+			"The command's exit status is devvm's, except 255 on a machine reached\n" +
+			"over ssh: ssh itself uses 255 for \"cannot reach\", and it is reported as such.",
 		Args:               cobra.MinimumNArgs(2),
 		DisableFlagParsing: true, // pass CMD's own flags through untouched
 		RunE: func(cmd *cobra.Command, args []string) error {
