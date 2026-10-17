@@ -544,6 +544,11 @@ func Fingerprint(pubkey string) (string, error) {
 	return strings.Join(parts, ":"), nil
 }
 
+// FindSSHKey is the project key with this exact name, or nil, nil.
+func (c *Client) FindSSHKey(ctx context.Context, name string) (*provider.SSHKey, error) {
+	return c.findSSHKey(ctx, name)
+}
+
 func (c *Client) findSSHKey(ctx context.Context, name string) (*provider.SSHKey, error) {
 	return c.findSSHKeyBy(ctx, "name", name)
 }

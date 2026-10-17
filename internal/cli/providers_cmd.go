@@ -74,26 +74,53 @@ func (a *App) runProvidersToken(name string, clear bool) error {
 		a.noteEnvOverride()
 		return nil
 	}
+	if _, err := a.readAndSaveToken(name); err != nil {
+		return err
+	}
+	a.noteEnvOverride()
+	return nil
+}
+
+// readAndSaveToken reads a token (readToken), checks it with one GET
+// /servers, and stores it: the token command's core, and the first-use
+// prompt of a lifecycle command (askProviderToken). A token that does not
+// work is never written. It returns the client the token made.
+func (a *App) readAndSaveToken(name string) (provider.Provider, error) {
+	path := provider.TokenPath(a.Paths, name)
 	tok, err := a.readToken(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cl, err := a.providerAPIFor(name, tok)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), providerTimes.get)
 	defer cancel()
 	servers, err := cl.List(ctx) // the one validating call; read-only
 	if err != nil {
-		return fmt.Errorf("the token did not work, so nothing was saved: %w", err)
+		return nil, fmt.Errorf("the token did not work, so nothing was saved: %w", err)
 	}
 	if err := writeTokenFile(path, tok); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Fprintf(a.Stdout, "devvm: saved the %s token to %s (its project has %d servers)\n", providerTitle(name), tildePath(path), len(servers))
-	a.noteEnvOverride()
-	return nil
+	return cl, nil
+}
+
+// askProviderToken is the first-use prompt (providers.md §1): a lifecycle
+// command on a terminal with no token asks for it once, validates and
+// stores it, then carries on with the client. Without a terminal it never
+// prompts: the caller gets back the no-token error, which names the
+// command. The env var still wins once the file exists.
+func (a *App) askProviderToken(name string, noToken error) (provider.Provider, error) {
+	if a.Stdin != nil || !stdinIsTTY() {
+		return nil, noToken
+	}
+	fmt.Fprintf(a.Stderr, "devvm: this host has no %s API token yet (it is kept in the state dir, never in devvm.toml).\n"+
+		"devvm: use a separate %s project for devvm boxes: a token reaches every server in its project.\n",
+		providerTitle(name), providerTitle(name))
+	return a.readAndSaveToken(name)
 }
 
 // noteEnvOverride says when HCLOUD_TOKEN will win over the file just

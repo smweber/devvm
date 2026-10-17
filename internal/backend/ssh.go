@@ -208,8 +208,24 @@ func (b *sshBackend) Copy(hostSrc, guestDst string) error {
 		return err
 	}
 	args := append([]string{"scp"}, b.sshFlags()...)
-	args = append(args, hostSrc, b.m.SSHHost+":"+guestDst)
+	args = append(args, hostSrc, scpTarget(b.m.SSHHost, guestDst))
 	return quietHost(args) // scp's message rides the error, not a bare exit status
+}
+
+// scpTarget is scp's [user@]host:path for dest. ssh takes a bare IPv6
+// address as its destination, but scp splits host from path at the first
+// colon, so a v6 host (a provider box with ipv4 = false is reached at one)
+// must be bracketed: dev@[2001:db8::1]:path. A host already bracketed, or
+// with no colon (a name, an alias, IPv4), is left as is.
+func scpTarget(dest, path string) string {
+	user, host := "", dest
+	if i := strings.LastIndex(dest, "@"); i >= 0 {
+		user, host = dest[:i+1], dest[i+1:]
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return user + host + ":" + path
 }
 
 func (b *sshBackend) Exists() (bool, error) { return true, nil } // devvm doesn't create ssh hosts

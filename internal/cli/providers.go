@@ -26,17 +26,24 @@ import (
 // backend.Discover's sources because it needs what only the cli has: the
 // file's `[providers.*]` tables, this host's token, and the cache.
 //
-// Every API call is in this file: Get in providerLookup (resolve, only
-// after every earlier source missed, and never in providerCached mode: the
-// daemon, __session, completion, config rm), List in listProvider (the live round
-// of a one-shot `status` or a watcher's refresh), and List in the token
-// command's validation. Nothing on the snapshot path dials: a --watch
-// snapshot reads the cache file and nothing else.
+// The API calls: Get in providerLookup (resolve, only after every earlier
+// source missed, and never in providerCached mode: the daemon, __session,
+// completion, config rm), List in listProvider (the live round of a
+// one-shot `status` or a watcher's refresh), List in the token command's
+// validation (and the first-use prompt's), and the lifecycle verbs in
+// providers_lifecycle.go: create's Get, key lookup or upload and Create,
+// delete's Delete, start/stop's Power. Nothing on the snapshot path dials:
+// a --watch snapshot reads the cache file and nothing else.
 
-// providerTimes bounds an API call made for resolve. The listing in a round
-// shares the round's deadline (reachTimes) instead, so a one-shot `status`
-// stays bounded by one deadline. A var so tests run with short values.
-var providerTimes = struct{ get time.Duration }{get: 15 * time.Second}
+// providerTimes bounds the API calls. get is a lookup made for resolve (the
+// listing in a round shares the round's deadline, reachTimes, so a
+// one-shot `status` stays bounded by one deadline). create covers the POST
+// and waiting for the server to start, which Hetzner usually finishes in
+// well under a minute; action covers a delete or power action, waited to
+// completion. A var so tests run with short values.
+var providerTimes = struct{ get, create, action time.Duration }{
+	get: 15 * time.Second, create: 5 * time.Minute, action: 3 * time.Minute,
+}
 
 // providerTitle is a provider's name as its console calls it, for messages.
 func providerTitle(name string) string {
@@ -146,6 +153,9 @@ func (a *App) providerLookup(f *config.File, name string, mode providerMode) (*c
 	var hints []string
 	for _, pn := range f.ProviderNames() {
 		cl, err := a.providerClient(pn)
+		if errNoToken(err) && a.providerAsk {
+			cl, err = a.askProviderToken(pn, err)
+		}
 		if errNoToken(err) {
 			hints = append(hints, fmt.Sprintf("%s servers were not searched: no token (run 'devvm providers token %s')", providerTitle(pn), pn))
 			continue
@@ -224,17 +234,11 @@ func providerUnmanagedErr(m *config.Machine) error {
 		provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
 }
 
-// providerLifecycleErr refuses the lifecycle verbs on a provider server
-// until they are built (providers.md §3, implementation step 3).
-func providerLifecycleErr(m *config.Machine, verb string) error {
-	return fmt.Errorf("'%s' is a %s server: %s is not supported yet (providers step 3)", m.Name, providerTitle(m.Backend), verb)
-}
-
 // localOwner names the earlier source that holds name on this host, ""
 // when none does: a `[machines.NAME]` entry or a local smol VM, which
 // shadow a provider server of the same name for every command
-// (providers.md §2). `config check` warns with it, and step 3's `create
-// --backend hetzner` refuses with it. A file that does not parse is the
+// (providers.md §2). `config check` warns with it, and `create --backend
+// hetzner` refuses with it. A file that does not parse is the
 // caller's to refuse first.
 //
 // smols is one local listing the caller took (smolSnapshot), so a check

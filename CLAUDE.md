@@ -245,7 +245,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `unreachable` (a slow Tailscale peer is not a dead one); refused/unroutable is `unreachable`.
 - **Providers** (`providers.md`, `cli/providers.go`): no entry; resolve asks each `[providers.*]` (one Get) only after entry+smol miss and with a token
   (`<State>/providers/NAME.token` via `providers token`; `HCLOUD_TOKEN` wins). `status` reads `cache/provider-NAME.list`, written only by the
-  live round (one-shot `status`, `__refresh`); `--local` skips providers; daemon, `__session`, completion and `config rm` read the cache only (no API, no token). Lifecycle verbs refuse until step 3.
+  live round (one-shot `status`, `__refresh`); `--local` skips providers; daemon, `__session`, completion and `config rm` read the cache only (no API, no token). Lifecycle (`cli/providers_lifecycle.go`):
+  `create --backend hetzner` refuses everything before Create (name, collisions, key, user), then hands the server to `shape` unchanged (never deletes it on failure);
+  `delete`/`start`/`stop` act on the row resolve just fetched, merge the answer into the cache; `stop` warns it still bills; unmanaged: start/stop confirm, delete refuses. `forgetHostState` drops the address pin too.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
   hub, hetzner}, state ∈ {running, stopped, starting, stopping, reachable,

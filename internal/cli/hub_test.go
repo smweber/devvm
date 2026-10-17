@@ -194,7 +194,7 @@ func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 	// forwarded tty); when it refuses — here, exit 1 — nothing local changes
 	// and its status comes back as the proxied exit.
 	log := fakeSSH(t, "exit 1")
-	err := a.runDelete("h/web", false)
+	err := a.runDelete("h/web", false, false)
 	var pe *proxyExit
 	if !errors.As(err, &pe) || pe.code != 1 {
 		t.Fatalf("delete h/web with the hub refusing: err = %v, want proxyExit 1", err)
@@ -209,7 +209,7 @@ func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 	// written); a machine with no local state is still proxied (its
 	// registry entry is the hub's), and just drops nothing here.
 	fakeSSH(t, "exit 0")
-	if err := a.runDelete("h/web", false); err != nil {
+	if err := a.runDelete("h/web", false, false); err != nil {
 		t.Fatalf("delete h/web: %v", err)
 	}
 	if got, _ := config.SavedPortsNames(a.Paths); !slices.Equal(got, []string{"h/api"}) {
@@ -221,7 +221,7 @@ func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 	if confAfter, _ := os.ReadFile(hubConf); string(confAfter) != string(confBefore) {
 		t.Errorf("delete h/web wrote devvm.toml:\n%s", confAfter)
 	}
-	if err := a.runDelete("h/other", false); err != nil {
+	if err := a.runDelete("h/other", false, false); err != nil {
 		t.Errorf("delete of an unrecorded machine: err = %v", err)
 	}
 	if _, err := os.Stat(a.Paths.ChangedPath()); err != nil {

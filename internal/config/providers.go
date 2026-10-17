@@ -66,6 +66,32 @@ func validPlacement(key, v string) error {
 	return nil
 }
 
+// ValidPlacement checks a server type, location or image given as a flag
+// or at create's prompt, with the rule the file's values follow.
+func ValidPlacement(key, v string) error { return validPlacement(key, v) }
+
+// hostnameLabelRe is one RFC 1123 label, lower case: Hetzner requires a
+// server name to be a valid host name (unique per project), stricter than
+// a devvm name (no _ and no leading or trailing - or .).
+var hostnameLabelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidServerName refuses a name a provider would reject, before anything
+// is called: an RFC 1123 host name of lower-case labels, at most 253
+// characters. Lower case only, so the name devvm resolves is exactly the
+// one the provider lists.
+func ValidServerName(name string) error {
+	bad := fmt.Errorf("invalid server name %q: a provider server's name is a host name (RFC 1123: lower-case letters, digits and -, dot-separated labels of at most 63, not starting or ending with -)", name)
+	if name == "" || len(name) > 253 {
+		return bad
+	}
+	for _, l := range strings.Split(name, ".") {
+		if !hostnameLabelRe.MatchString(l) {
+			return bad
+		}
+	}
+	return nil
+}
+
 func (s ProviderSpec) validate() error {
 	var errs []error
 	for _, kv := range [][2]string{{"location", s.Location}, {"image", s.Image}} {

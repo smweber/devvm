@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/smweber/devvm/internal/auth"
+	"github.com/smweber/devvm/internal/config"
 )
 
 // machineArg builds the standard "one machine name" positional spec with
@@ -20,11 +21,13 @@ func (a *App) createCmd() *cobra.Command {
 	var s createSpec
 	c := &cobra.Command{
 		Use:   "create [NAME]",
-		Short: "Create a local smol VM, then set it up from a template",
-		Long: "Create a local smol VM and shape it with 'setup'. NAME and any unset fields\n" +
-			"are prompted for on a terminal, seeded from the template; pass them as\n" +
-			"flags/args to run non-interactively. Precedence: flag > --template >\n" +
-			"[templates.default] > built-in.\n\n" +
+		Short: "Create a local smol VM or a Hetzner server, then set it up from a template",
+		Long: "Create a local smol VM (or, with --backend hetzner, a Hetzner Cloud server,\n" +
+			"which bills until 'devvm delete') and shape it with 'setup'. NAME and any\n" +
+			"unset fields are prompted for on a terminal, seeded from the template; pass\n" +
+			"them as flags/args to run non-interactively. Precedence: flag > --template >\n" +
+			"[templates.default] > built-in; a server's placement also falls back to\n" +
+			"[providers.hetzner] in devvm.toml, which names its ssh key.\n\n" +
 			"Remote boxes and hubs are not created: add one to devvm.toml with\n" +
 			"'devvm config add NAME --backend remote|hub --host H', then 'devvm setup NAME'\n" +
 			"for a managed box.",
@@ -41,6 +44,14 @@ func (a *App) createCmd() *cobra.Command {
 			if err := checkCreateBackend(s.Backend); err != nil {
 				return err
 			}
+			// A provider server is never on a hub (providers.md §6): there
+			// is no exec to own there, so nothing for HUB/NAME to address.
+			if len(args) > 0 && config.IsProviderBackend(s.Backend) {
+				if _, _, onHub, _ := config.SplitHubName(args[0]); onHub {
+					return fmt.Errorf("create %s --backend %s: a %s server is never on a hub; run 'devvm create NAME --backend %s' here",
+						args[0], s.Backend, providerTitle(s.Backend), s.Backend)
+				}
+			}
 			return a.hubOr(func(cmd *cobra.Command, args []string) error {
 				if len(args) > 0 {
 					s.Name = args[0]
@@ -51,7 +62,10 @@ func (a *App) createCmd() *cobra.Command {
 		},
 	}
 	f := c.Flags()
-	f.StringVarP(&s.Backend, "backend", "b", "", "smol (the only backend devvm allocates today)")
+	f.StringVarP(&s.Backend, "backend", "b", "", "smol (default) or hetzner (a cloud server; asked on a terminal when [providers.*] is set)")
+	f.StringVar(&s.ServerType, "server-type", "", "hetzner: server type (template server_type; default "+config.DefaultServerType+")")
+	f.StringVar(&s.Location, "location", "", "hetzner: location (template, then [providers.hetzner]; default "+config.DefaultLocation+")")
+	f.StringVar(&s.Image, "image", "", "hetzner: image name or id (template, then [providers.hetzner]; default "+config.DefaultImage+")")
 	f.StringVarP(&s.Template, flagTemplate, "t", "", "template to create from (default: default)")
 	addTemplateFlags(f, &s.tmplFlags, flagMemory, flagDisk, flagHook)
 	// The pre-template name of --hook, kept so scripts keep working.
@@ -233,6 +247,7 @@ func (a *App) portsCmd() *cobra.Command {
 }
 
 func (a *App) startCmd() *cobra.Command {
+	var yes bool
 	c := &cobra.Command{
 		Use:   "start NAME",
 		Short: "Start the machine (backend-aware)",
@@ -245,30 +260,34 @@ func (a *App) startCmd() *cobra.Command {
 			} else if ok {
 				return a.startHubMachine(cmd, args)
 			}
-			return a.runStart(args[0])
+			return a.runStart(args[0], yes)
 		},
 	}
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "don't confirm (a provider server devvm did not make)")
 	a.machineArg(c)
 	return c
 }
 
 func (a *App) stopCmd() *cobra.Command {
+	var yes bool
 	c := &cobra.Command{
 		Use:   "stop NAME",
-		Short: "Stop the machine (backend-aware)",
-		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) }),
+		Short: "Stop the machine (backend-aware; a stopped Hetzner server still bills)",
+		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0], yes) }),
 	}
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "don't confirm (a provider server devvm did not make)")
 	a.machineArg(c)
 	return c
 }
 
 func (a *App) deleteCmd() *cobra.Command {
-	var force bool
+	var force, yes bool
 	c := &cobra.Command{
 		Use:   "delete NAME",
-		Short: "Delete a smol VM devvm made, or HUB/NAME (an entry is 'config rm')",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], force) },
+		Short: "Delete a smol VM or Hetzner server devvm made, or HUB/NAME (an entry is 'config rm')",
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], force, yes) },
 	}
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "don't confirm")
 	c.Flags().BoolVar(&force, "force", false, "deprecated: no effect (a hub entry is removed with 'devvm config rm --force')")
 	_ = c.Flags().MarkHidden("force")
 	a.machineArg(c)

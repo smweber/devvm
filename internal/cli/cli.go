@@ -36,6 +36,10 @@ type App struct {
 	// providerMode is how resolve's provider source may answer: the API
 	// (the zero value) or the last listing only (cachedProviders).
 	providerMode providerMode
+	// providerAsk: this is a lifecycle command (create, delete, start,
+	// stop), so a provider with no token on this host asks for one on a
+	// terminal (providers.md §1 "First use asks") instead of being skipped.
+	providerAsk bool
 }
 
 func (a *App) stdin() io.Reader {

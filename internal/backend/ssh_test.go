@@ -41,3 +41,19 @@ func TestSSHConnectTimeoutEnv(t *testing.T) {
 		t.Fatalf("unparseable value gave %d, want the default %d", got, defaultSSHConnectTimeout)
 	}
 }
+
+// scp splits host from path at the first colon, so a bare IPv6 host (a
+// provider box with ipv4 = false) is bracketed; nothing else changes.
+func TestSCPTargetBracketsIPv6(t *testing.T) {
+	for _, tc := range []struct{ dest, want string }{
+		{"dev@2001:db8::1", "dev@[2001:db8::1]:/var/tmp/x"},
+		{"2001:db8::1", "[2001:db8::1]:/var/tmp/x"},
+		{"dev@[2001:db8::1]", "dev@[2001:db8::1]:/var/tmp/x"},
+		{"dev@192.0.2.1", "dev@192.0.2.1:/var/tmp/x"},
+		{"alias", "alias:/var/tmp/x"},
+	} {
+		if got := scpTarget(tc.dest, "/var/tmp/x"); got != tc.want {
+			t.Errorf("scpTarget(%q) = %q, want %q", tc.dest, got, tc.want)
+		}
+	}
+}

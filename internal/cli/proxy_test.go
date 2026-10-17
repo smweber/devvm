@@ -565,7 +565,7 @@ func TestDeleteHubMachineReapsRunFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := a.runDelete("h/web", false); err != nil {
+	if err := a.runDelete("h/web", false, false); err != nil {
 		t.Fatalf("delete h/web: %v", err)
 	}
 	for _, f := range []string{"h@web.log", "h@web.sock"} {

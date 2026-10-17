@@ -267,7 +267,7 @@ func TestProviderUnmanagedShellExec(t *testing.T) {
 }
 
 // An unmanaged provider server: status, shell and exec only; the rest
-// refuse with the never-promote line, and lifecycle verbs wait for step 3.
+// refuse with the never-promote line, and delete points at the console.
 // Nothing on this host is touched by the refusals.
 func TestProviderRefusals(t *testing.T) {
 	a := newTestApp(t)
@@ -292,10 +292,8 @@ func TestProviderRefusals(t *testing.T) {
 	if err := runTree(t, a, "delete", "prod"); err == nil || !strings.Contains(err.Error(), "Hetzner console") {
 		t.Errorf("delete prod: %v", err)
 	}
-	for _, argv := range [][]string{{"start", "box"}, {"stop", "box"}, {"delete", "box"}, {"start", "prod"}, {"create", "x", "--backend", "hetzner"}} {
-		if err := runTree(t, a, argv...); err == nil || !strings.Contains(err.Error(), "not supported yet (providers step 3)") {
-			t.Errorf("%v: %v", argv, err)
-		}
+	if p.CallCount("Delete") != 0 {
+		t.Error("delete prod reached the API")
 	}
 	if saved, _ := config.LoadPorts(a.Paths, "box"); len(saved) != 1 {
 		t.Fatalf("a refusal touched box's saved forwards: %v", saved)

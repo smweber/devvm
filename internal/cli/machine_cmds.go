@@ -102,14 +102,17 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 	}
 }
 
-func (a *App) runStart(name string) error {
+// runStart powers a machine on and brings its saved forwards up. yes skips
+// the confirm a provider server devvm did not make gets (§8).
+func (a *App) runStart(name string, yes bool) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
+	a.providerAsk = true
 	m, b, err := a.resolveUnmanaged(name)
 	if err != nil {
 		return err
 	}
 	if m.IsProvider() {
-		return providerLifecycleErr(m, "start")
+		return a.powerProviderBox(m, true, yes)
 	}
 	if err := b.PowerStart(); err != nil {
 		return err
@@ -128,14 +131,15 @@ func (a *App) runStart(name string) error {
 	return nil
 }
 
-func (a *App) runStop(name string) error {
+func (a *App) runStop(name string, yes bool) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
+	a.providerAsk = true
 	m, b, err := a.resolveUnmanaged(name)
 	if err != nil {
 		return err
 	}
 	if m.IsProvider() {
-		return providerLifecycleErr(m, "stop") // before the daemon is touched
+		return a.powerProviderBox(m, false, yes) // it reaps the daemon itself, after any confirm
 	}
 	// Reap this machine's forwards (stop its daemon) before powering off, so no
 	// dead forward squats a host port.
@@ -145,29 +149,31 @@ func (a *App) runStop(name string) error {
 	return b.PowerStop()
 }
 
-// runDelete destroys a smol VM devvm made, or proxies `delete NAME` to a
-// hub for HUB/NAME. It never removes a config entry: an entry is the
-// user's line in devvm.toml, and the one command that removes it, and this
-// host's state for it, is `config rm` (config.md §4). force is accepted
-// and ignored, for scripts written when `delete HUB --force` existed.
-func (a *App) runDelete(name string, _ bool) error {
+// runDelete destroys a smol VM or provider server devvm made, or proxies
+// `delete NAME` to a hub for HUB/NAME. It never removes a config entry: an
+// entry is the user's line in devvm.toml, and the one command that removes
+// it, and this host's state for it, is `config rm` (config.md §4). force
+// is accepted and ignored, for scripts written when `delete HUB --force`
+// existed; yes skips the confirm.
+func (a *App) runDelete(name string, _ bool, yes bool) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	m, b, err := a.resolveAny(name)    // delete applies to hub machines too
+	a.providerAsk = true
+	m, b, err := a.resolveAny(name) // delete applies to hub machines too
 	if err != nil {
 		return err
 	}
 	if m.IsHubMachine() {
 		return a.deleteHubMachine(m, b)
 	}
-	// A provider server: refused before anything is touched (no daemon
-	// reaped, no host state forgotten). devvm deletes only servers it made
-	// (the label); the managed ones are step 3's.
+	// A provider server: devvm deletes only servers it made (the label).
+	// Another is refused before anything is touched (no daemon reaped, no
+	// host state forgotten), with no flag that overrides (§8).
 	if m.IsProvider() {
 		if !m.Managed() {
 			return fmt.Errorf("'%s' is a %s server devvm did not make (no %s=%s label): devvm never deletes one; delete it in the %s console",
 				name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
 		}
-		return providerLifecycleErr(m, "delete")
+		return a.deleteProviderBox(m, yes)
 	}
 	if m.IsRemote() {
 		what := "a remote box"
@@ -181,12 +187,14 @@ func (a *App) runDelete(name string, _ bool) error {
 	if !m.Managed() {
 		return fmt.Errorf("'%s' is a smol VM devvm did not create; remove it with 'smolvm machine rm --name %s'", name, name)
 	}
-	ok, err := confirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("aborted")
+	if !yes {
+		ok, err := askConfirm(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("aborted")
+		}
 	}
 	a.reapRunFiles(name) // the daemon's exec goes before the VM does
 	if err := b.PowerDelete(); err != nil {
@@ -245,9 +253,16 @@ func (a *App) forgetHostState(name string, m *config.Machine) error {
 // known_hosts (only managed ssh boxes are pinned, sshFlags). The entry is
 // keyed by the host ssh actually connects to, so it is asked (`ssh -G`
 // resolves an alias in the user's ssh config, and a non-22 port), and
-// `ssh-keygen -R` removes it, hashed or not. It is kept while another
-// entry still reaches the same host and port: known_hosts is per host, not
-// per machine name, and that machine's pin is the same line.
+// `ssh-keygen -R` removes it, hashed or not, rewriting the file through a
+// temp file. It is kept while another entry still reaches the same host
+// and port: known_hosts is per host, not per machine name, and that
+// machine's pin is the same line.
+//
+// A provider box is reached at its bare address on port 22, so ssh pinned
+// it under the address (v4 or v6, unbracketed); that line is dropped too
+// should the user's ssh config resolve the address to something else.
+// Hetzner reuses addresses, and `delete` and `create` both clear it so the
+// next server there is pinned fresh rather than refused.
 func (a *App) forgetHostKey(m *config.Machine) error {
 	if !m.IsRemote() || !m.Managed() || m.SSHHost == "" {
 		return nil
@@ -269,8 +284,14 @@ func (a *App) forgetHostKey(m *config.Machine) error {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		return nil // nothing could have pinned it without ssh either
 	}
-	if out, err := exec.Command("ssh-keygen", "-R", key, "-f", kh).CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh-keygen -R %s: %v: %s", key, err, strings.TrimSpace(string(out)))
+	keys := []string{key}
+	if m.IsProvider() && m.Server.Address != "" && m.Server.Address != key {
+		keys = append(keys, m.Server.Address)
+	}
+	for _, k := range keys {
+		if out, err := exec.Command("ssh-keygen", "-R", k, "-f", kh).CombinedOutput(); err != nil {
+			return fmt.Errorf("ssh-keygen -R %s: %v: %s", k, err, strings.TrimSpace(string(out)))
+		}
 	}
 	_ = os.Remove(kh + ".old") // ssh-keygen's backup; the state dir keeps no history
 	return nil

@@ -23,6 +23,7 @@ type Provider struct {
 	nextID  int64
 
 	calls map[string]int
+	specs []provider.Spec
 
 	// Err, when set, is returned by every call: an API outage or a missing
 	// token, for exercising callers' fallback paths. Set it before sharing
@@ -137,6 +138,7 @@ func (p *Provider) Create(ctx context.Context, spec provider.Spec) (*provider.Se
 	if err := p.enter(ctx, "Create"); err != nil {
 		return nil, err
 	}
+	p.specs = append(p.specs, spec)
 	for _, s := range p.servers {
 		if s.Name == spec.Name {
 			return nil, fmt.Errorf("fake: server name %q is already used: %w", spec.Name, provider.ErrConflict)
@@ -226,6 +228,36 @@ func (p *Provider) EnsureSSHKey(ctx context.Context, name, pubkey string) (*prov
 	k := provider.SSHKey{ID: p.nextID, Name: name, PublicKey: pubkey, Fingerprint: fmt.Sprintf("fake:%d", p.nextID)}
 	p.keys[name] = k
 	return &k, nil
+}
+
+func (p *Provider) FindSSHKey(ctx context.Context, name string) (*provider.SSHKey, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.enter(ctx, "FindSSHKey"); err != nil {
+		return nil, err
+	}
+	if k, ok := p.keys[name]; ok {
+		c := k
+		return &c, nil
+	}
+	return nil, nil
+}
+
+// AddKey seeds a project key as if uploaded elsewhere (the console, another
+// host), for `ssh_key = NAME`.
+func (p *Provider) AddKey(name, pubkey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.nextID++
+	p.keys[name] = provider.SSHKey{ID: p.nextID, Name: name, PublicKey: strings.TrimSpace(pubkey), Fingerprint: fmt.Sprintf("fake:%d", p.nextID)}
+}
+
+// Specs is every Spec Create was called with, in order, so a test can
+// check the placement and labels a command asked for.
+func (p *Provider) Specs() []provider.Spec {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.Spec(nil), p.specs...)
 }
 
 func material(line string) string {

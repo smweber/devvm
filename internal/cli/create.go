@@ -17,8 +17,14 @@ import (
 // whatever's left unset, seeded from the effective template.
 type createSpec struct {
 	Name     string
-	Backend  string // smol, the only one devvm allocates (config.md §9 item 4)
+	Backend  string // smol, or a provider (hetzner); "" asks, else smol
 	Template string // --template; "" means [templates.default]
+
+	// A provider box's placement flags, over the template's and the
+	// [providers.NAME] table's (gatherProviderSpec).
+	ServerType string
+	Location   string
+	Image      string
 
 	// The template fields (hook, memory, disk, repos, ports, user): flags
 	// here, then settled by gatherCreateSpec from flag > template >
@@ -35,7 +41,14 @@ func (a *App) runCreate(s createSpec) error {
 	if err := checkCreateBackend(s.Backend); err != nil {
 		return err
 	}
-	s.Backend = config.BackendSmol
+	// Backend first (providers.md §3): asked only on a terminal with a
+	// provider configured; otherwise create makes a smol VM, as it always did.
+	if err := a.askBackend(&s); err != nil {
+		return err
+	}
+	if s.Backend == "" {
+		s.Backend = config.BackendSmol
+	}
 	// Name may be omitted on the command line; prompt for it before anything else
 	// so `devvm create` can be run bare on a terminal.
 	if err := resolveName(&s); err != nil {
@@ -60,6 +73,9 @@ func (a *App) runCreate(s createSpec) error {
 	f, err := config.LoadFile(a.Paths)
 	if err != nil {
 		return err
+	}
+	if config.IsProviderBackend(s.Backend) {
+		return a.runCreateProvider(s, f)
 	}
 	if _, ok := f.Entry(s.Name); ok {
 		return fmt.Errorf("'%s' is an entry in %s ([machines.%s]); a smol VM of that name would be shadowed by it: pick another name, or 'devvm config rm %s' first",
@@ -88,23 +104,22 @@ func (a *App) runCreate(s createSpec) error {
 		tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}}); err != nil {
 		return fmt.Errorf("'%s' was created but setup failed: %w; re-run 'devvm setup %s'", s.Name, err, s.Name)
 	}
-	a.printCreateNext(s.Name)
+	a.printCreateNext(s.Name, config.BackendSmol)
 	return nil
 }
 
-// checkCreateBackend refuses anything but smol, on this host, before a
-// `create HUB/NAME` is proxied too. Remote create is gone (config.md §4): a
-// remote box is an entry in devvm.toml, and shaping it is setup's.
+// checkCreateBackend refuses what create does not allocate, on this host,
+// before a `create HUB/NAME` is proxied too: smol and the providers only.
+// Remote create is gone (config.md §4): a remote box is an entry in
+// devvm.toml, and shaping it is setup's.
 func checkCreateBackend(b string) error {
 	switch b {
-	case "", config.BackendSmol:
+	case "", config.BackendSmol, config.BackendHetzner:
 		return nil
-	case config.BackendHetzner:
-		return fmt.Errorf("create --backend %s is not supported yet (providers step 3)", b)
 	case config.BackendRemote, config.BackendHub, "remote-managed", "remote-unmanaged":
 		return fmt.Errorf("create allocates local smol VMs only; add a remote box or hub with 'devvm config add NAME --backend remote|hub --host H', then 'devvm setup NAME' for a managed one")
 	default:
-		return fmt.Errorf("invalid backend %q (create makes smol VMs)", b)
+		return fmt.Errorf("invalid backend %q (create makes smol VMs and %s servers)", b, strings.Join(config.KnownProviders(), ", "))
 	}
 }
 
@@ -132,7 +147,7 @@ func (s createSpec) template() config.Template {
 
 // provisionResource allocates the smol VM, leaving it running: create's
 // allocation step. SmolCreate (create + start), then the managed marker.
-// A provider backend adds its API-backed create here (config.md §9).
+// A provider box is allocated by runCreateProvider instead.
 func (a *App) provisionResource(name string, memory, disk int) error {
 	if !backend.SmolAvailable() {
 		return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
@@ -167,8 +182,8 @@ func (a *App) writeManagedMarker(name string) error {
 	return err
 }
 
-func (a *App) printCreateNext(name string) {
-	fmt.Fprintf(a.Stdout, "\nMachine '%s' (smol) is ready.\n\nNext:\n", name)
+func (a *App) printCreateNext(name, backendName string) {
+	fmt.Fprintf(a.Stdout, "\nMachine '%s' (%s) is ready.\n\nNext:\n", name, backendName)
 	fmt.Fprintf(a.Stdout, "  devvm auth %s            # log in to github, codex, and claude\n", name)
 	fmt.Fprintf(a.Stdout, "  devvm repos add %s owner/repo  # clone a repo into ~/src\n", name)
 	fmt.Fprintf(a.Stdout, "  devvm attach %s          # join the persistent dev tmux session\n", name)

@@ -78,9 +78,13 @@ type Provider interface {
 }
 
 // KeyEnsurer is the create-time helper beside Provider: make sure a key with
-// this name and this public key is in the project, uploading it if missing.
+// this name and this public key is in the project, uploading it if missing
+// (`ssh_key_file`), or find one already there by name (`ssh_key`, nil, nil
+// when absent). create calls one of them before Create, so a missing key
+// is an error before anything bills.
 type KeyEnsurer interface {
 	EnsureSSHKey(ctx context.Context, name, pubkey string) (*SSHKey, error)
+	FindSSHKey(ctx context.Context, name string) (*SSHKey, error)
 }
 
 // Sentinels both implementations return (wrapped), so callers and CLI tests

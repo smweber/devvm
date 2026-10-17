@@ -457,7 +457,7 @@ func TestDeleteHubMachineDropsCacheRow(t *testing.T) {
 	if err := writeHubCache(a.Paths, "h", []hubRow{{"web", "smol", "running", "-", "-", ""}, {"api", "smol", "stopped", "-", "-", ""}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.runDelete("h/web", false); err != nil {
+	if err := a.runDelete("h/web", false, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := cachedHubMachines(a.Paths, "h"); !slices.Equal(got, []string{"api"}) {
