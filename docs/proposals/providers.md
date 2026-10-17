@@ -1,6 +1,6 @@
 # Proposal: provider backends (devvm creates and destroys cloud VMs)
 
-Status: draft v1.4, 2026-10-17, from a design discussion with the user
+Status: implemented (v1.5, steps 0–4 landed 2026-10-17), 2026-10-17, from a design discussion with the user
 (v1.1: token stored by the CLI, cache-first watch; v1.2: refresh on demand,
 remote boxes probed; v1.3: menu refresh via its one-shot status; see the
 review log). Not
@@ -174,8 +174,9 @@ remove `state/ports/NAME` and the pinned `known_hosts` line for the address.
 Hetzner reuses addresses, so a stale pin would fail the next `create`.
 
 `start`/`stop` are `POST /servers/{id}/actions/poweron|poweroff`, waited to
-completion. `stop` keeps the forwards' daemon as smol does (pending,
-reconnecting). A stopped Hetzner server **still bills**, and the smol
+completion. `stop` stops the forwards' daemon first, as smol's `stop` does;
+`start` waits for sshd (the bounded ssh wait) and then resumes the saved
+forwards. A stopped Hetzner server **still bills**, and the smol
 intuition that stopped is free is wrong here, so `stop` **warns** every time
 (`web is stopped but still billed; devvm delete web frees it`) and `status
 -v` repeats it on the row (`stopped (billing)`). The warning is one line on
@@ -427,6 +428,32 @@ reopened:
   with last-contact time (§5). The user: "it feels like a lie".
 
 ## Review log
+
+**v1.4 → v1.5** (2026-10-17, steps 3–4 as built, reviewed and live-tested
+in the user's test project; five cx23 servers created and deleted, project
+verified empty):
+
+- `create` calls `shape` directly after a 5-minute-deadline `Create`; the
+  bill notice prints before the POST; any failure after the POST names the
+  server, id, address and the two commands; a transport error or timeout on
+  the POST says "may have been created, run `status`, then `delete`". An
+  interrupt during setup kills the ssh child and prints the same line.
+- `stop` stops the daemon first (smol's behaviour; §3 wording fixed) and
+  clears the box's reach entry; `start` waits for sshd before resuming
+  forwards (the live test's one real bug: the daemon died with 255 on a
+  booting box). The billing warning on an unmanaged server points at the
+  console, since `delete` refuses there.
+- Proxied `create HUB/NAME` always sends `--backend=smol`, so a hub whose
+  shared file has `[providers.*]` never prompts for a backend; placement
+  flags are refused on a smol create.
+- `forgetHostKey` (`ssh-keygen -R`) also drops the bare address pin, kept
+  while a `[machines.*]` entry shares it; create drops a stale pin before
+  setup. Recreate at a reused address needs no host-key handling.
+- ssh ControlPath length is checked up front (the live test's isolated state
+  dir hit ssh's 108-byte limit); root flags before `exec`/`keys add` work.
+- `Spec.IPv6Only`; `scpTarget` brackets a v6 host. The v6-only path and the
+  browser shim on remote boxes (deferred with the ssh agent exec) were not
+  live-tested.
 
 **v1.3 → v1.4** (2026-10-17, step 2 as built and reviewed):
 

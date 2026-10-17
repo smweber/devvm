@@ -7,11 +7,10 @@ file wins for sequencing and the design doc wins for mechanism.
 
 Status, 2026-10-17: the **hubs + browser bridge** plan (`hub.md` v3.4,
 `browser-bridge.md` v2.6) landed in full as v0.1.13–v0.1.15. The **config
-redesign** (`config.md` v3.1) landed in full; the three hosts are migrated; v0.1.16 is the release. **In
-parallel** since 2026-10-17, in its own jj workspace: the provider
-backend's independent steps 0–1 (`providers.md` v1.2; see below). After the
-redesign: the known issues below, then the ssh agent exec for remote boxes,
-then provider steps 2–4.
+redesign** (`config.md` v3.1) landed in full; the three hosts are migrated; v0.1.16 is the release. The
+**provider backend** (`providers.md` v1.5) landed in full the same day,
+steps 0–1 in v0.1.16 and steps 2–4 after it. Next: the known issues below,
+then the ssh agent exec for remote boxes.
 
 The long form of this file (per-step live-test lists and the detailed
 "what shipped differently" notes for hub steps 1–9) is in git history before
@@ -83,7 +82,7 @@ on the ThinkPad, one `jj commit`, **no release before step 6**.
   managed). **All three hosts run the step 5 build on the new layout.**
   Release v0.1.16 after a whole-redesign review.
 
-## Provider backend, steps 0–1 (in parallel, since 2026-10-17)
+## Provider backend (done, 2026-10-17)
 
 `providers.md` "Implementation order" owns its five steps. Steps **0** (status
 truthfulness: `run/refresh` + hidden `__refresh`, remote boxes probed by a
@@ -155,7 +154,27 @@ redesign: they build on resolve's source list, templates, `setup` and
   made the daemon/`__session`/`config rm`/completion cache-only and stripped
   `HCLOUD_TOKEN` from the daemon env. Swift: unlabelled hetzner rows are
   not usable; `starting`/`stopping` glyph (blind).
-- Steps 3–4: next. Notes for step 3 from review: put a
+- **Step 3 landed 2026-10-17**: `create NAME --backend hetzner` (name
+  checks, refusals before any API call, key by name or uploaded file as
+  `devvm-<12 hex>`, bill notice, 5m-deadline `Create`, cache merge, stale
+  pin dropped, then `shape`), `delete` (confirm, `Delete`, `forgetHostState`
+  incl. the known_hosts pin, cache row), `start`/`stop` (no-op paths, Power,
+  unmanaged confirm, billing warning, `start` waits for sshd), proxied
+  create pinned to `--backend=smol`, root flags before raw leaves, ControlPath
+  length check, interrupt handling in create/setup. Two Opus reviews plus the
+  live-test fixes.
+- **Step 4 done 2026-10-17**: live run in the user's test project from an
+  isolated config/state dir: create 118s (root adoption + prereqs), exec,
+  ports (curl through the forward), cp-in/out, stop/start, every unmanaged
+  refusal after removing the label via the API, delete clears the pin,
+  recreate at the reused address, interrupted create still listed and
+  deletable; project verified empty (one non-billing ssh key
+  `devvm-42dec2d3bc2d` left). Skipped: v6-only (no v6 route here), browser
+  shim on remote (deferred), interactive confirms (unit-tested). Not tested
+  from a second host.
+- Follow-ups (not scheduled): v6-only live test; mosh with a bare v6 host;
+  the next fixture recording should use a throwaway key; `cp-in` ~4× slower
+  than `cp-out`. Notes for step 3 from review: put a
   deadline on `Create`; `stop` should `Get` first and skip an already-off
   server; step 2 warns on a token file mode wider than 0600.
 
@@ -168,8 +187,7 @@ redesign: they build on resolve's source list, templates, `setup` and
    `auth`, `BROWSER` plumbing on remote boxes (bridge §5), deletion of
    `--auth` and the second agent socket. Deferred from the bridge plan
    because hub VMs never needed it; a provider backend does.
-3. **Provider backend, steps 2–4** (`providers.md`; constraints in
-   `config.md` §9; steps 0–1 land in parallel, above).
+3. ~~Provider backend~~ done (above).
 4. **Mac tests** when at the laptop: the v0.1.14 menubar changes (drop shelf,
    Tab completion, save panel), the step 3 fifth-column Swift change, and a
    Mac as a smol hub (`smolvm machine create` and `open` from an sshd
