@@ -32,8 +32,18 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private var applying = false
     /// The directory (ending in "/") the last completion wrote into the
     /// field, until the user edits it: a "/" typed right after it accepts
-    /// it and goes in rather than doubling the slash.
+    /// it and goes in rather than doubling the slash. So a slash typed after
+    /// a completed directory never doubles; that costs nothing, as "//"
+    /// means the same as "/" on the guest.
     private var completedDir: String?
+    /// The editing commands that accept the candidate a cycle shows.
+    private static let acceptSelectors: Set<Selector> = [
+        #selector(NSResponder.moveRight(_:)),
+        #selector(NSResponder.moveToEndOfLine(_:)),
+        #selector(NSResponder.moveToRightEndOfLine(_:)),
+        #selector(NSResponder.moveToEndOfParagraph(_:)),
+        #selector(NSResponder.moveToEndOfDocument(_:)),
+    ]
 
     init(devvm: Devvm, machine: String) {
         self.devvm = devvm
@@ -121,13 +131,29 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         // in, as a Tab on "src/" outside a cycle does. Without this, a
         // directory reached by cycling could only be entered by typing "/"
         // and deleting it again before the next Tab.
-        if let dir = completedDir, field.stringValue == dir + "/" {
+        //
+        // Only for a real insertion: an undo of the collapse also reads
+        // "src//", and collapsing it again would make the undo impossible
+        // to get past (and edit the field from inside the undo manager).
+        // The rewrite runs on the next turn of the run loop, after
+        // insertText: has finished with the field editor (it may still set
+        // the insertion point past the shortened text); the text is checked
+        // again in case the user typed in between.
+        let undo = field.currentEditor()?.undoManager
+        let replaying = (undo?.isUndoing ?? false) || (undo?.isRedoing ?? false)
+        if !replaying, let dir = completedDir, field.stringValue == dir + "/" {
+            completedDir = nil
             completer.edited()
             pendingTab = false
             debounce?.invalidate()
             debounce = nil
-            setText(dir)
-            tab(backwards: false)
+            DispatchQueue.main.async { [weak self] in
+                // Also not after the panel closed: tab() would start a lookup.
+                guard let self = self, self.panel.isVisible,
+                      self.field.stringValue == dir + "/" else { return }
+                self.setText(dir)
+                self.tab(backwards: false)
+            }
             return
         }
         completedDir = nil
@@ -216,17 +242,13 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
             tab(backwards: true)
             return true
         }
-        // Right arrow or Cmd-Right on a cycled candidate accepts it: the text
-        // stays, the cycle ends, so the next Tab enters a directory instead
-        // of moving on. The caret movement itself still happens.
-        let accepts: [Selector] = [
-            #selector(NSResponder.moveRight(_:)),
-            #selector(NSResponder.moveToEndOfLine(_:)),
-            #selector(NSResponder.moveToRightEndOfLine(_:)),
-            #selector(NSResponder.moveToEndOfParagraph(_:)),
-            #selector(NSResponder.moveToEndOfDocument(_:)),
-        ]
-        if accepts.contains(commandSelector), let shown = completer.shown, shown == field.stringValue {
+        // Right arrow or Cmd-Right on a cycled candidate, caret at the end
+        // (where the cycle put it), accepts it: the text stays, the cycle
+        // ends, so the next Tab enters a directory instead of moving on.
+        // The caret movement itself still happens.
+        if CopyOutPanel.acceptSelectors.contains(commandSelector),
+           let shown = completer.shown, shown == field.stringValue,
+           textView.selectedRange().location == (shown as NSString).length {
             completer.edited()
             hint.stringValue = ""
             hint.toolTip = nil
