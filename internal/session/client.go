@@ -21,13 +21,13 @@ var ErrNoDaemon = errors.New("no forward daemon running")
 
 // Client talks to a machine's forward daemon over its unix control socket.
 type Client struct {
-	configDir string
-	name      string
+	paths config.Paths
+	name  string
 }
 
 // Dial returns a client, spawning the daemon first if none is running.
-func Dial(configDir, name string) (*Client, error) {
-	return dialCancel(configDir, name, nil)
+func Dial(p config.Paths, name string) (*Client, error) {
+	return dialCancel(p, name, nil)
 }
 
 // errDialCanceled is returned when a dial's come-up wait was abandoned.
@@ -37,12 +37,15 @@ var errDialCanceled = errors.New("dial canceled")
 // (nil never does), so a session being closed is not held for the whole
 // wait by a reconnect in progress. A daemon already spawned carries on and
 // idles out on its own.
-func dialCancel(configDir, name string, cancel <-chan struct{}) (*Client, error) {
-	c := &Client{configDir: configDir, name: name}
+func dialCancel(p config.Paths, name string, cancel <-chan struct{}) (*Client, error) {
+	c := &Client{paths: p, name: name}
 	if c.alive() {
 		return c, nil
 	}
-	logOff := logSize(logPath(configDir, name))
+	if old := legacyDaemon(p, name); old != nil {
+		return old, nil
+	}
+	logOff := logSize(logPath(p, name))
 	exited, err := c.spawnDaemon()
 	if err != nil {
 		return nil, err
@@ -78,7 +81,7 @@ func comeUpWait(name string) time.Duration {
 // line is never mistaken for this one's). A clean exit is a daemon that
 // found another one already serving the socket; polling goes on for that.
 func (c *Client) waitComeUp(exited <-chan daemonExit, logOff int64, cancel <-chan struct{}, deadline time.Time) (*Client, error) {
-	log := logPath(c.configDir, c.name)
+	log := logPath(c.paths, c.name)
 	for time.Now().Before(deadline) {
 		if c.alive() {
 			return c, nil
@@ -101,13 +104,49 @@ func (c *Client) waitComeUp(exited <-chan daemonExit, logOff int64, cancel <-cha
 }
 
 // Existing returns a client only if a daemon is already running, else ErrNoDaemon.
-func Existing(configDir, name string) (*Client, error) {
-	c := &Client{configDir: configDir, name: name}
+func Existing(p config.Paths, name string) (*Client, error) {
+	c := &Client{paths: p, name: name}
+	if c.alive() {
+		return c, nil
+	}
+	if old := legacyDaemon(p, name); old != nil {
+		return old, nil
+	}
+	return nil, ErrNoDaemon
+}
+
+// ExistingIn is Existing at exactly p, without the pre-split fallback: for
+// a caller that walks both layouts itself (update cycles each daemon).
+func ExistingIn(p config.Paths, name string) (*Client, error) {
+	c := &Client{paths: p, name: name}
 	if !c.alive() {
 		return nil, ErrNoDaemon
 	}
 	return c, nil
 }
+
+// legacyDaemon is a client for a daemon an older build started under the
+// pre-split layout (run/ in the config dir) that is still serving, else
+// nil. It is the machine's one daemon until it exits: spawning a sibling
+// under the state dir would take a different lock and, on smol, open a
+// second agent exec (the one-exec rule). Clients therefore use it where it
+// is; `update` cycles it (config.MigrateState leaves its files alone).
+func legacyDaemon(p config.Paths, name string) *Client {
+	old := config.LegacyPaths(p.Config)
+	if old == p {
+		return nil
+	}
+	c := &Client{paths: old, name: name}
+	if !c.alive() {
+		return nil
+	}
+	return c
+}
+
+// Paths is where this client's daemon lives: the paths it was asked for,
+// or the pre-split layout when Dial or Existing found an older daemon
+// there. WaitGone and anything addressing the daemon's files use these.
+func (c *Client) Paths() config.Paths { return c.paths }
 
 func (c *Client) alive() bool {
 	resp, err := c.request(Request{Op: OpPing})
@@ -134,16 +173,18 @@ func (c *Client) spawnDaemon() (<-chan daemonExit, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := config.EnsureRuntimeDir(c.configDir); err != nil {
+	if err := c.paths.EnsureRuntimeDir(); err != nil {
 		return nil, err
 	}
-	logf, err := os.OpenFile(logPath(c.configDir, c.name),
+	logf, err := os.OpenFile(logPath(c.paths, c.name),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
 	defer logf.Close()
-	cmd := exec.Command(self, "__daemon", c.name, "--config-dir", c.configDir)
+	// Both dirs, always: the daemon must use exactly this client's paths
+	// (an explicit --config-dir alone would mean the legacy layout).
+	cmd := exec.Command(self, "__daemon", c.name, "--config-dir", c.paths.Config, "--state-dir", c.paths.State)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from the CLI
@@ -182,7 +223,7 @@ func lastLogLine(path string, off int64, fallback error) string {
 }
 
 func (c *Client) request(req Request) (Response, error) {
-	conn, err := net.Dial("unix", socketPath(c.configDir, c.name))
+	conn, err := net.Dial("unix", socketPath(c.paths, c.name))
 	if err != nil {
 		return Response{}, err
 	}
@@ -353,11 +394,11 @@ func (c *Client) Stop() error {
 // spawned earlier could listen on the same path and have its fresh socket
 // unlinked, or find the old ssh master still holding the ControlPath. Callers
 // cycling a daemon (update) wait here between Stop and Dial.
-func WaitGone(configDir, name string, timeout time.Duration) bool {
-	c := &Client{configDir: configDir, name: name}
+func WaitGone(p config.Paths, name string, timeout time.Duration) bool {
+	c := &Client{paths: p, name: name}
 	deadline := time.Now().Add(timeout)
 	for {
-		_, statErr := os.Stat(socketPath(configDir, name))
+		_, statErr := os.Stat(socketPath(p, name))
 		if os.IsNotExist(statErr) && !c.alive() {
 			return true
 		}

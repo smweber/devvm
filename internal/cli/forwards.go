@@ -69,7 +69,7 @@ func sinceHuman(t time.Time) string {
 }
 
 func (a *App) runPort(name, mapping string) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, b, err := a.resolveForwards(name)
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 		fmt.Fprintf(a.Stdout, "devvm: recorded %s; forwards come up on 'devvm start %s'\n", mapping, m.Name)
 		return nil
 	}
-	cl, err := session.Dial(a.ConfigDir, m.Name)
+	cl, err := session.Dial(a.Paths, m.Name)
 	if err != nil {
 		if m.IsHubMachine() {
 			// Recorded either way; the hub said why it could not forward now
@@ -127,7 +127,7 @@ func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) erro
 // (a bridge callback). It never drops a connection owner: that belongs to
 // whoever holds the session, and goes when the session does.
 func (a *App) runUnport(name, mapping string) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, _, err := a.resolveForwardsConf(name)
 	if err != nil {
 		return err
@@ -159,7 +159,7 @@ func (a *App) runUnport(name, mapping string) error {
 	// Drop the live forward's conf owner if a daemon is running.
 	var left *session.Forward
 	if guest != 0 {
-		if cl, derr := session.Existing(a.ConfigDir, name); derr == nil {
+		if cl, derr := session.Existing(a.Paths, name); derr == nil {
 			left, _ = cl.RemoveOwner(guest, session.OwnerConf)
 		}
 	}
@@ -174,7 +174,7 @@ func (a *App) runUnport(name, mapping string) error {
 // list: only a live forward with a ttl owner can be removed that way.
 func (a *App) unportUnconfigured(name string, m *config.Machine, mapping string, guest int) error {
 	notConfigured := fmt.Errorf("no forward '%s' configured for '%s' (have: %v)", mapping, name, m.Ports)
-	cl, err := session.Existing(a.ConfigDir, name)
+	cl, err := session.Existing(a.Paths, name)
 	if err != nil {
 		return notConfigured
 	}
@@ -278,14 +278,14 @@ func (a *App) runPortsListAll() error {
 	fmt.Fprintf(a.Stdout, "%-16s %-14s %-6s %-16s %-12s %s\n", "MACHINE", "MAPPING", "GUEST", "HOST", "STATE", "OWNER")
 	any := false
 	for _, name := range a.listMachines() {
-		m, err := config.LoadAny(a.ConfigDir, name)
+		m, err := config.LoadAny(a.Paths.Config, name)
 		if err != nil {
 			continue
 		}
 		// guest port -> daemon-owned forward, if a daemon is up for this machine.
 		// A pending forward (daemon reconnecting) shows its host port but not "up".
 		live := map[int]session.Forward{}
-		if cl, err := session.Existing(a.ConfigDir, name); err == nil {
+		if cl, err := session.Existing(a.Paths, name); err == nil {
 			if fwds, err := cl.List(); err == nil {
 				for _, f := range fwds {
 					live[f.Guest] = f
@@ -328,11 +328,11 @@ func (a *App) runPortsListAll() error {
 // With a session holding it (an attach, a hub's __session) the daemon stays
 // and the configured forwards alone go down.
 func (a *App) tunnelDown(name string) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	if _, _, err := a.resolveForwards(name); err != nil {
 		return err
 	}
-	cl, err := session.Existing(a.ConfigDir, name)
+	cl, err := session.Existing(a.Paths, name)
 	if errors.Is(err, session.ErrNoDaemon) {
 		fmt.Fprintln(a.Stdout, "devvm: no forwards running")
 		return nil
@@ -376,7 +376,7 @@ func (a *App) tunnelUp(name string) error { return a.tunnelUpWait(name, 0) }
 // up` passes 0 so a deliberately stopped VM fails fast instead of stalling
 // ten seconds on forty `smolvm machine ls` calls.
 func (a *App) tunnelUpWait(name string, wait time.Duration) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, b, err := a.resolveForwards(name)
 	if err != nil {
 		return err
@@ -463,7 +463,7 @@ func forwardState(f session.Forward) string {
 // says so (and for how long) and each forward is marked pending, so a stuck
 // reconnect is visible rather than looking like healthy forwards.
 func (a *App) forwardReport(name string) {
-	cl, err := session.Existing(a.ConfigDir, name)
+	cl, err := session.Existing(a.Paths, name)
 	if err != nil {
 		return
 	}

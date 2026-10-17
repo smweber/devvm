@@ -71,7 +71,7 @@ func TestSinceHuman(t *testing.T) {
 // Smol rows come from one `smolvm machine ls` per snapshot, not a probe per
 // machine (a --watch re-emit would otherwise spawn N+1 subprocesses).
 func TestRowForSmolUsesSnapshot(t *testing.T) {
-	a := &App{ConfigDir: t.TempDir()}
+	a := &App{Paths: testPaths(t.TempDir())}
 	m := &config.Machine{Name: "vm", Backend: config.BackendSmol, Ports: []string{"80:80"}}
 	if got := a.rowFor(m, smolMachines{available: false}).state; got != "?" {
 		t.Errorf("smolvm missing: state = %q, want ?", got)

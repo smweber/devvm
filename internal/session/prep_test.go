@@ -245,7 +245,7 @@ func (s *subTransport) calls() string {
 // unsubscribe (or disconnect) sends one unsubscribe, and restore()
 // re-subscribes a fresh transport after its binds and before StateUp.
 func TestSubscriberHook(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	var log []string
 	tr := &subTransport{fakeTransport: newFakeTransport(), log: &log}
@@ -294,7 +294,7 @@ func TestSubscriberHook(t *testing.T) {
 // A hook that never answers costs a subscribe its bound, not forever, and
 // the ack says the upstream half failed.
 func TestSubscriberHookTimeout(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.upTimeout = 50 * time.Millisecond
 	var log []string
@@ -327,7 +327,7 @@ func TestSubscriberHookTimeout(t *testing.T) {
 // cannot land after the unsubscribe that followed it; the late answer
 // triggers a re-sync, and the last desired state (unsubscribed) wins.
 func TestSubscriberHookLateAnswerOrdered(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.upTimeout = 30 * time.Millisecond
 	var log []string

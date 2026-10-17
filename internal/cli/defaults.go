@@ -50,7 +50,7 @@ func (a *App) defaultsCmd() *cobra.Command {
 		Short: "Print the config.toml path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(a.Stdout, config.DefaultsPath(a.ConfigDir))
+			fmt.Fprintln(a.Stdout, config.DefaultsPath(a.Paths.Config))
 			return nil
 		},
 	}
@@ -60,7 +60,7 @@ func (a *App) defaultsCmd() *cobra.Command {
 }
 
 func (a *App) runDefaultsList() error {
-	d, err := config.LoadDefaults(a.ConfigDir)
+	d, err := config.LoadDefaults(a.Paths.Config)
 	if err != nil {
 		return err
 	}
@@ -87,14 +87,14 @@ func (a *App) runDefaultsSet(key, value string) error {
 			return err
 		}
 	}
-	d, err := config.LoadDefaults(a.ConfigDir)
+	d, err := config.LoadDefaults(a.Paths.Config)
 	if err != nil {
 		return err
 	}
 	if err := d.Set(key, value); err != nil {
 		return err
 	}
-	if err := config.SaveDefaults(a.ConfigDir, d); err != nil {
+	if err := config.SaveDefaults(a.Paths.Config, d); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.Stdout, "set %s = %s\n", key, value)
@@ -102,14 +102,14 @@ func (a *App) runDefaultsSet(key, value string) error {
 }
 
 func (a *App) runDefaultsUnset(key string) error {
-	d, err := config.LoadDefaults(a.ConfigDir)
+	d, err := config.LoadDefaults(a.Paths.Config)
 	if err != nil {
 		return err
 	}
 	if err := d.Unset(key); err != nil {
 		return err
 	}
-	if err := config.SaveDefaults(a.ConfigDir, d); err != nil {
+	if err := config.SaveDefaults(a.Paths.Config, d); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.Stdout, "unset %s (reverts to built-in)\n", key)

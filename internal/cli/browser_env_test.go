@@ -20,7 +20,7 @@ func TestRemoteBootstrapAndAttachLeaveBrowserAlone(t *testing.T) {
 			log := fakeSSH(t, "exit 0")
 			t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
 			m := config.NewRemote("cloud", be, "dev@cloud.example")
-			if err := m.Save(a.ConfigDir); err != nil {
+			if err := m.Save(a.Paths.Config); err != nil {
 				t.Fatal(err)
 			}
 			if err := runTree(t, a, "bootstrap", "cloud"); err != nil {

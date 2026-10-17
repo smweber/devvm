@@ -66,7 +66,7 @@ func (w *blockWriter) none(t *testing.T) {
 }
 
 func TestWatchStatusReactsToChanges(t *testing.T) {
-	dir := t.TempDir()
+	dir := testPaths(t.TempDir())
 	// The snapshot is injected: what matters here is *when* it is re-taken,
 	// not what gatherRows would say about a machine with no backend.
 	var mu sync.Mutex
@@ -88,7 +88,7 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 
 	// A conf landing in machines/ is a change.
 	set("a\tsmol\tstopped\t-\nb\tremote-managed\treachable\t-\n")
-	if err := os.WriteFile(filepath.Join(config.MachinesDir(dir), "b.toml"), []byte("name = 'b'\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(config.MachinesDir(dir.Config), "b.toml"), []byte("name = 'b'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out.next(t, "a\tsmol\tstopped\t-\nb\tremote-managed\treachable\t-\n")
@@ -104,16 +104,16 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 
 	// Lock and log churn is noise, not a change.
 	set("changed but should not be seen\n")
-	if err := os.WriteFile(filepath.Join(config.RuntimeDir(dir), "a.lock"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir.RuntimeDir(), "a.lock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(config.RuntimeDir(dir), "a.log"), []byte("x\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir.RuntimeDir(), "a.log"), []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out.none(t)
 
 	// A socket-like entry appearing in run/ is a change (daemon came up).
-	if err := os.WriteFile(filepath.Join(config.RuntimeDir(dir), "a.sock"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir.RuntimeDir(), "a.sock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out.next(t, "changed but should not be seen\n")
@@ -130,7 +130,7 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 }
 
 func TestWatchStatusEmptyRegistryAndConsumerGone(t *testing.T) {
-	dir := t.TempDir()
+	dir := testPaths(t.TempDir())
 	out := newBlockWriter()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -152,7 +152,7 @@ func TestWatchStatusEmptyRegistryAndConsumerGone(t *testing.T) {
 }
 
 func TestWatchRequiresPlain(t *testing.T) {
-	a := &App{ConfigDir: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard}
+	a := &App{Paths: testPaths(t.TempDir()), Stdout: io.Discard, Stderr: io.Discard}
 	root := a.rootCmd()
 	root.SetArgs([]string{"status", "--watch"})
 	root.SetOut(io.Discard)
@@ -165,7 +165,7 @@ func TestWatchRequiresPlain(t *testing.T) {
 // Removing a watched directory silently drops its watch on both inotify and
 // kqueue; the watcher must re-create and re-add it rather than go blind.
 func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
-	dir := t.TempDir()
+	dir := testPaths(t.TempDir())
 	var mu sync.Mutex
 	current := "a\tsmol\tstopped\t-\n"
 	snapshot := func() string {
@@ -182,7 +182,7 @@ func TestWatchStatusSurvivesDirRemoval(t *testing.T) {
 	out.next(t, "a\tsmol\tstopped\t-\n")
 
 	set("after removal\n")
-	if err := os.RemoveAll(config.RuntimeDir(dir)); err != nil {
+	if err := os.RemoveAll(dir.RuntimeDir()); err != nil {
 		t.Fatal(err)
 	}
 	out.next(t, "after removal\n") // the removal itself is a change

@@ -18,9 +18,9 @@ import (
 
 // startSockDaemon serves a daemon on a real control socket under dir, so
 // sessions and one-shot clients reach it exactly as the CLI does.
-func startSockDaemon(t *testing.T, dir string) *daemon {
+func startSockDaemon(t *testing.T, dir config.Paths) *daemon {
 	t.Helper()
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	d := newDaemon(dir, "t", "test", newFakeTransport(), func() (transport, error) {
@@ -40,7 +40,7 @@ func startSockDaemon(t *testing.T, dir string) *daemon {
 
 // testSession opens a session client on dir's socket without spawning
 // anything, with test-sized backoff.
-func testSession(t *testing.T, dir string, opts SessionOptions) *Session {
+func testSession(t *testing.T, dir config.Paths, opts SessionOptions) *Session {
 	t.Helper()
 	s, err := openSession("t", func(<-chan struct{}) (net.Conn, error) {
 		return net.Dial("unix", socketPath(dir, "t"))
@@ -147,12 +147,12 @@ func TestOneShotRemoveOwnerRules(t *testing.T) {
 func TestDownWithSessionLeavesDaemon(t *testing.T) {
 	_, g1 := echoServer(t)
 	_, g2 := echoServer(t)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	done := runLoop(d)
 	s := testSession(t, dir, SessionOptions{})
 	p1, p2 := freePort(t), freePort(t)
-	if _, _, _, err := (&Client{configDir: dir, name: "t"}).Add(p1, g1); err != nil {
+	if _, _, _, err := (&Client{paths: dir, name: "t"}).Add(p1, g1); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := s.Add(p2, g2, false); err != nil {
@@ -198,7 +198,7 @@ func TestDownWithSessionLeavesDaemon(t *testing.T) {
 // A session with no forwards holds the daemon past the idle period; when it
 // closes the daemon idles out.
 func TestSessionHoldsDaemonPastIdle(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.idle = 30 * time.Millisecond
 	held := countIdleChecks(d)
@@ -217,7 +217,7 @@ func TestSessionHoldsDaemonPastIdle(t *testing.T) {
 // The idle rule holds in reconnect() too: a session keeps a reconnecting
 // daemon with nothing to restore, and its close lets it go.
 func TestReconnectIdleRuleCountsSessions(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.idle = 30 * time.Millisecond
 	first := d.tr.(*fakeTransport)
@@ -241,7 +241,7 @@ func TestReconnectIdleRuleCountsSessions(t *testing.T) {
 // events; re-subscribing moves a session to the front; a disconnect or an
 // unsubscribe falls through to the next.
 func TestSubscribeOrder(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	if _, err := d.deliver(nil, time.Second); !errors.Is(err, errNoSubscriber) {
 		t.Fatalf("deliver with no subscriber = %v", err)
@@ -289,7 +289,7 @@ func TestSubscribeOrder(t *testing.T) {
 // reply would deadlock here.
 func TestSessionEventAndAddInterleave(t *testing.T) {
 	_, guest := echoServer(t)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	pref := freePort(t)
 	var s *Session
@@ -316,7 +316,7 @@ func TestSessionEventAndAddInterleave(t *testing.T) {
 // an id, and an add sent while an event is unanswered is answered first.
 func TestSessionWireIDs(t *testing.T) {
 	_, guest := echoServer(t)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	c, err := net.Dial("unix", socketPath(dir, "t"))
 	if err != nil {
@@ -378,7 +378,7 @@ func TestSessionWireIDs(t *testing.T) {
 // A reply for an id the daemon no longer waits on (the event timed out) or
 // never issued is dropped, and the session carries on.
 func TestLateReplyDropped(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	release := make(chan struct{})
 	var calls atomic.Int32
@@ -411,7 +411,7 @@ func TestLateReplyDropped(t *testing.T) {
 // they own.
 func TestTransportDeathKeepsSessions(t *testing.T) {
 	_, guest := echoServer(t)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	first := d.tr.(*fakeTransport)
 	second := newFakeTransport()
@@ -539,7 +539,7 @@ func TestRestoreLeavesExactPendingAndTickerRebinds(t *testing.T) {
 // sessions and unlinks the socket) and re-subscribes on the one that comes
 // back, so a held attach keeps getting events.
 func TestSessionClientReconnectsAndResubscribes(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d1 := startSockDaemon(t, dir)
 	reconnected := make(chan struct{}, 1)
 	var failedRedials atomic.Int32
@@ -586,8 +586,8 @@ func TestSessionClientReconnectsAndResubscribes(t *testing.T) {
 // A daemon from before sessions answers "unknown op" with no id; the client
 // reads that reply before its reader starts and says what to do.
 func TestOpenSessionOnPreSessionDaemon(t *testing.T) {
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	ln, err := net.Listen("unix", socketPath(dir, "t"))

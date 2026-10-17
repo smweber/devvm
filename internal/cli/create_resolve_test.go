@@ -16,12 +16,12 @@ import (
 // t.TempDir() there is /var/folders/…/T/TestName…/001.
 func newTestApp(t *testing.T) *App {
 	t.Helper()
-	return &App{ConfigDir: shortTempDir(t)}
+	return &App{Paths: testPaths(shortTempDir(t))}
 }
 
 func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.ConfigDir, &config.Defaults{
+	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{
 		BootstrapHook: "cmd:/opt/setup.sh",
 		Memory:        4096,
 	}); err != nil {
@@ -41,7 +41,7 @@ func TestResolveGlobalDefaultsFillUnsetFields(t *testing.T) {
 
 func TestResolveFlagBeatsGlobalDefault(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.ConfigDir, &config.Defaults{Memory: 4096, BootstrapHook: "cmd:/opt/setup.sh"}); err != nil {
+	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{Memory: 4096, BootstrapHook: "cmd:/opt/setup.sh"}); err != nil {
 		t.Fatal(err)
 	}
 	s := createSpec{Name: "box", Backend: config.BackendSmol, Memory: 1024, BootstrapHook: "none", Yes: true}
@@ -85,7 +85,7 @@ func TestResolveRequiredMemoryErrorsWithoutDefault(t *testing.T) {
 
 func TestResolveRemoteTransportFromGlobal(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.SaveDefaults(a.ConfigDir, &config.Defaults{Transport: config.TransportMosh}); err != nil {
+	if err := config.SaveDefaults(a.Paths.Config, &config.Defaults{Transport: config.TransportMosh}); err != nil {
 		t.Fatal(err)
 	}
 	s := createSpec{Name: "box", Backend: config.BackendRemoteManaged, SSHHost: "h", Yes: true}

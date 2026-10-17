@@ -38,12 +38,12 @@ func (a *App) runAuth(name, tool string, installAgent bool) error {
 	return auth.Run(context.Background(), b, m, tools, auth.Options{
 		Approve: a.agentInstallApprover(m, installAgent),
 		OpenBridge: func() (auth.Bridge, error) {
-			return openAuthBridge(a.ConfigDir, m.Name, a.hostOpener())
+			return openAuthBridge(a.Paths, m.Name, a.hostOpener())
 		},
 		NoSubscribe: noSubscribe(),
 		Version:     Version,
 		PingShim: func() (string, error) {
-			cl, err := session.Existing(a.ConfigDir, m.Name)
+			cl, err := session.Existing(a.Paths, m.Name)
 			if err != nil {
 				return "", err
 			}
@@ -84,7 +84,7 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 	if noSubscribe() {
 		return fmt.Errorf("auth %s: %s is set here, so this host cannot subscribe for the hub's logins; unset it and retry", name, backend.NoSubscribeEnv)
 	}
-	br, err := openAuthBridge(a.ConfigDir, m.Name, a.hostOpener())
+	br, err := openAuthBridge(a.Paths, m.Name, a.hostOpener())
 	if err != nil {
 		return fmt.Errorf("auth %s: browser bridge: %w", name, err)
 	}
@@ -111,7 +111,7 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 		if info.State != session.StateUp {
 			return fmt.Errorf("auth %s: the link to hub %s is %s; retry in a moment", name, m.Hub.Name, info.State)
 		}
-		if be := hubMachineBackend(a.ConfigDir, m); be != "" && be != config.BackendSmol {
+		if be := hubMachineBackend(a.Paths, m); be != "" && be != config.BackendSmol {
 			return fmt.Errorf("auth %s: auth on a non-smol hub machine is not supported through the hub yet (%s is %s there)", name, name, be)
 		}
 		// Not cached: a hub daemon new enough to pass the subscribe always
@@ -133,8 +133,8 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 // hubMachineBackend is the hub-side backend of a hub machine as the
 // hub's cached listing last said (hublist.go), "" when not cached: enough
 // to word a refusal, never to decide one.
-func hubMachineBackend(configDir string, m *config.Machine) string {
-	for _, r := range readHubCache(configDir, m.Hub.Name) {
+func hubMachineBackend(paths config.Paths, m *config.Machine) string {
+	for _, r := range readHubCache(paths, m.Hub.Name) {
 		if r.name == m.HubMachineName() {
 			return r.backend
 		}

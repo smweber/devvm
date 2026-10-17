@@ -28,10 +28,10 @@ func (a *App) runBootstrap(name string) error {
 			m.SSHHost = bootstrap.SwitchUser(m.SSHHost, backend.DefaultUser)
 			fmt.Fprintf(a.Stderr, "devvm: '%s' logs in as root; created user '%s' and set ssh_host = %q\n",
 				name, backend.DefaultUser, m.SSHHost)
-			if err := m.Save(a.ConfigDir); err != nil {
+			if err := m.Save(a.Paths.Config); err != nil {
 				return err
 			}
-			if b, err = backend.For(m, a.ConfigDir); err != nil {
+			if b, err = backend.For(m, a.Paths); err != nil {
 				return err
 			}
 		}

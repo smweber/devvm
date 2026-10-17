@@ -124,7 +124,7 @@ func TestCopyOutDefaultIsWorkingDirectory(t *testing.T) {
 }
 
 func TestCopyCommandNamesAndCompletion(t *testing.T) {
-	a := &App{ConfigDir: t.TempDir()}
+	a := &App{Paths: testPaths(t.TempDir())}
 	root := a.rootCmd()
 	// Without -t: slot 2 and 3 alternate local/guest; nothing completes past
 	// them. With -t, every slot after NAME is a source of the same kind. An

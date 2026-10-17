@@ -8,13 +8,13 @@ import (
 )
 
 func TestTouchChangedWritesMarker(t *testing.T) {
-	dir := t.TempDir()
+	dir := Paths{Config: t.TempDir(), State: t.TempDir()}
 	TouchChanged(dir) // runtime dir does not exist yet: created, never an error
-	first, err := os.ReadFile(ChangedPath(dir))
+	first, err := os.ReadFile(dir.ChangedPath())
 	if err != nil || len(first) == 0 {
 		t.Fatalf("marker = %q, %v", first, err)
 	}
-	info, _ := os.Stat(ChangedPath(dir))
+	info, _ := os.Stat(dir.ChangedPath())
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("marker mode = %o, want 0600", info.Mode().Perm())
 	}
@@ -23,7 +23,7 @@ func TestTouchChangedWritesMarker(t *testing.T) {
 	// a coarse clock, so only check it is a valid stamp not older than the
 	// first.
 	TouchChanged(dir)
-	second, _ := os.ReadFile(ChangedPath(dir))
+	second, _ := os.ReadFile(dir.ChangedPath())
 	t1, err1 := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(first)))
 	t2, err2 := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(second)))
 	if err1 != nil || err2 != nil {

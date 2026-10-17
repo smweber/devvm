@@ -94,7 +94,7 @@ func newEventTransport() *fakeTransport {
 
 func newTestDaemon(t *testing.T) *daemon {
 	t.Helper()
-	d := newDaemon(t.TempDir(), "t", "test", newFakeTransport(), func() (transport, error) {
+	d := newDaemon(config.LegacyPaths(t.TempDir()), "t", "test", newFakeTransport(), func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})
 	d.logf = t.Logf
@@ -649,8 +649,8 @@ func (o *orderedTransport) Close() error {
 }
 
 func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	sock := socketPath(dir, "t")
@@ -680,8 +680,8 @@ func TestDaemonShutdownUnlinksSocketAfterTransport(t *testing.T) {
 // A replacement daemon that took the socket path while this one was still
 // tearing down must not have its socket unlinked by our shutdown.
 func TestDaemonShutdownLeavesSuccessorSocket(t *testing.T) {
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	sock := socketPath(dir, "t")
@@ -714,8 +714,8 @@ func TestDaemonShutdownLeavesSuccessorSocket(t *testing.T) {
 // before shutdown unlinks the socket, or the process exits with an orphaned
 // exec/master that the next daemon then runs in parallel with.
 func TestDaemonShutdownWaitsForLateDial(t *testing.T) {
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	_, guest := echoServer(t)
@@ -933,6 +933,14 @@ func shortTempDir(t *testing.T) string {
 		dir = resolved
 	}
 	return dir
+}
+
+// shortTempPaths is a short config dir with its state dir inside it: kept
+// apart, so a runtime path built from the config dir by mistake fails a test.
+func shortTempPaths(t *testing.T) config.Paths {
+	t.Helper()
+	dir := shortTempDir(t)
+	return config.Paths{Config: dir, State: filepath.Join(dir, "s")}
 }
 
 // regSession registers a bare local session with this id, so a test can add

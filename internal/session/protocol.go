@@ -208,23 +208,23 @@ const (
 // package a name becomes a path, so the mapping is applied once here.
 
 // socketPath is the daemon's control socket for a machine.
-func socketPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".sock")
+func socketPath(p config.Paths, name string) string {
+	return filepath.Join(p.RuntimeDir(), config.RuntimeName(name)+".sock")
 }
 
 // logPath is where a spawned daemon's stderr lands.
-func logPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".log")
+func logPath(p config.Paths, name string) string {
+	return filepath.Join(p.RuntimeDir(), config.RuntimeName(name)+".log")
 }
 
 // masterPath is the daemon's own ssh ControlMaster for a remote or hub
 // machine. The backends build the same path (backend.SSHConn's
 // ControlPath); only Reap needs it here, to clear a stale one on delete.
-func masterPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".master")
+func masterPath(p config.Paths, name string) string {
+	return filepath.Join(p.RuntimeDir(), config.RuntimeName(name)+".master")
 }
 
 // lockPath is the startup lock serializing daemon creation for a machine.
-func lockPath(configDir, name string) string {
-	return filepath.Join(config.RuntimeDir(configDir), config.RuntimeName(name)+".lock")
+func lockPath(p config.Paths, name string) string {
+	return filepath.Join(p.RuntimeDir(), config.RuntimeName(name)+".lock")
 }

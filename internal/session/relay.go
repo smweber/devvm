@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/smweber/devvm/internal/config"
 )
 
 // The hub side of a relay (hub.md §7, roadmap step 6). A laptop daemon
@@ -70,11 +72,12 @@ func SkipToMarker(br *bufio.Reader, marker string, limit int) error {
 // DialConn returns a raw connection to the machine's daemon, spawning the
 // daemon first if none is running. `__session` relays it; the caller owns
 // the connection and speaks whatever the far end sends.
-func DialConn(configDir, name string) (net.Conn, error) {
-	if _, err := Dial(configDir, name); err != nil {
+func DialConn(p config.Paths, name string) (net.Conn, error) {
+	c, err := Dial(p, name)
+	if err != nil {
 		return nil, err
 	}
-	return net.Dial("unix", socketPath(configDir, name))
+	return net.Dial("unix", socketPath(c.paths, name))
 }
 
 // Relay is `__session`'s body once the daemon connection is up: the marker,

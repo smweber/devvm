@@ -16,11 +16,11 @@ import (
 func (a *App) completeCopyGuestPath(ctx context.Context, name, prefix string) ([]string, cobra.ShellCompDirective) {
 	// Load registered machines directly: resolveLive's smol discovery probes
 	// have no context and could block completion before the timed query starts.
-	m, err := config.Load(a.ConfigDir, name)
+	m, err := config.Load(a.Paths.Config, name)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	b, err := backend.For(m, a.ConfigDir)
+	b, err := backend.For(m, a.Paths)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

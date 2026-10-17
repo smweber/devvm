@@ -18,22 +18,47 @@ import (
 // then removes the run files nothing else ever removes: NAME.log, and a
 // NAME.sock or NAME.master nobody answers any more (a daemon or master that
 // was killed rather than stopped). NAME.lock is not among them: see
-// RemoveLock, which runs only once the registry entry is gone. A socket something still answers on is never
-// removed: a live master belongs to a daemon still shutting down, and a
+// RemoveLock, which runs only once the registry entry is gone. Both the
+// state dir's run/ and a pre-split one in the config dir are reaped. A
+// socket something still answers on is never removed: a live master belongs to a daemon still shutting down, and a
 // live control socket to a daemon started since.
 //
 // The files go only under the startup lock (acquireLock), taken without
 // waiting: holding it, no daemon is between its first dial and its listen,
 // so a control socket that does not answer is stale, not about to be
 // served. A daemon starting right now is left to it, and so are its files.
-func Reap(configDir, name string, timeout time.Duration) error {
-	if cl, err := Existing(configDir, name); err == nil {
+func Reap(p config.Paths, name string, timeout time.Duration) error {
+	// Up to two daemons: one under the state dir and one an older build
+	// left in the pre-split layout (Existing finds the new one first).
+	for range 2 {
+		cl, err := Existing(p, name)
+		if err != nil {
+			break
+		}
 		_ = cl.Stop()
-		if !WaitGone(configDir, name, timeout) {
+		if !WaitGone(cl.Paths(), name, timeout) {
 			return fmt.Errorf("its forward daemon did not exit within %s; run files left in place", timeout)
 		}
 	}
-	lp := lockPath(configDir, name)
+	for _, at := range runLayouts(p) {
+		if err := reapFiles(at, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runLayouts is p plus, when it differs, the pre-split layout, whose run/
+// may still hold an older build's files.
+func runLayouts(p config.Paths) []config.Paths {
+	if old := config.LegacyPaths(p.Config); old != p {
+		return []config.Paths{p, old}
+	}
+	return []config.Paths{p}
+}
+
+func reapFiles(p config.Paths, name string) error {
+	lp := lockPath(p, name)
 	lock, err := os.OpenFile(lp, os.O_RDWR, 0)
 	switch {
 	case err == nil:
@@ -45,15 +70,15 @@ func Reap(configDir, name string, timeout time.Duration) error {
 	default:
 		return err
 	}
-	sock := socketPath(configDir, name)
+	sock := socketPath(p, name)
 	if answers(sock) {
 		return fmt.Errorf("a forward daemon for it is running again; run files left in place")
 	}
 	_ = os.Remove(sock)
-	if master := masterPath(configDir, name); !answers(master) {
+	if master := masterPath(p, name); !answers(master) {
 		_ = os.Remove(master)
 	}
-	_ = os.Remove(logPath(configDir, name))
+	_ = os.Remove(logPath(p, name))
 	return nil
 }
 
@@ -66,8 +91,10 @@ func Reap(configDir, name string, timeout time.Duration) error {
 // that next starter fails at resolve before it reaches the lock. A
 // HUB/NAME keeps its lock after `delete HUB/NAME`, since the hub conf still
 // resolves it; an empty file is harmless.
-func RemoveLock(configDir, name string) {
-	_ = os.Remove(lockPath(configDir, name))
+func RemoveLock(p config.Paths, name string) {
+	for _, at := range runLayouts(p) {
+		_ = os.Remove(lockPath(at, name))
+	}
 }
 
 // answers reports whether something accepts connections on a unix socket.
@@ -83,9 +110,13 @@ func answers(path string) bool {
 // HubRuntimeNames is every HUB/NAME with a run file on this host (a
 // daemon's socket, lock or log, a master): what `delete HUB` must reap,
 // whether or not a daemon is running or a [machines.NAME] table exists.
-func HubRuntimeNames(configDir, hub string) []string {
+func HubRuntimeNames(p config.Paths, hub string) []string {
 	prefix := config.RuntimeName(config.JoinHubName(hub, ""))
-	matches, _ := filepath.Glob(filepath.Join(config.RuntimeDir(configDir), prefix+"*"))
+	var matches []string
+	for _, at := range runLayouts(p) { // an older build's run/ too
+		m, _ := filepath.Glob(filepath.Join(at.RuntimeDir(), prefix+"*"))
+		matches = append(matches, m...)
+	}
 	var names []string
 	for _, p := range matches {
 		base := filepath.Base(p)

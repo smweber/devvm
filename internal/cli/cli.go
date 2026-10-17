@@ -1,6 +1,6 @@
 // Package cli wires the devvm host command tree (cobra). Command bodies live in
 // the same package, split by concern; this file holds the root command and the
-// shared App context (config dir + helpers) every subcommand receives.
+// shared App context (config and state dirs + helpers) every subcommand receives.
 package cli
 
 import (
@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -21,10 +22,10 @@ var Version = "dev"
 
 // App carries process-wide context to command handlers.
 type App struct {
-	ConfigDir string
-	Stdin     io.Reader // nil means os.Stdin; set by tests that drive a stdin-EOF path
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Paths  config.Paths
+	Stdin  io.Reader // nil means os.Stdin; set by tests that drive a stdin-EOF path
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 func (a *App) stdin() io.Reader {
@@ -36,10 +37,32 @@ func (a *App) stdin() io.Reader {
 
 func newApp() *App {
 	return &App{
-		ConfigDir: config.DefaultConfigDir(),
-		Stdout:    os.Stdout,
-		Stderr:    os.Stderr,
+		Paths:  config.DefaultPaths(),
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
 	}
+}
+
+// stateDirFor is the state dir `--config-dir dir` alone means: the default
+// one when dir is the default config dir (compared through symlinks, since
+// a dotfiles-managed ~/.config/devvm is often one, and landing state in
+// dotfiles by a spelling difference would be the one wrong answer), else
+// dir itself, the pre-split layout that keeps an isolated instance whole.
+func stateDirFor(dir string) string {
+	if sameDir(dir, config.DefaultConfigDir()) {
+		return config.DefaultStateDir()
+	}
+	return dir
+}
+
+func sameDir(a, b string) bool {
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	return filepath.Clean(a) == filepath.Clean(b) || resolve(a) == resolve(b)
 }
 
 // Execute builds the command tree and runs it. Returns the process exit code.
@@ -91,13 +114,30 @@ func (a *App) rootCmd() *cobra.Command {
 			"  remote-managed    a remote host devvm shapes (over ssh)\n" +
 			"  remote-unmanaged  an existing host devvm adopts hands-off (over ssh)\n" +
 			"  hub               another host running devvm; its machines are HUB/NAME\n\n" +
-			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml.",
+			"Per-machine config lives in ~/.config/devvm/machines/<name>.toml;\n" +
+			"this host's state (daemon sockets, logs, caches) in ~/.local/state/devvm.",
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			// --config-dir alone, naming another dir, keeps an isolated
+			// instance (a test, a second registry) self-contained, its
+			// state still inside it as before the split, rather than
+			// sharing this host's run/ with the real one. Naming the
+			// default dir is not isolation: a pre-split `update` re-execs
+			// its successor with exactly that, and the successor must
+			// cycle daemons into the real state dir.
+			fl := cmd.Flags()
+			if fl.Changed("config-dir") && !fl.Changed("state-dir") {
+				a.Paths.State = stateDirFor(a.Paths.Config)
+			}
+			config.MigrateState(a.Paths)
+		},
 	}
-	root.PersistentFlags().StringVar(&a.ConfigDir, "config-dir", a.ConfigDir,
+	root.PersistentFlags().StringVar(&a.Paths.Config, "config-dir", a.Paths.Config,
 		"devvm config directory")
+	root.PersistentFlags().StringVar(&a.Paths.State, "state-dir", a.Paths.State,
+		"devvm state directory: daemon sockets, logs, caches (with a non-default --config-dir, defaults to it)")
 
 	root.AddGroup(
 		&cobra.Group{ID: groupLifecycle, Title: "Lifecycle:"},
@@ -159,7 +199,7 @@ func (a *App) completeMachines(cmd *cobra.Command, args []string, toComplete str
 	}
 	var names []string
 	for _, n := range a.listMachines() {
-		if m, err := config.Load(a.ConfigDir, n); err == nil && m.IsHub() {
+		if m, err := config.Load(a.Paths.Config, n); err == nil && m.IsHub() {
 			continue // a HUB/NAME never loads as a local conf, so it stays
 		}
 		names = append(names, n)

@@ -115,11 +115,11 @@ func TestWatchHubPipeOverflowRespawns(t *testing.T) {
 func TestStatusLocalSkipsHubs(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
-	if err := config.NewSmol("box").Save(a.ConfigDir); err != nil {
+	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	if err := writeHubCache(a.ConfigDir, "h", []hubRow{{"db", "smol", "running", "-"}}); err != nil {
+	if err := writeHubCache(a.Paths, "h", []hubRow{{"db", "smol", "running", "-"}}); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -195,7 +195,7 @@ func TestStatusMergesHubRows(t *testing.T) {
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "db": {"80"}})
 	// This host's own daemon for h@web (serveFakeDaemon takes the runtime
 	// name): two forwards, against the hub's up:9.
-	serveFakeDaemon(t, a.ConfigDir, config.RuntimeName("h/web"), session.Response{
+	serveFakeDaemon(t, a.Paths, config.RuntimeName("h/web"), session.Response{
 		State: session.StateUp, Forwards: []session.Forward{{Host: 3000, Guest: 3000}, {Host: 3001, Guest: 3001}},
 	})
 	var out bytes.Buffer
@@ -213,17 +213,17 @@ func TestStatusMergesHubRows(t *testing.T) {
 	// The cache is the hub's rows verbatim, in cache/; machines/ and run/
 	// hold only what the test put there (a cache write must never wake
 	// `status --watch`, which observes those two).
-	data, err := os.ReadFile(hubCachePath(a.ConfigDir, "h"))
+	data, err := os.ReadFile(hubCachePath(a.Paths, "h"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := string(data); got != "web\tsmol\trunning\tup:9\napi\tsmol\tstopped\t-\n" {
 		t.Errorf("cache =\n%q", got)
 	}
-	if rel, _ := filepath.Rel(config.CacheDir(a.ConfigDir), hubCachePath(a.ConfigDir, "h")); rel != "hub-h.list" {
-		t.Errorf("cache path %s is not under cache/", hubCachePath(a.ConfigDir, "h"))
+	if rel, _ := filepath.Rel(a.Paths.CacheDir(), hubCachePath(a.Paths, "h")); rel != "hub-h.list" {
+		t.Errorf("cache path %s is not under cache/", hubCachePath(a.Paths, "h"))
 	}
-	for dir, want := range map[string][]string{config.MachinesDir(a.ConfigDir): {"h.toml"}, config.RuntimeDir(a.ConfigDir): {"h@web.sock"}} {
+	for dir, want := range map[string][]string{config.MachinesDir(a.Paths.Config): {"h.toml"}, a.Paths.RuntimeDir(): {"h@web.sock"}} {
 		entries, _ := os.ReadDir(dir)
 		var names []string
 		for _, e := range entries {
@@ -278,7 +278,7 @@ func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 			a := newTestApp(t)
 			fakeSSH(t, tc.body)
 			writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-			if err := writeHubCache(a.ConfigDir, "h", cached); err != nil {
+			if err := writeHubCache(a.Paths, "h", cached); err != nil {
 				t.Fatal(err)
 			}
 			var out bytes.Buffer
@@ -294,7 +294,7 @@ func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 				t.Errorf("plain =\n%s\nwant\n%s", out.String(), want)
 			}
 			// A failed listing leaves the cache alone.
-			if got := readHubCache(a.ConfigDir, "h"); !slices.Equal(got, cached) {
+			if got := readHubCache(a.Paths, "h"); !slices.Equal(got, cached) {
 				t.Errorf("cache after failure = %v", got)
 			}
 			// The drill-in says so too, rather than dressing the cache up.
@@ -349,7 +349,7 @@ func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 }
 
 func TestHubCacheRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	dir := testPaths(t.TempDir())
 	if got := readHubCache(dir, "h"); got != nil {
 		t.Errorf("missing cache = %v", got)
 	}
@@ -362,7 +362,7 @@ func TestHubCacheRoundTrip(t *testing.T) {
 	}
 	// Atomic: no temp file survives a write, and the file is exactly the
 	// --plain grammar.
-	entries, _ := os.ReadDir(config.CacheDir(dir))
+	entries, _ := os.ReadDir(dir.CacheDir())
 	if len(entries) != 1 || entries[0].Name() != "hub-h.list" {
 		t.Errorf("cache dir holds %v", entries)
 	}
@@ -401,13 +401,13 @@ func TestDeleteHubMachineDropsCacheRow(t *testing.T) {
 	pinTTY(t, false)
 	fakeSSH(t, "exit 0")
 	writeHub(t, a, "h", nil)
-	if err := writeHubCache(a.ConfigDir, "h", []hubRow{{"web", "smol", "running", "-"}, {"api", "smol", "stopped", "-"}}); err != nil {
+	if err := writeHubCache(a.Paths, "h", []hubRow{{"web", "smol", "running", "-"}, {"api", "smol", "stopped", "-"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.runDelete("h/web", false); err != nil {
 		t.Fatal(err)
 	}
-	if got := cachedHubMachines(a.ConfigDir, "h"); !slices.Equal(got, []string{"api"}) {
+	if got := cachedHubMachines(a.Paths, "h"); !slices.Equal(got, []string{"api"}) {
 		t.Errorf("cache after delete h/web = %v", got)
 	}
 }
@@ -417,11 +417,11 @@ func TestDeleteHubMachineDropsCacheRow(t *testing.T) {
 func TestCompleteHubPrefix(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
-	if err := config.NewSmol("box").Save(a.ConfigDir); err != nil {
+	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"api": nil})
-	if err := writeHubCache(a.ConfigDir, "h", []hubRow{{"web", "smol", "running", "-"}, {"db", "smol", "stopped", "-"}}); err != nil {
+	if err := writeHubCache(a.Paths, "h", []hubRow{{"web", "smol", "running", "-"}, {"db", "smol", "stopped", "-"}}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := a.completeMachines(nil, nil, "h/")
@@ -478,7 +478,7 @@ func TestWatchHubPipes(t *testing.T) {
 		"[ \"$n\" -ge 1 ] && exec sleep 30\nsleep 0.3\nexit 0")
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
 	// A stale cache from an earlier day: the first block replaces it.
-	if err := writeHubCache(a.ConfigDir, "h", []hubRow{{"old", "smol", "stopped", "-"}}); err != nil {
+	if err := writeHubCache(a.Paths, "h", []hubRow{{"old", "smol", "stopped", "-"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -508,7 +508,7 @@ func TestWatchHubPipes(t *testing.T) {
 		t.Errorf("hub pipe argv:\n%s\nwant\n%s", strings.Join(lines, "\n"), wantLine)
 	}
 	// The cache followed the last block.
-	if got := cachedHubMachines(a.ConfigDir, "h"); !slices.Equal(got, []string{"web"}) {
+	if got := cachedHubMachines(a.Paths, "h"); !slices.Equal(got, []string{"web"}) {
 		t.Errorf("cache after blocks = %v", got)
 	}
 
@@ -518,13 +518,13 @@ func TestWatchHubPipes(t *testing.T) {
 		return strings.Contains(b, "h2\thub\treachable\t-\nh2/web\tsmol\trunning\t-\n") && strings.Contains(b, "h/web\tsmol\trunning\tdown\n")
 	})
 	// A local change still re-emits, with the hubs' latest blocks merged.
-	if err := config.NewSmol("box").Save(a.ConfigDir); err != nil {
+	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	out.until(t, "with the local machine", func(b string) bool { return strings.HasPrefix(b, "box\tsmol\t?\t-\nh\thub\treachable") })
 
 	// A deleted hub conf closes its pipe and drops its rows.
-	if err := config.Remove(a.ConfigDir, "h2"); err != nil {
+	if err := config.Remove(a.Paths.Config, "h2"); err != nil {
 		t.Fatal(err)
 	}
 	out.until(t, "without h2", func(b string) bool { return !strings.Contains(b, "h2") && strings.Contains(b, "h/web") })

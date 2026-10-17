@@ -24,8 +24,8 @@ type bridgeSub interface {
 
 // openBridgeSession dials the machine's daemon (spawning it if needed) and
 // opens a session on it; a var so tests can see whether, and how, it runs.
-var openBridgeSession = func(configDir, name string, opts session.SessionOptions) (bridgeSub, error) {
-	return session.OpenSession(configDir, name, opts)
+var openBridgeSession = func(paths config.Paths, name string, opts session.SessionOptions) (bridgeSub, error) {
+	return session.OpenSession(paths, name, opts)
 }
 
 // hubBridgeWait bounds how long a proxied attach/shell waits for its
@@ -158,8 +158,8 @@ func noSubscribe() bool {
 // openAuthBridge is openBridgeSession for thin `auth`, which also reads the
 // shim from ping and binds its callback port on the session (auth.Bridge);
 // a var so tests can stand in for the daemon.
-var openAuthBridge = func(configDir, name string, opts session.SessionOptions) (auth.Bridge, error) {
-	return session.OpenSession(configDir, name, opts)
+var openAuthBridge = func(paths config.Paths, name string, opts session.SessionOptions) (auth.Bridge, error) {
+	return session.OpenSession(paths, name, opts)
 }
 
 // hostOpener is the OnEvent of every session this host subscribes: open
@@ -281,7 +281,7 @@ func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func(
 // openSubscribed opens a session on m's daemon and subscribes it (acked),
 // closing it again when the subscribe fails.
 func (a *App) openSubscribed(m *config.Machine) (bridgeSub, error) {
-	s, err := openBridgeSession(a.ConfigDir, m.Name, a.hostOpener())
+	s, err := openBridgeSession(a.Paths, m.Name, a.hostOpener())
 	if err != nil {
 		return nil, err
 	}

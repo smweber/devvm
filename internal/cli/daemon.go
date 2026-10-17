@@ -23,7 +23,7 @@ func (a *App) daemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return session.RunDaemon(context.Background(), a.ConfigDir, m, b, Version)
+			return session.RunDaemon(context.Background(), a.Paths, m, b, Version)
 		},
 	}
 }

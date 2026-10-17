@@ -105,7 +105,7 @@ func newMenubarFixture(t *testing.T, tag string, tamper bool) *menubarFixture {
 	}}).server(t)
 
 	f := &menubarFixture{u: testUpdater(s), mac: &fakeMac{appsDir: filepath.Join(t.TempDir(), "Applications")}}
-	f.app = &App{ConfigDir: t.TempDir(), Stdout: &f.stdout, Stderr: &f.stderr}
+	f.app = &App{Paths: testPaths(t.TempDir()), Stdout: &f.stdout, Stderr: &f.stderr}
 
 	oldGOOS, oldDir, oldRun, oldQuit, oldVersion, oldUpdater := menubarGOOS, menubarAppsDir, menubarRun, menubarQuitTimeout, Version, newMenubarUpdater
 	menubarGOOS = "darwin"

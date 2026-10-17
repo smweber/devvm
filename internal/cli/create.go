@@ -41,7 +41,7 @@ type createSpec struct {
 }
 
 func (a *App) runCreate(s createSpec) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	// Name may be omitted on the command line; prompt for it before anything else
 	// so `devvm create` can be run bare on a terminal.
 	if err := resolveName(&s); err != nil {
@@ -59,11 +59,11 @@ func (a *App) runCreate(s createSpec) error {
 	if err := config.ValidName(s.Name); err != nil {
 		return err
 	}
-	if config.Exists(a.ConfigDir, s.Name) || backend.SmolExists(s.Name) {
+	if config.Exists(a.Paths.Config, s.Name) || backend.SmolExists(s.Name) {
 		// A registered smol with no live VM is dormant — point at provision, since
 		// create won't overwrite the existing conf.
-		if config.Exists(a.ConfigDir, s.Name) && !backend.SmolExists(s.Name) {
-			if ex, _ := config.Load(a.ConfigDir, s.Name); ex != nil && ex.Backend == config.BackendSmol {
+		if config.Exists(a.Paths.Config, s.Name) && !backend.SmolExists(s.Name) {
+			if ex, _ := config.Load(a.Paths.Config, s.Name); ex != nil && ex.Backend == config.BackendSmol {
 				return fmt.Errorf("machine '%s' already exists (dormant; run 'devvm provision %s')", s.Name, s.Name)
 			}
 		}
@@ -87,20 +87,20 @@ func (a *App) runCreate(s createSpec) error {
 		// A hub is registered, never shaped: no bootstrap. The one extra check
 		// is that its devvm is usable at all (installed, on the login shell's
 		// PATH, and not older than the hub surface), before the conf exists.
-		b, err := backend.For(m, a.ConfigDir)
+		b, err := backend.For(m, a.Paths)
 		if err != nil {
 			return err
 		}
 		if err := a.checkHubVersion(context.Background(), b, m); err != nil {
 			return err
 		}
-		if err := m.Save(a.ConfigDir); err != nil {
+		if err := m.Save(a.Paths.Config); err != nil {
 			return err
 		}
 		a.printCreateNext(m)
 		return nil
 	}
-	if err := m.Save(a.ConfigDir); err != nil {
+	if err := m.Save(a.Paths.Config); err != nil {
 		return err
 	}
 	if err := a.runBootstrap(s.Name); err != nil {
@@ -200,7 +200,7 @@ func (s createSpec) machine() (*config.Machine, error) {
 // probeRemote confirms the host answers over ssh before we save its config, so
 // adopting a typo'd or unreachable host fails loudly up front. Read-only.
 func (a *App) probeRemote(m *config.Machine) error {
-	b, err := backend.For(m, a.ConfigDir)
+	b, err := backend.For(m, a.Paths)
 	if err != nil {
 		return err
 	}

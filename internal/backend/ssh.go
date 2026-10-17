@@ -16,8 +16,8 @@ import (
 )
 
 type sshBackend struct {
-	m         *config.Machine
-	configDir string
+	m     *config.Machine
+	paths config.Paths
 }
 
 func (b *sshBackend) Kind() string { return b.m.Backend }
@@ -91,9 +91,12 @@ func (b *sshBackend) sshFlagsTimeout(connectSecs int) []string {
 		f = append(f, "-i", config.ExpandHome(b.m.Identity))
 	}
 	// Managed hosts get an isolated, TOFU-pinned known_hosts.
+	// ssh records a new pin only if the file's directory exists, and the
+	// state dir, unlike the config dir the pins used to share, may not yet.
 	if b.m.Managed() {
+		_ = os.MkdirAll(b.paths.State, 0o700)
 		f = append(f,
-			"-o", "UserKnownHostsFile="+config.KnownHostsPath(b.configDir),
+			"-o", "UserKnownHostsFile="+b.paths.KnownHostsPath(),
 			"-o", "StrictHostKeyChecking=accept-new")
 	}
 	return f
@@ -105,10 +108,10 @@ func (b *sshBackend) base() []string { return b.baseTimeout(SSHConnectTimeout())
 
 func (b *sshBackend) baseTimeout(connectSecs int) []string {
 	ssh := append([]string{"ssh"}, b.sshFlagsTimeout(connectSecs)...)
-	_ = os.MkdirAll(b.configDir, 0o755)
+	_ = os.MkdirAll(b.paths.State, 0o700)
 	ssh = append(ssh,
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath="+filepath.Join(b.configDir, "cm-%C"),
+		"-o", "ControlPath="+b.paths.ControlPath(),
 		"-o", "ControlPersist=60")
 	return ssh
 }
@@ -312,6 +315,6 @@ func (b *sshBackend) SSHConn() SSHConn {
 	return SSHConn{
 		Host:        b.m.SSHHost,
 		Flags:       b.sshFlags(),
-		ControlPath: filepath.Join(config.RuntimeDir(b.configDir), b.m.Name+".master"),
+		ControlPath: filepath.Join(b.paths.RuntimeDir(), b.m.Name+".master"),
 	}
 }

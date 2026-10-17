@@ -1,6 +1,8 @@
 package session
 
 import (
+	"github.com/smweber/devvm/internal/config"
+
 	"bufio"
 	"encoding/json"
 	"net"
@@ -65,7 +67,7 @@ func (l *lineClient) open(req Request) Response {
 	return resp
 }
 
-func dialLine(t *testing.T, dir, name string) *lineClient {
+func dialLine(t *testing.T, dir config.Paths, name string) *lineClient {
 	t.Helper()
 	c, err := net.Dial("unix", socketPath(dir, name))
 	if err != nil {
@@ -151,7 +153,7 @@ func TestRelayHeartbeatLateRepliesDoNotTrip(t *testing.T) {
 	// A 900ms deadline against a ping every 150ms: a 6x margin, so a
 	// stalled runner under -race (macOS CI) does not read as silence.
 	fastHeartbeats(t, 150*time.Millisecond)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	g := newGateTransport()
 	d.mu.Lock()
@@ -186,7 +188,7 @@ func TestRelayHeartbeatLateRepliesDoNotTrip(t *testing.T) {
 // idles too (a hub daemon still sees laptops older than heartbeats).
 func TestHeartbeatOnlyOnDeclaringRelay(t *testing.T) {
 	fastHeartbeats(t, 20*time.Millisecond)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	local := dialLine(t, dir, "t")
 	if resp := local.open(Request{Heartbeat: 1}); resp.Heartbeat != 0 {

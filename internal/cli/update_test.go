@@ -192,7 +192,7 @@ func newUpdateFixture(t *testing.T, tag string, tamper bool) *updateFixture {
 	// The install target comes from executablePath, redirected to a temp file
 	// so the test binary is never the thing replaced.
 	f := &updateFixture{u: testUpdater(s)}
-	f.app = &App{ConfigDir: t.TempDir(), Stdout: &f.stdout, Stderr: io.Discard}
+	f.app = &App{Paths: testPaths(t.TempDir()), Stdout: &f.stdout, Stderr: io.Discard}
 	f.exe = filepath.Join(shortTempDir(t), "devvm")
 	if err := os.WriteFile(f.exe, []byte("old-binary"), 0o755); err != nil {
 		t.Fatal(err)
@@ -226,8 +226,25 @@ func TestRunUpdateInstallsVerifiesAndReexecs(t *testing.T) {
 	if argv[0] != f.exe || argv[1] != f.exe {
 		t.Errorf("reexec target = %v", argv[:2])
 	}
-	want := []string{"--config-dir", f.app.ConfigDir, "update", "--finish-from", "v0.1.0"}
+	want := []string{"--config-dir", f.app.Paths.Config, "--state-dir", f.app.Paths.State, "update", "--finish-from", "v0.1.0"}
 	if got := strings.Join(argv[2:], " "); got != strings.Join(want, " ") {
+		t.Errorf("reexec args = %q, want %q", got, strings.Join(want, " "))
+	}
+}
+
+// --state-dir is passed only when the successor would not derive it from
+// --config-dir alone, so a pre-split target (no such flag) still starts.
+func TestRunUpdateOmitsDerivableStateDir(t *testing.T) {
+	f := newUpdateFixture(t, "v0.2.0", false)
+	f.app.Paths = config.LegacyPaths(f.app.Paths.Config) // what --config-dir alone derives
+	if err := f.app.runUpdate(context.Background(), f.u, updateOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.exec) != 1 {
+		t.Fatalf("reexec calls = %v", f.exec)
+	}
+	want := []string{"--config-dir", f.app.Paths.Config, "update", "--finish-from", "v0.1.0"}
+	if got := strings.Join(f.exec[0][2:], " "); got != strings.Join(want, " ") {
 		t.Errorf("reexec args = %q, want %q", got, strings.Join(want, " "))
 	}
 }
@@ -289,9 +306,9 @@ func TestRunUpdatePinnedVersionMissingAsset(t *testing.T) {
 }
 
 func TestRestartDaemonsSkipsMachinesWithoutDaemon(t *testing.T) {
-	a := &App{ConfigDir: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard}
+	a := &App{Paths: testPaths(t.TempDir()), Stdout: io.Discard, Stderr: io.Discard}
 	m := &config.Machine{Name: "box", Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}
-	if err := m.Save(a.ConfigDir); err != nil {
+	if err := m.Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	if res := a.restartDaemons(); len(res.cycled)+len(res.skipped)+len(res.failed) != 0 {
@@ -400,12 +417,12 @@ type fakeDaemon struct {
 	stops int
 }
 
-func serveFakeDaemon(t *testing.T, configDir, name string, resp session.Response) *fakeDaemon {
+func serveFakeDaemon(t *testing.T, configDir config.Paths, name string, resp session.Response) *fakeDaemon {
 	t.Helper()
-	if err := config.EnsureRuntimeDir(configDir); err != nil {
+	if err := configDir.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("unix", filepath.Join(config.RuntimeDir(configDir), name+".sock"))
+	ln, err := net.Listen("unix", filepath.Join(configDir.RuntimeDir(), name+".sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,23 +460,23 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 	daemonGoneTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
-	a := &App{ConfigDir: shortTempDir(t), Stdout: &out, Stderr: io.Discard}
+	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
 	for _, name := range []string{"reconn", "unconf", "stuck", "fresh"} {
 		m := &config.Machine{Name: name, Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}
-		if err := m.Save(a.ConfigDir); err != nil {
+		if err := m.Save(a.Paths.Config); err != nil {
 			t.Fatal(err)
 		}
 	}
 	fwd := []session.Forward{{Host: 8080, Guest: 8080}}
-	reconn := serveFakeDaemon(t, a.ConfigDir, "reconn", session.Response{State: session.StateReconnecting, Forwards: fwd})
-	unconf := serveFakeDaemon(t, a.ConfigDir, "unconf", session.Response{State: session.StateUp, Forwards: []session.Forward{{Host: 1455, Guest: 1455}}})
-	stuck := serveFakeDaemon(t, a.ConfigDir, "stuck", session.Response{State: session.StateUp, Version: "v0.0.1", Forwards: fwd})
-	fresh := serveFakeDaemon(t, a.ConfigDir, "fresh", session.Response{State: session.StateUp, Version: Version, Forwards: fwd})
+	reconn := serveFakeDaemon(t, a.Paths, "reconn", session.Response{State: session.StateReconnecting, Forwards: fwd})
+	unconf := serveFakeDaemon(t, a.Paths, "unconf", session.Response{State: session.StateUp, Forwards: []session.Forward{{Host: 1455, Guest: 1455}}})
+	stuck := serveFakeDaemon(t, a.Paths, "stuck", session.Response{State: session.StateUp, Version: "v0.0.1", Forwards: fwd})
+	fresh := serveFakeDaemon(t, a.Paths, "fresh", session.Response{State: session.StateUp, Version: Version, Forwards: fwd})
 	oldVersion := Version
 	Version = "v9.9.9"
 	t.Cleanup(func() { Version = oldVersion })
-	fresh2 := serveFakeDaemon(t, a.ConfigDir, "fresh2", session.Response{State: session.StateUp, Version: "v9.9.9", Forwards: fwd})
-	if err := (&config.Machine{Name: "fresh2", Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}).Save(a.ConfigDir); err != nil {
+	fresh2 := serveFakeDaemon(t, a.Paths, "fresh2", session.Response{State: session.StateUp, Version: "v9.9.9", Forwards: fwd})
+	if err := (&config.Machine{Name: "fresh2", Backend: config.BackendRemoteUnmanaged, SSHHost: "dev@example", Ports: []string{"8080:8080"}}).Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 
@@ -496,9 +513,9 @@ func TestRestartDaemonsSkipsAndFails(t *testing.T) {
 // updater is never built, so no release server (or network) is involved.
 func TestFinishFromNeverDownloads(t *testing.T) {
 	var out bytes.Buffer
-	a := &App{ConfigDir: shortTempDir(t), Stdout: &out, Stderr: io.Discard}
+	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
 	root := a.rootCmd()
-	root.SetArgs([]string{"--config-dir", a.ConfigDir, "update", "--finish-from", "v0.0.1"})
+	root.SetArgs([]string{"--config-dir", a.Paths.Config, "--state-dir", a.Paths.State, "update", "--finish-from", "v0.0.1"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -522,4 +539,10 @@ func shortTempDir(t *testing.T) string {
 		dir = resolved
 	}
 	return dir
+}
+
+// testPaths is a config dir with its state dir kept apart inside it, so a
+// runtime path built from the config dir by mistake fails a test.
+func testPaths(dir string) config.Paths {
+	return config.Paths{Config: dir, State: filepath.Join(dir, "s")}
 }

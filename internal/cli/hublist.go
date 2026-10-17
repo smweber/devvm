@@ -131,10 +131,10 @@ type hubListings map[string]hubListing
 // hubConfs loads every hub conf, sorted by name. A conf that fails to load is
 // not a hub here; status lists it as broken conf.
 func (a *App) hubConfs() []*config.Machine {
-	names, _ := config.List(a.ConfigDir)
+	names, _ := config.List(a.Paths.Config)
 	var hubs []*config.Machine
 	for _, n := range names {
-		if m, err := config.Load(a.ConfigDir, n); err == nil && m.IsHub() {
+		if m, err := config.Load(a.Paths.Config, n); err == nil && m.IsHub() {
 			hubs = append(hubs, m)
 		}
 	}
@@ -173,14 +173,14 @@ func (a *App) listHub(ctx context.Context, hub *config.Machine) hubListing {
 	defer cancel()
 	rows, err := a.runHubList(ctx, hub)
 	if err != nil {
-		return hubListing{rows: readHubCache(a.ConfigDir, hub.Name)}
+		return hubListing{rows: readHubCache(a.Paths, hub.Name)}
 	}
-	_ = writeHubCache(a.ConfigDir, hub.Name, rows) // derived data; a failed write is not a failed status
+	_ = writeHubCache(a.Paths, hub.Name, rows) // derived data; a failed write is not a failed status
 	return hubListing{rows: rows, fresh: true}
 }
 
 func (a *App) runHubList(ctx context.Context, hub *config.Machine) ([]hubRow, error) {
-	b, err := backend.For(hub, a.ConfigDir)
+	b, err := backend.For(hub, a.Paths)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +196,8 @@ func (a *App) runHubList(ctx context.Context, hub *config.Machine) ([]hubRow, er
 // column 1): the grammar the hub already speaks, so cachedHubMachines reads
 // column 1 with no second format to keep in step.
 
-func hubCachePath(configDir, hub string) string {
-	return filepath.Join(config.CacheDir(configDir), "hub-"+hub+".list")
+func hubCachePath(paths config.Paths, hub string) string {
+	return filepath.Join(paths.CacheDir(), "hub-"+hub+".list")
 }
 
 func hubCacheText(rows []hubRow) string {
@@ -211,8 +211,8 @@ func hubCacheText(rows []hubRow) string {
 // writeHubCache replaces a hub's cache atomically (temp + rename, as
 // Machine.Save does): a `status` reading it mid-write sees the old listing
 // or the new one, never half a row.
-func writeHubCache(configDir, hub string, rows []hubRow) error {
-	dir := config.CacheDir(configDir)
+func writeHubCache(paths config.Paths, hub string, rows []hubRow) error {
+	dir := paths.CacheDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func writeHubCache(configDir, hub string, rows []hubRow) error {
 	_, werr := tmp.WriteString(hubCacheText(rows))
 	cerr := tmp.Close()
 	if werr == nil && cerr == nil {
-		if err := os.Rename(tmp.Name(), hubCachePath(configDir, hub)); err == nil {
+		if err := os.Rename(tmp.Name(), hubCachePath(paths, hub)); err == nil {
 			return nil
 		} else {
 			werr = err
@@ -235,8 +235,8 @@ func writeHubCache(configDir, hub string, rows []hubRow) error {
 	return werr
 }
 
-func readHubCache(configDir, hub string) []hubRow {
-	data, err := os.ReadFile(hubCachePath(configDir, hub))
+func readHubCache(paths config.Paths, hub string) []hubRow {
+	data, err := os.ReadFile(hubCachePath(paths, hub))
 	if err != nil {
 		return nil
 	}
@@ -245,13 +245,13 @@ func readHubCache(configDir, hub string) []hubRow {
 
 // removeHubCache is for `delete HUB`: the cache is derived from a conf that
 // no longer exists. Best-effort; a missing file is the goal.
-func removeHubCache(configDir, hub string) { _ = os.Remove(hubCachePath(configDir, hub)) }
+func removeHubCache(paths config.Paths, hub string) { _ = os.Remove(hubCachePath(paths, hub)) }
 
 // dropFromHubCache is for `delete HUB/NAME`: the next listing would drop the
 // row anyway, but completion reads the cache in between and should not keep
 // offering a machine the hub just destroyed.
-func dropFromHubCache(configDir, hub, machine string) {
-	rows := readHubCache(configDir, hub)
+func dropFromHubCache(paths config.Paths, hub, machine string) {
+	rows := readHubCache(paths, hub)
 	kept := rows[:0]
 	for _, r := range rows {
 		if r.name != machine {
@@ -259,7 +259,7 @@ func dropFromHubCache(configDir, hub, machine string) {
 		}
 	}
 	if len(kept) != len(rows) {
-		_ = writeHubCache(configDir, hub, kept)
+		_ = writeHubCache(paths, hub, kept)
 	}
 }
 
@@ -355,7 +355,7 @@ func (w *hubWatcher) run(ctx context.Context, p *hubPipe) {
 	lastCache := "" // what the cache holds, so an unchanged block costs no write
 	for {
 		var spoke atomic.Bool
-		if b, err := backend.For(p.hub, w.a.ConfigDir); err == nil {
+		if b, err := backend.For(p.hub, w.a.Paths); err == nil {
 			// One context per attempt, cancelled to kill this ssh: by an
 			// overflowing pipe (blockSplitter), or by the watcher stopping,
 			// after stdin EOF has had its grace. Detached from ctx on purpose
@@ -391,7 +391,7 @@ func (w *hubWatcher) run(ctx context.Context, p *hubPipe) {
 				}
 				rows := parseHubRows(text)
 				if text := hubCacheText(rows); text != lastCache {
-					if writeHubCache(w.a.ConfigDir, p.hub.Name, rows) == nil {
+					if writeHubCache(w.a.Paths, p.hub.Name, rows) == nil {
 						lastCache = text
 					}
 				}
@@ -412,7 +412,7 @@ func (w *hubWatcher) run(ctx context.Context, p *hubPipe) {
 			}
 			acancel()
 		}
-		w.set(p, hubListing{rows: readHubCache(w.a.ConfigDir, p.hub.Name)})
+		w.set(p, hubListing{rows: readHubCache(w.a.Paths, p.hub.Name)})
 		settle()
 		if spoke.Load() {
 			backoff = hubTimes.backoffMin

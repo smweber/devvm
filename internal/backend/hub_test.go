@@ -15,7 +15,7 @@ import (
 
 func TestForHub(t *testing.T) {
 	hub := config.NewHub("h", "u@host")
-	b, err := For(hub, t.TempDir())
+	b, err := For(hub, config.LegacyPaths(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestForHub(t *testing.T) {
 	}
 
 	rec := &config.Machine{Name: "h/web", Hub: hub, Backend: config.BackendHub, SSHHost: hub.SSHHost}
-	b, err = For(rec, t.TempDir())
+	b, err = For(rec, config.LegacyPaths(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func fakeSSHLog(t *testing.T) string {
 func TestHubBackendRunIsProxiedExec(t *testing.T) {
 	hub := config.NewHub("h", "u@host")
 	rec := &config.Machine{Name: "h/web", Hub: hub, Backend: config.BackendHub, SSHHost: hub.SSHHost}
-	b, err := For(rec, t.TempDir())
+	b, err := For(rec, config.LegacyPaths(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,5 +156,24 @@ func TestLoginShellArgvRunsUnderLoginShell(t *testing.T) {
 	}
 	if !strings.Contains(remote, `-lc "$0"`) {
 		t.Errorf("not a login shell invocation: %s", remote)
+	}
+}
+
+// The pin file and the ControlMaster sockets are host state: they live in
+// the state dir, never beside the confs.
+func TestSSHStateFilesUnderStateDir(t *testing.T) {
+	p := config.Paths{Config: t.TempDir(), State: t.TempDir()}
+	b, err := For(config.NewRemote("cloud", config.BackendRemoteManaged, "dev@cloud"), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssh := strings.Join(b.(*sshBackend).base(), " ")
+	for _, want := range []string{"UserKnownHostsFile=" + p.KnownHostsPath(), "ControlPath=" + p.ControlPath()} {
+		if !strings.Contains(ssh, want) {
+			t.Errorf("ssh argv %q lacks %q", ssh, want)
+		}
+	}
+	if strings.Contains(ssh, p.Config) {
+		t.Errorf("ssh argv names the config dir: %q", ssh)
 	}
 }

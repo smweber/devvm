@@ -84,7 +84,7 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 }
 
 func (a *App) runStart(name string) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
@@ -100,14 +100,14 @@ func (a *App) runStart(name string) error {
 }
 
 func (a *App) runStop(name string) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	_, b, err := a.resolveLive(name)
 	if err != nil {
 		return err
 	}
 	// Reap this machine's forwards (stop its daemon) before powering off, so no
 	// dead forward squats a host port.
-	if cl, derr := session.Existing(a.ConfigDir, name); derr == nil {
+	if cl, derr := session.Existing(a.Paths, name); derr == nil {
 		_ = cl.Stop()
 	}
 	return b.PowerStop()
@@ -116,7 +116,7 @@ func (a *App) runStop(name string) error {
 // runProvision allocates the resource for a dormant machine (conf exists, no VM)
 // and bootstraps it — the inverse of deprovision, and the resource half of create.
 func (a *App) runProvision(name string) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
@@ -152,7 +152,7 @@ func (a *App) runProvision(name string) error {
 // entry, so it can be rebuilt later with `provision`. It's the middle rung between
 // stop (resource kept) and delete (entry gone too).
 func (a *App) runDeprovision(name string, yes bool) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
@@ -181,7 +181,7 @@ func (a *App) runDeprovision(name string, yes bool) error {
 	}
 	// Reap forwards (stop the daemon) before tearing down the resource, so no dead
 	// forward squats a host port — same as stop.
-	if cl, derr := session.Existing(a.ConfigDir, name); derr == nil {
+	if cl, derr := session.Existing(a.Paths, name); derr == nil {
 		_ = cl.Stop()
 	}
 	if err := b.PowerDelete(); err != nil {
@@ -193,8 +193,8 @@ func (a *App) runDeprovision(name string, yes bool) error {
 }
 
 func (a *App) runDelete(name string, force bool) error {
-	defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
-	m, b, err := a.resolveAny(name)        // delete applies to hubs and hub machines too
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
+	m, b, err := a.resolveAny(name)    // delete applies to hubs and hub machines too
 	if err != nil {
 		return err
 	}
@@ -210,10 +210,10 @@ func (a *App) runDelete(name string, force bool) error {
 	// a resource we couldn't probe).
 	if ok, exErr := b.Exists(); exErr == nil && !ok {
 		a.reapRunFiles(name)
-		if err := config.Remove(a.ConfigDir, name); err != nil {
+		if err := config.Remove(a.Paths.Config, name); err != nil {
 			return err
 		}
-		session.RemoveLock(a.ConfigDir, name) // only now: see RemoveLock
+		session.RemoveLock(a.Paths, name) // only now: see RemoveLock
 		fmt.Fprintf(a.Stdout, "devvm: removed registry entry for '%s' (was dormant)\n", name)
 		return nil
 	}
@@ -246,10 +246,10 @@ func (a *App) runDelete(name string, force bool) error {
 		a.reapRunFiles(name)
 		_ = b.PowerDelete()
 	}
-	if err := config.Remove(a.ConfigDir, name); err != nil {
+	if err := config.Remove(a.Paths.Config, name); err != nil {
 		return err
 	}
-	session.RemoveLock(a.ConfigDir, name) // only now: see RemoveLock
+	session.RemoveLock(a.Paths, name) // only now: see RemoveLock
 	fmt.Fprintf(a.Stdout, "devvm: removed '%s'\n", name)
 	return nil
 }
@@ -258,7 +258,7 @@ func (a *App) runDelete(name string, force bool) error {
 // its run files (session.Reap) as its registry entry goes. Failing that is
 // worth a line, not the delete: the leftovers are inert files in run/.
 func (a *App) reapRunFiles(name string) {
-	if err := session.Reap(a.ConfigDir, name, daemonGoneTimeout); err != nil && a.Stderr != nil {
+	if err := session.Reap(a.Paths, name, daemonGoneTimeout); err != nil && a.Stderr != nil {
 		fmt.Fprintf(a.Stderr, "devvm: %s: %v\n", name, err)
 	}
 }
@@ -282,11 +282,11 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
 		return err
 	}
 	a.reapRunFiles(m.Name)
-	dropFromHubCache(a.ConfigDir, hub.Name, machine)
+	dropFromHubCache(a.Paths, hub.Name, machine)
 	if _, recorded := hub.Machines[machine]; recorded {
 		// Under the hub conf's flock: every machine on the hub shares the
 		// file (config.UpdateHubMachine). An emptied table is dropped.
-		if _, err := config.UpdateHubMachine(a.ConfigDir, hub.Name, machine, func(hm *config.HubMachine) error {
+		if _, err := config.UpdateHubMachine(a.Paths.Config, hub.Name, machine, func(hm *config.HubMachine) error {
 			hm.Ports = nil
 			return nil
 		}); err != nil {
@@ -311,7 +311,7 @@ func (a *App) deleteHub(m *config.Machine, force bool) error {
 		held = append(held, "[machines."+name+"]")
 	}
 	var live []string
-	for _, display := range liveHubSockets(a.ConfigDir) {
+	for _, display := range liveHubSockets(a.Paths) {
 		if hub, _, _, _ := config.SplitHubName(display); hub == m.Name {
 			live = append(live, display)
 			held = append(held, "forwards for "+display)
@@ -333,17 +333,17 @@ func (a *App) deleteHub(m *config.Machine, force bool) error {
 	// killed rather than stopped leaves its socket, and every one that ever
 	// started leaves its lock and log. The hub's own name too (a refused
 	// `__daemon HUB` still took its lock).
-	reaped := append(session.HubRuntimeNames(a.ConfigDir, m.Name), m.Name)
+	reaped := append(session.HubRuntimeNames(a.Paths, m.Name), m.Name)
 	for _, display := range reaped {
 		a.reapRunFiles(display)
 	}
-	if err := config.Remove(a.ConfigDir, m.Name); err != nil {
+	if err := config.Remove(a.Paths.Config, m.Name); err != nil {
 		return err
 	}
 	for _, display := range reaped {
-		session.RemoveLock(a.ConfigDir, display) // only now: see RemoveLock
+		session.RemoveLock(a.Paths, display) // only now: see RemoveLock
 	}
-	removeHubCache(a.ConfigDir, m.Name) // derived from the conf that just went
+	removeHubCache(a.Paths, m.Name) // derived from the conf that just went
 	fmt.Fprintf(a.Stdout, "devvm: removed hub '%s'\n", m.Name)
 	return nil
 }

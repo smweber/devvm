@@ -30,7 +30,7 @@ import (
 // currently runs on, and a gate on its re-dial (closed = dials succeed).
 type hubRig struct {
 	t    *testing.T
-	dir  string
+	dir  config.Paths
 	d    *daemon
 	mu   sync.Mutex
 	tr   *fakeTransport
@@ -42,9 +42,9 @@ func newHubRig(t *testing.T) *hubRig {
 	t.Helper()
 	// The hub's transport carries events, as its smol one would: the hub
 	// daemon echoes Bridge on a relay open only then.
-	h := &hubRig{t: t, dir: shortTempDir(t), tr: newEventTransport(), gate: make(chan struct{})}
+	h := &hubRig{t: t, dir: shortTempPaths(t), tr: newEventTransport(), gate: make(chan struct{})}
 	close(h.gate) // dials allowed until a test says otherwise
-	if err := os.MkdirAll(config.RuntimeDir(h.dir), 0o700); err != nil {
+	if err := os.MkdirAll(h.dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	h.d = newDaemon(h.dir, "web", "test", h.tr, func() (transport, error) {
@@ -120,7 +120,7 @@ type relay struct {
 
 // startRelay starts a __session against the hub's socket. The hub side
 // prints banner first, as a chatty login shell would.
-func startRelay(t *testing.T, hubDir, banner string) (*relay, error) {
+func startRelay(t *testing.T, hubDir config.Paths, banner string) (*relay, error) {
 	conn, err := net.Dial("unix", socketPath(hubDir, "web"))
 	if err != nil {
 		return nil, err
@@ -276,7 +276,7 @@ func (l *laptopRig) hubTransport() *hubTransport {
 	return ht
 }
 
-func dialHub(t *testing.T, hubDir string, local *fakeLocal, banner string) (*hubTransport, *relay, error) {
+func dialHub(t *testing.T, hubDir config.Paths, local *fakeLocal, banner string) (*hubTransport, *relay, error) {
 	r, err := startRelay(t, hubDir, banner)
 	if err != nil {
 		return nil, nil, err
@@ -300,7 +300,7 @@ func newLaptopRig(t *testing.T, h *hubRig, loop bool) *laptopRig {
 	}
 	l.relays = append(l.relays, r)
 	l.locals = append(l.locals, l.local)
-	l.d = newDaemon(shortTempDir(t), "h/web", "test", ht, func() (transport, error) {
+	l.d = newDaemon(shortTempPaths(t), "h/web", "test", ht, func() (transport, error) {
 		l.dials.Add(1)
 		local := newFakeLocal()
 		ht, r, err := dialHub(t, h.dir, local, "")
@@ -648,7 +648,7 @@ func TestHubPendingReplyLeavesLaptopPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := newDaemon(shortTempDir(t), "h/web", "test", ht, func() (transport, error) {
+	d := newDaemon(shortTempPaths(t), "h/web", "test", ht, func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})
 	d.logf = t.Logf
@@ -751,7 +751,7 @@ func TestHubTeardownBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := newDaemon(shortTempDir(t), "h/web", "test", ht, func() (transport, error) { return nil, errors.New("no dial") })
+	d := newDaemon(shortTempPaths(t), "h/web", "test", ht, func() (transport, error) { return nil, errors.New("no dial") })
 	d.logf = t.Logf
 	for i := 0; i < 4; i++ {
 		_, g := echoServer(t)
@@ -850,7 +850,7 @@ func TestHubAddErrorLeavesRestorePending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ht.Close()
-	d := newDaemon(shortTempDir(t), "h/web", "test", nil, func() (transport, error) { return nil, errors.New("no dial") })
+	d := newDaemon(shortTempPaths(t), "h/web", "test", nil, func() (transport, error) { return nil, errors.New("no dial") })
 	var logMu sync.Mutex
 	var logged []string
 	d.logf = func(f string, a ...any) {
@@ -907,15 +907,15 @@ func TestHubAddErrorLeavesRestorePending(t *testing.T) {
 // quoting only what that daemon logged (never an earlier run's line); a
 // clean exit (another daemon won the socket) keeps it polling.
 func TestWaitComeUpEarlyExit(t *testing.T) {
-	dir := shortTempDir(t)
-	if err := config.EnsureRuntimeDir(dir); err != nil {
+	dir := shortTempPaths(t)
+	if err := dir.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
 	log := logPath(dir, "h/web")
 	if err := os.WriteFile(log, []byte("devvm: an earlier run's error\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := &Client{configDir: dir, name: "h/web"}
+	c := &Client{paths: dir, name: "h/web"}
 	off := logSize(log)
 	f, _ := os.OpenFile(log, os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString("devvm: h/web: the hub's __session ended before it started: web is not running\n")

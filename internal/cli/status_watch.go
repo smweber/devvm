@@ -41,7 +41,7 @@ func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
 		}()
 	}
 	if local {
-		return watchStatus(ctx, a.ConfigDir, func() string { return a.plainSnapshot(statusScope{local: true}) }, a.Stdout, watchDebounce, nil)
+		return watchStatus(ctx, a.Paths, func() string { return a.plainSnapshot(statusScope{local: true}) }, a.Stdout, watchDebounce, nil)
 	}
 	return a.watchWithHubs(ctx, a.Stdout, watchDebounce)
 }
@@ -62,7 +62,7 @@ func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Du
 	}
 	hw.sync(a.hubConfs())
 	hw.settle(ctx, hubTimes.deadline)
-	return watchStatus(ctx, a.ConfigDir, snapshot, out, debounce, hw.wake)
+	return watchStatus(ctx, a.Paths, snapshot, out, debounce, hw.wake)
 }
 
 // plainSnapshot renders the plain listing as one string so identical
@@ -95,14 +95,15 @@ func (a *App) plainSnapshot(sc statusScope) string {
 // watch (verified on both inotify and kqueue), so it is recreated and
 // re-added, and any watcher error triggers a re-snapshot rather than being
 // treated as fatal — a long-running consumer must never go blind.
-func watchStatus(ctx context.Context, configDir string, snapshot func() string, out io.Writer, debounce time.Duration, wake <-chan struct{}) error {
-	// Both dirs must exist to be watched; an empty registry is a valid thing to
+func watchStatus(ctx context.Context, paths config.Paths, snapshot func() string, out io.Writer, debounce time.Duration, wake <-chan struct{}) error {
+	// Both dirs (machines/ under config, run/ under state) must exist to be
+	// watched; an empty registry is a valid thing to
 	// watch (the first `create` is the change). Match Save's and
 	// EnsureRuntimeDir's modes so nothing is loosened.
-	if err := os.MkdirAll(config.MachinesDir(configDir), 0o755); err != nil {
+	if err := os.MkdirAll(config.MachinesDir(paths.Config), 0o755); err != nil {
 		return err
 	}
-	if err := config.EnsureRuntimeDir(configDir); err != nil {
+	if err := paths.EnsureRuntimeDir(); err != nil {
 		return err
 	}
 	w, err := fsnotify.NewWatcher()
@@ -110,7 +111,7 @@ func watchStatus(ctx context.Context, configDir string, snapshot func() string, 
 		return err
 	}
 	defer w.Close()
-	dirs := []string{config.MachinesDir(configDir), config.RuntimeDir(configDir)}
+	dirs := []string{config.MachinesDir(paths.Config), paths.RuntimeDir()}
 	for _, dir := range dirs {
 		if err := w.Add(dir); err != nil {
 			return fmt.Errorf("watch %s: %w", dir, err)
@@ -119,8 +120,8 @@ func watchStatus(ctx context.Context, configDir string, snapshot func() string, 
 	rewatch := func(dir string) {
 		// Best-effort: the directory may be mid-rename; the next event or
 		// error retries. Modes match the initial creation above.
-		if dir == config.RuntimeDir(configDir) {
-			_ = config.EnsureRuntimeDir(configDir)
+		if dir == paths.RuntimeDir() {
+			_ = paths.EnsureRuntimeDir()
 		} else {
 			_ = os.MkdirAll(dir, 0o755)
 		}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -79,15 +78,15 @@ func TestRequireRunningForForwardsPolls(t *testing.T) {
 func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 	shrinkRunningPoll(t)
 	var out bytes.Buffer
-	a := &App{ConfigDir: t.TempDir(), Stdout: &out, Stderr: &out}
+	a := &App{Paths: testPaths(t.TempDir()), Stdout: &out, Stderr: &out}
 	m := &config.Machine{Name: "vm", Backend: config.BackendSmol}
-	if err := m.Save(a.ConfigDir); err != nil {
+	if err := m.Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080:8080"); err != nil {
 		t.Fatal(err)
 	}
-	saved, err := config.Load(a.ConfigDir, "vm")
+	saved, err := config.Load(a.Paths.Config, "vm")
 	if err != nil || len(saved.Ports) != 1 || saved.Ports[0] != "8080:8080" {
 		t.Fatalf("conf ports = %v, %v; want [8080:8080]", saved.Ports, err)
 	}
@@ -101,7 +100,7 @@ func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 			t.Fatalf("Status polled %d times on `ports add`; want at most 2", b.calls)
 		}
 	}
-	if entries, _ := os.ReadDir(filepath.Join(a.ConfigDir, "run")); len(entries) != 0 {
+	if entries, _ := os.ReadDir(a.Paths.RuntimeDir()); len(entries) != 0 {
 		names := []string{}
 		for _, e := range entries {
 			names = append(names, e.Name())

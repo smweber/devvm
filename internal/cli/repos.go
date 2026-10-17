@@ -60,7 +60,7 @@ func (a *App) runReposAdd(name string, repos []string, clone bool) error {
 		fmt.Fprintf(a.Stdout, "devvm: nothing to add (already configured)\n")
 		return nil
 	}
-	if err := m.Save(a.ConfigDir); err != nil {
+	if err := m.Save(a.Paths.Config); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.Stdout, "devvm: added %d repo(s) to '%s'\n", len(added), name)
@@ -111,7 +111,7 @@ func (a *App) runReposRm(name, repo string) error {
 		}
 	}
 	m.Repos = kept
-	if err := m.Save(a.ConfigDir); err != nil {
+	if err := m.Save(a.Paths.Config); err != nil {
 		return err
 	}
 	// Leave the guest checkout in place — removing a repo from the conf is a

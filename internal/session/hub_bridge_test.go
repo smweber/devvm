@@ -26,10 +26,10 @@ import (
 const testShim = "/usr/local/bin/devvm-open-url"
 
 // serveLaptop gives the laptop rig's daemon a control socket.
-func serveLaptop(t *testing.T, l *laptopRig) string {
+func serveLaptop(t *testing.T, l *laptopRig) config.Paths {
 	t.Helper()
-	dir := l.d.configDir
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := l.d.paths
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	ln, info, err := listenControl(socketPath(dir, l.d.name))
@@ -44,7 +44,7 @@ func serveLaptop(t *testing.T, l *laptopRig) string {
 
 // sessionOn opens a session client on name's daemon in dir, spawning
 // nothing, and subscribes it answering with h.
-func sessionOn(t *testing.T, dir, name string, h func(json.RawMessage) json.RawMessage) *Session {
+func sessionOn(t *testing.T, dir config.Paths, name string, h func(json.RawMessage) json.RawMessage) *Session {
 	t.Helper()
 	s, err := openSession(name, func(<-chan struct{}) (net.Conn, error) {
 		return net.Dial("unix", socketPath(dir, name))
@@ -145,7 +145,7 @@ func TestHubLocalAckWaitsForUpstreamAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &laptopRig{d: newDaemon(shortTempDir(t), "h/web", "test", ht, func() (transport, error) {
+	l := &laptopRig{d: newDaemon(shortTempPaths(t), "h/web", "test", ht, func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})}
 	l.d.logf = t.Logf
@@ -235,8 +235,8 @@ func (n *nullBindTransport) forward(h, g int) (io.Closer, error) {
 // its loop running.
 func startHubDaemon(t *testing.T, tr transport) *hubRig {
 	t.Helper()
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	d := newDaemon(dir, "web", "test", tr, func() (transport, error) { return nil, errors.New("no dial in this test") })
@@ -380,7 +380,7 @@ func TestHubTooOldForBrowserOpens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &laptopRig{d: newDaemon(shortTempDir(t), "h/web", "test", ht, func() (transport, error) {
+	l := &laptopRig{d: newDaemon(shortTempPaths(t), "h/web", "test", ht, func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})}
 	l.d.logf = t.Logf
@@ -417,12 +417,12 @@ func TestHubTooOldForBrowserOpens(t *testing.T) {
 // The daemon reports its transport's shim on ping and on the session open
 // (what a relay learns it from); a transport without one reports none.
 func TestPingReportsShim(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.mu.Lock()
 	d.tr.(*fakeTransport).shim = testShim
 	d.mu.Unlock()
-	cl := &Client{configDir: dir, name: "t"}
+	cl := &Client{paths: dir, name: "t"}
 	if shim, err := cl.Shim(); err != nil || shim != testShim {
 		t.Fatalf("one-shot ping shim = %q, %v", shim, err)
 	}
@@ -446,7 +446,7 @@ func TestPingReportsShim(t *testing.T) {
 // never subscribes "successfully" through it and then hears nothing, and
 // can tell it from a hub too old to echo Bridge at all.
 func TestBridgeEchoOnlyWithEvents(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	startSockDaemon(t, dir) // fakeTransport: ev nil, as ssh
 	open := dialLine(t, dir, "t").open(Request{Relay: true})
 	if !open.OK || open.Bridge || !open.NoEvents {
@@ -458,7 +458,7 @@ func TestBridgeEchoOnlyWithEvents(t *testing.T) {
 // relay, and returns it: an onDead after admission cannot turn a smol
 // machine's echo into NoEvents.
 func TestOpenSessionReportsBridgeAtAdmission(t *testing.T) {
-	d := newDaemon(shortTempDir(t), "t", "test", newEventTransport(), func() (transport, error) {
+	d := newDaemon(shortTempPaths(t), "t", "test", newEventTransport(), func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})
 	d.logf = t.Logf
@@ -509,7 +509,7 @@ func TestHubMachineWithoutEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &laptopRig{d: newDaemon(shortTempDir(t), "h/box", "test", ht, func() (transport, error) {
+	l := &laptopRig{d: newDaemon(shortTempPaths(t), "h/box", "test", ht, func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})}
 	l.d.logf = t.Logf
@@ -568,7 +568,7 @@ func TestBridgeRefusedForGood(t *testing.T) {
 
 // scriptedLaptop is a laptop daemon for h/web on a hubTransport over a
 // scripted hub (bridge echoed), with a control socket; no loop, no dial.
-func scriptedLaptop(t *testing.T, reply func(Request) Response) (*laptopRig, *hubTransport, string, func()) {
+func scriptedLaptop(t *testing.T, reply func(Request) Response) (*laptopRig, *hubTransport, config.Paths, func()) {
 	t.Helper()
 	conn, stop := scriptedHubOpen(t,
 		func(Request) Response {
@@ -578,7 +578,7 @@ func scriptedLaptop(t *testing.T, reply func(Request) Response) (*laptopRig, *hu
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &laptopRig{d: newDaemon(shortTempDir(t), "h/web", "test", ht, func() (transport, error) {
+	l := &laptopRig{d: newDaemon(shortTempPaths(t), "h/web", "test", ht, func() (transport, error) {
 		return nil, errors.New("no dial in this test")
 	})}
 	l.d.logf = t.Logf
@@ -634,9 +634,9 @@ func TestSubscribeRefusedWhileHubLinkReconnecting(t *testing.T) {
 	}
 	mu.Unlock()
 
-	local := startSockDaemon(t, shortTempDir(t))
+	local := startSockDaemon(t, shortTempPaths(t))
 	dropTransport(local)
-	subscribed(t, local.configDir, (&catcher{}).handle) // fails the test on a refusal
+	subscribed(t, local.paths, (&catcher{}).handle) // fails the test on a refusal
 }
 
 // A relay subscriber gets relaySubscriberWait, not subscriberWait: its far

@@ -1,6 +1,8 @@
 package session
 
 import (
+	"github.com/smweber/devvm/internal/config"
+
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -119,7 +121,7 @@ func (c *catcher) events() []BridgeEvent {
 }
 
 // subscribed opens a subscribed session on dir's daemon answering with h.
-func subscribed(t *testing.T, dir string, h func(json.RawMessage) json.RawMessage) *Session {
+func subscribed(t *testing.T, dir config.Paths, h func(json.RawMessage) json.RawMessage) *Session {
 	t.Helper()
 	s := testSession(t, dir, SessionOptions{OnEvent: h})
 	if err := s.Subscribe(); err != nil {
@@ -134,7 +136,7 @@ func subscribed(t *testing.T, dir string, h func(json.RawMessage) json.RawMessag
 // rewritten for the port it reaches; the forward goes with the session.
 func TestBridgeDirectConnectionOwnedWithBump(t *testing.T) {
 	_, guest := echoServer(t)
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	var opened []string
 	var mu sync.Mutex
@@ -173,7 +175,7 @@ func TestBridgeDirectConnectionOwnedWithBump(t *testing.T) {
 // the open is refused with a reply the guest can read, and the subscriber
 // never sees it.
 func TestBridgeRedirectExactTTL(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	now := time.Now()
 	d.now = func() time.Time { return now }
@@ -215,7 +217,7 @@ func TestBridgeRedirectExactTTL(t *testing.T) {
 // A relay subscriber gets the event unbound: the far daemon binds on its
 // own transport. Nothing is forwarded here, and its reply is relayed as is.
 func TestBridgeRelaySubscriberUnbound(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	l := dialLine(t, dir, "t")
 	l.open(Request{Relay: true})
@@ -270,7 +272,7 @@ func TestBridgeNoSubscriber(t *testing.T) {
 // A loopback open while the daemon is reconnecting is refused with
 // "forward pending"; an external one still goes through.
 func TestBridgeReconnectingPending(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	c := &catcher{reply: agentrpc.OpenReply{Opened: true}}
 	subscribed(t, dir, c.handle)
@@ -291,7 +293,7 @@ func TestBridgeReconnectingPending(t *testing.T) {
 
 // A subscriber that does not answer in time, or goes away, is opened:false.
 func TestBridgeSubscriberTimeoutAndDisconnect(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.replyWait = 50 * time.Millisecond
 	c := &catcher{block: make(chan struct{})}
@@ -301,7 +303,7 @@ func TestBridgeSubscriberTimeoutAndDisconnect(t *testing.T) {
 		t.Fatalf("slow subscriber = %+v", rep)
 	}
 
-	dir2 := shortTempDir(t)
+	dir2 := shortTempPaths(t)
 	d2 := startSockDaemon(t, dir2)
 	l := dialLine(t, dir2, "t")
 	l.open(Request{})
@@ -376,7 +378,7 @@ func (v *v4OnlyTransport) forward(h, g int) (io.Closer, error) {
 // A literal [::1] URL names the family, so a forward without its ::1 side
 // is refused rather than reported; localhost and 127.0.0.1 never need it.
 func TestBridgeLiteralV6RefusedWithoutV6(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.mu.Lock()
 	d.tr = &v4OnlyTransport{newFakeTransport()}
@@ -399,7 +401,7 @@ func TestBridgeLiteralV6RefusedWithoutV6(t *testing.T) {
 // The limits: at most 10 opens a minute, at most 20 bridge forwards, never
 // a port below 1024; each refused with a reply.
 func TestBridgeLimits(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	var clock atomic.Int64
 	start := time.Now()
@@ -496,7 +498,7 @@ func sendEvent(t *testing.T, g *yamux.Session, raw string) net.Conn {
 // still opens the URL, its reply write does not hang, and the next event,
 // from a new agent, gets its reply over the same session.
 func TestBridgeOldAgentDoesNotHangDaemon(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	tr := d.tr.(*fakeTransport)
 	tr.ev = make(chan bridgeRequest)
@@ -529,7 +531,7 @@ func TestBridgeOldAgentDoesNotHangDaemon(t *testing.T) {
 // handleOpen never runs on loop()'s goroutine: with a subscriber sitting on
 // an event, the loop still sees the transport die and reconnects.
 func TestBridgeOpenDoesNotBlockLoop(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.replyWait = time.Minute
 	first := d.tr.(*fakeTransport)
@@ -556,7 +558,7 @@ func TestBridgeOpenDoesNotBlockLoop(t *testing.T) {
 
 // The ticker expires a callback: wall-clock, within one tick of its ttl.
 func TestBridgeTTLExpiresOnTicker(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.retryEvery = 10 * time.Millisecond
 	var clock atomic.Int64
@@ -583,7 +585,7 @@ func TestBridgeTTLExpiresOnTicker(t *testing.T) {
 // re-subscribes on its own, so the next open still lands, with no
 // re-attach.
 func TestBridgeThroughSessionClientAcrossDaemonCycle(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d1 := startSockDaemon(t, dir)
 	tr1 := d1.tr.(*fakeTransport)
 	tr1.ev = make(chan bridgeRequest)
@@ -640,7 +642,7 @@ func TestBridgeThroughSessionClientAcrossDaemonCycle(t *testing.T) {
 // ("address …"), and a refusal takes back only an owner this open added:
 // an earlier callback's ttl owner on the same port stays.
 func TestBridgeLiteralV6DirectAndEarlierOwner(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	d.mu.Lock()
 	d.tr = &v4OnlyTransport{newFakeTransport()}
@@ -672,7 +674,7 @@ func TestBridgeLiteralV6DirectAndEarlierOwner(t *testing.T) {
 // A relay's forwards are another host's: they never count toward this
 // host's bridge cap.
 func TestBridgeCapIgnoresRelayForwards(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	relay := regSession(d, 900)
 	relay.relay = true
@@ -692,7 +694,7 @@ func TestBridgeCapIgnoresRelayForwards(t *testing.T) {
 // forward is left owned by a connection nobody will close. The session add
 // path is held to the same rule.
 func TestBridgeSubscriberGoneBeforeBind(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	s := subscribed(t, dir, (&catcher{}).handle)
 	d.mu.Lock()
@@ -715,7 +717,7 @@ func TestBridgeSubscriberGoneBeforeBind(t *testing.T) {
 // The cap is checked where the forward is created: concurrent opens at the
 // edge admit exactly one.
 func TestBridgeCapConcurrent(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	sub := regSession(d, 901)
 	d.mu.Lock()

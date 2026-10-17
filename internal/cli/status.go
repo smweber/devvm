@@ -193,7 +193,7 @@ func (a *App) renderVerboseDetail(r statusRow) {
 			fmt.Fprintf(a.Stdout, "    backend: %s (as reported by hub %s)\n", r.backend, r.hub)
 		}
 	}
-	if cl, err := session.Existing(a.ConfigDir, r.name); err == nil {
+	if cl, err := session.Existing(a.Paths, r.name); err == nil {
 		if st, err := cl.Status(); err == nil && len(st.Forwards) > 0 {
 			if st.Reconnecting() {
 				fmt.Fprintf(a.Stdout, "    forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
@@ -235,7 +235,7 @@ func (a *App) gatherRows(sc statusScope) []statusRow {
 			continue // rendered under its hub below, or not at all with --local
 		}
 		seen[name] = true
-		m, err := config.Load(a.ConfigDir, name)
+		m, err := config.Load(a.Paths.Config, name)
 		if err != nil {
 			rows = append(rows, statusRow{name: name, backend: "?", state: "broken conf"})
 			continue
@@ -304,7 +304,7 @@ func (a *App) hubRows(hub *config.Machine, l hubListing) []statusRow {
 	for n := range hub.Machines {
 		names[n] = true
 	}
-	for _, display := range liveHubSockets(a.ConfigDir) {
+	for _, display := range liveHubSockets(a.Paths) {
 		if h, n, _, _ := config.SplitHubName(display); h == hub.Name {
 			names[n] = true
 		}
@@ -367,7 +367,7 @@ func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 		r.fwds = a.forwardSummary(m.Name)
 		return r
 	}
-	b, err := backend.For(m, a.ConfigDir)
+	b, err := backend.For(m, a.Paths)
 	if err != nil {
 		r.state = "broken conf"
 		return r
@@ -398,7 +398,7 @@ func smolStateLabel(exists, running bool) string {
 // forwardSummary asks a machine's daemon for its state and forward count; a
 // zero value means no daemon answered.
 func (a *App) forwardSummary(name string) fwdSummary {
-	cl, err := session.Existing(a.ConfigDir, name)
+	cl, err := session.Existing(a.Paths, name)
 	if err != nil {
 		return fwdSummary{}
 	}
@@ -422,10 +422,10 @@ func (a *App) smolLiveResources(name string, m *config.Machine) (memMiB, diskGiB
 	if m == nil {
 		return 0, 0, false
 	}
-	if _, err := session.Existing(a.ConfigDir, name); err == nil {
+	if _, err := session.Existing(a.Paths, name); err == nil {
 		return 0, 0, false // a daemon owns the exec; don't risk a parallel one
 	}
-	b, err := backend.For(m, a.ConfigDir)
+	b, err := backend.For(m, a.Paths)
 	if err != nil {
 		return 0, 0, false
 	}

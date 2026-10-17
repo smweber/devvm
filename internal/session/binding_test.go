@@ -317,7 +317,7 @@ func TestRestoreSkipsSlotBeingBound(t *testing.T) {
 // Review 7: Close does not wait out a reconnect's dial (which can sit in a
 // daemon come-up wait for ~20s).
 func TestSessionCloseDoesNotWaitOutDial(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	var dials sync.WaitGroup
 	calls := 0
@@ -470,9 +470,9 @@ func TestRemoveMidBindMakesNewAddWait(t *testing.T) {
 // Close cuts off a reconnect that is past its dial and waiting on a wedged
 // daemon for the session reply (it would otherwise wait out callTimeout).
 func TestSessionCloseDuringWedgedOpen(t *testing.T) {
-	dir := shortTempDir(t)
+	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
-	wedged, err := net.Listen("unix", filepath.Join(dir, "wedged.sock"))
+	wedged, err := net.Listen("unix", filepath.Join(dir.State, "wedged.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +496,7 @@ func TestSessionCloseDuringWedgedOpen(t *testing.T) {
 		if n == 1 {
 			return net.Dial("unix", socketPath(dir, "t"))
 		}
-		return net.Dial("unix", filepath.Join(dir, "wedged.sock"))
+		return net.Dial("unix", filepath.Join(dir.State, "wedged.sock"))
 	}, SessionOptions{}, time.Millisecond, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)

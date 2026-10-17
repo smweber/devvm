@@ -113,7 +113,7 @@ func sq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 // terminal, -t iff one, the hub's destination, then the login-shell wrapper
 // around `env DEVVM_NO_SUBSCRIBE=1 devvm …`, every token single-quoted.
 func wantSSH(a *App, tty bool, devvmArgv ...string) string {
-	line := "-o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=" + filepath.Join(a.ConfigDir, "cm-%C") + " -o ControlPersist=60"
+	line := "-o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=" + a.Paths.ControlPath() + " -o ControlPersist=60"
 	if tty {
 		line += " -t -o LogLevel=ERROR" // Quiet: no "Shared connection … closed." after a pty run
 	} else {
@@ -163,8 +163,9 @@ func TestProxyRebuildsArgv(t *testing.T) {
 			[]string{"exec", "web", "--", "echo", "--config-dir", "x"}},
 		{[]string{"exec", "h/web", "sh", "-c", `echo "$HOME" it's 'a b' $X`, "h/web"},
 			[]string{"exec", "web", "sh", "-c", `echo "$HOME" it's 'a b' $X`, "h/web"}},
-		{[]string{"--config-dir", a.ConfigDir, "stop", "h/web"}, []string{"stop", "web"}},
-		{[]string{"--config-dir", a.ConfigDir, "deprovision", "h/web", "--yes"}, []string{"deprovision", "web", "--yes"}},
+		{[]string{"--config-dir", a.Paths.Config, "stop", "h/web"}, []string{"stop", "web"}},
+		{[]string{"--state-dir", a.Paths.State, "stop", "h/web"}, []string{"stop", "web"}},
+		{[]string{"--config-dir", a.Paths.Config, "deprovision", "h/web", "--yes"}, []string{"deprovision", "web", "--yes"}},
 		{[]string{"create", "h/api", "--backend", "smol", "--yes", "-m", "512", "-d", "1"},
 			[]string{"create", "api", "--backend=smol", "--disk=1", "--memory=512", "--yes"}},
 		{[]string{"repos", "add", "h/web", "--no-clone", "o/r", "https://x.example/a b.git"},
@@ -187,7 +188,7 @@ func TestProxyRebuildsArgv(t *testing.T) {
 		if len(got) != 1 || !slices.Equal(got[0], tc.want) {
 			t.Errorf("%v: devvm on the hub got %q, want %q", tc.argv, got, tc.want)
 		}
-		if strings.Contains(strings.Join(lines, "\n"), a.ConfigDir+"'") {
+		if strings.Contains(strings.Join(lines, "\n"), a.Paths.Config+"'") {
 			t.Errorf("%v: the laptop's config dir crossed the wire: %s", tc.argv, lines)
 		}
 		if !strings.Contains(a.Stdout.(*bytes.Buffer).String(), "fake devvm: ") {
@@ -196,17 +197,17 @@ func TestProxyRebuildsArgv(t *testing.T) {
 	}
 	// State-changing verbs touch the local change marker; a read-only one
 	// does not.
-	os.Remove(config.ChangedPath(a.ConfigDir))
+	os.Remove(a.Paths.ChangedPath())
 	if err := runTree(t, a, "repos", "list", "h/web"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err == nil {
+	if _, err := os.Stat(a.Paths.ChangedPath()); err == nil {
 		t.Error("repos list touched the change marker")
 	}
 	// start HUB/NAME proxies, then brings up this host's configured
 	// forwards for the machine (its [machines.web] table: 3000) on this
 	// host's daemon for h@web (hub.md §3).
-	od := serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{
+	od := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpAdd:  {OK: true, Host: 3000},
 		session.OpList: {OK: true, State: session.StateUp},
 	}, false)
@@ -220,7 +221,7 @@ func TestProxyRebuildsArgv(t *testing.T) {
 	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 || adds[0].Host != 3000 {
 		t.Errorf("start h/web: laptop forwards = %+v, want one add of 3000", adds)
 	}
-	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err != nil {
+	if _, err := os.Stat(a.Paths.ChangedPath()); err != nil {
 		t.Error("start did not touch the change marker")
 	}
 }
@@ -429,9 +430,9 @@ func TestProxyInteractiveTransport(t *testing.T) {
 	// A hub conf set to mosh still gets ssh for the proxied session (with a
 	// notice on stderr; see hubBackend.ProxyInteractive), and --transport
 	// mosh is accepted the same way rather than refused.
-	h, _ := config.Load(a.ConfigDir, "h")
+	h, _ := config.Load(a.Paths.Config, "h")
 	h.Transport = config.TransportMosh
-	if err := h.Save(a.ConfigDir); err != nil {
+	if err := h.Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	os.Remove(sshLog)
@@ -522,7 +523,7 @@ func TestHubStopStopsLaptopDaemon(t *testing.T) {
 	a := newTestApp(t)
 	fakeHub(t, a)
 	for _, argv := range [][]string{{"stop", "h/web"}, {"deprovision", "h/web", "--yes"}} {
-		od := serveOwnerDaemon(t, a.ConfigDir, "h/web", nil, true)
+		od := serveOwnerDaemon(t, a.Paths, "h/web", nil, true)
 		t.Setenv("FAKE_DEVVM_EXIT", "1")
 		var pe *proxyExit
 		if err := runTree(t, a, argv...); !errors.As(err, &pe) {
@@ -551,10 +552,10 @@ func TestDeleteHubMachineReapsRunFiles(t *testing.T) {
 	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
 	writeHub(t, a, "h", nil)
 	fakeSSH(t, "exit 0")
-	if err := config.EnsureRuntimeDir(a.ConfigDir); err != nil {
+	if err := a.Paths.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
-	run := config.RuntimeDir(a.ConfigDir)
+	run := a.Paths.RuntimeDir()
 	for _, f := range []string{"h@web.lock", "h@web.log", "h@web.sock", "h@api.lock"} {
 		if err := os.WriteFile(filepath.Join(run, f), nil, 0o600); err != nil {
 			t.Fatal(err)

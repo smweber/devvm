@@ -37,7 +37,7 @@ func writeHub(t *testing.T, a *App, name string, tables map[string][]string) {
 			h.Machines[m] = config.HubMachine{Ports: ports}
 		}
 	}
-	if err := h.Save(a.ConfigDir); err != nil {
+	if err := h.Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -119,30 +119,30 @@ func TestShapingVerbsRefuseHub(t *testing.T) {
 
 func TestListMachinesUnion(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.NewSmol("box").Save(a.ConfigDir); err != nil {
+	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "api": nil})
 	// A broken conf is still a name (status renders it as such).
-	if err := os.WriteFile(filepath.Join(config.MachinesDir(a.ConfigDir), "bad.toml"), []byte("backend = \"nope\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(config.MachinesDir(a.Paths.Config), "bad.toml"), []byte("backend = \"nope\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The hub's cached listing (written by step 3's merged listing): bare
 	// names in column 1; anything nested or invalid is ignored.
-	if err := os.MkdirAll(config.CacheDir(a.ConfigDir), 0o755); err != nil {
+	if err := os.MkdirAll(a.Paths.CacheDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cache := "web\tsmol\trunning\t-\ndb\tsmol\tstopped\t-\nother/x\tsmol\trunning\t-\n\nbad name\tsmol\t?\t-\n"
-	if err := os.WriteFile(hubCachePath(a.ConfigDir, "h"), []byte(cache), 0o644); err != nil {
+	if err := os.WriteFile(hubCachePath(a.Paths, "h"), []byte(cache), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Live daemons: a hub machine with no entry anywhere else, and a local
 	// one (which config.List already covers).
-	if err := config.EnsureRuntimeDir(a.ConfigDir); err != nil {
+	if err := a.Paths.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []string{"h@live.sock", "box.sock", "h@web.sock"} {
-		if err := os.WriteFile(filepath.Join(config.RuntimeDir(a.ConfigDir), s), nil, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(a.Paths.RuntimeDir(), s), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -204,7 +204,7 @@ func TestCreateHubVersionProbe(t *testing.T) {
 	if err := a.runCreate(spec); err == nil || !strings.Contains(err.Error(), "v0.0.1") {
 		t.Fatalf("create with an old hub: err = %v", err)
 	}
-	if config.Exists(a.ConfigDir, "h") {
+	if config.Exists(a.Paths.Config, "h") {
 		t.Fatal("a refused hub must not be registered")
 	}
 	calls, _ := os.ReadFile(log)
@@ -223,7 +223,7 @@ func TestCreateHubVersionProbe(t *testing.T) {
 	// A dev build on the hub is accepted with a warning, and the conf lands.
 	// The refused run above already touched the change marker (its defer runs
 	// regardless), so clear it to see this run's own touch.
-	if err := os.Remove(config.ChangedPath(a.ConfigDir)); err != nil {
+	if err := os.Remove(a.Paths.ChangedPath()); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("FAKE_DEVVM_VERSION", "dev")
@@ -233,11 +233,11 @@ func TestCreateHubVersionProbe(t *testing.T) {
 	if !strings.Contains(a.Stderr.(*bytes.Buffer).String(), "not a release") {
 		t.Errorf("no warning for a dev hub: %s", a.Stderr.(*bytes.Buffer).String())
 	}
-	h, err := config.Load(a.ConfigDir, "h")
+	h, err := config.Load(a.Paths.Config, "h")
 	if err != nil || !h.IsHub() || h.SSHHost != "u@hub" {
 		t.Fatalf("saved hub = %+v, %v", h, err)
 	}
-	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err != nil {
+	if _, err := os.Stat(a.Paths.ChangedPath()); err != nil {
 		t.Error("create did not touch the change marker")
 	}
 }
@@ -279,7 +279,7 @@ func TestDeleteHubMachineDropsTable(t *testing.T) {
 	if !errors.As(err, &pe) || pe.code != 1 {
 		t.Fatalf("delete h/web with the hub refusing: err = %v, want proxyExit 1", err)
 	}
-	h, err := config.Load(a.ConfigDir, "h")
+	h, err := config.Load(a.Paths.Config, "h")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,14 +296,14 @@ func TestDeleteHubMachineDropsTable(t *testing.T) {
 	if err := a.runDelete("h/web", false); err != nil {
 		t.Fatalf("delete h/web: %v", err)
 	}
-	h, _ = config.Load(a.ConfigDir, "h")
+	h, _ = config.Load(a.Paths.Config, "h")
 	if _, still := h.Machines["web"]; still || len(h.Machines) != 1 {
 		t.Errorf("tables after delete: %v", h.Machines)
 	}
 	if err := a.runDelete("h/other", false); err != nil {
 		t.Errorf("delete of an unrecorded machine: err = %v", err)
 	}
-	if _, err := os.Stat(config.ChangedPath(a.ConfigDir)); err != nil {
+	if _, err := os.Stat(a.Paths.ChangedPath()); err != nil {
 		t.Error("delete did not touch the change marker")
 	}
 }
@@ -311,7 +311,7 @@ func TestDeleteHubMachineDropsTable(t *testing.T) {
 // Verbs that refuse hubs do not offer them; status/delete offer everything.
 func TestCompletionOmitsHubsForShapingVerbs(t *testing.T) {
 	a := newTestApp(t)
-	if err := config.NewSmol("box").Save(a.ConfigDir); err != nil {
+	if err := config.NewSmol("box").Save(a.Paths.Config); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
@@ -357,7 +357,7 @@ func TestCreateHubRefusesShapingFlags(t *testing.T) {
 			t.Errorf("error %q does not name %s", err, f)
 		}
 	}
-	if config.Exists(a.ConfigDir, "h") {
+	if config.Exists(a.Paths.Config, "h") {
 		t.Error("refused hub must not be registered")
 	}
 	// The same spec without them is fine (the version probe answers dev).
@@ -379,15 +379,15 @@ func TestDeleteHubRefusesWhileHeld(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "[machines.web]") || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("delete with a table: err = %v", err)
 	}
-	if !config.Exists(a.ConfigDir, "h") {
+	if !config.Exists(a.Paths.Config, "h") {
 		t.Fatal("refused delete removed the conf")
 	}
 	// A live daemon socket alone is enough to refuse, even with no table.
 	writeHub(t, a, "h", nil)
-	if err := config.EnsureRuntimeDir(a.ConfigDir); err != nil {
+	if err := a.Paths.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(config.RuntimeDir(a.ConfigDir), "h@api.sock")
+	sock := filepath.Join(a.Paths.RuntimeDir(), "h@api.sock")
 	if err := os.WriteFile(sock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestDeleteHubRefusesWhileHeld(t *testing.T) {
 		t.Fatalf("delete with a live socket: err = %v", err)
 	}
 	// Another hub's socket does not count.
-	if err := os.Rename(sock, filepath.Join(config.RuntimeDir(a.ConfigDir), "other@api.sock")); err != nil {
+	if err := os.Rename(sock, filepath.Join(a.Paths.RuntimeDir(), "other@api.sock")); err != nil {
 		t.Fatal(err)
 	}
 	// With nothing held it proceeds to the prompt, which has no terminal here:

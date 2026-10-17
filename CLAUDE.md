@@ -94,7 +94,8 @@ cmd/devvm/          host CLI entrypoint
 cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
 internal/cli/       cobra command tree + handlers (create's huh form in createform.go;
                     hub proxying in proxy.go + hub*.go; attach/shell's bridge in bridge.go)
-internal/config/    TOML machine registry (~/.config/devvm/machines/<name>.toml)
+internal/config/    TOML machine registry (~/.config/devvm/machines/<name>.toml) + Paths
+                    (config vs state dirs) + MigrateState
 internal/backend/   Backend interface + smol.go + ssh.go (both remote-* backends)
                     + hub.go (HUB/NAME: proxy argv, `__session` argv; never spawns)
 internal/session/   per-machine forward daemon (owns the exec) + client + transports
@@ -132,11 +133,27 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   dial — ext4/APFS reuse inode numbers, tmpfs doesn't, which hid the bug
   locally). Binds run outside `d.mu`: an `ssh -O forward` against a wedged
   master must not freeze `list`/`ping`.
+- **Config vs state** (`config.Paths{Config, State}`): the config dir
+  (`$XDG_CONFIG_HOME/devvm`) holds only the user's files (`machines/`,
+  `config.toml`); this host's own state lives in `$XDG_STATE_HOME/devvm`
+  (`~/.local/state/devvm`): `run/` (daemon sockets, logs, locks, `changed`),
+  `cache/` (hub listings), the pinned `known_hosts`, and the ssh
+  ControlMaster sockets `c-%C` (short for macOS's sun_path). State helpers
+  are methods on `Paths`, so a config dir can't be passed where state is
+  meant. `--state-dir` overrides; a non-default `--config-dir` alone means the
+  pre-split layout (state inside it), so a test or second registry stays
+  isolated. The daemon is spawned with both flags. `config.MigrateState`
+  (root `PersistentPreRun`, every invocation) moves an older build's state
+  out of the config dir by link+unlink, never replacing a file, and leaves
+  every run file of a machine whose old socket exists. Session clients
+  (`Dial`/`Existing`) use such an old-layout daemon where it is, never
+  spawning a sibling (one-exec rule); `update` cycles it unless it is
+  reconnecting, and `delete` reaps both layouts.
 - **Change marker**: every state-changing command and daemon transition calls
   `config.TouchChanged` (a *write* to `run/changed`, because kqueue ignores
-  utimes); `status --plain --watch` (fsnotify on `machines/` + `run/`) re-emits
-  on it. Rule: a new state-changing command gets `defer
-  config.TouchChanged(a.ConfigDir)`. `Machine.Save` is atomic (temp + rename) so
+  utimes); `status --plain --watch` (fsnotify on config's `machines/` + state's
+  `run/`) re-emits on it. Rule: a new state-changing command gets `defer
+  config.TouchChanged(a.Paths)`. `Machine.Save` is atomic (temp + rename) so
   the watcher never reads a half-written conf.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards` with state ∈ {running, stopped, dormant,

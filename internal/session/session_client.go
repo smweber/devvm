@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/smweber/devvm/internal/config"
 )
 
 // Session is the client side of a long-lived session connection
@@ -79,12 +81,13 @@ var ErrSessionDown = errors.New("session is reconnecting")
 // OpenSession dials the machine's daemon (spawning it if needed), opens a
 // session, and keeps it open, reconnecting, until Close. The first
 // connection is made before it returns, so its error is the caller's.
-func OpenSession(configDir, name string, opts SessionOptions) (*Session, error) {
+func OpenSession(p config.Paths, name string, opts SessionOptions) (*Session, error) {
 	dial := func(cancel <-chan struct{}) (net.Conn, error) {
-		if _, err := dialCancel(configDir, name, cancel); err != nil {
+		c, err := dialCancel(p, name, cancel)
+		if err != nil {
 			return nil, err
 		}
-		return net.Dial("unix", socketPath(configDir, name))
+		return net.Dial("unix", socketPath(c.paths, name))
 	}
 	return openSession(name, dial, opts, minSessionBackoff, maxSessionBackoff)
 }

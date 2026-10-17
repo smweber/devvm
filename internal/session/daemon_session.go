@@ -263,7 +263,7 @@ func (d *daemon) openSession(conn net.Conn, relay bool) (s *sess, bridge bool, e
 	s = &sess{id: d.nextConn, conn: conn, relay: relay, pending: map[int64]chan json.RawMessage{}, done: make(chan struct{})}
 	d.sessions[s.id] = s
 	d.mu.Unlock()
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 	return s, bridge, nil
 }
 
@@ -295,7 +295,7 @@ func (d *daemon) closeSession(s *sess) {
 	closers, _ := d.dropOwnersLocked(func(o owner, _ ownerInfo) bool { return o == own })
 	d.mu.Unlock()
 	closeAll(closers)
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 }
 
 // closeAllSessions closes every session connection (shutdown). Each one's

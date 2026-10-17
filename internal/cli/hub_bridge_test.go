@@ -59,14 +59,14 @@ func stubHubBridges(t *testing.T, br *orderedBridge) *[]string {
 	t.Helper()
 	var dials []string
 	oldB, oldA := openBridgeSession, openAuthBridge
-	openBridgeSession = func(dir, name string, opts session.SessionOptions) (bridgeSub, error) {
+	openBridgeSession = func(dir config.Paths, name string, opts session.SessionOptions) (bridgeSub, error) {
 		if opts.OnEvent == nil {
 			t.Error("bridge session opened without an event handler")
 		}
 		dials = append(dials, name)
 		return br, nil
 	}
-	openAuthBridge = func(dir, name string, opts session.SessionOptions) (auth.Bridge, error) {
+	openAuthBridge = func(dir config.Paths, name string, opts session.SessionOptions) (auth.Bridge, error) {
 		if opts.OnEvent == nil {
 			t.Error("auth bridge opened without an event handler")
 		}
@@ -200,7 +200,7 @@ func TestHubAuthRefusedWithoutBridge(t *testing.T) {
 	}
 
 	old := openAuthBridge
-	openAuthBridge = func(string, string, session.SessionOptions) (auth.Bridge, error) {
+	openAuthBridge = func(config.Paths, string, session.SessionOptions) (auth.Bridge, error) {
 		return nil, errors.New("forward daemon for 'h/web' exited")
 	}
 	t.Cleanup(func() { openAuthBridge = old })
@@ -264,7 +264,7 @@ func TestHubAuthRefusedWithoutProof(t *testing.T) {
 	}
 
 	// The hub's cached listing says web is not smol: the refusal says so.
-	if err := writeHubCache(a.ConfigDir, "h", []hubRow{{name: "web", backend: config.BackendRemoteManaged, state: "reachable", forwards: "-"}}); err != nil {
+	if err := writeHubCache(a.Paths, "h", []hubRow{{name: "web", backend: config.BackendRemoteManaged, state: "reachable", forwards: "-"}}); err != nil {
 		t.Fatal(err)
 	}
 	noShim := session.PingInfo{State: session.StateUp}
@@ -379,7 +379,7 @@ func slowHubBridge(t *testing.T) chan<- bridgeSub {
 	hubBridgeWait = 20 * time.Millisecond
 	t.Cleanup(func() { openBridgeSession, hubBridgeWait = old, oldWait })
 	gate := make(chan bridgeSub)
-	openBridgeSession = func(dir, name string, opts session.SessionOptions) (bridgeSub, error) {
+	openBridgeSession = func(dir config.Paths, name string, opts session.SessionOptions) (bridgeSub, error) {
 		select {
 		case s := <-gate:
 			return s, nil
@@ -430,7 +430,7 @@ func scriptedOpens(t *testing.T, gate <-chan struct{}, results ...any) *atomic.I
 	t.Helper()
 	var n atomic.Int32
 	old := openBridgeSession
-	openBridgeSession = func(string, string, session.SessionOptions) (bridgeSub, error) {
+	openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
 		i := int(n.Add(1)) - 1
 		if i == 0 && gate != nil {
 			<-gate

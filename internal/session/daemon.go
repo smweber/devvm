@@ -207,13 +207,13 @@ func (f *fwd) wire() Forward {
 }
 
 type daemon struct {
-	configDir string
-	name      string
-	version   string                    // build that spawned this daemon (cli.Version)
-	dial      func() (transport, error) // re-dials the transport after it dies
-	ln        net.Listener
-	sockInfo  os.FileInfo // the socket we created; shutdown unlinks only that inode
-	logf      func(format string, args ...any)
+	paths    config.Paths
+	name     string
+	version  string                    // build that spawned this daemon (cli.Version)
+	dial     func() (transport, error) // re-dials the transport after it dies
+	ln       net.Listener
+	sockInfo os.FileInfo // the socket we created; shutdown unlinks only that inode
+	logf     func(format string, args ...any)
 
 	// late counts transports that arrived after a stop interrupted their
 	// dial; shutdown waits (bounded by lateWait) for them to be closed so the
@@ -287,10 +287,10 @@ type daemon struct {
 
 // newDaemon wires a daemon around an already-connected transport; dial is how
 // it gets a fresh one when that transport dies.
-func newDaemon(configDir, name, version string, tr transport, dial func() (transport, error)) *daemon {
+func newDaemon(p config.Paths, name, version string, tr transport, dial func() (transport, error)) *daemon {
 	logger := log.New(os.Stderr, "devvm-daemon: ", log.LstdFlags)
 	return &daemon{
-		configDir:      configDir,
+		paths:          p,
 		name:           name,
 		version:        version,
 		tr:             tr,
@@ -319,15 +319,15 @@ func newDaemon(configDir, name, version string, tr transport, dial func() (trans
 // command). It owns the transport for the machine's lifetime and serves control
 // requests until idle or stopped, reconnecting when the transport dies. version
 // is the build running it, reported on ping so a client can spot a stale daemon.
-func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backend.Backend, version string) error {
-	sock := socketPath(configDir, m.Name)
-	if err := config.EnsureRuntimeDir(configDir); err != nil {
+func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b backend.Backend, version string) error {
+	sock := socketPath(paths, m.Name)
+	if err := paths.EnsureRuntimeDir(); err != nil {
 		return err
 	}
 	// Serialize startup: two racing daemons could otherwise both pass the dial
 	// check, and the loser's stale-socket Remove would unlink the winner's live
 	// socket (and, on smol, both would briefly hold parallel agent execs).
-	lock, err := acquireLock(lockPath(configDir, m.Name))
+	lock, err := acquireLock(lockPath(paths, m.Name))
 	if err != nil {
 		return err
 	}
@@ -372,7 +372,7 @@ func RunDaemon(ctx context.Context, configDir string, m *config.Machine, b backe
 		}
 		return newTransport(ctx, m, b)
 	}
-	d := newDaemon(configDir, m.Name, version, tr, dial)
+	d := newDaemon(paths, m.Name, version, tr, dial)
 	d.ln, d.sockInfo = ln, info
 	go d.serveControl()
 	d.loop()
@@ -526,7 +526,7 @@ func (d *daemon) onDead() {
 	n := len(d.forwards) // after the relay drop: those are not restored
 	tr := d.detachLocked()
 	d.mu.Unlock()
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 	d.logf("%s: transport died; reconnecting (%d forwards to restore)", d.name, n)
 	if len(relays) > 0 {
 		d.logf("%s: closing %d relay session(s); they re-add once the transport is back", d.name, len(relays))
@@ -710,7 +710,7 @@ func (d *daemon) restore(tr transport) bool {
 	d.mu.Lock()
 	d.setStateLocked(StateUp)
 	d.mu.Unlock()
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 	d.logf("%s: reconnected, %d forwards restored", d.name, restored)
 	return true
 }
@@ -834,7 +834,7 @@ func (d *daemon) retryPending() {
 		return
 	}
 	if n, _ := d.rebindPending(tr, false); n > 0 {
-		config.TouchChanged(d.configDir)
+		config.TouchChanged(d.paths)
 	}
 }
 
@@ -1028,13 +1028,13 @@ func (d *daemon) shutdown() error {
 	// reconnects at once, and the daemon it spawns must not find the old
 	// master or exec still up.
 	d.closeAllSessions()
-	sock := socketPath(d.configDir, d.name)
+	sock := socketPath(d.paths, d.name)
 	if d.ownsSocket(sock) {
 		os.Remove(sock)
 	}
 	// The socket vanishing is itself a watch event; the marker covers the
 	// no-forwards-on-exit case where a consumer would otherwise infer nothing.
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 	return nil
 }
 
@@ -1135,7 +1135,7 @@ func (d *daemon) addWith(pref, guest int, exact bool, own owner, o addOpts) (add
 			}
 			host, pending := f.host, f.closer == nil
 			d.mu.Unlock()
-			config.TouchChanged(d.configDir)
+			config.TouchChanged(d.paths)
 			return addResult{host: host, pending: pending, added: added}, nil
 		}
 		// Bind: a new slot, or one pending while up. An exact forward
@@ -1174,7 +1174,7 @@ func (d *daemon) bindSlot(tr transport, f *fwd, own owner, added bool, target in
 			// itself dead in the same breath.
 			host := f.host
 			d.mu.Unlock()
-			config.TouchChanged(d.configDir)
+			config.TouchChanged(d.paths)
 			return host, false, true, nil
 		}
 		// An add that never bound isn't remembered: only its own owner goes
@@ -1208,7 +1208,7 @@ func (d *daemon) bindSlot(tr transport, f *fwd, own owner, added bool, target in
 		}
 		return 0, false, false, fmt.Errorf("forward for guest %d was removed while binding", f.guest)
 	}
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 	return host, bumped, false, nil
 }
 
@@ -1281,7 +1281,7 @@ func (d *daemon) remove(guest int, own owner) (found bool, left *Forward) {
 		w := f.wire()
 		d.mu.Unlock()
 		if had {
-			config.TouchChanged(d.configDir)
+			config.TouchChanged(d.paths)
 		}
 		return true, &w
 	}
@@ -1290,7 +1290,7 @@ func (d *daemon) remove(guest int, own owner) (found bool, left *Forward) {
 	if closer != nil {
 		closer.Close()
 	}
-	config.TouchChanged(d.configDir)
+	config.TouchChanged(d.paths)
 	return true, nil
 }
 
@@ -1302,7 +1302,7 @@ func (d *daemon) dropOwners(match func(owner, ownerInfo) bool) (dropped int) {
 	d.mu.Unlock()
 	closeAll(closers)
 	if dropped > 0 {
-		config.TouchChanged(d.configDir)
+		config.TouchChanged(d.paths)
 	}
 	return dropped
 }

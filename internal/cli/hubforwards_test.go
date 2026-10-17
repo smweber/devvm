@@ -23,7 +23,7 @@ import (
 // hubPorts reads the hub conf's [machines.NAME] ports as saved.
 func hubPorts(t *testing.T, a *App, hub, machine string) ([]string, bool) {
 	t.Helper()
-	h, err := config.Load(a.ConfigDir, hub)
+	h, err := config.Load(a.Paths.Config, hub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,9 +36,9 @@ func hubPorts(t *testing.T, a *App, hub, machine string) ([]string, bool) {
 // asked of this host's daemon for h@web, and nothing dials the hub (the
 // daemon's __session does that, and here a fake daemon serves the socket).
 func TestHubPortsRunLaptopSide(t *testing.T) {
-	a := &App{ConfigDir: shortTempDir(t)}
+	a := &App{Paths: testPaths(shortTempDir(t))}
 	sshLog, _ := fakeHub(t, a) // [machines.web] ports = ["3000"]
-	od := serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{
+	od := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpAdd: {OK: true, Host: 4001, Bumped: true},
 		session.OpList: {OK: true, State: session.StateUp, Forwards: []session.Forward{
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf}},
@@ -110,9 +110,9 @@ func TestHubPortsRunLaptopSide(t *testing.T) {
 // `ports up HUB/NAME` asks this host's daemon for every mapping in the
 // machine's table.
 func TestHubPortsUp(t *testing.T) {
-	a := &App{ConfigDir: shortTempDir(t)}
+	a := &App{Paths: testPaths(shortTempDir(t))}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000", "8443:443"}})
-	od := serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{
+	od := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp},
 	}, false)
 	if err := runTree(t, a, "ports", "up", "h/web"); err != nil {
@@ -132,10 +132,10 @@ func TestHubPortsUp(t *testing.T) {
 // serialized, and the flock around the read-modify-write is what keeps one
 // edit from dropping the other.
 func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
-	a := &App{ConfigDir: shortTempDir(t), Stdout: io.Discard, Stderr: io.Discard}
+	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
 	writeHub(t, a, "h", nil)
 	for _, m := range []string{"h/a", "h/b"} {
-		serveOwnerDaemon(t, a.ConfigDir, m, map[string]session.Response{session.OpAdd: {OK: true, Host: 1}}, false)
+		serveOwnerDaemon(t, a.Paths, m, map[string]session.Response{session.OpAdd: {OK: true, Host: 1}}, false)
 	}
 	const n = 15
 	var wg sync.WaitGroup
@@ -163,11 +163,11 @@ func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 		}
 	}
 	// The lock is a dotfile ending in .lock: never a machine, watch noise.
-	names, _ := config.List(a.ConfigDir)
+	names, _ := config.List(a.Paths.Config)
 	if !slices.Equal(names, []string{"h"}) {
 		t.Errorf("config.List = %v", names)
 	}
-	if !isWatchNoise(filepath.Join(config.MachinesDir(a.ConfigDir), ".h.toml.lock")) {
+	if !isWatchNoise(filepath.Join(config.MachinesDir(a.Paths.Config), ".h.toml.lock")) {
 		t.Error("the hub conf lock would wake status --watch")
 	}
 }
@@ -177,10 +177,10 @@ func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 func TestListMachinesSeesHubSocket(t *testing.T) {
 	a := newTestApp(t)
 	writeHub(t, a, "h", nil)
-	if err := config.EnsureRuntimeDir(a.ConfigDir); err != nil {
+	if err := a.Paths.EnsureRuntimeDir(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(config.RuntimeDir(a.ConfigDir), "h@web.sock"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(a.Paths.RuntimeDir(), "h@web.sock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := a.listMachines(); !slices.Equal(got, []string{"h", "h/web"}) {
@@ -203,7 +203,7 @@ func TestHubSessionSSHArgv(t *testing.T) {
 	if !ok {
 		t.Fatalf("hub machine backend %T is no HubSessioner", b)
 	}
-	master := filepath.Join(config.RuntimeDir(a.ConfigDir), "h@web.master")
+	master := filepath.Join(a.Paths.RuntimeDir(), "h@web.master")
 	if c := hs.SSHConn(); c.ControlPath != master || c.Host != "u@h.example" {
 		t.Errorf("SSHConn = %+v", c)
 	}
@@ -245,16 +245,16 @@ func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 	daemonGoneTimeout = 2 * time.Second
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
-	a := &App{ConfigDir: shortTempDir(t), Stdout: &out, Stderr: &out}
+	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: &out}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	first := serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{
+	first := serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Version: "v0.0.1", Forwards: []session.Forward{
 			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf}},
 		}},
 	}, true)
 	// The replacement: what `__daemon h/web` would be, listening as soon as
 	// the old socket is gone (the test binary itself runs no daemon).
-	sock := filepath.Join(config.RuntimeDir(a.ConfigDir), "h@web.sock")
+	sock := filepath.Join(a.Paths.RuntimeDir(), "h@web.sock")
 	// The spawned `__daemon` (this test binary, which refuses) exits within
 	// a millisecond; it waits for the stand-in to listen first, or Dial's
 	// check after the exit races the goroutine below.
@@ -270,7 +270,7 @@ func TestRestartDaemonsCyclesHubMachineDaemon(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		next <- serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{
+		next <- serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{
 			session.OpList: {OK: true, State: session.StateUp, Version: Version},
 		}, false)
 	}()
@@ -290,9 +290,9 @@ func TestDialForwardsRetriesHubMachine(t *testing.T) {
 	origInterval := runningPollInterval
 	runningPollInterval = 10 * time.Millisecond
 	t.Cleanup(func() { runningPollInterval = origInterval })
-	a := &App{ConfigDir: shortTempDir(t), Stdout: io.Discard, Stderr: io.Discard}
+	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	m, err := config.LoadHubMachine(a.ConfigDir, "h/web")
+	m, err := config.LoadHubMachine(a.Paths.Config, "h/web")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestDialForwardsRetriesHubMachine(t *testing.T) {
 	}
 	go func() {
 		time.Sleep(200 * time.Millisecond)
-		serveOwnerDaemon(t, a.ConfigDir, "h/web", map[string]session.Response{}, false)
+		serveOwnerDaemon(t, a.Paths, "h/web", map[string]session.Response{}, false)
 	}()
 	if _, err := a.dialForwards(m, 10*time.Second); err != nil {
 		t.Errorf("dialForwards did not retry until the daemon came up: %v", err)

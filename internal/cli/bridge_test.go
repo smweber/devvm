@@ -27,7 +27,7 @@ func stubBridge(t *testing.T, fb *fakeBridge, openErr error) *[]string {
 	t.Helper()
 	var calls []string
 	old := openBridgeSession
-	openBridgeSession = func(dir, name string, opts session.SessionOptions) (bridgeSub, error) {
+	openBridgeSession = func(dir config.Paths, name string, opts session.SessionOptions) (bridgeSub, error) {
 		if opts.OnEvent == nil {
 			t.Error("bridge session opened without an event handler")
 		}
@@ -43,7 +43,7 @@ func stubBridge(t *testing.T, fb *fakeBridge, openErr error) *[]string {
 
 func bridgeApp(t *testing.T) (*App, *bytes.Buffer) {
 	var errBuf bytes.Buffer
-	return &App{ConfigDir: t.TempDir(), Stderr: &errBuf}, &errBuf
+	return &App{Paths: testPaths(t.TempDir()), Stderr: &errBuf}, &errBuf
 }
 
 // attach/shell on a running smol machine hold a subscribed session for
@@ -104,7 +104,7 @@ func TestBridgeSessionStoppedVMIsANotice(t *testing.T) {
 	noRetries(t)
 	var opens atomic.Int32
 	old := openBridgeSession
-	openBridgeSession = func(string, string, session.SessionOptions) (bridgeSub, error) {
+	openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
 		opens.Add(1)
 		return newSignalBridge(), nil
 	}

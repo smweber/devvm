@@ -11,8 +11,8 @@ import (
 // directory nothing creates, and the first daemon spawn would fail opening
 // its log. Local names pass through unchanged.
 func TestRuntimePathsUseRuntimeName(t *testing.T) {
-	dir := t.TempDir()
-	run := config.RuntimeDir(dir)
+	dir := config.LegacyPaths(t.TempDir())
+	run := dir.RuntimeDir()
 	for _, tt := range []struct{ name, base string }{
 		{"web", "web"},
 		{"h/web", "h@web"},

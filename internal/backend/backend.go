@@ -68,21 +68,22 @@ type Backend interface {
 	Spawn(ctx context.Context, o ExecOpts, argv ...string) (*Session, error)
 }
 
-// For returns the backend implementation for a resolved machine. configDir is
-// used by the ssh backend for its isolated known_hosts and ControlMaster paths.
-func For(m *config.Machine, configDir string) (Backend, error) {
+// For returns the backend implementation for a resolved machine. The ssh
+// backend keeps its isolated known_hosts and ControlMaster sockets in
+// paths.State.
+func For(m *config.Machine, paths config.Paths) (Backend, error) {
 	switch m.Backend {
 	case config.BackendSmol:
 		return &smolBackend{m: m}, nil
 	case config.BackendRemoteManaged, config.BackendRemoteUnmanaged:
-		return &sshBackend{m: m, configDir: configDir}, nil
+		return &sshBackend{m: m, paths: paths}, nil
 	case config.BackendHub:
 		if m.IsHubMachine() {
-			return &hubBackend{m: m, hub: &sshBackend{m: m.Hub, configDir: configDir}}, nil
+			return &hubBackend{m: m, hub: &sshBackend{m: m.Hub, paths: paths}}, nil
 		}
 		// The hub itself is reached exactly like a remote box (its conf carries
 		// the same ssh fields); the shaping verbs refuse it before they get here.
-		return &sshBackend{m: m, configDir: configDir}, nil
+		return &sshBackend{m: m, paths: paths}, nil
 	default:
 		return nil, fmt.Errorf("machine %q has unsupported backend %q", m.Name, m.Backend)
 	}

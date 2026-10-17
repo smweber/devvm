@@ -53,7 +53,7 @@ func (a *App) runSession(name string) error {
 	if err := requireRunningForForwards(m, b, 0); err != nil {
 		return err
 	}
-	conn, err := session.DialConn(a.ConfigDir, name)
+	conn, err := session.DialConn(a.Paths, name)
 	if err != nil {
 		return err
 	}
@@ -93,10 +93,10 @@ func (a *App) resolveForwardsConf(name string) (*config.Machine, backend.Backend
 func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
 	if !m.IsHubMachine() {
 		m.Ports = edit(m.Ports)
-		return m.Save(a.ConfigDir)
+		return m.Save(a.Paths.Config)
 	}
 	machine := m.HubMachineName()
-	h, err := config.UpdateHubMachine(a.ConfigDir, m.Hub.Name, machine, func(hm *config.HubMachine) error {
+	h, err := config.UpdateHubMachine(a.Paths.Config, m.Hub.Name, machine, func(hm *config.HubMachine) error {
 		hm.Ports = edit(hm.Ports)
 		return nil
 	})
@@ -115,7 +115,7 @@ func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
 func (a *App) dialForwards(m *config.Machine, wait time.Duration) (*session.Client, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		cl, err := session.Dial(a.ConfigDir, m.Name)
+		cl, err := session.Dial(a.Paths, m.Name)
 		if err == nil || !m.IsHubMachine() || !time.Now().Before(deadline) {
 			return cl, err
 		}
@@ -130,7 +130,7 @@ func (a *App) startHubMachine(cmd *cobra.Command, args []string) error {
 	if err := a.proxy(cmd, args); err != nil {
 		return err
 	}
-	m, err := config.LoadHubMachine(a.ConfigDir, args[0])
+	m, err := config.LoadHubMachine(a.Paths.Config, args[0])
 	if err != nil {
 		return err
 	}

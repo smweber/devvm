@@ -16,8 +16,8 @@ import (
 // by the fake transport. This is the IPC that `port`/`tunnel` ride, minus a VM.
 func TestClientDaemonRoundTrip(t *testing.T) {
 	_, guest := echoServer(t)
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o755); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	d := newDaemon(dir, "t", "test", newFakeTransport(), nil)
@@ -30,7 +30,7 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 	d.ln = ln
 	go d.serveControl()
 
-	cl := &Client{configDir: dir, name: "t"}
+	cl := &Client{paths: dir, name: "t"}
 	if !cl.alive() {
 		t.Fatal("ping failed")
 	}
@@ -68,8 +68,8 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 }
 
 func TestWaitGone(t *testing.T) {
-	dir := shortTempDir(t)
-	if err := os.MkdirAll(config.RuntimeDir(dir), 0o700); err != nil {
+	dir := shortTempPaths(t)
+	if err := os.MkdirAll(dir.RuntimeDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// Nothing there: gone at once.
@@ -109,7 +109,7 @@ func TestWaitGone(t *testing.T) {
 // An empty name must never reach spawnDaemon's re-exec: under a binary
 // other than devvm, `__daemon ”` recurses into a fork bomb.
 func TestDialRefusesEmptyName(t *testing.T) {
-	dir := t.TempDir()
+	dir := config.LegacyPaths(t.TempDir())
 	if _, err := Dial(dir, ""); err == nil {
 		t.Fatal("Dial with an empty name succeeded")
 	}

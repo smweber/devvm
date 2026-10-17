@@ -18,7 +18,7 @@ import (
 // it resolves silently and errors — naming the flag — on a required field that
 // has no default. So create is fully scriptable and predictable either way.
 func (a *App) gatherCreateSpec(s *createSpec) error {
-	defaults, err := config.LoadDefaults(a.ConfigDir)
+	defaults, err := config.LoadDefaults(a.Paths.Config)
 	if err != nil {
 		return err
 	}

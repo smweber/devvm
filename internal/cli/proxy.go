@@ -22,8 +22,8 @@ import (
 // hub-side name, and the hub's own devvm does the work against its own
 // registry. The remote command line is *rebuilt* from the parsed cobra
 // command — the leaf's path, the flags that were explicitly set, the
-// positionals — never replayed from os.Args: the persistent --config-dir
-// names a laptop directory and must never be sent, and `exec`/`keys add`
+// positionals — never replayed from os.Args: the persistent --config-dir and
+// --state-dir name laptop directories and must never be sent, and `exec`/`keys add`
 // disable flag parsing precisely so the guest command's own arguments (a
 // guest --config-dir after `exec NAME --`, say) pass through untouched.
 //
@@ -108,10 +108,10 @@ func (a *App) hubOrStopForwards(local func(cmd *cobra.Command, args []string) er
 		if err := a.proxy(cmd, args); err != nil {
 			return err
 		}
-		if cl, err := session.Existing(a.ConfigDir, args[0]); err == nil && cl.Stop() == nil {
+		if cl, err := session.Existing(a.Paths, args[0]); err == nil && cl.Stop() == nil {
 			// Waited out, so a `start HUB/NAME` right after spawns its
 			// daemon against a released master, not the old one's.
-			_ = session.WaitGone(a.ConfigDir, args[0], daemonGoneTimeout)
+			_ = session.WaitGone(cl.Paths(), args[0], daemonGoneTimeout)
 		}
 		return nil
 	}
@@ -136,7 +136,7 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 	}
 	leaf := strings.Fields(cmd.CommandPath())[1:] // drop the root's own name
 	if proxiedStateVerbs[leaf[0]] {
-		defer config.TouchChanged(a.ConfigDir) // wake `status --watch`
+		defer config.TouchChanged(a.Paths) // wake `status --watch`
 	}
 	var runs [][]string
 	switch strings.Join(leaf, " ") {
@@ -347,7 +347,8 @@ func hubArgv(cmd *cobra.Command, args []string) ([]string, error) {
 // flag). A true bool is the bare --name; a slice flag repeats. It walks
 // cmd.Flags(), the set that parsed (Visit yields only what was set);
 // cobra's LocalFlags() is a copy of the definitions with no parse state.
-// Inherited flags — the root's --config-dir — are the laptop's and skipped.
+// Inherited flags — the root's --config-dir and --state-dir — are the
+// laptop's and skipped.
 func setFlags(cmd *cobra.Command) []string {
 	var out []string
 	inherited := cmd.InheritedFlags()

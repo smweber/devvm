@@ -481,7 +481,7 @@ func TestHubCopyRoundTrip(t *testing.T) {
 	}
 	before := len(sshLines(t, sshLog))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH")) // the fake scp, as the login shell had it
-	hub := &App{ConfigDir: hubCfg}
+	hub := &App{Paths: config.LegacyPaths(hubCfg)}                       // the layout `--config-dir hubCfg` alone means
 	// Cut at the trailer, and cut at an entry boundary behind a NUL-tailed
 	// entry (the tail alone looks like a trailer): both refused before any
 	// exec reaches the machine.

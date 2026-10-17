@@ -59,17 +59,17 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 	if _, _, isHub, err := config.SplitHubName(name); err != nil {
 		return nil, nil, err
 	} else if isHub {
-		m, err := config.LoadHubMachine(a.ConfigDir, name)
+		m, err := config.LoadHubMachine(a.Paths.Config, name)
 		if err != nil {
 			return nil, nil, err
 		}
-		b, err := backend.For(m, a.ConfigDir)
+		b, err := backend.For(m, a.Paths)
 		if err != nil {
 			return nil, nil, err
 		}
 		return m, b, nil
 	}
-	m, err := config.Load(a.ConfigDir, name)
+	m, err := config.Load(a.Paths.Config, name)
 	if errors.Is(err, config.ErrNotFound) {
 		if err2 := config.ValidName(name); err2 != nil {
 			return nil, nil, err2
@@ -82,7 +82,7 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 	} else if err != nil {
 		return nil, nil, err
 	}
-	b, err := backend.For(m, a.ConfigDir)
+	b, err := backend.For(m, a.Paths)
 	if err != nil {
 		return nil, nil, err
 	}

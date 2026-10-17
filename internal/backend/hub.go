@@ -219,7 +219,7 @@ type HubSessioner interface {
 // one path shared between them would let either kill the other's -L).
 func (b *hubBackend) SSHConn() SSHConn {
 	c := b.hub.SSHConn()
-	c.ControlPath = filepath.Join(config.RuntimeDir(b.hub.configDir), config.RuntimeName(b.m.Name)+".master")
+	c.ControlPath = filepath.Join(b.hub.paths.RuntimeDir(), config.RuntimeName(b.m.Name)+".master")
 	return c
 }
 

@@ -32,21 +32,21 @@ func (a *App) listMachines() []string {
 			names = append(names, n)
 		}
 	}
-	local, _ := config.List(a.ConfigDir)
+	local, _ := config.List(a.Paths.Config)
 	for _, n := range local {
 		add(n)
-		m, err := config.Load(a.ConfigDir, n)
+		m, err := config.Load(a.Paths.Config, n)
 		if err != nil || !m.IsHub() {
 			continue // a broken conf is still listed (status shows it as such)
 		}
 		for mn := range m.Machines {
 			add(config.JoinHubName(n, mn))
 		}
-		for _, mn := range cachedHubMachines(a.ConfigDir, n) {
+		for _, mn := range cachedHubMachines(a.Paths, n) {
 			add(config.JoinHubName(n, mn))
 		}
 	}
-	for _, n := range liveHubSockets(a.ConfigDir) {
+	for _, n := range liveHubSockets(a.Paths) {
 		add(n)
 	}
 	sort.Strings(names)
@@ -57,9 +57,9 @@ func (a *App) listMachines() []string {
 // (hublist.go): column 1 of each --plain row, which the hub emits as bare
 // names. A hint for enumeration and completion only; the merged listing
 // says whether a machine is still there.
-func cachedHubMachines(configDir, hub string) []string {
+func cachedHubMachines(paths config.Paths, hub string) []string {
 	var names []string
-	for _, r := range readHubCache(configDir, hub) {
+	for _, r := range readHubCache(paths, hub) {
 		names = append(names, r.name)
 	}
 	return names
@@ -69,8 +69,8 @@ func cachedHubMachines(configDir, hub string) []string {
 // (daemon crashed) is listed too; status pings it and shows no daemon, which
 // is the truthful answer. Local sockets carry no '@' and are skipped: their
 // machines come from config.List.
-func liveHubSockets(configDir string) []string {
-	matches, _ := filepath.Glob(filepath.Join(config.RuntimeDir(configDir), "*@*.sock"))
+func liveHubSockets(paths config.Paths) []string {
+	matches, _ := filepath.Glob(filepath.Join(paths.RuntimeDir(), "*@*.sock"))
 	var names []string
 	for _, p := range matches {
 		rt := strings.TrimSuffix(filepath.Base(p), ".sock")

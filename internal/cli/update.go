@@ -217,7 +217,15 @@ func (a *App) runUpdate(ctx context.Context, u *updater, o updateOpts) error {
 	// Hand off to the new code for the post-install steps. exec only returns
 	// on failure, in which case the binary is installed but the daemons were
 	// not cycled; say so rather than pretend.
-	argv := []string{exe, "--config-dir", a.ConfigDir, "update", "--finish-from", current}
+	// --state-dir only when the successor would not derive it from
+	// --config-dir alone: a pre-split release (`update --version` to one)
+	// doesn't know the flag. Downgrading across the split is otherwise
+	// unsupported: that binary looks for daemons in the old run/ only.
+	argv := []string{exe, "--config-dir", a.Paths.Config}
+	if a.Paths.State != stateDirFor(a.Paths.Config) {
+		argv = append(argv, "--state-dir", a.Paths.State)
+	}
+	argv = append(argv, "update", "--finish-from", current)
 	if err := reexec(exe, argv, os.Environ()); err != nil {
 		return fmt.Errorf("installed %s at %s but could not re-exec it to finish (%v); run 'devvm ports down NAME' and 'devvm ports up NAME' for any running forwards", tag, exe, err)
 	}
@@ -273,61 +281,78 @@ type restartResult struct {
 // on this build. Errors are reported per machine and never abort the rest.
 func (a *App) restartDaemons() restartResult {
 	var res restartResult
+	// A daemon from before the paths split may still serve from the config
+	// dir's run/ (MigrateState leaves a live daemon's files in place, and
+	// clients use it there rather than spawn a sibling), so both layouts
+	// are checked, the old one first: its forwards come back on a daemon
+	// under the state dir, which the second pass then finds current.
+	layouts := []config.Paths{a.Paths}
+	if old := config.LegacyPaths(a.Paths.Config); old != a.Paths {
+		layouts = []config.Paths{old, a.Paths}
+	}
 	for _, name := range a.listMachines() {
-		cl, err := session.Existing(a.ConfigDir, name)
-		if err != nil {
-			continue // no daemon: nothing running old code
-		}
-		st, err := cl.Status()
-		if err != nil {
-			fmt.Fprintf(a.Stderr, "devvm: %s: query forwards: %v\n", name, err)
-			res.failed = append(res.failed, name)
-			continue
-		}
-		skip := func(why string) {
-			fmt.Fprintf(a.Stdout, "%s: %s\n", name, why)
-			res.skipped = append(res.skipped, name)
-		}
-		switch {
-		case st.Version == Version && Version != "dev":
-			skip("forward daemon already runs " + Version)
-			continue
-		case st.Reconnecting():
-			skip("forward daemon is reconnecting; not restarted, it picks up the new binary next time it is started")
-			continue
-		}
-		configured := anyConfiguredForward(a.ConfigDir, name, st.Forwards)
-		if err := cl.Stop(); err != nil {
-			fmt.Fprintf(a.Stderr, "devvm: %s: stop forwards: %v\n", name, err)
-			res.failed = append(res.failed, name)
-			continue
-		}
-		if !session.WaitGone(a.ConfigDir, name, daemonGoneTimeout) {
-			fmt.Fprintf(a.Stderr, "devvm: %s: old forward daemon did not exit within %s\n", name, daemonGoneTimeout)
-			res.failed = append(res.failed, name)
-			continue
-		}
-		if !configured {
-			fmt.Fprintf(a.Stdout, "%s: stopped forward daemon (no configured forwards up; sessions reconnect to a new one on their own)\n", name)
-			res.cycled = append(res.cycled, name)
-			continue
-		}
-		fmt.Fprintf(a.Stdout, "restarting forwards for %s\n", name)
-		if err := a.tunnelUp(name); err != nil {
-			fmt.Fprintf(a.Stderr, "devvm: %s: bring forwards back up: %v\n", name, err)
-			res.failed = append(res.failed, name)
-			continue
-		}
-		if cl, err := session.Existing(a.ConfigDir, name); err == nil {
-			if st, err := cl.Status(); err == nil && st.Version != Version {
-				fmt.Fprintf(a.Stderr, "devvm: %s: new forward daemon reports %q, expected %q\n", name, st.Version, Version)
-				res.failed = append(res.failed, name)
-				continue
+		for _, at := range layouts {
+			cl, err := session.ExistingIn(at, name)
+			if err != nil {
+				continue // no daemon: nothing running old code
 			}
+			a.restartDaemon(&res, name, cl)
 		}
-		res.cycled = append(res.cycled, name)
 	}
 	return res
+}
+
+// restartDaemon cycles one daemon found by restartDaemons, recording the
+// outcome in res.
+func (a *App) restartDaemon(res *restartResult, name string, cl *session.Client) {
+	st, err := cl.Status()
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "devvm: %s: query forwards: %v\n", name, err)
+		res.failed = append(res.failed, name)
+		return
+	}
+	skip := func(why string) {
+		fmt.Fprintf(a.Stdout, "%s: %s\n", name, why)
+		res.skipped = append(res.skipped, name)
+	}
+	switch {
+	case st.Version == Version && Version != "dev":
+		skip("forward daemon already runs " + Version)
+		return
+	case st.Reconnecting():
+		skip("forward daemon is reconnecting; not restarted, it picks up the new binary next time it is started")
+		return
+	}
+	configured := anyConfiguredForward(a.Paths.Config, name, st.Forwards)
+	if err := cl.Stop(); err != nil {
+		fmt.Fprintf(a.Stderr, "devvm: %s: stop forwards: %v\n", name, err)
+		res.failed = append(res.failed, name)
+		return
+	}
+	if !session.WaitGone(cl.Paths(), name, daemonGoneTimeout) {
+		fmt.Fprintf(a.Stderr, "devvm: %s: old forward daemon did not exit within %s\n", name, daemonGoneTimeout)
+		res.failed = append(res.failed, name)
+		return
+	}
+	if !configured {
+		fmt.Fprintf(a.Stdout, "%s: stopped forward daemon (no configured forwards up; sessions reconnect to a new one on their own)\n", name)
+		res.cycled = append(res.cycled, name)
+		return
+	}
+	fmt.Fprintf(a.Stdout, "restarting forwards for %s\n", name)
+	if err := a.tunnelUp(name); err != nil {
+		fmt.Fprintf(a.Stderr, "devvm: %s: bring forwards back up: %v\n", name, err)
+		res.failed = append(res.failed, name)
+		return
+	}
+	if cl, err := session.Existing(a.Paths, name); err == nil {
+		if st, err := cl.Status(); err == nil && st.Version != Version {
+			fmt.Fprintf(a.Stderr, "devvm: %s: new forward daemon reports %q, expected %q\n", name, st.Version, Version)
+			res.failed = append(res.failed, name)
+			return
+		}
+	}
+	res.cycled = append(res.cycled, name)
 }
 
 // anyConfiguredForward reports whether at least one of the daemon's
