@@ -1,6 +1,7 @@
 # Proposal: provider backends (devvm creates and destroys cloud VMs)
 
-Status: draft v1, 2026-10-17, from a design discussion with the user. Not
+Status: draft v1.1, 2026-10-17, from a design discussion with the user
+(v1.1: token stored by the CLI, cache-first watch; see the review log). Not
 scheduled. It **depends on `config.md`** (the config redesign) having landed
 and the three hosts having migrated (`config.md` §8); `config.md` §9 records
 the constraints that redesign keeps for this one. First provider: Hetzner
@@ -48,7 +49,7 @@ helps with least.
 
 ```toml
 [providers.hetzner]              # one table per provider; credentials never here
-token_env = "HCLOUD_TOKEN"       # default; the env var holding the API token
+                                 # (the token lives in the state dir; §1 "The token")
 location = "nbg1"                # default placement
 image = "ubuntu-24.04"           # image name or id; must boot sshd with root + key
 ssh_key = "scott-laptop"         # name of a key already uploaded to the project
@@ -65,16 +66,42 @@ server_type = "cx23"             # sizing for provider boxes; memory/disk stay s
   `machines`. `config check` validates it (unknown provider name is an
   error; unknown keys are errors, as elsewhere). `config add`/`rm` never
   touch it; it is written by hand with `config edit`.
-- **The token is never in the file.** `token_env` names an environment
-  variable. A missing variable is a one-line error naming it, only when a
-  provider operation actually runs; `status` with no token lists no provider
-  rows and says why once, it does not fail.
+- **The token is never in the file** (below).
 - `server_type`, `location`, `image` and `ipv4` are **template fields** too
   (template overrides provider table overrides built-in), so `[templates.big]
   server_type = "cx43"` works. `memory`/`disk` are ignored on a provider box
   and `config check` warns (the §3 rule from `config.md`).
-- The shared file carries this across hosts. Two laptops with the same
-  `HCLOUD_TOKEN` see the same VMs: that is the point.
+- The shared file carries this across hosts. Two laptops with tokens for
+  the same project see the same VMs: that is the point.
+
+**The token.** It is per-host credential state, so it lives with the other
+per-host state, never in `devvm.toml` and never in dotfiles:
+
+- **Storage:** `$XDG_STATE_HOME/devvm/providers/hetzner.token`, mode 0600 in
+  a 0700 directory, one line. `HCLOUD_TOKEN` in the environment **overrides**
+  the file, for scripts and for parity with the `hcloud` CLI, which reads the
+  same variable. Each host holds its own token, so one laptop can be revoked
+  in the Hetzner console without touching the others.
+- **First use asks.** A lifecycle command (`create`, `delete`, `start`,
+  `stop`) on a TTY with no token prompts for it with echo off, validates it
+  with one `GET /servers`, and stores it. That is the only prompt.
+- **`devvm providers token hetzner`** sets it explicitly (hidden prompt, or
+  stdin when not a TTY), validating before writing; `--clear` removes it.
+  This is the rotation path and the thing every no-TTY failure points at.
+- **Nothing without a TTY ever prompts.** `status`, `status --watch` and a
+  scripted lifecycle command with no token print one line naming the
+  command above and, for `status`, fall back to the cache (§5). The menu bar
+  app therefore needs no environment plumbing: it runs the CLI as the user,
+  and the CLI finds the file. The app may grow a "Set Hetzner token…" item
+  that opens a terminal on that command; nothing more.
+- **Who reads it:** only the CLI's provider calls. The daemon never does
+  (§8). It never appears in argv or logs.
+- **Plaintext at rest**, 0600, the posture of the `hcloud` CLI's own config,
+  an unencrypted ssh key, or `gh`'s file fallback. Keychain (macOS) and
+  secret-service (Linux) can later sit behind the same command without
+  changing anything else. A write-scoped token can delete every server in
+  its project, so treat the file as a private key, and see the project
+  recommendation in §8.
 
 ### 2. Discovered, labelled, no entry
 
@@ -181,19 +208,46 @@ that matters, and shares `backend/ssh.go`:
 
 ### 5. Status, cache and `--plain`
 
-- `status` adds one API call per configured provider, alongside the per-hub
-  fan-out. It reuses the hub listing's shape: a deadline, a per-source cache
-  (`cache/provider-hetzner.list`) returned stale on failure with the rows
-  marked, so a menu bar `status --watch` loop with no network shows the last
-  known servers rather than nothing. `status --local` skips providers as it
-  skips hubs.
-- `--plain` rows: backend column `hetzner`; state ∈ {running, stopped,
+`status --watch` is event-driven today: it re-emits on fsnotify events for
+the config and state dirs and on blocks from each hub's held listing pipe,
+and it never polls (`status_watch.go`). A provider has no pipe and nothing
+that pushes, so provider rows must not be fetched on the snapshot path, or
+every daemon touch of `run/` would cost an HTTP round trip and, offline, a
+deadline.
+
+- **Cache-first in watch mode.** Provider rows in `status --watch` come from
+  the per-source cache (`cache/provider-hetzner.list`, the hub cache's
+  shape) and never from a live call on the snapshot path. The cache refreshes
+  two ways:
+  - a **timer in the watch loop, every 60s**, only while a provider is
+    configured and a token is present (one small HTTPS `GET` per provider per
+    minute, no persistent connection; Hetzner allows 3600 requests/hour per
+    project);
+  - **immediately after devvm's own lifecycle commands.** `create`,
+    `delete`, `start` and `stop` already hold the API's answer, so they write
+    it into the cache and `TouchChanged`; the menu updates within the
+    debounce window, as for a smol VM today. Only a change made in the
+    Hetzner console lags, by up to a minute.
+- **One-shot `status`** (no `--watch`) makes the live call with the hub
+  listing's deadline and falls back to the cache on failure: a human typed
+  it and wants fresh. `status --local` skips providers as it skips hubs.
+- **When the source can't be read** (no token, no network, API error), the
+  cached rows are shown with their last-known state and `status -v` names
+  the source and the reason (`hetzner: no token (devvm providers token
+  hetzner)`, `hetzner: listing failed, cached 3m ago`). In `--plain` the
+  state is `?`, an existing token, **not** `unreachable`, which on a hub row
+  means "the hub didn't answer" and here would read as "the box is down".
+  Forwards for a provider box are its daemon's over ssh and show regardless
+  (§4), so a running `attach` keeps its tile.
+- **`--plain` rows:** backend column `hetzner`; state ∈ {running, stopped,
   starting, stopping, ?} mapped from Hetzner's `status` (`initializing`,
   `starting` → starting; `off` → stopped; `deleting`, `rebuilding`,
   `migrating`, `unknown` → `?`). The fifth column is `managed`/`unmanaged`
-  from the label. No new tokens, so the Swift app needs no change; an
-  `unreachable` provider shows its cached rows as hubs do.
-- `status -v` shows server type, location and address from the row.
+  from the label. No new tokens, so the Swift app needs no change. Note that
+  this is **more truthful than a `remote` entry**, which reports
+  `reachable` unconditionally (devvm never probes remotes, `status.go:107`);
+  a provider row carries real power state.
+- `status -v` shows server type, location, address and the cache age.
 
 ### 6. Hubs
 
@@ -249,9 +303,17 @@ boundary and that `backend` values for providers are the provider name, so
 - API errors are surfaced verbatim with the HTTP status; rate limits are not
   retried (the loop that could hit them is `status --watch`, which is why it
   caches).
-- The token is read from the environment only; it never appears in argv,
-  logs or the daemon's spawn (the daemon never calls the API: it gets the
-  address in its `Machine` as it does for a `remote` box).
+- The token is read from the state-dir file or `HCLOUD_TOKEN` (§1); it
+  never appears in argv, logs or the daemon's spawn (the daemon never calls
+  the API: it gets the address in its `Machine` as it does for a `remote`
+  box).
+- **Use a separate Hetzner project for devvm boxes.** Projects are free and
+  a token is scoped to one. The user's current project holds production
+  servers; a dedicated project means a leaked or misused devvm token cannot
+  reach them, the unmanaged list is short, and the never-promote gate in §2
+  is defence in depth rather than the only thing between `setup` and an
+  outage. The proposal recommends it in `create`'s first-run prompt text and
+  in the docs; it does not enforce it.
 
 ## CLI surface after
 
@@ -261,6 +323,7 @@ boundary and that `backend` values for providers are the provider name, so
 - **Everything else** unchanged.
 - **Config:** `[providers.hetzner]` by hand; `config check` and `config show`
   cover it.
+- **Providers:** `providers token hetzner [--clear]` (the only new leaf).
 
 A fresh cloud box is `create web --backend hetzner`, `attach web`, and later
 `delete web`.
@@ -270,13 +333,14 @@ A fresh cloud box is `create web --backend hetzner`, `attach web`, and later
 1. **Provider interface and the Hetzner client** (`internal/provider`,
    `internal/provider/hetzner`) with a fake and tests against recorded
    responses. No CLI.
-2. **Discovery and reach**: the provider source in resolve and in `status`
-   (with the cache), the `hetzner` backend value built on `sshBackend`,
+2. **Token and discovery**: the token file and `providers token`; the
+   provider source in resolve and in `status` (cache-first in watch mode with
+   the 60s timer), the `hetzner` backend value built on `sshBackend`,
    `--plain` mapping, `config check` for `[providers.*]`.
 3. **Lifecycle**: `create --backend hetzner` through `setup`, `delete` with
    cleanup, `start`/`stop` with the billing warning and the unmanaged
-   confirm.
-4. **Live test** against the user's project: create, attach, auth, ports,
+   confirm; each writes the cache it just learned.
+4. **Live test** against a dedicated devvm project (§8): create, attach, auth, ports,
    bridge, stop/start, delete, then the same from a second host.
 
 ## Open questions
@@ -292,6 +356,21 @@ reopened:
   production servers an accidental `setup` would break. The same discussion
   tightened promotion of discovered smol VMs in `config.md` §3 (`--adopt`
   plus a typed name, no `--yes`).
+- **Token storage:** a CLI-owned 0600 file in the state dir, prompted for
+  on first use, `providers token` to rotate; env var overrides (§1). The
+  user first chose env-var-only, then preferred this once it was clear the
+  menu bar app copies only `PATH` from the login shell (`Devvm.swift:34`)
+  and would never see the variable.
+- **Watch cost:** cache-first with a 60s timer; lifecycle commands write
+  the cache (§5). Raised by the user ("will its loop be too heavy?").
+
+## Review log
+
+**v1 → v1.1** (2026-10-17, with the user): token moved from `token_env` to a
+CLI-owned state-dir file with a first-use prompt and `providers token`
+(§1, §8); `status --watch` made cache-first with a 60s refresh and
+lifecycle-written cache (§5); `?` not `unreachable` for an unreadable
+source; separate-project recommendation (§8).
 
 ## Dependencies on `config.md`
 
