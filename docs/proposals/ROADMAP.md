@@ -174,7 +174,10 @@ redesign: they build on resolve's source list, templates, `setup` and
   from a second host.
 - Follow-ups (not scheduled): v6-only live test; mosh with a bare v6 host;
   the next fixture recording should use a throwaway key; `cp-in` ~4× slower
-  than `cp-out`. Notes for step 3 from review: put a
+  than `cp-out`; let `[providers.hetzner]` carry a default `server_type`
+  (user, 2026-10-17: it is provider-specific, so it reads oddly in
+  `[templates.default]`; today it is a template field or `--server-type`,
+  built-in `cx23`). Notes for step 3 from review: put a
   deadline on `Create`; `stop` should `Get` first and skip an already-off
   server; step 2 warns on a token file mode wider than 0600.
 
@@ -244,13 +247,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
   a further Tab does not descend into it; the user has to type a second `/`
   and delete it before Tab lists the directory's contents. The completer
   should treat a selected directory (trailing `/`) as the new prefix.
-- **`TestWatchFollowsSymlinkRetarget` is flaky on macOS CI** (2026-10-17):
-  the kqueue watcher sometimes misses a symlink renamed over `devvm.toml`
-  under `-race` on the runner; the watcher code did not change between a
-  passing and two failing runs. Real-world impact: a stow relink of
-  devvm.toml on a Mac may not be noticed by a running `status --watch`
-  until the next event.
-Real:
 
 - **An external `devvm exec` storm can exhaust a fake-smolvm hub.** On
   2026-10-17 the cloud hub received ~7,800 `exec web -- … toggledark dark`
@@ -310,6 +306,12 @@ Cosmetic or accepted:
 
 ## Lessons (don't relearn)
 
+- **macOS kqueue coalesces a relink into nothing** (2026-10-17): a symlink
+  created and renamed over `devvm.toml` under load merges into one dir
+  event; fsnotify's listing then finds nothing new and the old target's fd
+  stays watched, so no Create/Remove ever fires. `status --watch`
+  re-resolves a symlinked `devvm.toml` on a 2s timer for that reason. A
+  test that "passed once on macOS" after a kqueue change proved nothing.
 - **A scratch binary that imports `internal/session` must hand `__daemon`
   to the real devvm.** `spawnDaemon` re-execs `os.Executable()`; under a
   scratch tool that recursed into a fork bomb that took the 2 GB guest down
