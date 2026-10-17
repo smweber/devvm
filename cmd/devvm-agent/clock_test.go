@@ -61,3 +61,39 @@ func TestClockSetError(t *testing.T) {
 		t.Errorf("reply line %q", s)
 	}
 }
+
+// A failing sudo's error text must not vary with the time it tried, or the
+// once-per-distinct-error logs (agent and daemon) would fire every minute.
+func TestDateErrorStable(t *testing.T) {
+	run := func(at time.Time) error {
+		// What exec reports for `sudo -n date ... @SECS` that wants a password.
+		out := []byte("sudo: a password is required\n")
+		return dateError(errors.New("exit status 1"), out)
+	}
+	a, b := run(time.Unix(1760000000, 0)), run(time.Unix(1760000060, 0))
+	if a == nil || a.Error() != b.Error() {
+		t.Fatalf("errors differ: %v / %v", a, b)
+	}
+	if a.Error() != "sudo -n date: exit status 1: sudo: a password is required" {
+		t.Errorf("error = %q", a)
+	}
+	if dateError(nil, []byte("Sat Oct 17")) != nil {
+		t.Error("a successful date reported an error")
+	}
+}
+
+// Two failing steps at different times log once: the agent's dedupe holds
+// across the minute's requests.
+func TestClockSetErrorStableAcrossRequests(t *testing.T) {
+	guest := time.Unix(1760000000, 0)
+	c, sets := fakeClock(guest, nil)
+	c.set = func(at time.Time) error {
+		*sets = append(*sets, at)
+		return dateError(errors.New("exit status 1"), []byte("sudo: a password is required"))
+	}
+	r1 := c.handle(guest.Add(time.Hour))
+	r2 := c.handle(guest.Add(time.Hour + time.Minute))
+	if r1.Result != r2.Result || c.lastErr == "" || len(*sets) != 2 {
+		t.Errorf("results %q / %q, lastErr %q, %d sets", r1.Result, r2.Result, c.lastErr, len(*sets))
+	}
+}

@@ -183,9 +183,9 @@ redesign: they build on resolve's source list, templates, `setup` and
 
 ## After the config redesign (agreed order)
 
-1. **Known issues** (below), the real ones first: guest clock after host
-   suspend, killed daemon orphaning its ControlMaster,
-   SIGINT leaking the cp spool, the cold-boot bridge retry.
+1. **Known issues** (below), the real ones first: killed daemon orphaning
+   its ControlMaster, SIGINT leaking the cp spool, the cold-boot bridge
+   retry.
 2. **The ssh agent exec for remote boxes** (bridge §1 "Remote"): thin remote
    `auth`, `BROWSER` plumbing on remote boxes (bridge §5), deletion of
    `--auth` and the second agent socket. Deferred from the bridge plan
@@ -252,6 +252,9 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 Cosmetic or accepted:
 
+- A bare `devvm exec NAME …` with no daemon up (no forwards, no
+  subscriber) still sees a stale guest clock after a host suspend: the
+  daemon syncs the clock only while it holds the agent exec.
 - An external `devvm exec` storm (~7,800 calls in two hours from a client's
   hook) OOM-killed the fake-smolvm cloud hub. Not devvm's to fix: every hub
   exec is a login shell by design, and a rate limit would only make the

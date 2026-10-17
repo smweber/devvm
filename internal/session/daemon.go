@@ -1514,6 +1514,17 @@ func (d *daemon) status() (state string, since time.Time) {
 	return d.state, d.since
 }
 
+// nudgeClock asks the current transport to sync its guest's clock now
+// (clockNudger), if it does that and one is up. Non-blocking.
+func (d *daemon) nudgeClock() {
+	d.mu.Lock()
+	tr := d.tr
+	d.mu.Unlock()
+	if c, ok := tr.(clockNudger); ok {
+		c.nudgeClock()
+	}
+}
+
 // requestKick asks the reconnect loop to retry now. Non-blocking; a kick
 // while up or while one is already queued is a no-op.
 func (d *daemon) requestKick() {
@@ -1595,6 +1606,7 @@ func (d *daemon) dispatch(req Request) Response {
 		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount(), Shim: d.shimPath()}
 	case OpKick:
 		d.requestKick()
+		d.nudgeClock()
 		return Response{OK: true}
 	case OpStop:
 		defer d.triggerStop()

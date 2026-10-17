@@ -60,9 +60,9 @@ func (c *clockSyncer) handle(host time.Time) agentrpc.ClockReply {
 		}
 		return r
 	}
+	// No line of its own for a step: the daemon logs it from the reply.
 	c.lastErr = ""
 	r.Result = agentrpc.ClockStepped
-	log.Printf("clock: stepped %s to the host's (%s)", r.Drift, target.UTC().Format(time.RFC3339))
 	return r
 }
 
@@ -81,11 +81,19 @@ func setClock(t time.Time) error {
 	// Whole seconds (busybox's @ takes no fraction), rounded.
 	at := fmt.Sprintf("@%d", t.Add(500*time.Millisecond).Unix())
 	out, err := exec.CommandContext(ctx, "sudo", "-n", "date", "-u", "-s", at).CombinedOutput()
-	if err != nil {
-		if msg := strings.TrimSpace(string(out)); msg != "" {
-			return fmt.Errorf("sudo -n date -u -s %s: %v: %s", at, err, msg)
-		}
-		return fmt.Errorf("sudo -n date -u -s %s: %v", at, err)
+	return dateError(err, out)
+}
+
+// dateError is setClock's error for a failed `sudo -n date`. It never
+// names the time it tried: both ends log an error once per distinct text
+// (the agent's lastErr, the daemon's syncClock), and a timestamp in it
+// would make every minute's refusal new.
+func dateError(err error, out []byte) error {
+	if err == nil {
+		return nil
 	}
-	return nil
+	if msg := strings.Join(strings.Fields(string(out)), " "); msg != "" {
+		return fmt.Errorf("sudo -n date: %v: %s", err, msg)
+	}
+	return fmt.Errorf("sudo -n date: %v", err)
 }

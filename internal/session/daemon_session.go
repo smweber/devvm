@@ -223,6 +223,9 @@ func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 		// too (errUpstreamReconnecting): an ack would claim a subscription
 		// the hub never saw.
 		d.subscribe(s)
+		// A new subscriber (attach/shell/auth) is about to use the guest:
+		// fix its clock now rather than at the next tick (syncClock).
+		d.nudgeClock()
 		if err := d.syncUpstream(true); err != nil {
 			return Response{Err: NotUpstreamPrefix + err.Error()}
 		}

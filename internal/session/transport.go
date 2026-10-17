@@ -63,6 +63,16 @@ type subscriber interface {
 	setSubscribed(on bool) error
 }
 
+// clockNudger is a transport that keeps its guest's clock in sync (smol:
+// syncClock over the agent exec) and can be asked to sync now: on a kick
+// and on a new subscriber, the moments after a host wake when a user is
+// about to use the guest. Optional; only smolTransport implements it (a
+// hub machine's sync is its hub daemon's, nudged there by the relayed
+// subscribe).
+type clockNudger interface {
+	nudgeClock()
+}
+
 // shimReporter is a transport that knows the guest path of the BROWSER shim
 // (browser-bridge.md §5): smol's own install, or a hub machine's as its hub
 // daemon reported it. ping carries it, so thin `auth` never installs

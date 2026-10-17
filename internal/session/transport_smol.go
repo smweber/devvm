@@ -26,6 +26,7 @@ type smolTransport struct {
 	fwds  forwardSet         // this transport's listeners; Close drops them all
 	evCh  chan bridgeRequest // the guest's open-url requests (events)
 	paths agentbin.Paths     // what Install put in the guest (ping reports the shim)
+	clock chan struct{}      // nudgeClock: sync the guest's clock now (buffered 1)
 }
 
 func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend) (*smolTransport, error) {
@@ -53,9 +54,10 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 		agent.Close()
 		return nil, err
 	}
-	t := &smolTransport{agent: agent, mux: mux, evCh: make(chan bridgeRequest), paths: paths}
+	t := &smolTransport{agent: agent, mux: mux, evCh: make(chan bridgeRequest), paths: paths,
+		clock: make(chan struct{}, 1)}
 	go serveEvents(mux, t.evCh)
-	go syncClock(mux, clockSyncInterval)
+	go syncClock(mux, clockSyncInterval, t.clock)
 	return t, nil
 }
 
@@ -64,19 +66,25 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 const clockSyncInterval = 60 * time.Second
 
 // syncClock pushes this host's wall clock to the agent once now (every
-// dial, first and each reconnect) and then every interval, until the
-// session dies; the agent steps the guest's clock when it is 2s or more
+// dial, first and each reconnect), on every nudge (a kick, a new
+// subscriber: nudgeClock) and every interval, until the session dies; the agent steps the guest's clock when it is 2s or more
 // off. A smol guest does not resync after the host suspends, and its init
 // runs no time daemon, so this is its time sync: over the one agent exec,
 // nothing installed. Only while a daemon holds the exec: an unmanaged VM
 // never gets one, and a hub machine's exec (and its sync) is the hub
 // daemon's, so neither the ssh nor the hub transport does this.
 //
+// The nudges matter after a host wake: the ticker runs on the monotonic
+// clock, which stops during suspend, so its first tick after a wake can be
+// up to interval late, while an attach then wants the clock right before
+// the user types. One exchange at a time, never two time streams at once:
+// a nudge that lands while one is in flight is satisfied by it.
+//
 // It logs only a step or a failure (each distinct failure once), never an
 // "ok". An agent older than the time stream stops it after one line. Close
 // never waits on it: the session's end stops the loop, and one exchange is
 // bounded by agentrpc's own deadline.
-func syncClock(mux *yamux.Session, interval time.Duration) {
+func syncClock(mux *yamux.Session, interval time.Duration, nudge chan struct{}) {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	lastErr := ""
@@ -104,11 +112,26 @@ func syncClock(mux *yamux.Session, interval time.Duration) {
 		default:
 			lastErr = ""
 		}
+		// A nudge from during the exchange is answered by it.
+		select {
+		case <-nudge:
+		default:
+		}
 		select {
 		case <-mux.CloseChan():
 			return
 		case <-tick.C:
+		case <-nudge:
 		}
+	}
+}
+
+// nudgeClock asks for a clock sync now. Non-blocking: one already queued,
+// or a loop that has stopped, makes it a no-op.
+func (t *smolTransport) nudgeClock() {
+	select {
+	case t.clock <- struct{}{}:
+	default:
 	}
 }
 
