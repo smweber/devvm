@@ -388,9 +388,9 @@ func TestProxyPropagatesExitStatus(t *testing.T) {
 	pinTTY(t, false)
 	t.Setenv("FAKE_DEVVM_EXIT", "3")
 	err := runTree(t, a, "exec", "h/web", "--", "false")
-	var pe *proxyExit
+	var pe *exitCode
 	if !errors.As(err, &pe) || pe.code != 3 {
-		t.Fatalf("err = %v, want proxyExit 3", err)
+		t.Fatalf("err = %v, want exitCode 3", err)
 	}
 	t.Setenv("FAKE_DEVVM_EXIT", "255")
 	err = runTree(t, a, "stop", "h/web")
@@ -534,7 +534,7 @@ func TestHubStopStopsLaptopDaemon(t *testing.T) {
 	for _, argv := range [][]string{{"stop", "h/web"}} {
 		od := serveOwnerDaemon(t, a.Paths, "h/web", nil, true)
 		t.Setenv("FAKE_DEVVM_EXIT", "1")
-		var pe *proxyExit
+		var pe *exitCode
 		if err := runTree(t, a, argv...); !errors.As(err, &pe) {
 			t.Fatalf("%v with the hub failing: err = %v, want its exit status", argv, err)
 		}

@@ -259,7 +259,7 @@ func TestCopyOutHubGuards(t *testing.T) {
 		stream  string
 		exit    string
 		wantErr string
-		code    int // a proxyExit with this code
+		code    int // an exitCode with this code
 	}{
 		{name: "honest", stream: marker + honestTar},
 		{name: "dotdot after the marker", stream: marker + fileOf(t, dotdot), wantErr: "refusing archive entry"},
@@ -280,9 +280,9 @@ func TestCopyOutHubGuards(t *testing.T) {
 			err := runTree(t, a, "cp-out", "-r", "h/web", "proj", dst+"/")
 			switch {
 			case tc.code != 0:
-				var pe *proxyExit
+				var pe *exitCode
 				if !errors.As(err, &pe) || pe.code != tc.code {
-					t.Fatalf("err = %v, want proxyExit %d", err, tc.code)
+					t.Fatalf("err = %v, want exitCode %d", err, tc.code)
 				}
 			case tc.wantErr != "":
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
@@ -396,7 +396,7 @@ func TestHubCopyRoundTrip(t *testing.T) {
 	}
 	argv = []string{"cp-in", "h/web", f, "inbox/"}
 	err = run(argv...)
-	var pe *proxyExit
+	var pe *exitCode
 	if !errors.As(err, &pe) || pe.code != 1 {
 		t.Fatalf("%v: err = %v, want the hub's exit 1", argv, err)
 	}

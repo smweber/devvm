@@ -118,12 +118,13 @@ func (a *App) hubOrStopForwards(local func(cmd *cobra.Command, args []string) er
 	}
 }
 
-// proxyExit carries the remote command's exit status back to Execute, which
-// exits with it silently: the hub's devvm already printed its own error, so
-// a second "devvm: exit status 1" here would only double it.
-type proxyExit struct{ code int }
+// exitCode carries a command's own exit status back to Execute, which exits
+// with it silently: a proxied command's (the hub's devvm already printed its
+// own error, so a second "devvm: exit status 1" here would only double it)
+// and `exec`'s guest command's (guestExit; it wrote its own stderr).
+type exitCode struct{ code int }
 
-func (e *proxyExit) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+func (e *exitCode) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 // proxy runs the parsed leaf on the hub named by args[0]. Laptop-side inputs
 // are resolved first (keys add, repos add): rebuilding argv preserves bytes,
@@ -403,10 +404,11 @@ func proxyExecOpts(tty bool) backend.ExecOpts {
 // which is the hop failing and gets one line naming the hub. 255 is
 // conflated with "unreachable" by design: it is ssh's own code for a
 // connection or protocol failure, and the hub's devvm never produces it.
-// In fact the hub's Execute flattens every leaf failure to 1 — including a
-// guest command's own status under `exec` (`sh -c 'exit 3'` comes back as
-// 1, on a local machine too) — so today only 0, 1 and 255 are expected
-// here; the pass-through is for whenever that changes. A negative code —
+// The hub's Execute flattens a leaf failure to 1, except where the leaf
+// returns an exitCode: a guest command's own status under `exec` comes
+// back as is (guestExit), and a guest's 255 is ssh's again here, read as
+// the hub unreachable (a remote box's own 255 never crosses: guestExit
+// makes it an error on the hub). A negative code —
 // ssh killed by a signal — is clamped to 1 so os.Exit never sees -1.
 func (a *App) exitStatus(m *config.Machine, err error) error {
 	var ee *exec.ExitError
@@ -420,7 +422,7 @@ func (a *App) exitStatus(m *config.Machine, err error) error {
 	case code < 0:
 		code = 1
 	}
-	return &proxyExit{code: code}
+	return &exitCode{code: code}
 }
 
 // laptopKeyLines resolves a `keys add` spec on the laptop: a file path, an

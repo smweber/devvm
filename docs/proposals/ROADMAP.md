@@ -271,8 +271,6 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 Cosmetic or accepted:
 
-- `devvm exec` flattens the guest command's exit code to 1 (`Execute`);
-  `proxyExit` already passes codes through.
 - `keys add` dedup strips the target's *own* `id_*.pub`, so a loopback
   `self` machine breaks its own `ssh localhost`.
 - `^C` on a `-t` proxied command reports "cannot reach hub" (ssh's 255 is

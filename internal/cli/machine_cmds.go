@@ -30,7 +30,27 @@ func (a *App) runExec(name string, argv []string) error {
 	}
 	err = b.Run(context.Background(), backend.ExecOpts{Login: true}, argv...)
 	a.noteContact(m, "exec", config.TransportSSH, err)
-	return err
+	return guestExit(m, err)
+}
+
+// guestExit makes exec's failure the guest command's own exit status, as
+// ssh and `smolvm machine exec` pass it through: Execute exits with it
+// silently (the command wrote its own stderr), where it used to print
+// "exit status N" and exit 1. Over ssh (a remote box, a provider server)
+// 255 is ssh's own failure, as everywhere in devvm (noteContact, the hub
+// proxy's exitStatus), so it stays an error naming the box and exits 1: a
+// hub running this exec for a laptop must not answer 255, which the
+// laptop reads as the hub itself unreachable. A command killed by a signal
+// (code -1) and anything that is not an exit status are left as they were.
+func guestExit(m *config.Machine, err error) error {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() < 0 {
+		return err
+	}
+	if m.IsRemote() && ee.ExitCode() == 255 {
+		return fmt.Errorf("cannot reach '%s' (%s): ssh exited 255", m.Name, m.SSHHost)
+	}
+	return &exitCode{code: ee.ExitCode()}
 }
 
 // runShell opens a raw login shell (no tmux); runAttach joins the dev tmux

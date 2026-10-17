@@ -96,7 +96,7 @@ func Execute() int {
 		// A proxied command's exit status is the hub's devvm's own, which
 		// already printed its error; pass the status through without a
 		// second line.
-		var pe *proxyExit
+		var pe *exitCode
 		if errors.As(err, &pe) {
 			return pe.code
 		}

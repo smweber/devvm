@@ -195,9 +195,9 @@ func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 	// and its status comes back as the proxied exit.
 	log := fakeSSH(t, "exit 1")
 	err := a.runDelete("h/web", false, false)
-	var pe *proxyExit
+	var pe *exitCode
 	if !errors.As(err, &pe) || pe.code != 1 {
-		t.Fatalf("delete h/web with the hub refusing: err = %v, want proxyExit 1", err)
+		t.Fatalf("delete h/web with the hub refusing: err = %v, want exitCode 1", err)
 	}
 	if got, _ := config.SavedPortsNames(a.Paths); !slices.Equal(got, []string{"h/api", "h/web"}) {
 		t.Errorf("a refused delete changed the saved forwards: %v", got)
