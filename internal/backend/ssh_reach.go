@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/reach"
 )
 
@@ -22,16 +23,28 @@ import (
 type Prober interface {
 	// Probe establishes the box's reach now, writes it to the reach cache
 	// and returns it. Bounded by ctx; a probe the deadline cuts short
-	// before it tested anything for a full ProbeDialTimeout claims nothing
+	// before it tested anything for its full dial bound claims nothing
 	// and returns the cached entry unchanged.
 	Probe(ctx context.Context) reach.Entry
 }
 
-// ProbeDialTimeout bounds the probe's TCP connect. Fixed, not
+// ProbeDialTimeout bounds the probe's TCP connect by default. Not
 // DEVVM_SSH_CONNECT_TIMEOUT: that one is sized for ssh's banner exchange
-// on a slow host, while a SYN-ACK either comes within a couple of seconds
-// or the box is, for a human looking at a menu, not there.
+// on a slow host, while a SYN-ACK usually comes within a couple of
+// seconds. An entry's own connect_timeout (a box behind a relayed or
+// waking first hop, e.g. Tailscale's DERP) replaces it, capped at
+// ProbeBudget: see probeDialTimeout.
 const ProbeDialTimeout = 2 * time.Second
+
+// probeDialTimeout is the dial bound for one box: its entry's
+// connect_timeout when it sets one, capped at ProbeBudget (the round's
+// own deadline, which bounds the dial anyway), else ProbeDialTimeout.
+func probeDialTimeout(m *config.Machine) time.Duration {
+	if m == nil || m.ConnectTimeout <= 0 {
+		return ProbeDialTimeout
+	}
+	return min(time.Duration(m.ConnectTimeout)*time.Second, ProbeBudget)
+}
 
 // ProbeBudget is the whole budget of one box's probe when nothing bounds
 // it already (the single-machine `status NAME` through Status); the
@@ -40,8 +53,8 @@ const ProbeBudget = 5 * time.Second
 
 // probeDial is the TCP connect, a var so tests can inject a dialer that
 // never answers instead of relying on an unroutable address.
-var probeDial = func(ctx context.Context, addr string) error {
-	d := net.Dialer{Timeout: ProbeDialTimeout}
+var probeDial = func(ctx context.Context, addr string, timeout time.Duration) error {
+	d := net.Dialer{Timeout: timeout}
 	c, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
@@ -51,8 +64,8 @@ var probeDial = func(ctx context.Context, addr string) error {
 
 // Probe is providers.md §5's probe, and deliberately never a full ssh: no
 // ssh connection, no auth, nothing run on the box, so it costs
-// milliseconds against a live master and at most ProbeDialTimeout
-// otherwise, and it cannot hang on a prompt or a slow login shell. (`ssh
+// milliseconds against a live master and at most the dial bound
+// (probeDialTimeout) otherwise, and it cannot hang on a prompt or a slow login shell. (`ssh
 // -G` is local but may run a `Match exec` from the user's ssh config; it
 // is bounded by ctx like the rest.) In order:
 //
@@ -63,11 +76,15 @@ var probeDial = func(ctx context.Context, addr string) error {
 //  2. `ssh -G` to resolve the alias as ssh would (HostName, Port); an alias
 //     with ProxyJump/ProxyCommand is not dialled, since the dial would test
 //     the wrong host, and stays `?`.
-//  3. A TCP connect to the resolved host:port.
+//  3. A TCP connect to the resolved host:port. Refused, unroutable or
+//     unresolvable is `unreachable`; a connect that timed out is `?` with
+//     the reason (How = probe), since a slow box (a Tailscale peer still
+//     on a relay) is not a dead one. That `?` replaces what was cached:
+//     the box was tested, and it did not answer in time.
 //
 // What it writes is only what it established. A probe the round's
 // deadline cut short (the master check or `-G` killed, or a dial that had
-// less than ProbeDialTimeout to answer, as a box that got a late slot
+// less than its dial bound to answer, as a box that got a late slot
 // does) tested nothing and leaves the cache as it was. A `?` (not
 // probeable) never overwrites a state a command or a master check
 // recorded: for an alias behind ProxyJump that record is the only
@@ -77,7 +94,7 @@ func (b *sshBackend) Probe(ctx context.Context) reach.Entry {
 	if !ok {
 		return reach.Read(b.paths, b.m.Name)
 	}
-	if e.State == reach.Unknown {
+	if e.State == reach.Unknown && e.How != reach.HowProbe {
 		if prev := reach.Read(b.paths, b.m.Name); prev.State != reach.Unknown {
 			return prev
 		}
@@ -105,10 +122,13 @@ func (b *sshBackend) probe(ctx context.Context) (reach.Entry, bool) {
 	if proxy != "" {
 		return reach.Entry{State: reach.Unknown, Reason: proxy}, true
 	}
-	start := time.Now()
-	if err := probeDial(ctx, net.JoinHostPort(host, port)); err != nil {
-		if ctx.Err() != nil && time.Since(start) < ProbeDialTimeout {
+	start, bound := time.Now(), probeDialTimeout(b.m)
+	if err := probeDial(ctx, net.JoinHostPort(host, port), bound); err != nil {
+		if ctx.Err() != nil && time.Since(start) < bound {
 			return reach.Entry{}, false // cut short by the round, not timed out by the box
+		}
+		if dialTimedOut(err) {
+			return reach.Entry{State: reach.Unknown, How: reach.HowProbe, Reason: dialReason(err, host)}, true
 		}
 		return reach.Entry{State: reach.Unreachable, Verified: time.Now(), How: reach.HowProbe, Reason: dialReason(err, host)}, true
 	}
@@ -191,12 +211,18 @@ func probeCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	return cmd.Run()
 }
 
+// dialTimedOut is a connect that got no answer in time, as opposed to
+// one refused or unroutable.
+func dialTimedOut(err error) bool {
+	var ne net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout()
+}
+
 // dialReason is a failed connect in the words `status -v` shows.
 func dialReason(err error, host string) string {
 	var dns *net.DNSError
-	var ne net.Error
 	switch {
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
+	case dialTimedOut(err):
 		return "connect timed out"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "connection refused"

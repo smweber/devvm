@@ -208,6 +208,8 @@ func (e Entry) Describe(now time.Time) string {
 			s += " (" + e.Reason + ")"
 		}
 		return s
+	case e.How == HowProbe && e.Reason != "":
+		return "unknown, last probe inconclusive (" + e.Reason + ")" // a dial that timed out: slow, not known dead
 	case e.Reason != "":
 		return "not probed (" + e.Reason + ")"
 	default:

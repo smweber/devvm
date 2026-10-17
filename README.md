@@ -115,6 +115,25 @@ release. A `dev` build has no version to compare and needs `--force`. First-time
 installs still go through `install.sh` (or your bootstrap script). If the menu
 bar app is installed, `update` brings it to the same version too.
 
+## Upgrading from v0.1.15
+
+v0.1.16 replaces the per-machine confs (`~/.config/devvm/machines/*.toml`) and
+`config.toml` with one hand-edited `devvm.toml`, and moves state out of the
+config dir.
+
+1. Run any devvm command once (`devvm status` will do). It moves the state
+   files, seeds your saved forwards and the managed markers of the smol VMs
+   devvm made from the old confs, and prints a one-line pointer at the rest.
+2. Write `~/.config/devvm/devvm.toml` by hand: the remote boxes and hubs you
+   use, plus any templates. Local smol VMs need no entry; they are discovered.
+   See [docs/proposals/config.md §8](docs/proposals/config.md) for the
+   old-to-new mapping.
+3. Remove `~/.config/devvm/machines/` and `~/.config/devvm/config.toml`.
+
+Forward daemons started by v0.1.15 keep working where they are; `devvm update`
+cycles them. A hub needs v0.1.16 too for `create HUB/NAME` and
+`setup HUB/NAME`.
+
 ## Menu bar app (macOS)
 
 `devvm menubar` installs the DevVM menu bar app into `~/Applications` at your

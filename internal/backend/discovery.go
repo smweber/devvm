@@ -67,7 +67,8 @@ func SmolRecord(paths config.Paths, sm SmolMachine) *config.Machine {
 }
 
 // settleSmol is the smol source's Managed rule (config.md §2): managed iff
-// the marker holds this VM's created_at. A VM with no created_at, or a
+// the marker holds this VM's created_at. A VM with no created_at (a smolvm
+// older than 1.16, the first that reports created_at), or a
 // marker naming another created_at (the VM deleted with raw smolvm and
 // recreated under the same name), is unmanaged: a stale marker is ignored,
 // never trusted, and never rewritten here. A devvm-made VM from before
@@ -93,7 +94,10 @@ func settleSmol(paths config.Paths, sm SmolMachine) bool {
 // so the VMs devvm made before markers existed stay managed instead of
 // turning unmanaged (and refusing attach) on upgrade. One `ls --json` for
 // all of them, and only when one is unmarked; a name smolvm does not list,
-// or a host with no smolvm, is skipped. An existing marker is never
+// a VM with no created_at (devvm needs smolvm ≥ 1.16, which reports
+// created_at; an older one leaves the VM unmarked, and it reads unmanaged
+// until smolvm is upgraded and the next invocation seeds it), or a host
+// with no smolvm, is skipped. An existing marker is never
 // rewritten, stale or not (that is the VM-recreated-behind-devvm case).
 // Idempotent and best-effort: it runs on every invocation while machines/
 // still holds such confs.

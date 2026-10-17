@@ -15,9 +15,12 @@ import (
 //
 //   - config.List: every `[machines.*]` entry, hubs included (a hub has a row
 //     of its own);
+//   - every local smol VM `smolvm machine ls` lists (discovery, config.md
+//     §2), except one an entry of the same name shadows;
 //   - HUB/NAME for every saved-forwards file ports/HUB@NAME (savedHubPorts);
 //   - HUB/NAME for every name in the hub's cached listing (cachedHubMachines);
-//   - HUB/NAME for every live run/HUB@NAME.sock.
+//   - HUB/NAME for every live run/HUB@NAME.sock, in this layout's run/ and
+//     the pre-split one's (a v0.1.15 daemon keeps serving from there).
 //
 // It lives here and not in config, which stays a file reader that never dials
 // a socket or trusts a cache: the last two sources are hints for enumeration
@@ -25,7 +28,15 @@ import (
 // The socket source matters because a laptop daemon for a hub machine can
 // exist with no saved forwards at all (a browser open from `attach HUB/NAME`
 // creates a connection-owned forward and writes nothing).
+//
+// The smol source costs one `smolvm machine ls --json` (none without
+// smolvm); listMachinesFrom takes a snapshot a caller already holds, so
+// that is the only listing it adds.
 func (a *App) listMachines() []string {
+	return a.listMachinesFrom(smolSnapshot())
+}
+
+func (a *App) listMachinesFrom(smols smolMachines) []string {
 	seen := map[string]bool{}
 	var names []string
 	add := func(n string) {
@@ -47,6 +58,13 @@ func (a *App) listMachines() []string {
 			for _, mn := range cachedHubMachines(a.Paths, m.Name) {
 				add(config.JoinHubName(m.Name, mn))
 			}
+		}
+	}
+	// Local smol VMs: an entry of the same name shadows one (it is already
+	// listed, and every command resolves the name to the entry).
+	for _, sm := range smols.list {
+		if config.ValidName(sm.Name) == nil {
+			add(sm.Name)
 		}
 	}
 	// Only for a hub that is still registered: a stray file for a deleted
@@ -93,9 +111,16 @@ func savedHubPorts(paths config.Paths) []string {
 // liveHubSockets lists HUB/NAME for every run/HUB@NAME.sock. A stale socket
 // (daemon crashed) is listed too; status pings it and shows no daemon, which
 // is the truthful answer. Local sockets carry no '@' and are skipped: their
-// machines come from the file and discovery.
+// machines come from the file and discovery. The pre-split layout's run/
+// (config.LegacyPaths) is globbed too: a hub-machine daemon v0.1.15 started
+// keeps serving there, and update must find it to cycle it even when no
+// cache or ports file names it.
 func liveHubSockets(paths config.Paths) []string {
 	matches, _ := filepath.Glob(filepath.Join(paths.RuntimeDir(), "*@*.sock"))
+	if old := config.LegacyPaths(paths.Config); old.RuntimeDir() != paths.RuntimeDir() {
+		legacy, _ := filepath.Glob(filepath.Join(old.RuntimeDir(), "*@*.sock"))
+		matches = append(matches, legacy...)
+	}
 	var names []string
 	for _, p := range matches {
 		rt := strings.TrimSuffix(filepath.Base(p), ".sock")

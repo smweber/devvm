@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -78,6 +79,11 @@ type fwdSummary struct {
 // resource sizes, and per-machine forward detail. local stops at this host.
 func (a *App) runStatusAll(verbose, local bool) error {
 	rows, err := a.gatherRows(statusScope{local: local, probe: !local})
+	if bc, ok := asBrokenConf(err); ok {
+		fmt.Fprintf(a.Stderr, "devvm: %v\n", bc.err)
+		fmt.Fprintf(a.Stdout, "broken conf: %v\n", bc.err)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -149,11 +155,12 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // `verified=-` for a remote box with nothing established; a hub machine
 // carries its hub's sixth column through (a newer hub's `verified=…`), and
 // every other row has `-`. `?` otherwise means the backend could not be
-// asked. A devvm.toml that does not parse fails the whole listing (an error
-// on stderr, non-zero exit) rather than rendering rows that may be wrong:
-// an entry shadows a smol VM, and a broken file cannot say which. `broken
-// conf` is gone with the per-machine confs, though an older hub may still
-// send it. Consumers should treat any other token as "unknown", not fail.
+// asked. A devvm.toml that does not parse renders no machine rows (an
+// entry shadows a smol VM, and a broken file cannot say which) but the one
+// row brokenConfRow, `-` everywhere but state `broken conf`, with the parse
+// error on stderr and a zero exit: the menu bar app shows the state rather
+// than a failed listing. A hub's broken row never becomes a HUB/NAME row
+// (`-` is no valid name, so parseHubRows drops it). Consumers should treat any other token as "unknown", not fail.
 // `--watch` re-emits this listing on devvm-made changes (see watchStatus); the
 // format is the same, so a consumer parses one thing.
 //
@@ -166,6 +173,11 @@ func (a *App) runStatusAll(verbose, local bool) error {
 // group by hub splits column 1 on `/`. --local lists this host only.
 func (a *App) runStatusPlain(local bool) error {
 	rows, err := a.gatherRows(statusScope{local: local, probe: !local})
+	if bc, ok := asBrokenConf(err); ok {
+		fmt.Fprintf(a.Stderr, "devvm: %v\n", bc.err)
+		fmt.Fprint(a.Stdout, brokenConfRow)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -173,6 +185,24 @@ func (a *App) runStatusPlain(local bool) error {
 		fmt.Fprint(a.Stdout, plainLine(r))
 	}
 	return nil
+}
+
+// brokenConfRow is the whole --plain listing while devvm.toml does not
+// parse (see runStatusPlain).
+const brokenConfRow = "-\t-\tbroken conf\t-\t-\t-\n"
+
+// brokenConfError is gatherRows' error for a devvm.toml that does not
+// parse: the one failure status renders (brokenConfRow) instead of
+// failing.
+type brokenConfError struct{ err error }
+
+func (e brokenConfError) Error() string { return e.err.Error() }
+func (e brokenConfError) Unwrap() error { return e.err }
+
+func asBrokenConf(err error) (brokenConfError, bool) {
+	var bc brokenConfError
+	ok := errors.As(err, &bc)
+	return bc, ok
 }
 
 // groupOf is the status section a row renders in: a hub and every machine
@@ -333,7 +363,7 @@ type statusScope struct {
 func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 	f, err := config.LoadFile(a.Paths)
 	if err != nil {
-		return nil, err
+		return nil, brokenConfError{err}
 	}
 	if sc.probe {
 		probed := make(chan struct{})

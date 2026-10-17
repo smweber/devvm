@@ -26,7 +26,11 @@ import (
 // sees it, the hub listing's (hubTimes.deadline) so a one-shot `status`
 // that runs both in parallel is bounded by one of them, not their sum;
 // parallel caps the probes in flight, each a couple of local ssh
-// processes and one socket. A var so tests run with short values.
+// processes and one socket. A box's dial is bounded by its connect_timeout
+// (backend.probeDialTimeout, capped at backend.ProbeBudget, which is this
+// deadline), so a slow box's connect still ends inside the round; one that
+// times out reads `?`, not `unreachable`. A var so tests run with short
+// values.
 type reachTiming struct {
 	deadline time.Duration
 	parallel int

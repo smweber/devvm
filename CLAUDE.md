@@ -240,10 +240,12 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Reach cache + refresh** (`providers.md` §5, `internal/reach`): a remote row's state is
   `cache/reach/NAME`, never a live call on the snapshot path. It is refreshed by one-shot `status`, by
   `__refresh` (writes `run/refresh`; the watcher runs one round, joined if in flight) and by attach/shell/exec/setup.
-  The probe is `ssh -O check`, then `ssh -G` + a 2s TCP connect: never a full ssh, never polled.
+  The probe is `ssh -O check`, then `ssh -G` + a TCP connect (2s, or the entry's `connect_timeout`
+  capped at the 5s round): never a full ssh, never polled. A connect that times out is `?`, not
+  `unreachable` (a slow Tailscale peer is not a dead one); refused/unroutable is `unreachable`.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
-  hub}, state ∈ {running, stopped, reachable, unreachable, ?}, forwards ∈
+  hub}, state ∈ {running, stopped, reachable, unreachable, broken conf, ?}, forwards ∈
   {up:N, reconnecting:N, down, -} and managed ∈ {managed, unmanaged,
   shadowed, -}. A hub older than devvm.toml sends `remote-managed`/
   `remote-unmanaged` (and maybe `broken conf`/`dormant`): the laptop maps
@@ -253,7 +255,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   local smol VM of the same name, `-` is a hub, or a hub machine from a hub
   too old to send it (never `unmanaged`, which nobody said). A sixth column,
   appended the same way, is `verified=<unix>:<how>` (or `verified=-`) on a
-  remote row (a hub machine carries its hub's through) and `-` on every other. There is no
+  remote row (a hub machine carries its hub's through) and `-` on every other. A
+  devvm.toml that does not parse is one row `-\t-\tbroken conf\t-\t-\t-` (exit 0;
+  `--watch` keeps watching until it parses). There is no
   `dormant` (an old hub may still send it); so
   are the `ports list` line (`guest N -> localhost:M [(pending)] [owner=K+K] [exact] [ttl=9m42s]`,
   owner kinds `conf`/`connection`/`ttl`; parsers split on whitespace and read only

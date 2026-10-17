@@ -331,6 +331,20 @@ func TestOldLayoutPointer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A hidden command (here __refresh; __daemon, __session and
+	// __complete alike) seeds but prints no pointer: daemon logs stay clean.
+	if err := runTree(t, a, "__refresh"); err != nil {
+		t.Fatal(err)
+	}
+	if w := a.Stderr.(*bytes.Buffer).String(); w != "" {
+		t.Errorf("hidden command: stderr = %q", w)
+	}
+	if got, _ := config.LoadPorts(a.Paths, "cloud"); strings.Join(got, ",") != "8080" {
+		t.Errorf("hidden command did not seed forwards: %v", got)
+	}
+	if _, ok, _ := config.ReadManagedMarker(a.Paths, "web"); !ok {
+		t.Error("hidden command did not seed the managed marker")
+	}
 	if err := runTree(t, a, "status", "--plain", "--local"); err != nil {
 		t.Fatal(err)
 	}

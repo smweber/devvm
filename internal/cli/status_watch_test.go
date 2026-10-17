@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -136,10 +137,10 @@ func TestWatchStatusReactsToChanges(t *testing.T) {
 	}
 }
 
-// A devvm.toml that stops parsing mid-watch pauses it: no block (the last
-// one stays true), one line on stderr, and the next event after it parses
-// again emits as usual.
-func TestWatchStatusPausesOnBrokenFile(t *testing.T) {
+// A devvm.toml that stops parsing mid-watch emits the broken conf row (one
+// line on stderr) and keeps watching: the next event after it parses again
+// emits the listing as usual.
+func TestWatchStatusBrokenFileRow(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
 	writeDevvmTOML(t, a, "[machines.b]\nbackend = \"remote\"\nhost = \"b\"\n")
@@ -154,22 +155,54 @@ func TestWatchStatusPausesOnBrokenFile(t *testing.T) {
 	out.next(t, "b\tremote\t?\t-\tunmanaged\tverified=-\n")
 
 	writeDevvmTOML(t, a, "[machines.b\n")
-	out.none(t)
-	if !strings.Contains(errBuf.String(), "paused until devvm.toml parses again") {
+	out.next(t, brokenConfRow)
+	if !strings.Contains(errBuf.String(), "listing 'broken conf' until devvm.toml parses again") {
 		t.Errorf("stderr = %q", errBuf.String())
 	}
 	writeDevvmTOML(t, a, "[machines.c]\nbackend = \"hub\"\nhost = \"c\"\n")
 	out.next(t, "")
 	cancel()
 	<-done
+}
 
-	// Broken at start: the watch fails like a one-shot status.
+// Broken at start: the watch opens on the broken conf row and keeps
+// going until the file parses; a one-shot status prints the row (plain) or
+// one line naming the error (human), the error on stderr, and exits 0.
+func TestStatusBrokenFileAtStart(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
 	writeDevvmTOML(t, a, "[machines.b\n")
-	if err := a.runStatusWatch(context.Background(), true, false); err == nil || !strings.Contains(err.Error(), "devvm.toml") {
-		t.Errorf("status --watch on a broken file = %v", err)
+	var stdout, stderr bytes.Buffer
+	a.Stdout, a.Stderr = &stdout, &stderr
+	if err := a.runStatusPlain(true); err != nil {
+		t.Fatalf("status --plain on a broken file = %v", err)
 	}
-	if err := a.runStatusPlain(true); err == nil {
-		t.Error("status --plain on a broken file succeeded")
+	if stdout.String() != brokenConfRow || !strings.Contains(stderr.String(), "devvm: ") {
+		t.Errorf("plain: stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := a.runStatusAll(false, true); err != nil {
+		t.Fatalf("status on a broken file = %v", err)
+	}
+	if l := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n"); len(l) != 1 || !strings.HasPrefix(l[0], "broken conf: ") || stderr.Len() == 0 {
+		t.Errorf("human: stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+
+	var errBuf syncBuffer
+	a.Stderr = &errBuf
+	out := newBlockWriter()
+	a.Stdout = out
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.runStatusWatch(ctx, true, false) }()
+	out.next(t, brokenConfRow)
+	writeDevvmTOML(t, a, "[machines.b]\nbackend = \"remote\"\nhost = \"b\"\n")
+	out.next(t, "b\tremote\t?\t-\tunmanaged\tverified=-\n")
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("watch = %v", err)
 	}
 }
 

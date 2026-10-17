@@ -48,7 +48,7 @@ func probeBackend(t *testing.T) (*sshBackend, config.Paths) {
 func noDial(t *testing.T) {
 	t.Helper()
 	old := probeDial
-	probeDial = func(context.Context, string) error { t.Error("dialled"); return nil }
+	probeDial = func(context.Context, string, time.Duration) error { t.Error("dialled"); return nil }
 	t.Cleanup(func() { probeDial = old })
 }
 
@@ -154,32 +154,73 @@ func TestDialReason(t *testing.T) {
 	}
 }
 
-// The dial's own timeout (the box never answered for ProbeDialTimeout) is
-// `unreachable`, connect timed out. Injected: no unroutable address.
+// The dial's own timeout (the box never answered within its bound) is
+// `?`, connect timed out, not `unreachable`: a slow box (a Tailscale peer
+// on a relay) is not a dead one. It replaces whatever was cached, since the
+// box was tested. Injected: no unroutable address.
 func TestProbeDialTimeout(t *testing.T) {
 	probeSSH(t, 255, "hostname 192.0.2.1\nport 22\n")
 	old := probeDial
 	var addr string
-	probeDial = func(_ context.Context, a string) error {
-		addr = a
+	var bound time.Duration
+	probeDial = func(_ context.Context, a string, timeout time.Duration) error {
+		addr, bound = a, timeout
 		return &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
 	}
 	defer func() { probeDial = old }()
 	b, p := probeBackend(t)
+	if err := reach.Write(p, "box", reach.Entry{State: reach.Unreachable, Verified: time.Unix(1760000000, 0), How: reach.HowProbe, Reason: "connection refused"}); err != nil {
+		t.Fatal(err)
+	}
 	e := b.Probe(context.Background())
-	if e.State != reach.Unreachable || e.Reason != "connect timed out" {
+	if e.State != reach.Unknown || e.Reason != "connect timed out" || e.How != reach.HowProbe || !e.Verified.IsZero() {
 		t.Errorf("probe = %+v", e)
 	}
-	if addr != "192.0.2.1:22" {
-		t.Errorf("dialled %q", addr)
+	if addr != "192.0.2.1:22" || bound != ProbeDialTimeout {
+		t.Errorf("dialled %q within %s", addr, bound)
 	}
-	if c := reach.Read(p, "box"); c.State != reach.Unreachable {
+	if c := reach.Read(p, "box"); c.State != reach.Unknown || c.Reason != "connect timed out" {
 		t.Errorf("cache = %+v", c)
+	}
+	if d := e.Describe(time.Now()); !strings.Contains(d, "inconclusive (connect timed out)") {
+		t.Errorf("describe = %q", d)
+	}
+	// Refused stays `unreachable`.
+	probeDial = func(context.Context, string, time.Duration) error {
+		return &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	}
+	if e := b.Probe(context.Background()); e.State != reach.Unreachable || e.Reason != "connection refused" {
+		t.Errorf("refused probe = %+v", e)
+	}
+}
+
+// The dial honours the entry's connect_timeout, capped at the round's
+// ProbeBudget; with none it is ProbeDialTimeout.
+func TestProbeDialTimeoutFromEntry(t *testing.T) {
+	for _, tc := range []struct {
+		secs int
+		want time.Duration
+	}{{0, ProbeDialTimeout}, {3, 3 * time.Second}, {30, ProbeBudget}} {
+		m := config.NewRemote("box", false, "u@box")
+		m.ConnectTimeout = tc.secs
+		if got := probeDialTimeout(m); got != tc.want {
+			t.Errorf("connect_timeout %d: dial bound %s, want %s", tc.secs, got, tc.want)
+		}
+	}
+	probeSSH(t, 255, "hostname 192.0.2.1\nport 22\n")
+	old := probeDial
+	var bound time.Duration
+	probeDial = func(_ context.Context, _ string, timeout time.Duration) error { bound = timeout; return nil }
+	defer func() { probeDial = old }()
+	b, _ := probeBackend(t)
+	b.m.ConnectTimeout = 4
+	if e := b.Probe(context.Background()); e.State != reach.Reachable || bound != 4*time.Second {
+		t.Errorf("probe = %+v within %s", e, bound)
 	}
 }
 
 // A probe the round's deadline cuts short tested nothing: a dial with less
-// than ProbeDialTimeout to answer (a late slot), or a master check killed
+// than its bound to answer (a late slot), or a master check killed
 // mid-way, keeps the cached entry rather than claiming `unreachable`.
 func TestProbeCutShortKeepsCache(t *testing.T) {
 	recorded := reach.Entry{State: reach.Reachable, Verified: time.Unix(1760000000, 0), How: "attach"}
@@ -205,7 +246,7 @@ func TestProbeCutShortKeepsCache(t *testing.T) {
 	t.Run("dial", func(t *testing.T) {
 		probeSSH(t, 255, "hostname 192.0.2.1\nport 22\n")
 		old := probeDial
-		probeDial = func(ctx context.Context, _ string) error { <-ctx.Done(); return ctx.Err() }
+		probeDial = func(ctx context.Context, _ string, _ time.Duration) error { <-ctx.Done(); return ctx.Err() }
 		defer func() { probeDial = old }()
 		b, p := probeBackend(t)
 		check(t, b, p)

@@ -32,11 +32,8 @@ const statusExitFlag = "--exit-on-stdin-eof"
 // what it observes and what it can't. exitOnEOF (statusExitFlag) ends it
 // when stdin closes: over ssh that is the laptop side going away.
 func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
-	// A file that does not parse at start fails the watch like a one-shot
-	// status; one that breaks later only pauses it (watchStatus).
-	if _, err := config.LoadFile(a.Paths); err != nil {
-		return err
-	}
+	// A file that does not parse, at start or later, emits the broken
+	// conf row and keeps watching until it parses again (watchStatus).
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	if exitOnEOF {
@@ -57,7 +54,8 @@ func (a *App) runStatusWatch(ctx context.Context, local, exitOnEOF bool) error {
 // whose pipes wake it. The hub entries are re-read on every snapshot, and
 // the loop takes one on every devvm.toml event, so the pipe set follows a
 // hub entry created, deleted or re-pointed while watching. While the file
-// does not parse the pipes are left as they are and nothing is emitted. The first block waits
+// does not parse the pipes are left as they are and the block is the
+// broken conf row. The first block waits
 // (bounded by the listing deadline) for the pipes to speak, so a consumer
 // does not start from a flash of `unreachable`.
 func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Duration) error {
@@ -65,7 +63,7 @@ func (a *App) watchWithHubs(ctx context.Context, out io.Writer, debounce time.Du
 	defer hw.stop()
 	snapshot := func() (string, error) {
 		if _, err := config.LoadFile(a.Paths); err != nil {
-			return "", err // keep the pipes: a half-saved edit must not drop every hub
+			return "", brokenConfError{err} // keep the pipes: a half-saved edit must not drop every hub
 		}
 		hubs := a.hubConfs() // once per block: the pipe set and the rows use the same read
 		hw.sync(hubs)
@@ -120,11 +118,12 @@ func (a *App) plainSnapshot(sc statusScope) (string, error) {
 // joins that round rather than starting another, and the debounce
 // coalesces a burst of requests, so a double click costs one round.
 //
-// A snapshot that fails (devvm.toml does not parse, say mid-edit) emits
-// nothing: the consumer keeps the last block, which was true when emitted,
-// rather than a listing that may be wrong. The error goes to errOut once
-// per distinct message, and the next event after the file parses again
-// emits as usual. The first snapshot must succeed (runStatusWatch checks).
+// A snapshot that fails because devvm.toml does not parse (say mid-edit,
+// or at start) emits brokenConfRow as the block, as a one-shot status
+// does, and the watch goes on: the next event after the file parses again
+// emits the listing. The error goes to errOut once per distinct message.
+// Any other failing snapshot emits nothing (the consumer keeps the last
+// block), except the first, which ends the watch with its error.
 //
 // Returns nil on ctx cancellation and on a write error, so a supervising
 // process sees a clean exit when it is the one that closed the pipe. (Execute
@@ -221,16 +220,31 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 	}
 
 	last, lastErr := "", ""
-	emit := func() error {
+	// take is one snapshot, a broken file rendered as its row.
+	take := func() (string, error) {
 		s, err := snapshot()
-		if err != nil {
-			if err.Error() != lastErr && errOut != nil {
-				fmt.Fprintf(errOut, "devvm: status --watch paused until devvm.toml parses again: %v\n", err)
+		if err == nil {
+			lastErr = ""
+			return s, nil
+		}
+		if err.Error() != lastErr && errOut != nil {
+			if bc, ok := asBrokenConf(err); ok {
+				fmt.Fprintf(errOut, "devvm: status --watch: listing 'broken conf' until devvm.toml parses again: %v\n", bc.err)
+			} else {
+				fmt.Fprintf(errOut, "devvm: status --watch: %v\n", err)
 			}
-			lastErr = err.Error()
+		}
+		lastErr = err.Error()
+		if _, ok := asBrokenConf(err); ok {
+			return brokenConfRow, nil
+		}
+		return "", err
+	}
+	emit := func() error {
+		s, err := take()
+		if err != nil {
 			return nil
 		}
-		lastErr = ""
 		if s == last {
 			return nil
 		}
@@ -240,7 +254,7 @@ func watchStatus(ctx context.Context, paths config.Paths, snapshot func() (strin
 	}
 	// The first block is unconditional so the consumer starts with a full list
 	// (an empty registry yields a lone blank line, which is still "a block").
-	first, err := snapshot()
+	first, err := take()
 	if err != nil {
 		return err
 	}

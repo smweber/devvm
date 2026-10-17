@@ -135,7 +135,7 @@ func (a *App) rootCmd() *cobra.Command {
 				a.Paths.State = stateDirFor(a.Paths.Config)
 			}
 			config.MigrateState(a.Paths)
-			a.noteOldLayout()
+			a.noteOldLayout(hiddenCmd(cmd))
 		},
 	}
 	root.PersistentFlags().StringVar(&a.Paths.Config, "config-dir", a.Paths.Config,
@@ -202,13 +202,15 @@ func (a *App) rootCmd() *cobra.Command {
 // per host) and the managed markers of the smol VMs devvm made
 // (SeedLegacyMarkers), so those VMs stay managed. Nothing else reads the
 // old files: the command carries on with no entries. stderr, so a
-// `--plain` consumer's stdout is untouched.
-func (a *App) noteOldLayout() {
+// `--plain` consumer's stdout is untouched. quiet (a hidden command:
+// __daemon, __session, __complete, …) runs the seeds but prints nothing,
+// so a daemon's log and a completion script are not spammed with it.
+func (a *App) noteOldLayout(quiet bool) {
 	if len(config.LegacySmolConfs(a.Paths)) > 0 || config.OldLayout(a.Paths) {
 		_ = config.MigratePorts(a.Paths) // a failure is the ports verbs' to report
 		backend.SeedLegacyMarkers(a.Paths)
 	}
-	if !config.OldLayout(a.Paths) || a.Stderr == nil {
+	if quiet || !config.OldLayout(a.Paths) || a.Stderr == nil {
 		return
 	}
 	old, what := config.LegacyMachinesDir(a.Paths)+"/", "machines/"
@@ -217,6 +219,17 @@ func (a *App) noteOldLayout() {
 	}
 	fmt.Fprintf(a.Stderr, "devvm: %s is the old layout (saved forwards and managed markers were seeded from it); write %s by hand (see docs/proposals/config.md §8) and remove %s\n",
 		tildePath(old), tildePath(a.Paths.FilePath()), what)
+}
+
+// hiddenCmd reports whether cmd, or a parent, is hidden (cobra's own
+// __complete is too): the machinery, not a command a person typed.
+func hiddenCmd(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Hidden {
+			return true
+		}
+	}
+	return false
 }
 
 // tildePath shortens a path under $HOME to ~/….

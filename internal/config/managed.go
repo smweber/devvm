@@ -55,7 +55,7 @@ func WriteManagedMarker(p Paths, name, createdAt string) error {
 		return err
 	}
 	if strings.TrimSpace(createdAt) == "" {
-		return errors.New("managed marker: the VM reports no created_at")
+		return errors.New("managed marker: the VM reports no created_at (devvm needs smolvm ≥ 1.16, which reports created_at; upgrade smolvm and retry)")
 	}
 	if err := os.MkdirAll(p.ManagedDir(), 0o700); err != nil {
 		return err
