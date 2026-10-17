@@ -49,6 +49,11 @@ func (a *App) runCreate(s createSpec) error {
 	if s.Backend == "" {
 		s.Backend = config.BackendSmol
 	}
+	if s.Backend == config.BackendSmol {
+		if err := s.refuseSmolPlacement(); err != nil {
+			return err
+		}
+	}
 	// Name may be omitted on the command line; prompt for it before anything else
 	// so `devvm create` can be run bare on a terminal.
 	if err := resolveName(&s); err != nil {
@@ -106,6 +111,23 @@ func (a *App) runCreate(s createSpec) error {
 	}
 	a.printCreateNext(s.Name, config.BackendSmol)
 	return nil
+}
+
+// refuseSmolPlacement refuses a provider's placement flags on a smol
+// create: a smol VM has none, and ignoring them would make a typo'd
+// --backend look like it worked.
+func (s createSpec) refuseSmolPlacement() error {
+	var set []string
+	for _, f := range [][2]string{{"--server-type", s.ServerType}, {"--location", s.Location}, {"--image", s.Image}} {
+		if f[1] != "" {
+			set = append(set, f[0])
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s place a provider server (--backend %s); a smol VM has no placement",
+		strings.Join(set, ", "), strings.Join(config.KnownProviders(), "|"))
 }
 
 // checkCreateBackend refuses what create does not allocate, on this host,

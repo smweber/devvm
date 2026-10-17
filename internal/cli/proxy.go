@@ -180,6 +180,15 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		runs = append(runs, argv)
+	case key == "start" || key == "stop":
+		// --yes is this host's (it skips the confirm a provider server
+		// devvm did not make gets, and a hub machine is never one); a hub
+		// older than step 3 would refuse the unknown flag.
+		argv, err := hubArgvSkip(cmd, args, []string{"yes"})
+		if err != nil {
+			return err
+		}
+		runs = append(runs, argv)
 	default:
 		argv, err := hubArgv(cmd, args)
 		if err != nil {
@@ -263,6 +272,13 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		// across resolved instead.
 		skip = append(append(skip, flagTemplate, "bootstrap-hook"), templateFlagNames...)
 		extra = templateArgv(t, keyLines)
+	}
+	// A create with no --backend says smol explicitly: the hub's own
+	// devvm.toml may configure a provider, and its create would then ask
+	// which backend (and could bill a server from the hub). HUB/NAME is
+	// only ever a hub's smol VM (providers.md §6).
+	if create && !fs.Changed("backend") {
+		extra = append(extra, "--backend="+config.BackendSmol)
 	}
 	extra = append(extra, "--"+flagNoPorts)
 	argv, err = hubArgvSkip(cmd, args, skip)

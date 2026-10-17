@@ -34,6 +34,10 @@ type Provider struct {
 	// start (or the read-back) failed" case, where the server exists and
 	// bills though the call failed.
 	CreateErr error
+	// CreateBlocks, when set, makes Create store the server and then wait
+	// for its context, returning the server with the context's error: the
+	// real client's "created, then the wait for the start ran out".
+	CreateBlocks bool
 }
 
 var (
@@ -168,6 +172,12 @@ func (p *Provider) Create(ctx context.Context, spec provider.Spec) (*provider.Se
 	}
 	p.servers[s.ID] = s
 	c := clone(s)
+	if p.CreateBlocks {
+		p.mu.Unlock()
+		<-ctx.Done()
+		p.mu.Lock()
+		return &c, fmt.Errorf("fake: waiting for server %d to start: %w", s.ID, ctx.Err())
+	}
 	return &c, p.CreateErr
 }
 

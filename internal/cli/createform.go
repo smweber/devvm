@@ -257,8 +257,9 @@ func form(tty *os.File, fields ...huh.Field) error {
 }
 
 // openTTY returns the controlling terminal, or nil when there isn't one (piped /
-// CI), signalling the caller to require flags instead of prompting.
-func openTTY() *os.File {
+// CI), signalling the caller to require flags instead of prompting. A var
+// so a test can hand create a terminal.
+var openTTY = func() *os.File {
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return nil

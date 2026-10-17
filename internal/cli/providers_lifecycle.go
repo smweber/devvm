@@ -15,6 +15,7 @@ import (
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
+	"github.com/smweber/devvm/internal/provider/hetzner"
 	"github.com/smweber/devvm/internal/session"
 )
 
@@ -41,7 +42,9 @@ func (a *App) lifecycleClient(pn string) (provider.Provider, error) {
 }
 
 // askConfirm is the y/N prompt the lifecycle verbs use (confirm, on the
-// controlling terminal); a var so a test can answer it.
+// controlling terminal); a var so a test can answer it. It is a package
+// global, so the tests that stub it (and pickBackend, openTTY) must not
+// use t.Parallel.
 var askConfirm = confirm
 
 // runCreateProvider is `create NAME --backend PROVIDER` (§3): refuse a
@@ -137,7 +140,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	next := fmt.Sprintf("run: devvm setup %s or devvm delete %s", s.Name, s.Name)
 	if err != nil {
 		if srv == nil {
-			return fmt.Errorf("%s: creating '%s': %w (the API reports no server created; 'devvm status' lists the project)", pn, s.Name, err)
+			return createNoServerErr(pn, s.Name, err)
 		}
 		return fmt.Errorf("%s server '%s' was created (server %d, %s) and bills, but %v; %s",
 			providerTitle(pn), srv.Name, srv.ID, orDash(srv.Address), err, next)
@@ -154,13 +157,18 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 		return fmt.Errorf("%s server '%s' came back without the %s=%s label, so devvm will not shape it; %s",
 			providerTitle(pn), srv.Name, provider.LabelManaged, provider.LabelManagedValue, next)
 	}
-	b, err := backend.For(m, a.Paths)
+	b, err := providerBackendFor(m, a.Paths)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s server '%s' was created (server %d, %s) and bills, but %v; %s",
+			providerTitle(pn), srv.Name, srv.ID, srv.Address, err, next)
 	}
 	// Hetzner reuses addresses: a pin left for this one (a server deleted
 	// in the console, or on another host) is stale by construction, and
-	// would fail setup's first ssh with a changed host key.
+	// would fail setup's first ssh with a changed host key. One a
+	// `[machines.*]` entry at the same address still uses is kept
+	// (forgetHostKey), so a mismatch then names that entry.
+	pinKey := knownHostsKey(m)
+	holder := a.pinSharedBy(m, pinKey)
 	if err := a.forgetHostKey(m); err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: %s: %v\n", s.Name, err)
 	}
@@ -169,12 +177,41 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	// waits for ssh and creates the user as root, shape does the rest.
 	o := setupOpts{resolved: &t, fresh: true, tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}}
 	if err := a.shape(context.Background(), m, b, t, o); err != nil {
+		if holder != "" && holder != "?" && hostKeyMismatch(err) {
+			next = fmt.Sprintf("the pinned host key for %s is kept for the entry [machines.%s], which reaches the same address; if that pin is stale, clear it with 'ssh-keygen -R %s -f %s', then %s",
+				pinKey, holder, pinKey, a.Paths.KnownHostsPath(), next)
+		}
 		return fmt.Errorf("'%s' was created (server %d at %s; it bills) but setup failed: %w; %s",
 			s.Name, srv.ID, srv.Address, err, next)
 	}
 	a.printCreateNext(s.Name, pn)
 	return nil
 }
+
+// createNoServerErr is a Create that returned no server. Only an
+// API-level refusal (an HTTP error answer: a conflict, a bad type, a
+// missing key) means nothing was made; a transport error, a timeout or a
+// cancelled context may have come after the POST was accepted, so the
+// server may exist and bill, and the user is told how to find out.
+func createNoServerErr(pn, name string, err error) error {
+	var apiErr *hetzner.APIError
+	if errors.As(err, &apiErr) || errors.Is(err, provider.ErrConflict) || errors.Is(err, provider.ErrNotFound) {
+		return fmt.Errorf("%s: creating '%s': %w (the API refused it; no server was created)", pn, name, err)
+	}
+	return fmt.Errorf("%s: creating '%s': %w; '%s' may have been created and would bill: run 'devvm status' to list the project, then 'devvm delete %s' if it exists",
+		pn, name, err, name, name)
+}
+
+// hostKeyMismatch reports whether setup failed on a pinned host key that
+// no longer matches (probeSSH's fatal marks).
+func hostKeyMismatch(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "REMOTE HOST IDENTIFICATION HAS CHANGED") || strings.Contains(msg, "Host key verification failed")
+}
+
+// providerBackendFor is backend.For for the record create just built, a
+// var so a test can fail it after Create.
+var providerBackendFor = backend.For
 
 func orDash(s string) string {
 	if s == "" {
@@ -281,16 +318,24 @@ func (a *App) askBackend(s *createSpec) error {
 		return nil
 	}
 	defer tty.Close()
-	choice := config.BackendSmol
-	opts := []huh.Option[string]{huh.NewOption("smol: a local microVM", config.BackendSmol)}
-	for _, pn := range f.ProviderNames() {
-		opts = append(opts, huh.NewOption(pn+": a "+providerTitle(pn)+" server (bills while it exists)", pn))
-	}
-	if err := form(tty, huh.NewSelect[string]().Title("Backend").Options(opts...).Value(&choice)); err != nil {
+	choice, err := pickBackend(tty, f.ProviderNames())
+	if err != nil {
 		return err
 	}
 	s.Backend = choice
 	return nil
+}
+
+// pickBackend is askBackend's select (smol first and pre-selected), a var
+// so a test can answer it.
+var pickBackend = func(tty *os.File, providers []string) (string, error) {
+	choice := config.BackendSmol
+	opts := []huh.Option[string]{huh.NewOption("smol: a local microVM", config.BackendSmol)}
+	for _, pn := range providers {
+		opts = append(opts, huh.NewOption(pn+": a "+providerTitle(pn)+" server (bills while it exists)", pn))
+	}
+	err := form(tty, huh.NewSelect[string]().Title("Backend").Options(opts...).Value(&choice))
+	return choice, err
 }
 
 // providerKeyFile reads and checks ssh_key_file when the provider table
@@ -401,11 +446,15 @@ func (a *App) deleteProviderBox(m *config.Machine, yes bool) error {
 	if err != nil && !gone {
 		return fmt.Errorf("%s: deleting '%s' (server %d): %w", pn, m.Name, srv.ID, err)
 	}
-	if err := a.forgetHostState(m.Name, m); err != nil {
-		return err
+	// The server is gone from here on: the cache row goes and the delete
+	// is reported whatever the host-side cleanup says, so a failure there
+	// (returned last) never reads as the server still existing.
+	_ = a.mergeProviderRow(pn, m.Name, nil) // derived data
+	if cerr := a.forgetHostState(m.Name, m); cerr != nil {
+		fmt.Fprintf(a.Stdout, "devvm: deleted %s server '%s', but clearing this host's state for it failed\n", providerTitle(pn), m.Name)
+		return cerr
 	}
 	session.RemoveLock(a.Paths, m.Name)
-	_ = a.mergeProviderRow(pn, m.Name, nil) // derived data
 	if gone {
 		fmt.Fprintf(a.Stdout, "devvm: %s server '%s' was already gone; cleared this host's state for it\n", providerTitle(pn), m.Name)
 		return nil

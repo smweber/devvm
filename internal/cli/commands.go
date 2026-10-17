@@ -44,10 +44,21 @@ func (a *App) createCmd() *cobra.Command {
 			if err := checkCreateBackend(s.Backend); err != nil {
 				return err
 			}
+			onHub := false
+			if len(args) > 0 {
+				_, _, onHub, _ = config.SplitHubName(args[0])
+			}
+			// HUB/NAME is a smol VM there, so the placement flags are
+			// refused before the proxy rather than dropped on the hub.
+			if onHub || s.Backend == config.BackendSmol {
+				if err := s.refuseSmolPlacement(); err != nil {
+					return err
+				}
+			}
 			// A provider server is never on a hub (providers.md §6): there
 			// is no exec to own there, so nothing for HUB/NAME to address.
-			if len(args) > 0 && config.IsProviderBackend(s.Backend) {
-				if _, _, onHub, _ := config.SplitHubName(args[0]); onHub {
+			if config.IsProviderBackend(s.Backend) {
+				if onHub {
 					return fmt.Errorf("create %s --backend %s: a %s server is never on a hub; run 'devvm create NAME --backend %s' here",
 						args[0], s.Backend, providerTitle(s.Backend), s.Backend)
 				}

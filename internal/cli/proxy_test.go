@@ -173,6 +173,10 @@ func TestProxyRebuildsArgv(t *testing.T) {
 		{[]string{"keys", "rm", "h/web", "--", "-odd/name"}, []string{"keys", "rm", "web", "--", "-odd/name"}},
 		{[]string{"keys", "rm", "h/web", "SHA256:abc"}, []string{"keys", "rm", "web", "SHA256:abc"}},
 		{[]string{"setup", "h/web"}, []string{"setup", "web", "--no-ports"}},
+		// No --backend: smol said explicitly, so a hub with [providers.*]
+		// never asks (or bills); --yes on stop is this host's alone.
+		{[]string{"create", "h/api", "--yes"}, []string{"create", "api", "--backend=smol", "--no-ports", "--yes"}},
+		{[]string{"stop", "h/web", "--yes"}, []string{"stop", "web"}},
 	}
 	for _, tc := range cases {
 		os.Remove(sshLog)

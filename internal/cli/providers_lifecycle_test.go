@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/provider/fake"
+	"github.com/smweber/devvm/internal/provider/hetzner"
 	"github.com/smweber/devvm/internal/reach"
 )
 
@@ -23,15 +25,20 @@ const testPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsa
 
 // spyProvider is the fake with hooks: onCreate runs after the fake made the
 // server (so a test can see what was printed by then, or plant a stale pin
-// for the new address), and deleteErr replaces Delete's answer after the
+// for the new address; it may change the returned copy), createErr fails
+// Create outright, and deleteErr replaces Delete's answer after the
 // fake deleted it (the "already gone" race).
 type spyProvider struct {
 	*fake.Provider
 	onCreate  func(*provider.Server)
+	createErr error // returned with no server, and nothing made
 	deleteErr error
 }
 
 func (s *spyProvider) Create(ctx context.Context, spec provider.Spec) (*provider.Server, error) {
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
 	srv, err := s.Provider.Create(ctx, spec)
 	if s.onCreate != nil {
 		s.onCreate(srv)
@@ -53,7 +60,9 @@ func useSpy(a *App, p *fake.Provider) *spyProvider {
 	return s
 }
 
-// answerConfirm stubs the y/N prompt, recording each question.
+// answerConfirm stubs the y/N prompt, recording each question. askConfirm
+// (like pickBackend and openTTY) is a package global: tests that stub it
+// must not use t.Parallel.
 func answerConfirm(t *testing.T, answer bool) *[]string {
 	t.Helper()
 	var asked []string
@@ -455,6 +464,211 @@ func TestValidServerName(t *testing.T) {
 	for _, bad := range []string{"", "Web", "web_1", "-web", "web-", "a..b", ".a", strings.Repeat("a", 64), strings.Repeat("a.", 127) + "a"} {
 		if config.ValidServerName(bad) == nil {
 			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+// Create returning no server: only an API answer (an HTTP error, a
+// conflict) means nothing was made; anything else may have come after the
+// POST was accepted, so the user is told to look.
+func TestProviderCreateNoServer(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	fakeSSH(t, "exit 0")
+	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n", false)
+	p.AddKey("scott", testPubKey)
+	spy := useSpy(a, p)
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&hetzner.APIError{Method: "POST", Path: "/servers", Status: 422, Code: "invalid_input", Message: "bad type"}, "the API refused it; no server was created"},
+		{&hetzner.APIError{Method: "POST", Path: "/servers", Status: 409, Code: "uniqueness_error"}, "the API refused it"},
+		{fmt.Errorf("fake: name used: %w", provider.ErrConflict), "the API refused it"},
+		{errors.New("hetzner: POST /servers: dial tcp: i/o timeout"), "'web' may have been created and would bill: run 'devvm status' to list the project, then 'devvm delete web' if it exists"},
+		{fmt.Errorf("hetzner: POST /servers: %w", context.DeadlineExceeded), "may have been created"},
+	} {
+		spy.createErr = tc.err
+		err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v, want %q", tc.err, err, tc.want)
+		}
+	}
+}
+
+// The create deadline: the server exists, the wait for its start runs
+// out, and it comes back with the error. It is cached, named with the two
+// commands, and never deleted.
+func TestProviderCreateDeadline(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	sshLog := fakeSSH(t, "exit 0")
+	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n", false)
+	p.AddKey("scott", testPubKey)
+	p.CreateBlocks = true
+	old := providerTimes
+	providerTimes.create = 50 * time.Millisecond
+	t.Cleanup(func() { providerTimes = old })
+	err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") || !strings.Contains(err.Error(), "'web' was created") ||
+		!strings.Contains(err.Error(), "run: devvm setup web or devvm delete web") {
+		t.Fatalf("deadline: %v", err)
+	}
+	if cachedRow(a, "web") == nil || p.CallCount("Delete") != 0 {
+		t.Error("the server was lost track of, or deleted")
+	}
+	if data, _ := os.ReadFile(sshLog); len(data) != 0 {
+		t.Errorf("setup ran:\n%s", data)
+	}
+}
+
+// A failure between Create and setup names the server like every other
+// post-Create error.
+func TestProviderCreateBackendErr(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	fakeSSH(t, "exit 0")
+	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n", false)
+	p.AddKey("scott", testPubKey)
+	old := providerBackendFor
+	providerBackendFor = func(*config.Machine, config.Paths) (backend.Backend, error) { return nil, errors.New("no backend") }
+	t.Cleanup(func() { providerBackendFor = old })
+	err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
+	row := cachedRow(a, "web")
+	if err == nil || row == nil || !strings.Contains(err.Error(), fmt.Sprintf("'web' was created (server %d, %s)", row.ID, row.Address)) ||
+		!strings.Contains(err.Error(), "no backend") || !strings.Contains(err.Error(), "run: devvm setup web or devvm delete web") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A pin a [machines.*] entry at the same address still uses is kept, and a
+// host-key mismatch at setup then says which entry and how to clear it.
+func TestProviderCreatePinHeldByEntry(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	shrinkReachWait(t, time.Second, 10*time.Millisecond)
+	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n\n[machines.old]\nbackend = \"remote\"\nmanaged = true\nhost = \"192.0.2.250\"\n", false)
+	p.AddKey("scott", testPubKey)
+	spy := useSpy(a, p)
+	spy.onCreate = func(s *provider.Server) { s.Address = "192.0.2.250" }
+	os.MkdirAll(a.Paths.State, 0o700)
+	os.WriteFile(a.Paths.KnownHostsPath(), []byte("192.0.2.250 "+testPubKey+"\n"), 0o600)
+	fakeRemote(t, `case "$last" in "'true'") echo "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@" >&2; exit 255;; esac`)
+	err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "kept for the entry [machines.old]") ||
+		!strings.Contains(err.Error(), "ssh-keygen -R 192.0.2.250 -f "+a.Paths.KnownHostsPath()) {
+		t.Fatalf("err = %v", err)
+	}
+	if kh, _ := os.ReadFile(a.Paths.KnownHostsPath()); !strings.Contains(string(kh), "192.0.2.250") {
+		t.Error("the entry's pin was dropped")
+	}
+}
+
+// A cleanup failure after a successful Delete still reports the delete and
+// drops the cache row, then returns the cleanup error.
+func TestProviderDeleteCleanupFails(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	fakeSSH(t, "exit 0")
+	p := withFakeHetzner(t, a, "", false)
+	addServer(t, p, "web", "192.0.2.80", provider.StateRunning, true)
+	os.MkdirAll(a.Paths.State, 0o700)
+	os.WriteFile(a.Paths.PortsDir(), []byte("not a dir"), 0o600) // LockPorts cannot make it
+	err := runTree(t, a, "delete", "web", "--yes")
+	if err == nil || p.CallCount("Delete") != 1 {
+		t.Fatalf("err = %v, Delete = %d", err, p.CallCount("Delete"))
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "deleted Hetzner server 'web', but clearing this host's state for it failed") {
+		t.Errorf("out = %q", out)
+	}
+	if cachedRow(a, "web") != nil {
+		t.Error("the cache row survived a successful Delete")
+	}
+}
+
+// smol's delete takes --yes too; without it, a declined confirm aborts.
+func TestSmolDeleteYes(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeManagedSmol(t, a, "vm")
+	asked := answerConfirm(t, false)
+	if err := runTree(t, a, "delete", "vm"); err == nil || !strings.Contains(err.Error(), "aborted") || len(*asked) != 1 {
+		t.Fatalf("declined: %v, asked %q", err, *asked)
+	}
+	if err := runTree(t, a, "delete", "vm", "--yes"); err != nil {
+		t.Fatalf("--yes: %v", err)
+	}
+	if len(*asked) != 1 {
+		t.Error("--yes asked")
+	}
+	if data, _ := os.ReadFile(log); !strings.Contains(string(data), "machine delete") && !strings.Contains(string(data), "machine rm") {
+		t.Errorf("smolvm calls:\n%s", data)
+	}
+}
+
+// askBackend asks only on a terminal, without --yes and with a provider
+// configured; otherwise create stays smol (askBackend leaves it unset).
+func TestAskBackend(t *testing.T) {
+	a := newTestApp(t)
+	tty, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTTY, oldPick := openTTY, pickBackend
+	t.Cleanup(func() { openTTY, pickBackend = oldTTY, oldPick })
+	haveTTY := true
+	openTTY = func() *os.File {
+		if !haveTTY {
+			return nil
+		}
+		f, _ := os.Open(tty.Name())
+		return f
+	}
+	var asked [][]string
+	pickBackend = func(_ *os.File, providers []string) (string, error) {
+		asked = append(asked, providers)
+		return config.BackendHetzner, nil
+	}
+	check := func(s createSpec, wantBackend string, wantAsked int) {
+		t.Helper()
+		if err := a.askBackend(&s); err != nil {
+			t.Fatal(err)
+		}
+		if s.Backend != wantBackend || len(asked) != wantAsked {
+			t.Fatalf("backend %q asked %d, want %q %d", s.Backend, len(asked), wantBackend, wantAsked)
+		}
+	}
+	writeDevvmTOML(t, a, "[templates.default]\nuser = \"dev\"\n")
+	check(createSpec{}, "", 0) // no provider table
+	writeDevvmTOML(t, a, providersTOML)
+	check(createSpec{Yes: true}, "", 0)
+	check(createSpec{Backend: config.BackendSmol}, config.BackendSmol, 0)
+	haveTTY = false
+	check(createSpec{}, "", 0)
+	haveTTY = true
+	check(createSpec{}, config.BackendHetzner, 1)
+	if len(asked[0]) != 1 || asked[0][0] != config.BackendHetzner {
+		t.Errorf("offered %v", asked[0])
+	}
+}
+
+// The placement flags are a provider's: a smol create refuses them, local
+// or proxied, before anything runs.
+func TestSmolCreateRefusesPlacement(t *testing.T) {
+	a := newTestApp(t)
+	smolLog := fakeLocalSmolvm(t, `[]`)
+	sshLog := fakeSSH(t, "exit 0")
+	for _, argv := range [][]string{
+		{"create", "vm", "--yes", "--location", "fsn1"},
+		{"create", "vm", "--backend", "smol", "--yes", "--server-type", "cx23"},
+		{"create", "h/vm", "--yes", "--image", "debian-12"},
+	} {
+		if err := runTree(t, a, argv...); err == nil || !strings.Contains(err.Error(), "a smol VM has no placement") {
+			t.Errorf("%v: %v", argv, err)
+		}
+	}
+	for _, log := range []string{smolLog, sshLog} {
+		if data, _ := os.ReadFile(log); strings.Contains(string(data), "create") {
+			t.Errorf("ran:\n%s", data)
 		}
 	}
 }
