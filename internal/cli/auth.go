@@ -13,11 +13,12 @@ import (
 	"github.com/smweber/devvm/internal/session"
 )
 
-// runAuth is `auth NAME` on this host's own machine. On smol it is thin
+// runAuth is `auth NAME` on this host's own machine, thin everywhere
 // (browser-bridge.md §6): a session on the machine's forward daemon reports
-// the shim and, subscribed, opens the logins' URLs here; nothing is
-// installed and no agent exec is spawned (the daemon holds the only one).
-// Remote boxes keep the private agent session (auth.Run branches).
+// the shim and, subscribed, opens the logins' URLs here; no agent exec is
+// spawned (the daemon holds the only one). Only a remote box whose daemon
+// has no agent gets one installed from here, gated on an adopt host
+// (agentInstallApprover).
 func (a *App) runAuth(name, tool string, installAgent bool) error {
 	m, b, err := a.resolve(name)
 	if err != nil {
@@ -27,12 +28,10 @@ func (a *App) runAuth(name, tool string, installAgent bool) error {
 	if err != nil {
 		return err
 	}
-	if auth.Thin(m) {
-		// No daemon is spawned for a stopped VM (its first dial would exec
-		// into it), so say so here rather than as a failed dial.
-		if err := requireRunningForForwards(m, b, 0); err != nil {
-			return err
-		}
+	// No daemon is spawned for a stopped VM (its first dial would exec
+	// into it), so say so here rather than as a failed dial.
+	if err := requireRunningForForwards(m, b, 0); err != nil {
+		return err
 	}
 	fmt.Fprintf(a.Stderr, "devvm: starting requested auth flow for '%s' (%s)\n", name, tool)
 	return auth.Run(context.Background(), b, m, tools, auth.Options{
@@ -92,8 +91,9 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 	if err := br.Subscribe(); err != nil {
 		if session.HubNoEvents(err) {
 			// The hub's daemon said so itself (NoEvents on the relay open):
-			// its transport there is not smol, so no login URL could come here.
-			return fmt.Errorf("auth %s: auth on a non-smol hub machine is not supported through the hub yet (its daemon on hub %s carries no browser events)", name, m.Hub.Name)
+			// its transport there carries no events, so no login URL could
+			// come here.
+			return fmt.Errorf("auth %s: its daemon on hub %s carries no browser events (a remote box with no current devvm agent there, or a hub devvm that predates remote agents), so logins there would not open here", name, m.Hub.Name)
 		}
 		// The daemon's reply leads with where the subscription stopped
 		// (for attach's notice); here the refusal is the whole story.
@@ -101,7 +101,7 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 	}
 	// Belt and braces: after the ack the hub has reported the shim its
 	// own auth will use. None means this host's daemon lost its link
-	// since, or the hub's machine carries no browser events (not smol);
+	// since, or the hub's daemon has no events for the machine after all;
 	// either way the hub's auth would not route its logins here.
 	info, err := br.Ping()
 	if err != nil {
@@ -111,13 +111,7 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 		if info.State != session.StateUp {
 			return fmt.Errorf("auth %s: the link to hub %s is %s; retry in a moment", name, m.Hub.Name, info.State)
 		}
-		if be := hubMachineBackend(a.Paths, m); be != "" && be != config.BackendSmol {
-			return fmt.Errorf("auth %s: auth on a non-smol hub machine is not supported through the hub yet (%s is %s there)", name, name, be)
-		}
-		// Not cached: a hub daemon new enough to pass the subscribe always
-		// reports its smol transport's shim, so this is almost surely a
-		// machine that is not smol, but the laptop cannot say for certain.
-		return fmt.Errorf("auth %s: the hub's daemon for %s reports no browser shim (is it a smol machine?), so logins there would not open here", name, m.HubMachineName())
+		return fmt.Errorf("auth %s: the hub's daemon for %s reports no browser shim, so logins there would not open here", name, m.HubMachineName())
 	}
 	for _, port := range auth.CallbackPorts(tools) {
 		auth.BridgeCallback(br, port)
@@ -130,32 +124,25 @@ func (a *App) authHubMachine(cmd *cobra.Command, args []string) error {
 	return a.runProxied(m, p, argv)
 }
 
-// hubMachineBackend is the hub-side backend of a hub machine as the
-// hub's cached listing last said (hublist.go), "" when not cached: enough
-// to word a refusal, never to decide one.
-func hubMachineBackend(paths config.Paths, m *config.Machine) string {
-	for _, r := range readHubCache(paths, m.Hub.Name) {
-		if r.name == m.HubMachineName() {
-			return r.backend
-		}
-	}
-	return ""
-}
-
 // agentInstallApprover returns nil for managed boxes (devvm owns them, so it
 // installs the agent freely). For an adopt host it returns a gate that requires
 // the --install-agent flag or an interactive yes before devvm writes the helper
-// agent into the user's ~/.local/bin.
-func (a *App) agentInstallApprover(m *config.Machine, installAgent bool) func() error {
+// agent into the user's ~/.local/bin: the one place devvm ever installs it
+// there (its forward daemon only looks for it). outdated: an agent is there,
+// but another build's, so the daemon cannot use it until it is replaced.
+func (a *App) agentInstallApprover(m *config.Machine, installAgent bool) func(outdated bool) error {
 	if m.Managed() {
 		return nil
 	}
-	return func() error {
+	return func(outdated bool) error {
 		if installAgent {
 			return nil
 		}
-		ok, err := confirm(fmt.Sprintf(
-			"devvm needs to install a helper agent in ~/.local/bin on '%s' (unmanaged host) for auth. Proceed?", m.Name))
+		q := fmt.Sprintf("devvm needs to install a helper agent in ~/.local/bin on '%s' (unmanaged host) to open login URLs on this host. Proceed?", m.Name)
+		if outdated {
+			q = fmt.Sprintf("The devvm helper agent in ~/.local/bin on '%s' (unmanaged host) is outdated; devvm needs to update it to open login URLs on this host. Proceed?", m.Name)
+		}
+		ok, err := askConfirm(q)
 		if err != nil {
 			return err
 		}

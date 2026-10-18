@@ -175,9 +175,12 @@ func TestSmolBrowserGuards(t *testing.T) {
 	}
 }
 
-// Remote attach and shell carry no BROWSER and send no set-environment:
-// remote plumbing is deferred with the ssh agent exec.
-func TestRemoteAttachSendsNoSetEnvironment(t *testing.T) {
+// Remote attach carries BROWSER into the dev session only through its
+// guarded set-environment (remoteAttachArgv), and remote shell sends no
+// remote command at all: the login shell is honoured, and an exec env
+// would be dropped by sshd anyway. Neither puts BROWSER on the ssh line
+// as an environment assignment.
+func TestRemoteAttachAndShellBrowser(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "ssh.log")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n"
@@ -198,10 +201,14 @@ func TestRemoteAttachSendsNoSetEnvironment(t *testing.T) {
 		if len(calls) != 3 {
 			t.Fatalf("%s: %d ssh calls, want tmux -V, attach, shell: %q", be, len(calls), calls)
 		}
-		for _, c := range calls {
-			if strings.Contains(c, "set-environment") || strings.Contains(c, "BROWSER") {
-				t.Errorf("%s: ssh call %q touches BROWSER", be, c)
-			}
+		if !strings.Contains(calls[1], "set-environment -t dev BROWSER") || !strings.Contains(calls[1], "[ -x") {
+			t.Errorf("%s: attach %q does not set a guarded BROWSER in the session", be, calls[1])
+		}
+		if strings.Contains(calls[1], "BROWSER=") || strings.Contains(calls[1], "'env'") {
+			t.Errorf("%s: attach %q passes BROWSER as exec env", be, calls[1])
+		}
+		if !strings.HasSuffix(calls[2], "-t dev@cloud") {
+			t.Errorf("%s: shell %q sends a remote command", be, calls[2])
 		}
 	}
 }

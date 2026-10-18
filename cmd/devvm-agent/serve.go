@@ -14,15 +14,12 @@ import (
 	"github.com/smweber/devvm/internal/agentrpc"
 )
 
-// Guest unix sockets where a running serve agent accepts open-url handoffs from
-// the BROWSER shim. The forward daemon's agent owns the default socket; an
-// `auth` session's agent listens on its own auth socket so the two never steal
-// each other's (an auth session must receive its login URLs itself — it does
-// the callback bridging — while the daemon agent merely opens URLs).
-const (
-	defaultSockName = "agent.sock"
-	authSockName    = "agent-auth.sock"
-)
+// sockName is the guest unix socket where the running serve agent accepts
+// open-url handoffs from the BROWSER shim. There is one: the machine's
+// forward daemon owns the only serve exec on smol and on remote boxes alike,
+// and `auth` rides that daemon (browser-bridge.md §6), so the private auth
+// session and its own socket (`agent-auth.sock`, `serve --auth`) are gone.
+const sockName = "agent.sock"
 
 // guestSockPath resolves a socket name under the dev user's ~/.devvm.
 func guestSockPath(name string) string {
@@ -37,20 +34,13 @@ func guestSockPath(name string) string {
 // single exec's stdio, multiplexed with yamux. On ready it also starts a guest
 // unix-socket listener so the open-url shim can push URLs to the host and
 // read back what the host did. The host may also push its clock (clock.go).
-// --auth selects the auth session's socket (see the socket-name comment).
 func runServe(args []string) {
-	sock := defaultSockName
-	for _, a := range args {
-		switch a {
-		case "--auth":
-			sock = authSockName
-		default:
-			fatal("unknown serve flag: " + a)
-		}
+	if len(args) > 0 {
+		fatal("unknown serve flag: " + args[0])
 	}
 	h := agentrpc.GuestHandlers{Clock: newClockSyncer().handle}
 	err := agentrpc.Serve(os.Stdin, os.Stdout, h,
-		func(g *agentrpc.GuestSession) { go serveURLSocket(g, guestSockPath(sock)) })
+		func(g *agentrpc.GuestSession) { go serveURLSocket(g, guestSockPath(sockName)) })
 	if err != nil {
 		log.Fatalf("serve: %v", err)
 	}

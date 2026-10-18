@@ -68,9 +68,8 @@ func TestBridgeSessionSubscribes(t *testing.T) {
 }
 
 // DEVVM_NO_SUBSCRIBE=1 (every proxied command on a hub) keeps attach/shell
-// off the daemon entirely: no dial, no session, no subscription. So do a
-// remote machine (no events until the ssh agent exec) and a stopped VM (no
-// daemon is ever spawned for one).
+// off the daemon entirely: no dial, no session, no subscription. A remote
+// box subscribes like smol (its daemon runs the agent exec on its master).
 func TestBridgeSessionSkipped(t *testing.T) {
 	shrinkRunningPoll(t)
 	for _, tc := range []struct {
@@ -82,7 +81,8 @@ func TestBridgeSessionSkipped(t *testing.T) {
 	}{
 		{"DEVVM_NO_SUBSCRIBE=1", "1", managedSmol("web"), &statusBackend{}, 0},
 		{"DEVVM_NO_SUBSCRIBE=0 subscribes", "0", managedSmol("web"), &statusBackend{}, 1},
-		{"remote", "", config.NewRemote("box", true, "box"), &statusBackend{}, 0},
+		{"remote subscribes", "", config.NewRemote("box", true, "box"), &statusBackend{}, 1},
+		{"adopt host subscribes", "", config.NewRemote("box", false, "box"), &statusBackend{}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(backend.NoSubscribeEnv, tc.env)
@@ -142,6 +142,53 @@ func TestVMNotRunningMatchesRefusal(t *testing.T) {
 	}
 	if vmNotRunning(errors.New("h/web: hub: connection refused")) {
 		t.Fatal("a link failure read as a stopped VM")
+	}
+}
+
+// pingBridge is a fakeBridge whose daemon answers ping (session.Session's).
+type pingBridge struct {
+	fakeBridge
+	info session.PingInfo
+}
+
+func (p *pingBridge) Ping() (session.PingInfo, error) { return p.info, nil }
+
+// A remote box's daemon that reports no shim has no agent to hear the
+// guest: attach/shell let the session go (the daemon idles out) with one
+// line naming the way to an agent, and the shell still opens. One that
+// reports a shim keeps the session for the shell's life.
+func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	for _, tc := range []struct {
+		m    *config.Machine
+		want string
+	}{
+		{config.NewRemote("adopted", false, "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (an unmanaged host: 'devvm auth adopted' offers to install one in ~/.local/bin); URLs opened in the guest will be printed there\n"},
+		{config.NewRemote("cloud", true, "dev@cloud"), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log; 'devvm auth cloud' retries the install); URLs opened in the guest will be printed there\n"},
+	} {
+		pb := &pingBridge{info: session.PingInfo{State: session.StateUp, Version: "test"}}
+		old := openBridgeSession
+		openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) { return pb, nil }
+		a, errBuf := bridgeApp(t)
+		release := a.bridgeSession(tc.m, &statusBackend{})
+		if errBuf.String() != tc.want || pb.subscribed != 1 || pb.closed != 1 {
+			t.Errorf("%s: notice %q, subscribed %d, closed %d", tc.m.Name, errBuf.String(), pb.subscribed, pb.closed)
+		}
+		release()
+		openBridgeSession = old
+	}
+	pb := &pingBridge{info: session.PingInfo{State: session.StateUp, Shim: "/home/me/.local/bin/devvm-open-url"}}
+	old := openBridgeSession
+	openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) { return pb, nil }
+	t.Cleanup(func() { openBridgeSession = old })
+	a, errBuf := bridgeApp(t)
+	release := a.bridgeSession(config.NewRemote("adopted", false, "me@adopted"), &statusBackend{})
+	if errBuf.Len() != 0 || pb.closed != 0 {
+		t.Fatalf("with an agent: notice %q, closed %d", errBuf.String(), pb.closed)
+	}
+	release()
+	if pb.closed != 1 {
+		t.Fatalf("release closed %d times", pb.closed)
 	}
 }
 
@@ -466,5 +513,40 @@ func TestStartStoppedSerialized(t *testing.T) {
 	}
 	if b.starts != 1 {
 		t.Fatalf("PowerStart ran %d times, want once", b.starts)
+	}
+}
+
+// auth's consent gate on an adopt host: none on a managed box; the flag
+// pre-approves; otherwise the prompt names a missing agent or an outdated
+// one (another build's, which the daemon will not run), and a no is an
+// error naming the flag.
+func TestAgentInstallApprover(t *testing.T) {
+	a, _ := bridgeApp(t)
+	if a.agentInstallApprover(config.NewRemote("cloud", true, "dev@cloud"), false) != nil {
+		t.Fatal("a managed box asks for consent")
+	}
+	adopted := config.NewRemote("box", false, "me@box")
+	if err := a.agentInstallApprover(adopted, true)(true); err != nil {
+		t.Fatalf("--install-agent: %v", err)
+	}
+	var asked []string
+	answer := true
+	old := askConfirm
+	askConfirm = func(q string) (bool, error) { asked = append(asked, q); return answer, nil }
+	t.Cleanup(func() { askConfirm = old })
+	gate := a.agentInstallApprover(adopted, false)
+	if err := gate(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate(true); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 2 || !strings.HasPrefix(asked[0], "devvm needs to install a helper agent in ~/.local/bin on 'box'") ||
+		!strings.HasPrefix(asked[1], "The devvm helper agent in ~/.local/bin on 'box' (unmanaged host) is outdated") {
+		t.Fatalf("prompts = %q", asked)
+	}
+	answer = false
+	if err := gate(false); err == nil || !strings.Contains(err.Error(), "--install-agent") {
+		t.Fatalf("declined: %v", err)
 	}
 }

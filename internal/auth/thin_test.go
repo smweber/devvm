@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/smweber/devvm/internal/agentbin"
 	"github.com/smweber/devvm/internal/backend"
@@ -42,6 +43,9 @@ type fakeBridge struct {
 	shim    string
 	state   string // "" reads as up
 	version string
+	// shimAfterKick: the shim a kick makes the daemon report (it picked up
+	// an agent auth installed); "" leaves shim as it is.
+	shimAfterKick string
 }
 
 func (f *fakeBridge) Ping() (fwdsession.PingInfo, error) {
@@ -51,6 +55,13 @@ func (f *fakeBridge) Ping() (fwdsession.PingInfo, error) {
 		state = fwdsession.StateUp
 	}
 	return fwdsession.PingInfo{State: state, Version: f.version, Shim: f.shim}, nil
+}
+func (f *fakeBridge) Kick() error {
+	f.log.add("kick")
+	if f.shimAfterKick != "" {
+		f.shim = f.shimAfterKick
+	}
+	return nil
 }
 func (f *fakeBridge) Subscribe() error { f.log.add("subscribe"); return nil }
 func (f *fakeBridge) Close() error     { f.log.add("close"); return nil }
@@ -87,15 +98,25 @@ func (b guestBackend) Spawn(_ context.Context, _ backend.ExecOpts, argv ...strin
 	return nil, errors.New("no exec in this test")
 }
 
-// stubInstall replaces agentbin.Install, counting calls.
+// stubInstall replaces agentbin.Install, logging calls, and agentbin.Probe,
+// answering st.
 func stubInstall(t *testing.T, log *thinLog, err error) {
 	t.Helper()
-	old := installAgent
-	installAgent = func(context.Context, backend.Backend, *config.Machine, func() error) (agentbin.Paths, error) {
-		log.add("INSTALL")
+	stubAgent(t, log, err, agentbin.Missing)
+}
+
+func stubAgent(t *testing.T, log *thinLog, err error, st agentbin.State) {
+	t.Helper()
+	oldI, oldP := installAgent, probeAgent
+	installAgent = func(_ context.Context, _ backend.Backend, _ *config.Machine, approve func() error) (agentbin.Paths, error) {
+		log.add("INSTALL approve=%v", approve != nil)
 		return agentbin.Paths{}, err
 	}
-	t.Cleanup(func() { installAgent = old })
+	probeAgent = func(context.Context, backend.Backend, *config.Machine) (agentbin.Paths, agentbin.State, error) {
+		log.add("PROBE")
+		return agentbin.Paths{}, st, nil
+	}
+	t.Cleanup(func() { installAgent, probeAgent = oldI, oldP })
 }
 
 // Thin auth on smol dials the daemon, reads the shim from ping, subscribes
@@ -134,23 +155,117 @@ func TestThinAuthNeverInstallsOrSpawns(t *testing.T) {
 	}
 }
 
-// A remote backend still takes the private-session branch: the consent-
-// gated install (here refused), never the daemon.
-func TestAuthRemoteTakesPrivateSession(t *testing.T) {
-	log := &thinLog{}
-	stubErr := errors.New("stub: install refused")
-	stubInstall(t, log, stubErr)
-	for _, be := range []string{"managed", "unmanaged"} {
-		m := config.NewRemote("box", be == "managed", "")
+// Thin auth on a remote box is the smol path (the private session is
+// gone): a daemon that reports its shim is dialed, pinged and subscribed,
+// and nothing is probed, installed or spawned from here, managed or not.
+func TestThinAuthRemote(t *testing.T) {
+	for _, managed := range []bool{true, false} {
+		log := &thinLog{}
+		stubInstall(t, log, nil)
+		m := config.NewRemote("box", managed, "dev@box")
+		br := &fakeBridge{log: log, shim: "/home/dev/.local/bin/devvm-open-url", version: "v1"}
 		err := Run(context.Background(), guestBackend{log: log}, m, []string{"github"}, Options{
-			OpenBridge: func() (Bridge, error) { log.add("dial"); return nil, errors.New("no daemon") },
+			OpenBridge: func() (Bridge, error) { log.add("dial"); return br, nil },
+			Approve:    func(bool) error { log.add("APPROVE"); return nil },
+			Version:    "v1",
 		})
-		if !errors.Is(err, stubErr) {
-			t.Fatalf("%s: err = %v, want the private session's install", be, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "dial\nping\nsubscribe\nprobe gh\n" +
+			"login tty=true BROWSER=/home/dev/.local/bin/devvm-open-url: unset GH_TOKEN GITHUB_TOKEN; gh auth login && gh auth setup-git && gh config set git_protocol https --host github.com\nclose"
+		if got := log.String(); got != want {
+			t.Fatalf("managed=%v: remote auth ran:\n%s\nwant:\n%s", managed, got, want)
 		}
 	}
-	if got := log.String(); got != "INSTALL\nINSTALL" {
-		t.Fatalf("remote auth ran:\n%s", got)
+}
+
+// An adopt host whose daemon found no current agent: auth probes (over its
+// own ssh), asks for consent worded by what it found (missing, or
+// outdated), installs, kicks the daemon so it looks again, and only once
+// a ping reports the shim subscribes and runs the logins. Declined, nothing
+// is installed and no login runs. A managed box needs no consent.
+func TestThinAuthAdoptHostInstallsWithConsent(t *testing.T) {
+	const shim = "/home/dev/.local/bin/devvm-open-url"
+	for _, tc := range []struct {
+		name    string
+		managed bool
+		st      agentbin.State
+		decline bool
+		want    string
+	}{
+		{"missing", false, agentbin.Missing, false,
+			"dial\nping\nPROBE\nAPPROVE outdated=false\nINSTALL approve=false\nkick\nping\nsubscribe\nprobe codex\nadd 1455 exact=true\nlogin tty=true BROWSER=" + shim + ": exec codex login\nclose"},
+		{"outdated", false, agentbin.Stale, false,
+			"dial\nping\nPROBE\nAPPROVE outdated=true\nINSTALL approve=false\nkick\nping\nsubscribe\nprobe codex\nadd 1455 exact=true\nlogin tty=true BROWSER=" + shim + ": exec codex login\nclose"},
+		{"current, daemon slow to notice", false, agentbin.Current, false,
+			"dial\nping\nPROBE\nkick\nping\nsubscribe\nprobe codex\nadd 1455 exact=true\nlogin tty=true BROWSER=" + shim + ": exec codex login\nclose"},
+		{"declined", false, agentbin.Missing, true,
+			"dial\nping\nPROBE\nAPPROVE outdated=false\nclose"},
+		{"managed", true, agentbin.Missing, false,
+			"dial\nping\nPROBE\nINSTALL approve=false\nkick\nping\nsubscribe\nprobe codex\nadd 1455 exact=true\nlogin tty=true BROWSER=" + shim + ": exec codex login\nclose"},
+	} {
+		log := &thinLog{}
+		stubAgent(t, log, nil, tc.st)
+		m := config.NewRemote("box", tc.managed, "dev@box")
+		br := &fakeBridge{log: log, version: "v1", shimAfterKick: shim}
+		o := Options{
+			OpenBridge: func() (Bridge, error) { log.add("dial"); return br, nil },
+			Version:    "v1",
+		}
+		if !tc.managed {
+			o.Approve = func(outdated bool) error {
+				log.add("APPROVE outdated=%v", outdated)
+				if tc.decline {
+					return errors.New("agent install declined")
+				}
+				return nil
+			}
+		}
+		err := Run(context.Background(), guestBackend{log: log}, m, []string{"codex"}, o)
+		if (err != nil) != tc.decline {
+			t.Fatalf("%s: err = %v", tc.name, err)
+		}
+		if got := log.String(); got != tc.want {
+			t.Errorf("%s: ran:\n%s\nwant:\n%s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A daemon that never reports the shim after the install is an error
+// naming the wait, not a login with BROWSER unset; and a daemon from
+// another build is never handed an agent (it would not look for one).
+func TestThinAuthRemotePickupTimesOut(t *testing.T) {
+	oldW, oldP := agentPickupWait, agentPickupPoll
+	agentPickupWait, agentPickupPoll = 30*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { agentPickupWait, agentPickupPoll = oldW, oldP })
+	log := &thinLog{}
+	stubAgent(t, log, nil, agentbin.Current)
+	m := config.NewRemote("box", true, "dev@box")
+	br := &fakeBridge{log: log, version: "v1"}
+	err := Run(context.Background(), guestBackend{log: log}, m, []string{"github"}, Options{
+		OpenBridge: func() (Bridge, error) { return br, nil },
+		Version:    "v1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not pick up the devvm agent") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(log.String(), "login") || strings.Contains(log.String(), "subscribe") {
+		t.Fatalf("ran logins without a shim:\n%s", log)
+	}
+
+	log = &thinLog{}
+	stubAgent(t, log, nil, agentbin.Missing)
+	br = &fakeBridge{log: log, version: "v0.1.18"}
+	err = Run(context.Background(), guestBackend{log: log}, m, []string{"github"}, Options{
+		OpenBridge: func() (Bridge, error) { return br, nil },
+		Version:    "v1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "runs another build of devvm") {
+		t.Fatalf("another build: err = %v", err)
+	}
+	if got := log.String(); got != "ping\nclose" {
+		t.Fatalf("another build: ran:\n%s", got)
 	}
 }
 

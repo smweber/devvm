@@ -176,14 +176,52 @@ func (a *App) hostOpener() session.SessionOptions {
 
 // bridged reports whether attach/shell/auth hold a subscription for m: a
 // local smol machine devvm manages (its daemon's agent exec carries
-// events), or a machine on a hub, through this host's daemon for HUB@NAME,
-// whose relay subscribes on the hub daemon (hub.md §8; the hub refuses a
-// VM it does not manage). A smol VM devvm did not create gets no bridge:
-// subscribing would spawn a daemon whose transport installs the agent
-// (config.md §2). Remote boxes wait for the ssh agent exec (bridge §1,
-// "Remote", deferred).
+// events), a remote box (its daemon runs the agent exec on its own ssh
+// master: browser-bridge.md §1, "Remote"; on an adopt host only once the
+// agent is there, which bridgeSession checks), or a machine on a hub,
+// through this host's daemon for HUB@NAME, whose relay subscribes on the
+// hub daemon (hub.md §8; the hub refuses a VM it does not manage). A smol
+// VM devvm did not create gets no bridge: subscribing would spawn a daemon
+// whose transport installs the agent (config.md §2). A hub itself is not a
+// machine.
 func bridged(m *config.Machine) bool {
-	return m.IsHubMachine() || (!m.IsRemote() && m.Managed())
+	switch {
+	case m.IsHub():
+		return false
+	case m.IsHubMachine(), m.IsRemote():
+		return true
+	default:
+		return m.Managed()
+	}
+}
+
+// shimPinger is the session's ping (*session.Session), asked after a
+// remote box's subscribe whether its daemon has an agent at all.
+type shimPinger interface {
+	Ping() (session.PingInfo, error)
+}
+
+// remoteWithoutAgent is attach/shell's check on a remote box's bridge: a
+// daemon that reports no shim has no agent exec to hear the guest (an adopt
+// host nobody consented for, or an install that failed), so the session is
+// let go with one line naming the way to get one, and the daemon idles out
+// as if never asked. A ping that fails says nothing either way: the
+// subscription is kept.
+func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub) bool {
+	p, ok := s.(shimPinger)
+	if !m.IsRemote() || m.IsHubMachine() || !ok {
+		return false
+	}
+	info, err := p.Ping()
+	if err != nil || info.Shim != "" || info.State != session.StateUp {
+		return false
+	}
+	why := "its devvm agent did not come up (see the daemon log; 'devvm auth " + m.Name + "' retries the install)"
+	if !m.Managed() {
+		why = "no current devvm agent there (an unmanaged host: 'devvm auth " + m.Name + "' offers to install one in ~/.local/bin)"
+	}
+	fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable: %s; URLs opened in the guest will be printed there\n", why)
+	return true
 }
 
 // bridgeSession opens the browser bridge for an interactive session and
@@ -208,6 +246,10 @@ func bridged(m *config.Machine) bool {
 // hubBootForSession), so a VM still not running gets one line and no
 // bridge. b is only asked whether a smol VM runs (a stopped one gets no
 // daemon), so it may be nil for a hub machine.
+//
+// On a remote box the session spawns the daemon (and its ssh master) if no
+// forward holds one, for the life of the session: it idles out once the
+// session ends with no forwards.
 func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func()) {
 	release = func() {}
 	if noSubscribe() || !bridged(m) {
@@ -225,6 +267,10 @@ func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func(
 	s, err := a.openSubscribed(m)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable (%v); URLs opened in the guest will be printed there\n", err)
+		return release
+	}
+	if a.remoteWithoutAgent(m, s) {
+		s.Close()
 		return release
 	}
 	return func() { s.Close() }

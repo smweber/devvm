@@ -108,9 +108,10 @@ func (r *recBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string
 	return r.fakeBackend.Run(ctx, o, argv...)
 }
 
-// Browser installs agent and shim and writes profile.d on smol, and does
-// nothing at all (no install, no exec) on either remote backend.
-func TestBrowserSmolOnly(t *testing.T) {
+// Browser installs agent and shim and writes profile.d as root on a
+// managed box, smol or remote (both daemons run the agent exec), and does
+// nothing at all (no install, no exec) on an unmanaged one of either kind.
+func TestBrowserManagedOnly(t *testing.T) {
 	var installs []string
 	old := installAgent
 	installAgent = func(_ context.Context, _ backend.Backend, m *config.Machine, approve func() error) (agentbin.Paths, error) {
@@ -122,36 +123,32 @@ func TestBrowserSmolOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { installAgent = old })
 
-	rb := &recBackend{}
-	if err := Browser(context.Background(), rb, managedSmol("web")); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(installs, ",") != "web" {
-		t.Fatalf("installs = %v, want [web]", installs)
-	}
-	if len(rb.runs) != 1 || rb.users[0] != "root" || rb.runs[0][0] != "sh" ||
-		rb.runs[0][2] != writeProfileScript(backend.ManagedShimPath) {
-		t.Fatalf("runs = %q as %q, want the profile.d write as root", rb.runs, rb.users)
-	}
-
-	// A smol VM devvm did not create gets nothing either (config.md §2).
-	installs, rb = nil, &recBackend{}
-	if err := Browser(context.Background(), rb, &config.Machine{Name: "found", Backend: config.BackendSmol}); err != nil {
-		t.Fatal(err)
-	}
-	if len(installs) != 0 || len(rb.runs) != 0 {
-		t.Errorf("unmanaged smol: installs %v, runs %q; want none", installs, rb.runs)
-	}
-
-	for _, be := range []string{"managed", "unmanaged"} {
+	for _, m := range []*config.Machine{managedSmol("web"), config.NewRemote("cloud", true, "dev@cloud")} {
 		installs = nil
 		rb := &recBackend{}
-		m := config.NewRemote("cloud", be == "managed", "dev@cloud")
 		if err := Browser(context.Background(), rb, m); err != nil {
-			t.Fatalf("%s: %v", be, err)
+			t.Fatal(err)
+		}
+		if strings.Join(installs, ",") != m.Name {
+			t.Fatalf("%s: installs = %v", m.Name, installs)
+		}
+		if len(rb.runs) != 1 || rb.users[0] != "root" || rb.runs[0][0] != "sh" ||
+			rb.runs[0][2] != writeProfileScript(backend.ManagedShimPath) {
+			t.Fatalf("%s: runs = %q as %q, want the profile.d write as root", m.Name, rb.runs, rb.users)
+		}
+	}
+
+	// A smol VM devvm did not create gets nothing (config.md §2), nor does
+	// an adopt host (its agent waits for consent at auth, and it never
+	// gets a profile.d write).
+	for _, m := range []*config.Machine{{Name: "found", Backend: config.BackendSmol}, config.NewRemote("adopted", false, "me@adopted")} {
+		installs = nil
+		rb := &recBackend{}
+		if err := Browser(context.Background(), rb, m); err != nil {
+			t.Fatal(err)
 		}
 		if len(installs) != 0 || len(rb.runs) != 0 {
-			t.Errorf("%s: installs=%v runs=%q, want nothing touched", be, installs, rb.runs)
+			t.Errorf("%s: installs %v, runs %q; want none", m.Name, installs, rb.runs)
 		}
 	}
 }

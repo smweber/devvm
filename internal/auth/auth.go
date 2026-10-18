@@ -1,3 +1,8 @@
+// Package auth orchestrates github/codex/claude logins inside a guest. It
+// is thin everywhere it runs (browser-bridge.md §6): the machine's forward
+// daemon bridges the host browser and OAuth loopback callbacks over its one
+// agent exec (smol's, or a remote box's on the daemon's ssh master), and
+// auth only reads the shim, subscribes, and runs the logins.
 package auth
 
 import (
@@ -5,44 +10,47 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
+	"os/exec"
 	"strings"
-	"sync"
+	"syscall"
+	"time"
 
-	"github.com/hashicorp/yamux"
 	"github.com/smweber/devvm/internal/agentbin"
-	"github.com/smweber/devvm/internal/agentrpc"
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
-	"github.com/smweber/devvm/internal/hostbrowser"
 	fwdsession "github.com/smweber/devvm/internal/session"
 )
+
+// codexFixedPort is codex's well-known callback port. auth pre-binds it before
+// `codex login` (no device auth), as an exact forward owned by its session,
+// so the callback is bridged even if codex never hands its URL to the shim.
+// Callback-port parsing itself is the daemon's (session.CallbackPort).
+const codexFixedPort = 1455
 
 // session is one auth run: the backend the logins run through, the guest
 // path of the BROWSER shim they get, and ensure, which bridges a login's
 // loopback callback port before the login starts (codex's fixed 1455).
-// On a remote backend it also holds the private agent exec, its yamux
-// channel and the callback listeners stood up over it; the thin path (smol)
-// has none of those: its daemon owns the one exec and binds callbacks.
 type session struct {
 	ctx    context.Context
 	b      backend.Backend
 	shim   string // guest $BROWSER wrapper path (co-located with the agent)
 	ensure func(port int)
-
-	// The private session (remote backends only).
-	agent *backend.Session
-	mux   *yamux.Session
-
-	mu        sync.Mutex
-	callbacks map[int][]net.Listener // guest callback port -> host listeners (v4 and/or v6)
 }
 
-// installAgent is agentbin.Install, a var so a test can prove the thin path
-// never calls it: on smol the daemon's transport is the sole installer
-// (browser-bridge.md §5, §6).
-var installAgent = agentbin.Install
+// installAgent and probeAgent are agentbin's, vars so a test can see what
+// auth installs: only an agent a remote box's daemon reports missing, and
+// on an adopt host only with consent. On smol the daemon's transport is the
+// sole installer (browser-bridge.md §5, §6).
+var (
+	installAgent = agentbin.Install
+	probeAgent   = agentbin.Probe
+)
+
+// agentPickupWait bounds how long auth waits, after installing the agent on
+// a remote box and kicking its daemon, for that daemon to report the shim
+// (its next probe, then its exec spawn). A var for tests.
+var agentPickupWait = 15 * time.Second
 
 // Bridge is thin auth's hold on the machine's forward daemon
 // (browser-bridge.md §6): a session (*session.Session) whose events open on
@@ -54,15 +62,19 @@ type Bridge interface {
 	Ping() (fwdsession.PingInfo, error)
 	Subscribe() error
 	Add(pref, guest int, exact bool) (host int, bumped, pending bool, err error)
+	// Kick nudges the daemon's transport: after auth installs the agent on
+	// a remote box, the daemon looks for it at once.
+	Kick() error
 	Close() error
 }
 
-// Options are what Run needs beyond the machine: the consent gate for the
-// remote branch's install, and the thin branch's way to the daemon.
+// Options are what Run needs beyond the machine: the consent gate for an
+// adopt host's agent install, and the way to the daemon.
 type Options struct {
-	// Approve gates the agent install on an adopt host (agentbin.Install);
-	// remote branch only.
-	Approve func() error
+	// Approve gates the agent install on an adopt host: called only when
+	// one would be written, with whether an agent is there but outdated
+	// (another build's). nil: no consent needed (a managed box).
+	Approve func(outdated bool) error
 	// OpenBridge dials the machine's forward daemon (spawning it if needed)
 	// and opens a session on it, with an OnEvent that opens URLs here.
 	OpenBridge func() (Bridge, error)
@@ -77,28 +89,32 @@ type Options struct {
 	Version string
 }
 
-// Thin reports whether auth on m takes the thin path (browser-bridge.md §6):
-// the machine's forward daemon has events, which today means smol. A hub
-// machine is thin too, but its auth runs on the hub (the cli proxies it
-// with this host subscribed), so it never reaches Run here. Remote boxes
-// keep the private session until the ssh agent exec ships.
-func Thin(m *config.Machine) bool { return !m.IsRemote() }
+// Thin reports whether auth on m takes the thin path (browser-bridge.md
+// §6): every machine of this host's own, smol and remote alike, whose
+// forward daemon carries events once it has an agent. A hub machine is
+// thin too, but its auth runs on the hub (the cli proxies it with this
+// host subscribed), so it never reaches Run here.
+func Thin(m *config.Machine) bool { return !m.IsHubMachine() }
 
-// Run logs in the requested tools on m: the thin path where the daemon has
-// events, the private session everywhere else.
+// Run logs in the requested tools on m over its forward daemon
+// (authenticateThin). A hub machine is refused: the cli proxies its auth.
 func Run(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, o Options) error {
 	if !Thin(m) {
-		return Authenticate(ctx, b, m, tools, o.Approve)
+		return fmt.Errorf("auth %s: a hub machine's auth runs on its hub", m.Name)
 	}
 	return authenticateThin(ctx, b, m, tools, o)
 }
 
-// authenticateThin is `auth` on smol (browser-bridge.md §6): no agent exec
-// of its own and no install. The machine's daemon holds the one exec and
-// installed the agent and shim before spawning it; a session on it reports
-// the shim (ping) and, once subscribed, brings every URL a login opens to
-// this host, binding its callback on the way. So `auth` during a held
-// attach adds no second `devvm-agent serve` to the VM (the one-exec rule).
+// authenticateThin is `auth` (browser-bridge.md §6): no agent exec of its
+// own. The machine's daemon holds the one exec and, on smol and a managed
+// remote box, installed the agent and shim before spawning it; a session on
+// it reports the shim (ping) and, once subscribed, brings every URL a login
+// opens to this host, binding its callback on the way. So `auth` during a
+// held attach adds no second `devvm-agent serve` to the box.
+//
+// A remote box whose daemon reports no shim gets the agent from here
+// (agentForDaemon) before anything subscribes: on an adopt host that is
+// the only place devvm ever installs it, and only with consent.
 func authenticateThin(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, o Options) error {
 	s := &session{ctx: ctx, b: b, ensure: func(int) {}}
 	if o.NoSubscribe {
@@ -123,6 +139,11 @@ func authenticateThin(ctx context.Context, b backend.Backend, m *config.Machine,
 	if err != nil {
 		return fmt.Errorf("browser bridge for '%s': %w", m.Name, err)
 	}
+	if info.Shim == "" && m.IsRemote() && info.State == fwdsession.StateUp && info.Version == o.Version {
+		if info, err = agentForDaemon(ctx, b, m, br, o); err != nil {
+			return err
+		}
+	}
 	if info.Shim == "" {
 		return noShimError(m.Name, info, o.Version)
 	}
@@ -135,10 +156,62 @@ func authenticateThin(ctx context.Context, b backend.Backend, m *config.Machine,
 	return s.runLogins(tools)
 }
 
+// agentForDaemon gives a remote box's daemon the agent it reports missing
+// (browser-bridge.md §1, "Remote"): on an adopt host the daemon only ever
+// probes, so the user-scoped install happens here, behind o.Approve (the
+// --install-agent flag or the prompt), worded by what the probe found; on a
+// managed box the daemon's own install failed or is still running, and
+// this one, in the foreground, either lands it or says why. Then the daemon
+// is kicked (its transport looks again at once) and asked until it reports
+// the shim, bounded by agentPickupWait. Every probe and write here runs
+// over this host's own ssh, never the daemon's exec.
+func agentForDaemon(ctx context.Context, b backend.Backend, m *config.Machine, br Bridge, o Options) (fwdsession.PingInfo, error) {
+	_, st, err := probeAgent(ctx, b, m)
+	if err != nil {
+		return fwdsession.PingInfo{}, fmt.Errorf("devvm-agent on '%s': %w", m.Name, err)
+	}
+	if st != agentbin.Current {
+		if o.Approve != nil {
+			if err := o.Approve(st == agentbin.Stale); err != nil {
+				return fwdsession.PingInfo{}, err
+			}
+		}
+		if _, err := installAgent(ctx, b, m, nil); err != nil {
+			return fwdsession.PingInfo{}, fmt.Errorf("install devvm-agent on '%s': %w", m.Name, err)
+		}
+	}
+	// One kick: a probe already in flight in the daemon keeps it queued
+	// (the transport's nudge is buffered), so the daemon looks again after.
+	if err := br.Kick(); err != nil {
+		return fwdsession.PingInfo{}, fmt.Errorf("browser bridge for '%s': %w", m.Name, err)
+	}
+	deadline := time.Now().Add(agentPickupWait)
+	for {
+		info, err := br.Ping()
+		if err != nil {
+			return fwdsession.PingInfo{}, fmt.Errorf("browser bridge for '%s': %w", m.Name, err)
+		}
+		if info.Shim != "" || info.State != fwdsession.StateUp {
+			return info, nil
+		}
+		if !time.Now().Before(deadline) {
+			return fwdsession.PingInfo{}, fmt.Errorf("the forward daemon for '%s' did not pick up the devvm agent within %s; see its log, or restart it ('devvm ports down %s', and end any attach holding it) and retry", m.Name, agentPickupWait, m.Name)
+		}
+		select {
+		case <-ctx.Done():
+			return fwdsession.PingInfo{}, ctx.Err()
+		case <-time.After(agentPickupPoll):
+		}
+	}
+}
+
+// agentPickupPoll is how often agentForDaemon asks again.
+var agentPickupPoll = 250 * time.Millisecond
+
 // noShimError explains a daemon that reports no shim, from the same ping:
 // between transports (the shim comes back with the next one), another build
-// (in practice one from before thin auth: it has the shim, step 7 installs
-// it, but does not say where; a newer one would report it), or neither. Nothing is installed from here.
+// (in practice one from before thin auth, or on a remote box one from
+// before its agent exec), or neither. Nothing is installed from here.
 func noShimError(name string, info fwdsession.PingInfo, version string) error {
 	switch {
 	case info.State != "" && info.State != fwdsession.StateUp:
@@ -184,39 +257,6 @@ func CallbackPorts(tools []string) []int {
 	return nil
 }
 
-// Authenticate logs in the requested tools (github/codex/claude) inside the
-// guest over a private agent session: the remote branch (Run), until the
-// ssh agent exec ships. It bridges the host browser and OAuth loopback
-// callbacks itself. tools is the resolved list (e.g. all ->
-// github,codex,claude). approve gates the agent install on adopt hosts
-// (see agentbin.Install).
-func Authenticate(ctx context.Context, b backend.Backend, m *config.Machine, tools []string, approve func() error) error {
-	// Agent and BROWSER shim, one install (agentbin.Install).
-	paths, err := installAgent(ctx, b, m, approve)
-	if err != nil {
-		return err
-	}
-	shim := paths.Shim
-	// --auth: listen on the auth session's own guest socket, so this agent and
-	// a forward daemon's agent never steal each other's URL socket.
-	agent, err := b.Spawn(ctx, backend.ExecOpts{User: backend.DefaultUser},
-		paths.Agent, "serve", "--auth")
-	if err != nil {
-		return err
-	}
-	defer agent.Close()
-	mux, err := yamux.Client(agentrpc.Stdio{In: agent.Stdout, Out: agent.Stdin}, agentrpc.MuxConfig())
-	if err != nil {
-		return err
-	}
-	s := &session{ctx: ctx, b: b, agent: agent, mux: mux, shim: shim, callbacks: map[int][]net.Listener{}}
-	s.ensure = s.ensureCallback
-	defer s.close()
-
-	go s.eventLoop()
-	return s.runLogins(tools)
-}
-
 // runLogins runs each tool's login in order, the shared body of both paths.
 func (s *session) runLogins(tools []string) error {
 	for _, tool := range tools {
@@ -241,110 +281,6 @@ func (s *session) runLogins(tools []string) error {
 		fmt.Fprintf(os.Stderr, "devvm: %s login exited non-zero; continuing\n", tool)
 	}
 	return nil
-}
-
-// eventLoop consumes agent-pushed streams (open-url events) for the auth
-// session's lifetime.
-func (s *session) eventLoop() {
-	for {
-		stream, err := s.mux.Accept()
-		if err != nil {
-			return
-		}
-		go s.handleStream(stream)
-	}
-}
-
-func (s *session) handleStream(stream net.Conn) {
-	defer stream.Close()
-	ev, err := agentrpc.ReadEvent(stream)
-	if err != nil || ev.Type != agentrpc.EventOpenURL {
-		return
-	}
-	// The agent waits for the answer and the shim prints it in the guest
-	// (browser-bridge.md §2).
-	_ = agentrpc.WriteReply(stream, s.onOpenURL(ev.URL))
-}
-
-// onOpenURL bridges a callback port (session.CallbackPort, which no longer
-// skips codex's 1455: ensureCallback is idempotent, so the pre-bound port
-// is simply reused) and opens the URL here.
-func (s *session) onOpenURL(url string) agentrpc.OpenReply {
-	if port, ok := fwdsession.CallbackPort(url); ok {
-		s.ensureCallback(port)
-	}
-	fmt.Fprintf(os.Stderr, "devvm: opening on host -> %s\n", url)
-	if err := hostbrowser.Open(url); err != nil {
-		why := err.Error()
-		if errors.Is(err, hostbrowser.ErrNoOpener) {
-			why = "no browser opener"
-		}
-		if errors.Is(err, hostbrowser.ErrRefused) {
-			fmt.Fprintf(os.Stderr, "devvm: %s\n", why)
-			return agentrpc.OpenReply{Err: why}
-		}
-		fmt.Fprintf(os.Stderr, "devvm: could not open a browser (%s); open this URL in your browser: %s\n", why, url)
-		return agentrpc.OpenReply{Err: why, URL: url, Printed: true}
-	}
-	return agentrpc.OpenReply{Opened: true, URL: url}
-}
-
-// ensureCallback binds the host loopback (both families, for macOS localhost->::1)
-// on the callback port and pipes each connection to the guest's 127.0.0.1:port
-// over a forward stream — the callback-as-forward that replaces nc + curl replay.
-func (s *session) ensureCallback(port int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.callbacks[port]; ok {
-		return
-	}
-	var lns []net.Listener
-	for _, addr := range []string{fmt.Sprintf("127.0.0.1:%d", port), fmt.Sprintf("[::1]:%d", port)} {
-		if ln, err := net.Listen("tcp", addr); err == nil {
-			lns = append(lns, ln)
-			go s.serveForward(ln, port)
-		}
-	}
-	if len(lns) > 0 {
-		s.callbacks[port] = lns
-		fmt.Fprintf(os.Stderr, "devvm: bridging login callback on port %d\n", port)
-	}
-}
-
-func (s *session) serveForward(ln net.Listener, guestPort int) {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		go s.pump(conn, guestPort)
-	}
-}
-
-func (s *session) pump(conn net.Conn, guestPort int) {
-	stream, err := s.mux.Open()
-	if err != nil {
-		conn.Close()
-		return
-	}
-	target := fmt.Sprintf("127.0.0.1:%d", guestPort)
-	if err := agentrpc.WriteHeader(stream, agentrpc.ForwardHeader(target)); err != nil {
-		stream.Close()
-		conn.Close()
-		return
-	}
-	agentrpc.Splice(conn, stream)
-}
-
-func (s *session) close() {
-	s.mu.Lock()
-	for _, lns := range s.callbacks {
-		for _, ln := range lns {
-			ln.Close()
-		}
-	}
-	s.mu.Unlock()
-	s.mux.Close()
 }
 
 // login runs one tool's interactive login with the browser shim wired in as
@@ -441,4 +377,17 @@ func Tools(sel string) ([]string, error) {
 		return []string{sel}, nil
 	}
 	return nil, fmt.Errorf("tool must be %s, or all", strings.Join(Choices(), ", "))
+}
+
+// isSignalExit reports whether a command exited due to a signal (e.g. Ctrl-C),
+// which should abort the whole auth flow rather than continue to the next tool.
+func isSignalExit(err error) bool {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return true
+		}
+		return ee.ExitCode() >= 128
+	}
+	return false
 }

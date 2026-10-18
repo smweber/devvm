@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/hashicorp/yamux"
+	"github.com/smweber/devvm/internal/agentrpc"
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 )
@@ -32,10 +34,12 @@ type transport interface {
 	// forward (`ports rm`, an owner's last drop).
 	forward(hostPort, guestPort int) (io.Closer, error)
 	// events carries the guest's open-url requests (browser-bridge.md §1):
-	// the smol agent exec's event streams, or a hub machine's events relayed
-	// by its hub daemon (hubTransport, while subscribed there). nil when
-	// the transport has none (ssh until its agent exec ships), which a
-	// select never receives from.
+	// the smol or ssh agent exec's event streams, or a hub machine's events
+	// relayed by its hub daemon (hubTransport, while subscribed there). The
+	// channel is fixed for the transport's life (the daemon's loop selects
+	// on it): ssh's stays the same across agent exec respawns and is fed by
+	// nothing while it has no exec. nil when the transport can never have
+	// events (the hub's own master), which a select never receives from.
 	events() <-chan bridgeRequest
 	dead() <-chan struct{}
 	// Close drops the transport and every forward bound on it, in one go:
@@ -63,20 +67,32 @@ type subscriber interface {
 	setSubscribed(on bool) error
 }
 
-// clockNudger is a transport that keeps its guest's clock in sync (smol:
-// syncClock over the agent exec) and can be asked to sync now: on a kick
-// and on a new subscriber, the moments after a host wake when a user is
-// about to use the guest. Optional; only smolTransport implements it (a
-// hub machine's sync is its hub daemon's, nudged there by the relayed
-// subscribe).
-type clockNudger interface {
-	nudgeClock()
+// nudger is a transport that does something better done now than on its
+// own timer when a user is about to use the guest: on a kick (`ports up`,
+// `start`) and on a new subscriber (attach/shell/auth), the moments after a
+// host wake or a fresh install. smol syncs its guest's clock (syncClock);
+// ssh retries its agent exec at once if it has none (an adopt host whose
+// agent `auth` just installed, an exec waiting out its respawn backoff).
+// Optional; a hub machine's are its hub daemon's, nudged there by the
+// relayed subscribe. Non-blocking.
+type nudger interface {
+	nudge()
+}
+
+// eventCarrier is a transport whose events() channel exists for its whole
+// life but carries events only while something feeds it: ssh, whose agent
+// exec may be absent (an adopt host without the agent) and comes and goes
+// under one channel. hasEvents is what the daemon reports as Bridge to a
+// relay (hub.md §8). Optional; smol always has events, hub reads its echo.
+type eventCarrier interface {
+	hasEvents() bool
 }
 
 // shimReporter is a transport that knows the guest path of the BROWSER shim
-// (browser-bridge.md §5): smol's own install, or a hub machine's as its hub
+// (browser-bridge.md §5): smol's own install, ssh's install or probe (""
+// while it knows of no current agent), or a hub machine's as its hub
 // daemon reported it. ping carries it, so thin `auth` never installs
-// anything itself (bridge §6). Optional; ssh has none.
+// anything itself on smol (bridge §6).
 type shimReporter interface {
 	shimPath() string
 }
@@ -102,7 +118,17 @@ func newTransport(ctx context.Context, m *config.Machine, b backend.Backend) (tr
 		if !ok {
 			return nil, fmt.Errorf("remote backend does not expose a connector")
 		}
-		return newSSHTransport(conn.SSHConn())
+		sc := conn.SSHConn()
+		t, err := newSSHTransport(sc)
+		if err != nil {
+			return nil, err
+		}
+		// The agent exec rides the daemon's own master (sc.ControlPath), and
+		// so do agentbin's probes and install before it.
+		if mb, ok := b.(backend.MasterBinder); ok {
+			t.startAgent(ctx, m.Name, sshAgentHooks(m, mb.OnMaster(sc.ControlPath)))
+		}
+		return t, nil
 	default:
 		return newSmolTransport(ctx, m, b)
 	}
@@ -249,5 +275,78 @@ func (s *forwardSet) closeAll() {
 	s.mu.Unlock()
 	for _, tf := range open {
 		tf.Close()
+	}
+}
+
+// agentMux is the host's yamux client over a `devvm-agent serve` exec's
+// stdio, shared by the smol and ssh transports. The exec is closed when the
+// mux cannot be made.
+func agentMux(agent *backend.Session) (*yamux.Session, error) {
+	mux, err := yamux.Client(agentrpc.Stdio{In: agent.Stdout, Out: agent.Stdin}, agentrpc.MuxConfig())
+	if err != nil {
+		agent.Close()
+		return nil, err
+	}
+	return mux, nil
+}
+
+// maxEventStreams bounds the guest's event streams in flight at once, from
+// accept until the reply is written: each holds a goroutine here, and one
+// admitted to the daemon a handler and up to a subscriber's wait. The rate
+// limit applies only once an open reaches the daemon, so without this a
+// hostile guest could open streams faster than anything refuses them. A
+// stream past the bound is closed unread (the shim then prints the URL).
+const maxEventStreams = 16
+
+// serveEvents accepts the guest-initiated streams on the agent's session for
+// its lifetime and hands each open-url to out, for the daemon's loop. Not
+// accepting them at all would queue the streams in yamux forever.
+func serveEvents(mux *yamux.Session, out chan<- bridgeRequest) {
+	sem := make(chan struct{}, maxEventStreams)
+	for {
+		stream, err := mux.Accept()
+		if err != nil {
+			return
+		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			stream.Close()
+			continue
+		}
+		release := func() { <-sem }
+		go serveEventStream(stream, out, mux.CloseChan(), release)
+	}
+}
+
+// serveEventStream reads one open-url and hands it on with a reply that
+// writes the answer to the stream and closes it (the agent is waiting on
+// that line, agentrpc's open-url exchange). An old agent closes the stream
+// right after its event and reads nothing: the reply's write fails or lands
+// on a closed stream within its deadline, so nothing waits on it. A stream
+// that is not an open-url is closed. done is the session's end: nobody will
+// take the request then. release frees the stream's slot (serveEvents'
+// bound) once it is answered or dropped.
+func serveEventStream(s net.Conn, out chan<- bridgeRequest, done <-chan struct{}, release func()) {
+	var once sync.Once
+	finish := func(r *agentrpc.OpenReply) {
+		once.Do(func() {
+			if r != nil {
+				_ = agentrpc.WriteReply(s, *r)
+			}
+			s.Close()
+			release()
+		})
+	}
+	ev, err := agentrpc.ReadEvent(s)
+	if err != nil || ev.Type != agentrpc.EventOpenURL || ev.URL == "" {
+		finish(nil)
+		return
+	}
+	req := bridgeRequest{url: ev.URL, reply: func(r agentrpc.OpenReply) { finish(&r) }}
+	select {
+	case out <- req:
+	case <-done:
+		finish(nil)
 	}
 }

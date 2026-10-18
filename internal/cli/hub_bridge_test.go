@@ -43,6 +43,7 @@ func (b *orderedBridge) note(what string) {
 
 func (b *orderedBridge) Subscribe() error { b.note("subscribe"); return b.subErr }
 func (b *orderedBridge) Close() error     { b.note("close"); return nil }
+func (b *orderedBridge) Kick() error      { b.note("kick"); return nil }
 func (b *orderedBridge) Ping() (session.PingInfo, error) {
 	b.note("ping")
 	if b.ping != nil {
@@ -222,8 +223,8 @@ func TestBridgedMachines(t *testing.T) {
 	}{
 		{managedSmol("web"), true},
 		{&config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}, true},
-		{config.NewRemote("box", true, "box"), false},
-		{config.NewRemote("box", false, "box"), false},
+		{config.NewRemote("box", true, "box"), true},
+		{config.NewRemote("box", false, "box"), true},
 		{hub, false},
 	} {
 		if got := bridged(tc.m); got != tc.want {
@@ -247,7 +248,7 @@ func TestHubAuthRefusedWithoutProof(t *testing.T) {
 		want string
 	}{
 		{session.PingInfo{State: session.StateReconnecting}, "auth h/web: the link to hub h is reconnecting; retry in a moment"},
-		{session.PingInfo{State: session.StateUp}, "auth h/web: the hub's daemon for web reports no browser shim (is it a smol machine?), so logins there would not open here"},
+		{session.PingInfo{State: session.StateUp}, "auth h/web: the hub's daemon for web reports no browser shim, so logins there would not open here"},
 	} {
 		var log []string
 		ping := tc.ping
@@ -262,19 +263,6 @@ func TestHubAuthRefusedWithoutProof(t *testing.T) {
 		if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
 			t.Errorf("%s: auth ran on the hub without a shim reported", tc.ping.State)
 		}
-	}
-
-	// The hub's cached listing says web is not smol: the refusal says so.
-	if err := writeHubCache(a.Paths, "h", []hubRow{{name: "web", backend: config.BackendRemote, state: "reachable", forwards: "-"}}); err != nil {
-		t.Fatal(err)
-	}
-	noShim := session.PingInfo{State: session.StateUp}
-	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: new([]string), ping: &noShim})
-	if err := runTree(t, a, "auth", "h/web"); err == nil || err.Error() != "auth h/web: auth on a non-smol hub machine is not supported through the hub yet (h/web is remote there)" {
-		t.Errorf("non-smol hub machine: err = %v", err)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("auth ran on the hub for a non-smol machine")
 	}
 
 	t.Setenv(backend.NoSubscribeEnv, "1")
@@ -630,7 +618,7 @@ func TestHubAttachNoRetryWhenRefusedForGood(t *testing.T) {
 	for _, msg := range []string{
 		"forward daemon for 'h/web' exited: h/web: devvm on hub h predates hub forwards (needs v0.1.14 or newer); run 'devvm update' there",
 		"subscribed here, but not upstream: hub devvm too old for browser opens: the daemon for web on hub h predates v0.1.15",
-		"subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h is not a smol machine there",
+		"subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h carries no browser events there",
 	} {
 		fb := &fakeBridge{subErr: errors.New(msg)}
 		opens := scriptedOpens(t, nil, fb)
@@ -646,7 +634,7 @@ func TestHubAttachNoRetryWhenRefusedForGood(t *testing.T) {
 }
 
 // auth HUB/NAME on a machine the hub's daemon says has no browser events
-// (NoEvents): refused as unsupported, before anything runs on the hub.
+// (NoEvents): refused, before anything runs on the hub.
 func TestHubAuthRefusedWithoutEvents(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	a := newTestApp(t)
@@ -654,9 +642,9 @@ func TestHubAuthRefusedWithoutEvents(t *testing.T) {
 	pinTTY(t, true)
 	var log []string
 	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log,
-		subErr: errors.New("subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h is not a smol machine there")})
+		subErr: errors.New("subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h carries no browser events there")})
 	err := runTree(t, a, "auth", "h/web")
-	if err == nil || err.Error() != "auth h/web: auth on a non-smol hub machine is not supported through the hub yet (its daemon on hub h carries no browser events)" {
+	if err == nil || err.Error() != "auth h/web: its daemon on hub h carries no browser events (a remote box with no current devvm agent there, or a hub devvm that predates remote agents), so logins there would not open here" {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {

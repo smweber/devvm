@@ -124,7 +124,8 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 	// Bridge: this daemon delivers browser events to a relay subscriber and
 	// reports its shim (hub.md §8), the capability a laptop checks before it
 	// subscribes upstream. Only while its transport carries events: an ssh
-	// box on a hub has none, and a laptop told Bridge would subscribe
+	// box on a hub without a current agent (an adopt host nobody consented
+	// for) has none, and a laptop told Bridge would subscribe
 	// "successfully" and hear nothing. NoEvents says why Bridge is absent,
 	// so the laptop tells this daemon from one too old to echo Bridge at
 	// all. Echoed to every session; only a relay reads them. bridge was
@@ -224,8 +225,10 @@ func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 		// the hub never saw.
 		d.subscribe(s)
 		// A new subscriber (attach/shell/auth) is about to use the guest:
-		// fix its clock now rather than at the next tick (syncClock).
-		d.nudgeClock()
+		// fix its clock now rather than at the next tick (syncClock), or
+		// look again for an agent exec it can hear (ssh; an `auth` that
+		// just installed the agent on an adopt host).
+		d.nudge()
 		if err := d.syncUpstream(true); err != nil {
 			return Response{Err: NotUpstreamPrefix + err.Error()}
 		}

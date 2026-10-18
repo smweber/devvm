@@ -433,7 +433,7 @@ func (t *hubTransport) setSubscribed(on bool) error {
 		}
 		hub, machine, _, _ := config.SplitHubName(t.name)
 		if t.noEvents {
-			return fmt.Errorf("%w: %s on hub %s is not a smol machine there, so URLs opened in it cannot reach this host (they print in the guest)", errHubNoEvents, machine, hub)
+			return fmt.Errorf("%w: %s on hub %s carries no browser events there (a remote box with no current devvm agent there, or a hub devvm that predates remote agents), so URLs opened in it cannot reach this host (they print in the guest)", errHubNoEvents, machine, hub)
 		}
 		// A session holds that daemon (this relay, for one), and `ports
 		// down` stops only a daemon nothing holds: hence stop/start, as

@@ -13,26 +13,23 @@ import (
 )
 
 // runOpenURL is the BROWSER shim: a login tool launches it with a URL, and it
-// hands the URL to a running serve agent over a guest socket, which pushes it
-// to the host and waits for the host's answer (browser-bridge.md §2). A live
-// auth session (its own socket) wins over the forward daemon's agent; with
-// neither listening, it prints the URL so the user can open it manually.
+// hands the URL to the running serve agent over the guest socket, which
+// pushes it to the host and waits for the host's answer (browser-bridge.md
+// §2). With no agent listening, it prints the URL so the user can open it
+// manually.
 func runOpenURL(args []string) {
 	if len(args) == 0 {
 		fatal("open-url needs a URL")
 	}
 	url := args[0]
-	for _, name := range []string{authSockName, defaultSockName} {
-		conn, err := net.Dial("unix", guestSockPath(name))
-		if err != nil {
-			continue
-		}
-		defer conn.Close()
-		fmt.Fprintf(conn, "%s\n", url)
-		fmt.Fprintln(os.Stderr, shimMessage(conn, url))
+	conn, err := net.Dial("unix", guestSockPath(sockName))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "devvm: open this URL in your host browser: %s\n", url)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "devvm: open this URL in your host browser: %s\n", url)
+	defer conn.Close()
+	fmt.Fprintf(conn, "%s\n", url)
+	fmt.Fprintln(os.Stderr, shimMessage(conn, url))
 }
 
 // shimMessage reads the agent's reply line and words it. No reply (the

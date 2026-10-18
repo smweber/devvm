@@ -154,6 +154,14 @@ type SSHConn struct {
 	ControlPath string   // dedicated master socket for this machine's daemon
 }
 
+// MasterBinder is a backend reached over ssh whose execs can ride a given
+// ControlMaster (sshBackend.OnMaster): the session daemon's ssh transport
+// runs agentbin and the agent exec on its own master. A capability, not a
+// backend name (config.md §9 item 1).
+type MasterBinder interface {
+	OnMaster(controlPath string) Backend
+}
+
 // SSHConnector is implemented by the ssh backend so the session package can
 // manage native forwards without importing ssh internals.
 type SSHConnector interface {

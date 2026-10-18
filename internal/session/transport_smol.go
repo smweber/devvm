@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -26,7 +25,7 @@ type smolTransport struct {
 	fwds  forwardSet         // this transport's listeners; Close drops them all
 	evCh  chan bridgeRequest // the guest's open-url requests (events)
 	paths agentbin.Paths     // what Install put in the guest (ping reports the shim)
-	clock chan struct{}      // nudgeClock: sync the guest's clock now (buffered 1)
+	clock chan struct{}      // nudge: sync the guest's clock now (buffered 1)
 }
 
 func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend) (*smolTransport, error) {
@@ -49,9 +48,8 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 	if err != nil {
 		return nil, err
 	}
-	mux, err := yamux.Client(agentrpc.Stdio{In: agent.Stdout, Out: agent.Stdin}, agentrpc.MuxConfig())
+	mux, err := agentMux(agent)
 	if err != nil {
-		agent.Close()
 		return nil, err
 	}
 	t := &smolTransport{agent: agent, mux: mux, evCh: make(chan bridgeRequest), paths: paths,
@@ -67,7 +65,7 @@ const clockSyncInterval = 60 * time.Second
 
 // syncClock pushes this host's wall clock to the agent once now (every
 // dial, first and each reconnect), on every nudge (a kick, a new
-// subscriber: nudgeClock) and every interval, until the session dies; the agent steps the guest's clock when it is 2s or more
+// subscriber: nudge) and every interval, until the session dies; the agent steps the guest's clock when it is 2s or more
 // off. A smol guest does not resync after the host suspends, and its init
 // runs no time daemon, so this is its time sync: over the one agent exec,
 // nothing installed. Only while a daemon holds the exec: an unmanaged VM
@@ -126,9 +124,9 @@ func syncClock(mux *yamux.Session, interval time.Duration, nudge chan struct{}) 
 	}
 }
 
-// nudgeClock asks for a clock sync now. Non-blocking: one already queued,
-// or a loop that has stopped, makes it a no-op.
-func (t *smolTransport) nudgeClock() {
+// nudge asks for a clock sync now (nudger). Non-blocking: one already
+// queued, or a loop that has stopped, makes it a no-op.
+func (t *smolTransport) nudge() {
 	select {
 	case t.clock <- struct{}{}:
 	default:
@@ -143,67 +141,6 @@ func smolInstallGate(m *config.Machine) func() error {
 			return fmt.Errorf("%s: %w; refusing to install the agent: %s", m.Name, backend.ErrUnmanaged, backend.AdoptHint(m.Name))
 		}
 		return nil
-	}
-}
-
-// maxEventStreams bounds the guest's event streams in flight at once, from
-// accept until the reply is written: each holds a goroutine here, and one
-// admitted to the daemon a handler and up to a subscriber's wait. The rate
-// limit applies only once an open reaches the daemon, so without this a
-// hostile guest could open streams faster than anything refuses them. A
-// stream past the bound is closed unread (the shim then prints the URL).
-const maxEventStreams = 16
-
-// serveEvents accepts the guest-initiated streams on the agent's session for
-// its lifetime and hands each open-url to out, for the daemon's loop. Not
-// accepting them at all would queue the streams in yamux forever.
-func serveEvents(mux *yamux.Session, out chan<- bridgeRequest) {
-	sem := make(chan struct{}, maxEventStreams)
-	for {
-		stream, err := mux.Accept()
-		if err != nil {
-			return
-		}
-		select {
-		case sem <- struct{}{}:
-		default:
-			stream.Close()
-			continue
-		}
-		release := func() { <-sem }
-		go serveEventStream(stream, out, mux.CloseChan(), release)
-	}
-}
-
-// serveEventStream reads one open-url and hands it on with a reply that
-// writes the answer to the stream and closes it (the agent is waiting on
-// that line, agentrpc's open-url exchange). An old agent closes the stream
-// right after its event and reads nothing: the reply's write fails or lands
-// on a closed stream within its deadline, so nothing waits on it. A stream
-// that is not an open-url is closed. done is the session's end: nobody will
-// take the request then. release frees the stream's slot (serveEvents'
-// bound) once it is answered or dropped.
-func serveEventStream(s net.Conn, out chan<- bridgeRequest, done <-chan struct{}, release func()) {
-	var once sync.Once
-	finish := func(r *agentrpc.OpenReply) {
-		once.Do(func() {
-			if r != nil {
-				_ = agentrpc.WriteReply(s, *r)
-			}
-			s.Close()
-			release()
-		})
-	}
-	ev, err := agentrpc.ReadEvent(s)
-	if err != nil || ev.Type != agentrpc.EventOpenURL || ev.URL == "" {
-		finish(nil)
-		return
-	}
-	req := bridgeRequest{url: ev.URL, reply: func(r agentrpc.OpenReply) { finish(&r) }}
-	select {
-	case out <- req:
-	case <-done:
-		finish(nil)
 	}
 }
 

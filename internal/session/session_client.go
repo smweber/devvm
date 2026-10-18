@@ -248,8 +248,11 @@ func (s *Session) Unsubscribe() error {
 // PingInfo is what a ping says about the daemon: its state, the build it
 // runs, and the guest path of the BROWSER shim its transport installed
 // (for a hub machine, the one the hub reported). Shim is "" when the
-// transport carries no events, while the daemon is between transports, or
-// from a daemon older than the field; State and Version tell those apart.
+// transport carries no events (an ssh box with no current agent: an adopt
+// host nobody consented for), while the daemon is between transports, or
+// from a daemon older than the field; State and Version tell the last two
+// apart. An ssh daemon whose agent exec is between respawns still reports
+// the shim of the agent it knows is installed.
 type PingInfo struct {
 	State   string
 	Version string
@@ -266,6 +269,19 @@ func (s *Session) Ping() (PingInfo, error) {
 	}
 	resp, err := sc.call(Request{Op: OpPing})
 	return PingInfo{State: resp.State, Version: resp.Version, Shim: resp.Shim}, err
+}
+
+// Kick is the one-shot kick over this session: a reconnecting daemon
+// retries now, and its transport is nudged (an ssh transport with no agent
+// exec looks for one at once). Thin `auth` sends it after installing the
+// agent on an adopt host, so the daemon it holds picks the agent up.
+func (s *Session) Kick() error {
+	sc := s.current()
+	if sc == nil {
+		return ErrSessionDown
+	}
+	_, err := sc.call(Request{Op: OpKick})
+	return err
 }
 
 // Add brings up a forward owned by this session's connection: it lives

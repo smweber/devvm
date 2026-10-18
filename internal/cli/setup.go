@@ -390,9 +390,9 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	if err := bootstrap.Prereqs(ctx, b, m); err != nil {
 		return err
 	}
-	// 3. Agent + BROWSER shim + /etc/profile.d/devvm.sh, on smol only (a
-	// no-op on remote boxes, which wait for the ssh agent exec). Before the
-	// hook, so the hook's own login shells already see BROWSER.
+	// 3. Agent + BROWSER shim + /etc/profile.d/devvm.sh, smol and remote
+	// alike (both daemons run the agent exec). Before the hook, so the
+	// hook's own login shells already see BROWSER.
 	if err := browserStep(ctx, b, m); err != nil {
 		return err
 	}

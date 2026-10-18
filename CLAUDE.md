@@ -75,7 +75,12 @@ ssh has no such limit: its forwards are native `ssh -L` on a ControlMaster; only
 rpc/events ride the agent exec. **`authorized_keys` management is host-side**
 (`internal/keys` over one plain exec — read, process on the host, atomic
 write-back), so `keys` needs no agent and touches nothing on an adopt host but
-`~/.ssh`. The agent is pulled in only on smol (forwards, `auth`, and the browser bridge that `attach`/`shell` subscribe to) and by `auth` on remote boxes.
+`~/.ssh`. The agent is pulled in by the forward daemon: on smol it carries
+everything (forwards, rpc, the browser events `attach`/`shell`/`auth`
+subscribe to); on a remote box one `devvm-agent serve` exec rides the
+daemon's own ControlMaster for browser events only. Either way it is one
+exec per daemon and one guest socket (`~/.devvm/agent.sock`); `auth` never
+spawns its own.
 
 A machine on a hub is the same rule one host removed: **the laptop never owns an
 agent exec for a hub VM**. The hub's daemon holds the one exec; the laptop's
@@ -109,16 +114,17 @@ internal/config/    the devvm.toml loader (file.go: [templates.*] + [machines.*]
 internal/backend/   Backend interface + smol.go + ssh.go (remote and the hop to a hub)
                     + hub.go (HUB/NAME: proxy argv, `__session` argv; never spawns)
 internal/session/   per-machine forward daemon (owns the exec) + client + transports
-                    (transport_{smol,ssh,hub}.go); daemon_session.go = sessions and
+                    (transport_{smol,ssh,hub}.go, transport_ssh_agent.go = a remote
+                    box's agent exec); daemon_session.go = sessions and
                     relays; bridge.go = URL classify/bind/deliver (browser bridge)
 internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
 internal/provider/  cloud providers: Provider interface + hetzner/ (plain REST) + fake/
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
-internal/auth/      login orchestration, URL bridge, callback-as-forward
+internal/auth/      login orchestration over the daemon's session (thin auth)
 internal/bootstrap/ the guest steps of `setup`: EnsureUser, prereqs (install on managed /
                     check on adopt), the template's hook, hardening
-                    + browser.go (smol: agent + shim + /etc/profile.d/devvm.sh)
+                    + browser.go (managed: agent + shim + /etc/profile.d/devvm.sh)
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop shelf,
                     one tile per live machine = cp-in; menu + shelf fed by
@@ -150,6 +156,19 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   shutdown as a client stop (later signals are absorbed); SIGKILL orphans
   the ssh master, which the next start `-O exit`s and never adopts; a
   SIGKILLed smol daemon's exec is not covered.
+  A remote box's daemon (`transport_ssh_agent.go`) also runs the agent exec
+  on its own master (`<name>.master`, via `backend.MasterBinder.OnMaster`,
+  never the CLI's `c-%C`), and agentbin's probes and install ride it too.
+  Managed: `agentbin.Install` (root, as smol). Adopt host: `agentbin.Probe`
+  only, never a write; with no current agent the transport has no shim and
+  no events and waits for a nudge (`kick`, a new subscriber), which is how
+  `auth` hands it an agent it just installed. The agent failing never fails
+  the transport (forwards don't need it). Exec dies with the master up →
+  respawned by the transport (1s doubling to 30s), forwards untouched;
+  master dies → the transport is marked dead and the daemon's reconnect
+  rebuilds both. No clock sync on remote (it runs its own time daemon).
+  A daemon spawned only for an attach's subscription idle-exits once the
+  session ends with no forwards.
   A smol daemon is also its guest's time sync: the guest runs no time
   daemon and stays behind after the host suspends. The daemon pushes its
   clock over the agent exec (a `time` stream) on every dial, on a `kick`,
@@ -425,26 +444,38 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   it there if it has no opener); its answer goes back to the guest. The daemon
   never opens a browser itself. With no subscriber, the shim prints the URL in the
   guest. Opens are rate-limited (10/min) and bridge forwards are capped per
-  machine. Remote boxes have no events until the ssh agent exec ships (their
-  transport's `events()` is nil).
-- **Auth**: smol and hub machines use **thin auth** over the daemon's session:
-  ping reads the shim path (nothing installed), subscribe, bind the fixed
+  machine. A remote box has events while its daemon knows a current agent
+  (`eventCarrier.hasEvents`, which is also what a hub echoes as `Bridge` for
+  it): its `events()` channel is fixed for the transport's life and fed only
+  while the agent exec is up. `attach`/`shell` subscribe on remote boxes
+  too; a daemon that reports no shim gets the session released with one
+  line. Remote `BROWSER` comes from tmux (`attach` sets it in the `dev`
+  session, guarded on the shim being executable) and, on a managed box,
+  profile.d: bare `shell` sends no remote command and sshd drops `SetEnv`.
+- **Auth**: every machine uses **thin auth** over the daemon's session:
+  ping reads the shim path, subscribe, bind the fixed
   callback (codex's `:1455`) as an exact session-owned forward, then run the
   logins with `BROWSER` = the shim. So `auth` during a held attach adds no second
   agent exec. `auth HUB/NAME` does this on the laptop and proxies `auth NAME` to
-  the hub, whose auth only pings. Remote boxes keep the private `--auth` agent
-  exec (its own guest socket) until the ssh agent exec lands.
+  the hub, whose auth only pings. On a remote box whose (same-build, up)
+  daemon reports no shim, `auth` probes over its own ssh, asks consent on an
+  adopt host (`--install-agent` or the prompt, which says "outdated" for
+  another build's agent), installs, `kick`s the daemon and waits (15s) for
+  the shim before subscribing. The private `--auth` session and its second
+  guest socket are gone.
 - **Agent install** (`internal/agentbin`): idempotent by sha256, arch-matched,
   `$HOME`-resolved (never hardcode `/home/dev`). Managed boxes get a root-owned
   `/usr/local/bin` install; adopt hosts get a **user-scoped `~/.local/bin`**
   install, gated behind explicit consent (`auth --install-agent` or a prompt) so
-  devvm never writes to an adopted box unasked. The posture is keyed on
+  devvm never writes to an adopted box unasked: its daemon only runs
+  `agentbin.Probe` (same probes, no writes). The posture is keyed on
   `Managed()` alone. The smol transport's install gate **fails** when
   `!Managed()` (a detached daemon can't ask anyone), so nothing is installed
   into a smol VM devvm did not create. `Install` returns the paths to use
-  (agent and shim). On smol, `setup` installs agent + shim and writes
-  `/etc/profile.d/devvm.sh` (`bootstrap.Browser`), so profile.d never names a
-  missing file; smol `create`/`setup` **fail** if that install fails. smol
+  (agent and shim). On every managed box (smol and remote), `setup` installs
+  agent + shim and writes `/etc/profile.d/devvm.sh` (`bootstrap.Browser`), so
+  profile.d never names a missing file; `create`/`setup` **fail** if that
+  install fails; an adopt host never gets profile.d. smol
   `shell`/`attach` also carry `BROWSER` in their exec env (attach copies it
   into the `dev` tmux session), dropped if the shim is missing.
 - **Root adoption (fresh cloud VMs)**: `setup` on a managed remote box first
@@ -475,7 +506,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   VM/disk) and writes the managed marker; `delete` destroys it. **`setup`**
   (was `bootstrap`) shapes a box and is the single place devvm touches its
   contents, in a fixed order: ensure user → prereqs (incl. tmux, gh,
-  mosh-server) → agent + shim (+ profile.d, smol) → **`hook`** → repos → keys
+  mosh-server) → agent + shim + profile.d → **`hook`** → repos → keys
   → harden → seed saved forwards. The **`hook`** (template key) is the
   *user's* step inside it, often a dotfiles script
   itself named `bootstrap.sh`. So `create` = make the box exist; `setup` =

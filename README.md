@@ -60,7 +60,7 @@ its API, is the planned next backend.)
 - `devvm shell NAME` — a raw login shell, no tmux.
 - Both take `--transport ssh|mosh` for remote machines (default from the
   entry's `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
-- **Browser opens (smol).** While `attach`/`shell` is open on a smol machine, a
+- **Browser opens.** While `attach`/`shell` is open on a machine, a
   URL a guest program opens through `$BROWSER` opens in the host's browser,
   and a loopback URL (a dev server, an OAuth callback) gets its forward
   bound first. `BROWSER` points at `/usr/local/bin/devvm-open-url`, which
@@ -72,8 +72,13 @@ its API, is the planned next backend.)
   and every `devvm exec`, which runs under a login shell) unless `BROWSER` is already set or the shim is
   missing. zsh and fish don't read profile.d: they get it inside `attach`,
   or set it yourself. When no devvm on the host answers, the shim prints
-  the URL instead. Remote machines are not wired up yet: there `BROWSER` is
-  left alone and only `auth` bridges its own logins.
+  the URL instead. On a remote box the machine's forward daemon runs the
+  agent over its own ssh connection; a managed box gets agent, shim and
+  profile.d at `setup`, and an unmanaged one gets them only when `devvm auth
+  NAME` installs the agent into `~/.local/bin` with your consent
+  (`--install-agent` pre-approves). There `BROWSER` comes from `attach`'s
+  tmux session (and profile.d on a managed box); a bare `shell` is your
+  login shell untouched.
 - `devvm cp-in NAME SOURCE [DEST]` — copy a local file into a machine; add `-r`
   for directories. DEST is a guest path, relative to the login user's home
   unless absolute, and defaults to the home directory. A DEST ending in `/`
@@ -173,7 +178,7 @@ internal/session/   per-machine forward daemon (owns the one exec) + client
 internal/agentrpc/  yamux stream protocol (forward / rpc / event) shared host+guest
 internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)
 internal/keys/      authorized_keys logic (dedup / revoke / list), host-side, was awk
-internal/auth/      login orchestration, URL bridge, callback-as-forward
+internal/auth/      login orchestration over the forward daemon (thin auth)
 internal/bootstrap/ the guest steps of `setup`: user, prereqs, the template hook, hardening
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
 ```
@@ -185,7 +190,8 @@ forward, rpc, and auth event for a machine rides a *single* persistent
 `devvm-agent serve` exec, multiplexed with yamux. This is why the session daemon
 exists (it owns that exec for the machine's lifetime) and why forwards are yamux
 streams for smol. ssh has no such limit, so its forwards are native `-L` on a
-ControlMaster; only the agent's rpc/events ride the exec. authorized_keys
+ControlMaster; only the agent's browser events ride its exec, which runs on
+the daemon's own ControlMaster. authorized_keys
 management runs host-side (`internal/keys` over one plain exec), so it needs no
 agent — which is what lets `keys` work on an adopt host with zero footprint.
 
@@ -194,7 +200,7 @@ agent — which is what lets `keys` work on an adopt host with zero footprint.
 `internal/agentbin/bin/devvm-agent-linux-{amd64,arm64}` are cross-compiled and
 committed, then `go:embed`-ed into the host binary so `go install …@latest`
 yields a self-contained artifact. Guests must be **Linux**: anything needing the
-agent (`auth`, smol forwards) fails early with a clear error on other OSes,
+agent (smol forwards, browser opens) fails early with a clear error on other OSes,
 while agent-free commands (`shell`, `attach`, `exec`, `keys`, ssh forwards)
 work on any remote with an sshd. Regenerate after changing `cmd/devvm-agent`:
 

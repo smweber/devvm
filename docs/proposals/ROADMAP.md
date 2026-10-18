@@ -186,10 +186,20 @@ redesign: they build on resolve's source list, templates, `setup` and
 1. **Known issues** (below), the real ones first: killed daemon orphaning
    its ControlMaster, SIGINT leaking the cp spool, ~~the cold-boot bridge
    retry~~ (fixed).
-2. **The ssh agent exec for remote boxes** (bridge §1 "Remote"): thin remote
-   `auth`, `BROWSER` plumbing on remote boxes (bridge §5), deletion of
-   `--auth` and the second agent socket. Deferred from the bridge plan
-   because hub VMs never needed it; a provider backend does.
+2. ~~**The ssh agent exec for remote boxes**~~ done (bridge §1 "Remote",
+   §5, §6 "As shipped"). As shipped: a remote box's daemon runs one
+   `devvm-agent serve` on its own master (`backend.MasterBinder.OnMaster`,
+   which agentbin's probes and install ride too) for browser events only;
+   a managed box gets the agent installed by the daemon and by `setup`
+   (`bootstrap.Browser` now runs on every managed box, profile.d
+   included), an adopt host is only ever probed and gets the agent from
+   `auth`, with consent, which then kicks the daemon to pick it up. The
+   transport respawns a dead exec itself while the master lives and marks
+   itself dead when the master is gone. `attach`/`shell` subscribe on
+   remote boxes, `attach` copies a guarded `BROWSER` into the tmux
+   session, `auth` is thin everywhere, and the private session, `serve
+   --auth` and `agent-auth.sock` are deleted. A hub echoes `Bridge` for a
+   remote machine whose transport has a current agent.
 3. ~~Provider backend~~ done (above).
 4. **Mac tests** when at the laptop: the v0.1.14 menubar changes (drop shelf,
    Tab completion, save panel), the step 3 fifth-column Swift change, and a
@@ -273,8 +283,6 @@ Cosmetic or accepted:
   says so); the redirect TTL's 10-minute expiry was never live-tested. The
   host browser is opened by the subscribing `attach`/`shell` process, so its
   PATH decides the opener.
-- Cancelling a private-session `auth cloud` logs a yamux ping warning and
-  prints both "opening on host" and "opened on host".
 - Killing a laptop-side `cp-in HUB/NAME` after the archive is fully written
   does not abort it (no pty, no SIGINT propagation; "nothing created" holds
   only for an early kill). The laptop then says "interrupted after upload;
@@ -339,6 +347,15 @@ Cosmetic or accepted:
   cli test binary's `TestMain` refuses `__daemon`.
 - **Unix sockets and inodes**: tmpfs hands out inodes monotonically, ext4
   and APFS reuse them; `ownsSocket` needs the dial, not just the inode.
+- **This dev guest is itself a devvm smol box** (2026-10-18): it has
+  `/usr/local/bin/devvm-open-url`, so a test that runs a guest script on
+  this host and expects the managed shim to be missing fails here. Test
+  the absence with a temp `$HOME` (the adopt path) and only assert the
+  managed path's text.
+- **`ControlMaster=no` with a missing ControlPath is a fresh connection,
+  not an error**: ssh falls back to connecting on its own. Anything run on
+  the daemon's master (`OnMaster`) checks the master is alive before a
+  respawn, and passes `BatchMode=yes` so the fallback can never prompt.
 
 ## Live-test environments
 

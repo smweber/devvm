@@ -251,3 +251,45 @@ func managedSmol(name string) *config.Machine {
 	m.SetManaged(true)
 	return m
 }
+
+// Probe writes nothing and tells missing, stale (some other build's agent,
+// or this build's without its shim) and current apart: the adopt-host
+// daemon runs only this, and auth words its consent prompt from it.
+func TestProbeStatesWriteNothing(t *testing.T) {
+	g := newFakeGuest()
+	m := config.NewRemote("box", false, "")
+	agent, shim := "/home/dev/.local/bin/devvm-agent", "/home/dev/.local/bin/devvm-open-url"
+	data, _, err := binFor("Linux x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		files map[string][]byte
+		want  State
+	}{
+		{"nothing installed", nil, Missing},
+		{"another build", map[string][]byte{agent: []byte("old agent"), shim: []byte(shimScript(agent))}, Stale},
+		{"agent without shim", map[string][]byte{agent: data}, Stale},
+		{"current", map[string][]byte{agent: data, shim: []byte(shimScript(agent))}, Current},
+	} {
+		g.files = tc.files
+		if g.files == nil {
+			g.files = map[string][]byte{}
+		}
+		p, st, err := Probe(context.Background(), g, m)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if st != tc.want || p.Agent != agent || p.Shim != shim {
+			t.Errorf("%s: Probe = %+v, %v; want %v", tc.name, p, st, tc.want)
+		}
+	}
+	if len(g.writes) != 0 {
+		t.Fatalf("Probe wrote %v", g.writes)
+	}
+	hubM := &config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: config.NewHub("h", "h")}
+	if _, _, err := Probe(context.Background(), g, hubM); !errors.Is(err, ErrHubMachine) {
+		t.Fatalf("Probe of a hub machine = %v", err)
+	}
+}

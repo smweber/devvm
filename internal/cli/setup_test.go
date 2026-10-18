@@ -322,13 +322,19 @@ func TestSetupAdoptTypedName(t *testing.T) {
 // fakeRemote is a fake ssh for the remote flow: it logs its argv, answers
 // `id -un` with the destination's user, and runs body first (dest is the
 // destination, $last the remote command).
+//
+// setup's agent step (bootstrap.Browser: agentbin's probes and install) is
+// stood in for, logging `AGENT-INSTALL NAME` into the same log, so a
+// remote setup's order reads from one file.
 func fakeRemote(t *testing.T, body string) string {
 	t.Helper()
 	t.Setenv("DEVVM_SSH_CONNECT_TIMEOUT", "")
-	return fakeSSH(t, `eval "dest=\${$(($# - 1))}"
+	log := fakeSSH(t, `eval "dest=\${$(($# - 1))}"
 `+body+`
 case "$last" in *"'id' '-un'"*|"id -un"*|*"id -un"*) echo "${dest%%@*}";; esac
 exit 0`)
+	stubBrowser(t, log)
+	return log
 }
 
 func shrinkReachWait(t *testing.T, budget, interval time.Duration) {
@@ -338,7 +344,8 @@ func shrinkReachWait(t *testing.T, budget, interval time.Duration) {
 	t.Cleanup(func() { setupReachBudget, setupReachInterval = ob, oi })
 }
 
-// The remote order: reach, prereqs, hook, repos, keys, harden; no agent.
+// The remote order: reach, prereqs, agent + shim + profile.d (as smol:
+// its daemon runs the agent exec too), hook, repos, keys, harden.
 func TestSetupRemoteOrder(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, "")
@@ -367,12 +374,13 @@ fail2ban = true
 		"BatchMode=yes", "dev@cloud.example 'true'", // reach
 		"'id' '-un'",                   // login user
 		"build-essential", "tmux mosh", // prereqs
+		"AGENT-INSTALL cloud",           // agent + shim + profile.d
 		"/opt/hook.sh",                  // hook
 		"gh repo clone",                 // repos
 		"authorized_keys.devvm",         // keys
 		"WANT_FAIL2BAN=1", "AllowUsers", // harden
 	)
-	for _, bad := range []string{"root@", "devvm-agent", "profile.d"} {
+	for _, bad := range []string{"root@"} {
 		if strings.Contains(string(data), bad) {
 			t.Errorf("remote setup mentions %q", bad)
 		}

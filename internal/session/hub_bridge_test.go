@@ -442,7 +442,8 @@ func TestPingReportsShim(t *testing.T) {
 }
 
 // The Bridge echo follows the transport: a daemon whose transport carries
-// no browser events (ssh, events() nil) says NoEvents instead, so a laptop
+// no browser events (events() nil here; an ssh box without an agent is
+// TestRelayBridgeEchoForRemoteMachine) says NoEvents instead, so a laptop
 // never subscribes "successfully" through it and then hears nothing, and
 // can tell it from a hub too old to echo Bridge at all.
 func TestBridgeEchoOnlyWithEvents(t *testing.T) {
@@ -534,7 +535,7 @@ func TestHubMachineWithoutEvents(t *testing.T) {
 	if err == nil || !HubNoEvents(err) || !BridgeRefusedForGood(err) || strings.Contains(err.Error(), "too old") {
 		t.Fatalf("subscribe through a hub machine without events = %v", err)
 	}
-	if !strings.Contains(err.Error(), "box on hub h is not a smol machine there") {
+	if !strings.Contains(err.Error(), "box on hub h carries no browser events there") {
 		t.Fatalf("refusal does not name the machine: %v", err)
 	}
 	mu.Lock()
@@ -556,7 +557,7 @@ func TestBridgeRefusedForGood(t *testing.T) {
 		{errors.New("forward daemon for 'h/web' exited: h/web: devvm on hub h predates hub forwards (needs v0.1.14 or newer); run 'devvm update' there"), true},
 		{errors.New("h/web: the forward daemon for web on hub h predates hub forwards; restart it there"), true},
 		{errors.New(NotUpstreamPrefix + errHubTooOld.Error() + ": the daemon for web on hub h predates v0.1.15"), true},
-		{errors.New(NotUpstreamPrefix + errHubNoEvents.Error() + ": box on hub h is not a smol machine there"), true},
+		{errors.New(NotUpstreamPrefix + errHubNoEvents.Error() + ": box on hub h carries no browser events there"), true},
 		{errors.New(NotUpstreamPrefix + errUpstreamReconnecting.Error()), false},
 		{errors.New("h/web: hub: web is not running"), false},
 	} {

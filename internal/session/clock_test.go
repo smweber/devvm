@@ -220,7 +220,7 @@ type nudgeTransport struct {
 	nudges chan struct{}
 }
 
-func (n *nudgeTransport) nudgeClock() { n.nudges <- struct{}{} }
+func (n *nudgeTransport) nudge() { n.nudges <- struct{}{} }
 
 // A kick (ports up/start) and a new subscriber (attach/shell/auth) each
 // nudge the transport's clock sync.

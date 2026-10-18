@@ -133,8 +133,8 @@ host has an IPv6 loopback, section 4).
 **Smol**: the daemon's existing agent exec already carries events; `drainEvents`
 in `transport_smol.go` becomes the bridge handler. No new exec.
 
-**Remote (ssh)**: **deferred**, not scheduled in `ROADMAP.md`. Until it
-ships, `auth` on a remote backend keeps its private agent session and the
+**Remote (ssh)**: **deferred** from this plan, and shipped after the config
+redesign (as shipped, below). Until it shipped, `auth` on a remote backend keeps its private agent session and the
 agent keeps `--auth`; ssh has no one-exec limit, so that is duplication, not a
 violation. When it does ship: the ssh transport gains an agent exec **on the
 daemon's own ControlMaster**. Today `sshBackend.Spawn` goes through `base()`, which uses the
@@ -170,12 +170,55 @@ type transport interface {
 `bridgeRequest` carries the event plus a reply func, so the daemon's loop can
 select on it alongside `dead()` and the idle timer.
 
+**As shipped (the ssh agent exec, after the config redesign).** The backend
+grew `OnMaster(controlPath) Backend` (`backend.MasterBinder`) rather than a
+`SpawnOn`: a copy of the ssh backend whose Run, Spawn and Copy all ride the
+given master (`ControlMaster=no`, `BatchMode=yes`, never the CLI's `c-%C`).
+So not only the agent exec but agentbin's probes and install before it ride
+the daemon's `<name>.master`: the daemon never opens a second connection to
+the box, nothing it runs can turn into a persisting auto-master, and
+`agentbin.Install` takes the bound backend like any other. The agent side
+lives in `internal/session/transport_ssh_agent.go` (`sshAgent`), a
+supervisor beside the master:
+
+- Presence follows `Managed()`: a managed box gets `agentbin.Install` (root,
+  as smol); an adopt host gets `agentbin.Probe`, the same read-only probes
+  (uname, `$HOME`, one sha256 pass) reporting missing, stale (another
+  build's) or current, and nothing is ever written from the daemon.
+- The transport's dial waits at most 8s for the first attempt, so a daemon
+  that comes up with an agent reports its shim on the first ping; past that
+  the attempt goes on behind a transport that is already up. A failed probe
+  or install never fails the transport (forwards do not need the agent): it
+  is logged once per distinct error and retried with a backoff capped at
+  five minutes, since what fixes it is usually a person.
+- `events()` is one channel for the transport's life, fed by whichever exec
+  is up, because the daemon's loop selects on the channel it read when it
+  last went round. Whether there are events is a separate question,
+  `eventCarrier.hasEvents()`: a current agent is known. The shim reported
+  on ping is that agent's, and it stays reported while the exec is between
+  respawns (it is installed and right; an open in that window finds no
+  agent socket and the shim prints the URL in the guest, as with no
+  subscriber). An agent known missing or stale reports no shim and no
+  events, and the supervisor waits for a nudge.
+- Nudges (the optional `nudger`, smol's clock-sync trigger renamed) come
+  from a `kick` and a new subscriber. That is how `auth` hands the daemon an
+  agent it just installed (section 6), and how an `attach` after it picks
+  the agent up.
+- Exec dies with the master alive: respawned after 1s doubling to 30s
+  (reset after an exec that lived a minute); forwards never notice. Exec
+  dies and the master is gone: the supervisor marks the transport dead at
+  once instead of waiting for the 30s `-O check`, and the reconnect builds
+  master and agent again. It checks the master before any respawn: with
+  the socket gone, a `ControlMaster=no` ssh would quietly make a fresh
+  connection of its own.
+- No clock sync: a remote box runs its own time daemon.
+
 **As shipped (roadmap step 7).** The mechanism is `internal/session/bridge.go`.
 `bridgeRequest` is `{url, reply func(agentrpc.OpenReply)}`; the loop starts
 `handleOpen` on a goroutine of its own per event (it binds and waits on a
 subscriber, and must never stall the loop), and `deliverTo` names the
 subscriber the handler chose, since what it bound depends on whether that
-one is a relay. `events()` is nil on ssh; on `hubTransport` it carries the
+one is a relay. `events()` is nil on ssh (until the ssh agent exec, above); on `hubTransport` it carries the
 hub daemon's relayed events from step 8 on (`hub.md` section 8). The
 handler order, and where it differs from the pseudocode above: a
 non-http(s) URL is refused by the daemon first (`host refused a non-http(s)
@@ -194,8 +237,8 @@ subscriber side is `session.OpenOnHost`, the `OnEvent` of `attach`/`shell`:
 it prints the URL (control characters replaced, lines ending `\r\n` for a
 raw-mode terminal) only when the opener is missing or fails to start, not
 for a refused URL. `hostbrowser.Sanitize` lost its `localhost:1455`
-rewrite. `attach`/`shell` open a session only on a running smol machine:
-remote boxes have no events until the ssh agent exec, and a stopped VM is
+rewrite. `attach`/`shell` open a session only on a running smol machine
+(and, since the ssh agent exec, on a remote box too): a stopped VM is
 started first (as `start` does), so it never gets a daemon while stopped; a
 bridge that cannot be had is a one-line notice, never a failed shell.
 
@@ -519,9 +562,9 @@ writing to an adopt host:
 
 | Path | smol | remote-managed | remote-unmanaged |
 |---|---|---|---|
-| `shell` | `ExecOpts.Env` | deferred | deferred |
-| `attach` | `ExecOpts.Env` + tmux session env | deferred | deferred |
-| other shells (cron) | profile.d | deferred | deferred |
+| `shell` | `ExecOpts.Env` | profile.d (login shell) | none |
+| `attach` | `ExecOpts.Env` + tmux session env | tmux session env | tmux session env, once the agent is installed |
+| other shells (cron) | profile.d | profile.d | none |
 
 Notes:
 
@@ -560,7 +603,7 @@ Notes:
   `BROWSER` is harmless.
 - The `agent-auth.sock` / `--auth` distinction goes away on smol: one socket,
   owned by the daemon's agent. It stays for remote backends until the ssh
-  agent exec ships.
+  agent exec ships (it has: both are gone, with the private auth session).
 
 **As shipped (roadmap step 9).** `bootstrap.Browser` runs in `bootstrap`
 after the prereqs, on smol only: `agentbin.Install`, then the profile.d
@@ -570,6 +613,18 @@ session environment only when it is), since only a shim that exists makes
 a stale `BROWSER` harmless. `tmux set-environment -t dev BROWSER "$BROWSER"`
 runs in the attach exec itself, before its `exec tmux attach-session`, so
 the order needs no second exec. Remote backends get neither, as planned.
+
+**As shipped (the ssh agent exec).** The remote columns of the table above.
+`bootstrap.Browser` runs on every managed box (its gate is `!Managed()`),
+so `setup` on a managed remote box installs agent and shim and writes
+profile.d, which is what a bare `shell` gets: it sends no remote command
+on purpose and sshd drops `SetEnv`. `attach` runs `sh -c` in the login
+wrapper: the dev session made with `new-session -d` when missing, then
+`[ -x "$s" ] && tmux set-environment -t dev BROWSER "$s"`, then `exec tmux
+attach-session` (`remoteAttachArgv`; mosh gets the same argv). `$s` is
+the root shim on a managed box and `$HOME/.local/bin/devvm-open-url` on an
+adopt host, where it exists only once `auth` installed the agent with
+consent, so nothing is ever written there by attach and profile.d never.
 
 ### 6. `auth` becomes thin
 
@@ -621,6 +676,27 @@ listeners and `stream.go`; they go with the ssh agent exec. `auth` during a
 held `attach` on smol no longer adds a second `devvm-agent serve`.
 `auth HUB/NAME` subscribes on the laptop and proxies the `auth` leaf to the
 hub (`hub.md` section 8 has why it is not a proxied `exec`).
+
+**As shipped (the ssh agent exec).** `auth.Thin` is true for every machine
+but a hub machine (whose auth is proxied), and the private session is
+deleted: `Authenticate`, its yamux channel and callback listeners,
+`stream.go`, `callback.go`, `serve --auth` and `agent-auth.sock`; the shim
+dials the one `agent.sock`. On a remote box whose daemon is up, of this
+build, and reports no shim, `auth` gets the agent there before it
+subscribes: `agentbin.Probe` over its own ssh, then on an adopt host the
+consent gate (`--install-agent`, or the prompt, which says the agent is
+outdated when the probe found another build's), `agentbin.Install`, a
+`kick` on its session (the daemon's transport looks again at once), and
+pings until the shim is reported, bounded at 15s. A managed box skips the
+consent and gets the same foreground install, which either lands what the
+daemon's own install could not or says why. `auth` on a remote box is then
+exactly the smol path, and during a held `attach` adds no second agent
+exec.
+A hub whose machine is a remote box now echoes `Bridge` for it while its
+ssh transport knows a current agent (the echo is the transport's
+`hasEvents`, never the backend kind), so `auth`/`attach HUB/NAME` on a
+remote hub machine work through the relay like a smol one; with no agent
+there it echoes `NoEvents`, and the laptop's refusal names that.
 
 ### 7. Trust boundary
 

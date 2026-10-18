@@ -21,6 +21,25 @@ import (
 type sshBackend struct {
 	m     *config.Machine
 	paths config.Paths
+	// master, when set, is a ControlMaster another process owns (the
+	// session daemon's <name>.master): every exec and copy rides it and
+	// none starts or persists a master of its own (OnMaster).
+	master string
+}
+
+// OnMaster is b with every Run, Spawn and Copy riding the ControlMaster at
+// controlPath instead of the CLI's shared `c-%C` auto-master (base). The
+// session daemon's ssh transport runs its agent exec, and agentbin's
+// probes and install before it, on its own master (browser-bridge.md §1,
+// "Remote"): the agent then lives and dies with the connection that
+// carries the forwards, the daemon never opens a second TCP connection to
+// the box, and nothing it runs can be the process that turns into a
+// persisting auto-master. A copy of the backend rather than a SpawnOn
+// method, so agentbin.Install takes it as any other backend.
+func (b *sshBackend) OnMaster(controlPath string) Backend {
+	c := *b
+	c.master = controlPath
+	return &c
 }
 
 func (b *sshBackend) Kind() string { return b.m.Backend }
@@ -122,6 +141,18 @@ func (b *sshBackend) base() []string { return b.baseTimeout(SSHConnectTimeoutFor
 
 func (b *sshBackend) baseTimeout(connectSecs int) []string {
 	ssh := append([]string{"ssh"}, b.sshFlagsTimeout(connectSecs)...)
+	if b.master != "" {
+		// Someone else's master: never become one (a user's ssh_config
+		// `ControlMaster auto` included), and never prompt (the daemon is
+		// detached; a mux client does not authenticate anyway). With the
+		// master gone ssh would fall back to a fresh connection, which
+		// BatchMode keeps non-interactive; the transport checks the master
+		// before it respawns anything, so that is a race, not a path.
+		return append(ssh,
+			"-o", "ControlMaster=no",
+			"-o", "ControlPath="+b.master,
+			"-o", "BatchMode=yes")
+	}
 	_ = os.MkdirAll(b.paths.State, 0o700)
 	// Keepalives as the daemon's master has them (session's startMaster):
 	// without them a master outliving a laptop sleep keeps answering
@@ -223,6 +254,9 @@ func controlPathErr(path string) error {
 // (paths.ControlPath). The daemon's own master is under run/, which is
 // shorter than or equal to the state dir's.
 func (b *sshBackend) checkControlPaths() error {
+	if b.master != "" {
+		return nil // the daemon's own, already bound by its master
+	}
 	return controlPathErr(b.paths.ControlPath())
 }
 
@@ -243,6 +277,9 @@ func (b *sshBackend) Copy(hostSrc, guestDst string) error {
 		return err
 	}
 	args := append([]string{"scp"}, b.sshFlags()...)
+	if b.master != "" {
+		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath="+b.master, "-o", "BatchMode=yes")
+	}
 	args = append(args, hostSrc, scpTarget(b.m.SSHHost, guestDst))
 	return quietHost(args) // scp's message rides the error, not a bare exit status
 }
@@ -310,12 +347,39 @@ func (b *sshBackend) Status() (State, error) {
 // Shell opens a raw interactive login shell over the chosen transport.
 func (b *sshBackend) Shell(transport string) error { return b.connect(transport, nil) }
 
-// Attach joins the persistent dev tmux session over the chosen transport.
+// Attach joins the persistent dev tmux session over the chosen transport,
+// with BROWSER in the session's environment (remoteAttachArgv).
 func (b *sshBackend) Attach(transport string) error {
 	if err := RequireGuestTmux(b, b.m); err != nil {
 		return err
 	}
-	return b.connect(transport, []string{"tmux", "new-session", "-A", "-s", "dev"})
+	return b.connect(transport, remoteAttachArgv(b.m.Managed()))
+}
+
+// remoteAttachArgv is Attach's guest command on a remote box: the dev
+// session made if missing, BROWSER copied into its environment, then
+// attached (browser-bridge.md §5). Remote BROWSER can come from nowhere
+// else devvm starts: a bare `shell` sends no remote command so the login
+// shell is honoured, and sshd drops SetEnv unless AcceptEnv allows it, so
+// an exec env never arrives. As on smol, `new-session -A` would not do:
+// `-e` and the client's env reach only a session it creates, and an
+// existing one is attached unchanged; set-environment reaches every new
+// window and pane (a shell already running keeps its own, documented).
+//
+// The shim is the one agentbin.Install puts beside the agent: root-owned on
+// a managed box, ~/.local/bin on an adopt host, where it exists only once
+// the user consented to the agent (`auth`): nothing is written here, and a
+// shim that is not executable leaves BROWSER alone, since a BROWSER naming
+// no file makes gh fail outright instead of printing the URL.
+func remoteAttachArgv(managed bool) []string {
+	shim := `s=` + ManagedShimPath
+	if !managed {
+		shim = `s="$HOME/.local/bin/devvm-open-url"`
+	}
+	return []string{"sh", "-c", shim + `; ` +
+		`tmux has-session -t dev 2>/dev/null || tmux new-session -d -s dev; ` +
+		`[ -x "$s" ] && tmux set-environment -t dev BROWSER "$s"; ` +
+		`exec tmux attach-session -t dev`}
 }
 
 // connect runs remoteArgv interactively over the chosen transport (nil = the

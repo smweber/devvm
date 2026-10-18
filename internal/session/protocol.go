@@ -147,8 +147,8 @@ type Response struct {
 	// forwards still work.
 	Bridge bool `json:"bridge,omitempty"`
 	// NoEvents (session open reply): the daemon knows the bridge but its
-	// transport carries no browser events (an ssh box: nothing in it can
-	// reach a subscriber until the ssh agent exec ships), which is why
+	// transport carries no browser events (an ssh box with no current
+	// agent there; before the ssh agent exec, every ssh box), which is why
 	// Bridge is absent. Added after Bridge, so its absence together with
 	// Bridge's is still the old-hub tell: a daemon that predates it
 	// predates Bridge too, as both first shipped in v0.1.15.

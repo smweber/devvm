@@ -18,12 +18,18 @@ import (
 // native `-L` forwards on it live (ssh -O forward / -O cancel). This replaces
 // autossh: resilience comes from the daemon, and native channels keep ssh's
 // per-connection throughput for VNC / dev-server traffic.
+//
+// For a remote box (not the hub transport's master) it also runs one
+// `devvm-agent serve` exec on that master, for browser events only
+// (sshAgent, transport_ssh_agent.go): forwards stay native -L.
 type sshTransport struct {
 	conn     backend.SSHConn
 	deadCh   chan struct{}
 	deadOnce sync.Once
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	agent *sshAgent // nil without one (the hub transport's master, tests)
 }
 
 // checkInterval is how often the monitor probes the master (ssh -O check).
@@ -225,14 +231,24 @@ func (t *sshTransport) markDead() {
 
 func (t *sshTransport) dead() <-chan struct{} { return t.deadCh }
 
-// events is nil: the ssh transport has no agent exec yet, so no events
-// (browser-bridge.md §1, "Remote": deferred).
-func (t *sshTransport) events() <-chan bridgeRequest { return nil }
+// events is the agent's channel, fixed for the transport's life and fed
+// only while an agent exec is up (sshAgent); nil with no agent at all
+// (the hub transport's master).
+func (t *sshTransport) events() <-chan bridgeRequest {
+	if t.agent == nil {
+		return nil
+	}
+	return t.agent.evCh
+}
 
-// Close exits the master, and every -L on it goes with it: one `ssh -O`,
-// however many forwards (transport.Close).
+// Close stops the agent (its supervisor first, so nothing respawns, then
+// its exec), then exits the master, and every -L on it goes with it: one
+// `ssh -O`, however many forwards (transport.Close).
 func (t *sshTransport) Close() error {
 	t.stopOnce.Do(func() { close(t.stopCh) })
+	if t.agent != nil {
+		t.agent.close()
+	}
 	// Best-effort master shutdown; ignore errors (it may already be gone).
 	_ = t.control("exit")
 	t.markDead()

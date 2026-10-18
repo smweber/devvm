@@ -45,7 +45,7 @@ func binFor(unameSM string) ([]byte, string, error) {
 	osname, guestArch := fields[0], fields[1]
 	if osname != "Linux" {
 		return nil, "", fmt.Errorf(
-			"guest OS is %s, but the devvm-agent only runs on Linux; 'auth' and smol forwards need it (everything else works agent-free)", osname)
+			"guest OS is %s, but the devvm-agent only runs on Linux; browser opens and smol forwards need it (everything else works agent-free)", osname)
 	}
 	var arch string
 	switch guestArch {
@@ -137,20 +137,90 @@ var ErrHubMachine = errors.New("a hub machine's agent and shim are installed by 
 // installed agent and shim before spawning the VM's one agent exec, and
 // this host never writes to a hub VM (hub.md §8, §9).
 func Install(ctx context.Context, b backend.Backend, m *config.Machine, approve func() error) (Paths, error) {
+	pl, err := plan(ctx, b, m)
+	if err != nil {
+		return Paths{}, err
+	}
+	if !pl.needAgent && !pl.needShim {
+		return pl.p, nil
+	}
+	if approve != nil {
+		if err := approve(); err != nil {
+			return Paths{}, err
+		}
+	}
+	if pl.needAgent {
+		if err := installAgent(ctx, b, m, pl.data, pl.arch, pl.p.Agent, pl.staging); err != nil {
+			return Paths{}, err
+		}
+	}
+	if pl.needShim {
+		if err := installShim(ctx, b, m, pl.p); err != nil {
+			return Paths{}, fmt.Errorf("install the browser shim: %w", err)
+		}
+	}
+	return pl.p, nil
+}
+
+// State is what Probe found in the guest.
+type State int
+
+const (
+	// Missing: no agent at the path this box's install would use.
+	Missing State = iota
+	// Stale: an agent is there, but it (or its shim) is not this build's.
+	Stale
+	// Current: agent and shim are exactly what Install would write.
+	Current
+)
+
+// Probe reports whether the guest already has this build's agent and shim
+// where Install would put them, writing nothing: the same read-only probes
+// Install starts with (uname, $HOME, one sha256 pass). The session daemon
+// on an adopt host runs only this (browser-bridge.md §1, "Remote": it never
+// installs there), and `auth` uses it to word its consent prompt (missing
+// versus outdated). A hub machine is refused, as by Install.
+func Probe(ctx context.Context, b backend.Backend, m *config.Machine) (Paths, State, error) {
+	pl, err := plan(ctx, b, m)
+	if err != nil {
+		return Paths{}, Missing, err
+	}
+	switch {
+	case !pl.needAgent && !pl.needShim:
+		return pl.p, Current, nil
+	case pl.agentPresent:
+		return pl.p, Stale, nil
+	default:
+		return pl.p, Missing, nil
+	}
+}
+
+// installPlan is what the read-only probes found, and what Install would
+// write.
+type installPlan struct {
+	p                   Paths
+	data                []byte // this build's agent for the guest's arch
+	arch, staging       string
+	needAgent, needShim bool
+	agentPresent        bool // some file is at p.Agent (needAgent: not this build's)
+}
+
+// plan runs the read-only probes Install and Probe share.
+func plan(ctx context.Context, b backend.Backend, m *config.Machine) (installPlan, error) {
 	if m.IsHubMachine() {
-		return Paths{}, fmt.Errorf("%s: %w", m.Name, ErrHubMachine)
+		return installPlan{}, fmt.Errorf("%s: %w", m.Name, ErrHubMachine)
 	}
 	var unameOut bytes.Buffer
 	if err := b.Run(ctx, backend.ExecOpts{Stdout: &unameOut, Stderr: os.Stderr}, "uname", "-s", "-m"); err != nil {
-		return Paths{}, fmt.Errorf("probe guest os/arch: %w", err)
+		return installPlan{}, fmt.Errorf("probe guest os/arch: %w", err)
 	}
 	data, arch, err := binFor(unameOut.String())
 	if err != nil {
-		return Paths{}, err
+		return installPlan{}, err
 	}
 	home, err := guestHome(ctx, b)
 	if err != nil {
-		return Paths{}, err
+		return installPlan{}, err
 	}
 	// Path + install strategy follow ownership. Staging sits beside the target so
 	// the final mv is an atomic same-dir swap.
@@ -163,32 +233,17 @@ func Install(ctx context.Context, b backend.Backend, m *config.Machine, approve 
 	p.Shim = path.Join(path.Dir(p.Agent), shimName)
 	shim := shimScript(p.Agent)
 
-	// One probe for both halves. A missing file prints no line; that is a
+	// One probe for both halves. A missing file prints "-"; that is a
 	// cache miss, not an error (sha256sum's own exit status is ignored).
 	var sums bytes.Buffer
 	_ = b.Run(ctx, backend.ExecOpts{Stdout: &sums}, "sh", "-c", sumsScript(p.Agent, p.Shim))
 	have := parseSums(sums.String())
-	needAgent := len(have) < 1 || have[0] != sha256hex(data)
-	needShim := len(have) < 2 || have[1] != sha256hex([]byte(shim))
-	if !needAgent && !needShim {
-		return p, nil
-	}
-	if approve != nil {
-		if err := approve(); err != nil {
-			return Paths{}, err
-		}
-	}
-	if needAgent {
-		if err := installAgent(ctx, b, m, data, arch, p.Agent, staging); err != nil {
-			return Paths{}, err
-		}
-	}
-	if needShim {
-		if err := installShim(ctx, b, m, p); err != nil {
-			return Paths{}, fmt.Errorf("install the browser shim: %w", err)
-		}
-	}
-	return p, nil
+	return installPlan{
+		p: p, data: data, arch: arch, staging: staging,
+		needAgent:    len(have) < 1 || have[0] != sha256hex(data),
+		needShim:     len(have) < 2 || have[1] != sha256hex([]byte(shim)),
+		agentPresent: len(have) >= 1 && have[0] != "-",
+	}, nil
 }
 
 // parseSums reads sumsScript's output: one hash (or "-") per line, in

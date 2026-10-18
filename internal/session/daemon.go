@@ -1485,10 +1485,11 @@ func (d *daemon) shimPath() string {
 }
 
 // carriesEvents reports whether the current transport brings the guest's
-// browser events to this daemon: smol's agent exec does, ssh has none
-// (events() nil), and a hub machine's relay does only when its hub daemon
-// echoed Bridge (a hub machine's events come from the hub, or from nowhere).
-// false between transports. Under d.mu, like shimPath.
+// browser events to this daemon: smol's agent exec does, ssh's does while
+// it has a current agent (eventCarrier: installed on a managed box, found
+// on an adopt host), and a hub machine's relay does only when its hub
+// daemon echoed Bridge (a hub machine's events come from the hub, or from
+// nowhere). false between transports. Under d.mu, like shimPath.
 func (d *daemon) carriesEvents() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1504,6 +1505,9 @@ func (d *daemon) carriesEventsLocked() bool {
 	if h, ok := d.tr.(*hubTransport); ok {
 		return h.bridge
 	}
+	if ec, ok := d.tr.(eventCarrier); ok {
+		return ec.hasEvents()
+	}
 	return d.tr.events() != nil
 }
 
@@ -1514,14 +1518,15 @@ func (d *daemon) status() (state string, since time.Time) {
 	return d.state, d.since
 }
 
-// nudgeClock asks the current transport to sync its guest's clock now
-// (clockNudger), if it does that and one is up. Non-blocking.
-func (d *daemon) nudgeClock() {
+// nudge tells the current transport a user is about to use the guest
+// (nudger: smol syncs its clock, ssh retries a missing agent exec now), if
+// it does anything with that and one is up. Non-blocking.
+func (d *daemon) nudge() {
 	d.mu.Lock()
 	tr := d.tr
 	d.mu.Unlock()
-	if c, ok := tr.(clockNudger); ok {
-		c.nudgeClock()
+	if n, ok := tr.(nudger); ok {
+		n.nudge()
 	}
 }
 
@@ -1606,7 +1611,7 @@ func (d *daemon) dispatch(req Request) Response {
 		return Response{OK: true, State: state, Since: since, Version: d.version, Sessions: d.sessionCount(), Shim: d.shimPath()}
 	case OpKick:
 		d.requestKick()
-		d.nudgeClock()
+		d.nudge()
 		return Response{OK: true}
 	case OpStop:
 		defer d.triggerStop()

@@ -588,10 +588,11 @@ daemon …)`, naming `ports down` and, since the relay itself holds the
 daemon, `stop`/`start`, which is the local subscribe's error (`attach`/`shell` print it
 as their one-line notice; forwards are unaffected).
 The echo is only made when the hub daemon's transport carries events: for a
-machine that is not smol there (ssh, no events yet) it echoes
+machine whose transport has none (at first every ssh machine; since the ssh
+agent exec, a remote box there with no current agent) it echoes
 `"no_events":true` instead, and the hook fails with `no browser events from
 this machine on its hub` (attach/shell: the same one-line notice; `auth`:
-refused as a non-smol hub machine). Without that, a laptop would subscribe
+refused, naming that). Without that, a laptop would subscribe
 "successfully" and never hear anything. Neither echo still means too old.
 `session.HubBridgeMinVersion` (`v0.1.15`) is pinned by a test. Third,
 **`auth desktop/web` proxies the `auth` leaf**, not the login commands
