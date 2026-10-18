@@ -292,6 +292,13 @@ Cosmetic or accepted:
   (two at a time, every 0.3s) all succeeded once the VM ran (~1s in, the
   early ones waiting up to 1s), and `start` + `exec` + the daemon's serve
   exec overlapped twice with no wedge. attach/shell now start the VM first.
+- **A smol VM whose start is in flight lists as `stopped`** (1.16.1 never
+  says `starting`), and a second `smolvm machine start` then kills the
+  first one's boot ("Killing orphaned _boot-vm process"; the first start
+  fails "boot process was killed by SIGTERM", the second boots it). Seen
+  with `devvm start raw &` and `devvm shell raw` 0.2s later. This host's
+  starts of one VM are serialized (`lockStart`, run/.start-NAME.lock);
+  `smolvm machine start` on a running VM is a harmless "already running".
 
 - **macOS kqueue coalesces a relink into nothing** (2026-10-17): a symlink
   created and renamed over `devvm.toml` under load merges into one dir

@@ -377,7 +377,8 @@ func (a *App) hubBootForSession(m *config.Machine, p backend.Proxier) error {
 	fmt.Fprintf(a.Stderr, "devvm: starting %s…\n", m.Name)
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	// No terminal for it (start prompts for nothing on smol): with `-t` its
-	// ssh would read what the user types ahead into the session.
+	// ssh would read what the user types ahead into the session. BatchMode
+	// costs nothing: the ControlMaster the __session just used is up.
 	o := proxyExecOpts(false)
 	o.Stdout, o.Stderr = a.Stdout, a.Stderr
 	if err := a.exitStatus(m, p.Proxy(context.Background(), o, "start", m.HubMachineName())); err != nil {

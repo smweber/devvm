@@ -168,7 +168,7 @@ func (a *App) runStart(name string, yes bool) error {
 	if m.IsProvider() {
 		return a.powerProviderBox(m, true, yes)
 	}
-	if err := b.PowerStart(); err != nil {
+	if err := a.powerStartWait(m, b); err != nil {
 		return err
 	}
 	if requireManaged(m) != nil {
@@ -183,6 +183,29 @@ func (a *App) runStart(name string, yes bool) error {
 		return a.tunnelUpWait(name, runningPollTimeout) // smolvm may still say "starting"
 	}
 	return nil
+}
+
+// powerStartWait is `start`'s PowerStart, under lockStart for a smol VM (a
+// concurrent attach starting it must not make smolvm kill one boot for
+// the other: startStopped), then a wait for "running": smolvm may return
+// before it, and whoever runs next (a proxied attach's __session, a
+// script's exec) needs it running. A failed PowerStart is forgiven when
+// the VM runs anyway.
+func (a *App) powerStartWait(m *config.Machine, b backend.Backend) error {
+	if !m.IsRemote() {
+		unlock, err := lockStart(a.Paths, m.Name)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	if err := b.PowerStart(); err != nil {
+		if m.IsRemote() || waitRunning(m, b) != nil {
+			return err
+		}
+		return nil
+	}
+	return waitRunning(m, b)
 }
 
 func (a *App) runStop(name string, yes bool) error {

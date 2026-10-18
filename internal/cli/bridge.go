@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/smweber/devvm/internal/auth"
@@ -42,8 +44,9 @@ var hubBridgeWait = 5 * time.Second
 // stays unreachable is given up on. A var for tests.
 //
 // A VM the hub reported not running only after the attach stopped waiting
-// is retried too: the hub-side attach starts it (bootForSession), and the
-// retries' exec startups then overlap only that attach's, which smolvm
+// is retried too: a hub at this version starts it in the hub-side attach
+// (bootForSession; an older hub's attach still fails on a stopped VM), and
+// the retries' exec startups then overlap only that attach's, which smolvm
 // 1.16.1 merely serializes (an exec during a boot waits for it, ~1s;
 // measured on real smol, ROADMAP "Lessons").
 var bridgeRetryWaits = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 15 * time.Second}
@@ -94,28 +97,29 @@ func (l *lateBridge) release() {
 // the first that opens, until release or a refusal no retry cures (a hub
 // too old for browser opens, a machine without events there). Failures
 // are not reported: the attach owns the terminal by then, and the guest's
-// shim prints the URL all the same.
-func (l *lateBridge) retry(open func() (bridgeSub, error)) {
+// shim prints the URL all the same. It reports whether one was adopted.
+func (l *lateBridge) retry(open func() (bridgeSub, error)) bool {
 	for _, w := range bridgeRetryWaits {
 		select {
 		case <-l.stop:
-			return
+			return false
 		case <-bridgeRetryAfter(w):
 		}
 		select {
 		case <-l.stop:
-			return
+			return false
 		default:
 		}
 		s, err := open()
 		if err == nil {
 			l.adopt(s)
-			return
+			return true
 		}
 		if noBridgeRetry(err) {
-			return
+			return false
 		}
 	}
+	return false
 }
 
 // noBridgeRetry: a bridge failure no background retry should follow, a
@@ -236,8 +240,13 @@ func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func(
 // The hub's `__session` refuses a VM that is not running. Answered within
 // the wait, boot (when set: proxyInteractive's hubBootForSession) starts
 // it and the bridge is opened once more, so the session that follows is
-// bridged from its first URL; boot's error is the attach's. Without boot,
-// or refused again, it is one line and no bridge.
+// bridged from its first URL; boot's error is the attach's. Refused again
+// after boot (a hub whose start returned before "running"), it is retried
+// in the background. Without boot it is one line and no bridge.
+//
+// A bridge adopted late after a not-running refusal that nothing here
+// booted (the hub-side attach did) brings this host's saved forwards for
+// the machine up too, as the boot would have (lateHubForwards).
 func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), err error) {
 	release = func() {}
 	if noSubscribe() {
@@ -248,7 +257,22 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 		s   bridgeSub
 		err error
 	}
-	open := func() (bridgeSub, error) { return a.openSubscribed(m) }
+	var stopped atomic.Bool // an open was refused for a VM not running
+	open := func() (bridgeSub, error) {
+		s, err := a.openSubscribed(m)
+		if vmNotRunning(err) {
+			stopped.Store(true)
+		}
+		return s, err
+	}
+	booted := false
+	// adopted runs once a late bridge is held: the forwards a boot here
+	// would have brought up, unless one did.
+	adopted := func() {
+		if stopped.Load() && !booted {
+			a.lateHubForwards(m)
+		}
+	}
 	for {
 		done := make(chan opened, 1)
 		go func() {
@@ -262,12 +286,12 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 			if r.err == nil {
 				return func() { r.s.Close() }, nil
 			}
-			if vmNotRunning(r.err) {
+			if vmNotRunning(r.err) && !booted {
 				if boot != nil {
 					if err := boot(); err != nil {
 						return release, err
 					}
-					boot = nil
+					boot, booted = nil, true
 					continue
 				}
 				a.notRunningNotice(m)
@@ -281,7 +305,9 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 			late := newLateBridge()
 			go func() {
 				defer bridgeRetryEnded()
-				late.retry(open)
+				if late.retry(open) {
+					adopted()
+				}
 			}()
 			return late.release, nil
 		case <-t.C:
@@ -295,13 +321,27 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 				switch r := <-done; {
 				case r.err == nil:
 					late.adopt(r.s)
+					adopted()
 				case !noBridgeRetry(r.err):
-					late.retry(open)
+					if late.retry(open) {
+						adopted()
+					}
 				}
 			}()
 			fmt.Fprintf(a.Stderr, "devvm: browser bridge to hub %s not up yet; URLs opened before it is will print in the guest\n", m.Hub.Name)
 			return late.release, nil
 		}
+	}
+}
+
+// lateHubForwards brings this host's saved forwards for a hub machine up
+// behind a running attach: nothing on stdout (the session owns the
+// terminal), a failure one warning line.
+func (a *App) lateHubForwards(m *config.Machine) {
+	q := *a
+	q.Stdout = io.Discard
+	if err := q.hubForwardsAfterStart(m.Name); err != nil {
+		fmt.Fprintf(a.Stderr, "devvm: saved forwards for %s not brought up (%v); 'devvm ports up %s' retries\r\n", m.Name, err, m.Name)
 	}
 }
 

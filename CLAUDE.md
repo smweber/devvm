@@ -138,7 +138,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   **reconnects instead of exiting**: backoff 2–30s, forwards stay in the map
   closer-less as *pending* and come back on the same host ports; a `kick` op
   (sent by `ports up`/`start`) resets the backoff. It never dials a stopped smol
-  VM (`smolvm machine exec` may boot it) — neither does the CLI spawn a daemon
+  VM (smolvm 1.16.1's `machine exec` refuses one; an exec racing a boot only
+  waits for it) — neither does the CLI spawn a daemon
   for one (`requireRunningForForwards`; `start`, `setup` and attach/shell,
   which start a stopped VM first, wait for "running").
   Shutdown closes the transport **before** unlinking the socket (`WaitGone`
@@ -229,7 +230,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   integer before compare/write.
 - **Unmanaged smol VMs do little**: `status`, `start`, `stop`, and
   `shell`/`exec` as smolvm's default user over a plain `machine exec` (no
-  sudo, no `BROWSER`, no tmux, nothing installed: `resolveUnmanaged`).
+  sudo, no `BROWSER`, no tmux, nothing installed: `resolveUnmanaged`);
+  shell starts a stopped one first, as `start` does (no confirm, no forwards).
   Everything else goes through `resolve`, whose `requireManaged` refuses in
   one line (`backend.AdoptHint`: `setup --adopt NAME`, or `smolvm machine
   rm` + `create`);
@@ -403,7 +405,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   then adopts a late one, retrying failures in the background (a refusal for
   good excepted). attach/shell on a stopped VM **start it first**, as
   `start` does (`bootForSession`; smolvm 1.16.1's `machine exec` refuses a
-  stopped VM, it never boots one), then open the bridge: on a hub, a
+  stopped VM, it never boots one; this host's starts of one VM hold
+  `lockStart`, since a second `machine start` kills an in-flight boot that
+  still lists as `stopped`), then open the bridge: on a hub, a
   `__session` refusal for a VM not running within the 5s makes the laptop
   proxy `start NAME` (no `-t`) and open once more (`hubBootForSession`);
   past the 5s the retry adopts it once the hub-side attach has started it.

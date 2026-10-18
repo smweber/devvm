@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -263,4 +265,206 @@ func managedSmol(name string) *config.Machine {
 	m := &config.Machine{Name: name, Backend: config.BackendSmol}
 	m.SetManaged(true)
 	return m
+}
+
+// bootBackend is a smol backend whose Status walks states (the last one
+// repeats) and whose PowerStart is counted and may fail.
+type bootBackend struct {
+	backend.Backend
+	states   []string
+	calls    int
+	starts   int
+	startErr error
+}
+
+func (b *bootBackend) Status() (backend.State, error) {
+	raw := b.states[min(b.calls, len(b.states)-1)]
+	b.calls++
+	return backend.State{Exists: true, Running: raw == "running", Raw: raw}, nil
+}
+
+func (b *bootBackend) PowerStart() error { b.starts++; return b.startErr }
+
+// startStopped waits for a VM already starting (a second PowerStart would
+// fail on it), forgives a PowerStart that failed when the VM runs anyway,
+// and never blocks the session on a Status error.
+func TestStartStoppedRaces(t *testing.T) {
+	shrinkRunningPoll(t)
+	m := managedSmol("web")
+	for _, tc := range []struct {
+		name       string
+		b          *bootBackend
+		wantBooted bool
+		wantStarts int
+		wantErr    string
+		wantLine   string
+	}{
+		{"starting is waited for", &bootBackend{states: []string{"starting", "starting", "running"}}, true, 0, "", "waiting for web to start"},
+		{"stopped is started", &bootBackend{states: []string{"stopped", "stopped", "running"}}, true, 1, "", "starting web…"},
+		{"a failed start that raced another", &bootBackend{states: []string{"stopped", "stopped", "running"}, startErr: errors.New("already starting")}, true, 1, "", "starting web…"},
+		{"a failed start", &bootBackend{states: []string{"stopped"}, startErr: errors.New("boom")}, false, 1, "boom", "starting web…"},
+		{"never running", &bootBackend{states: []string{"stopped"}}, true, 1, "web did not reach running within", "starting web…"},
+		{"running", &bootBackend{states: []string{"running"}}, false, 0, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, errBuf := bridgeApp(t)
+			booted, err := a.startStopped(m, tc.b)
+			if booted != tc.wantBooted || tc.b.starts != tc.wantStarts {
+				t.Errorf("booted %v starts %d, want %v %d", booted, tc.b.starts, tc.wantBooted, tc.wantStarts)
+			}
+			if (err == nil) != (tc.wantErr == "") || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Errorf("err = %v, want %q", err, tc.wantErr)
+			}
+			if !strings.Contains(errBuf.String(), tc.wantLine) {
+				t.Errorf("stderr = %q", errBuf.String())
+			}
+		})
+	}
+	a, _ := bridgeApp(t)
+	if booted, err := a.startStopped(m, &statusBackend{statusErr: errors.New("smolvm missing")}); booted || err != nil {
+		t.Errorf("a Status error: booted %v, err %v; want neither", booted, err)
+	}
+}
+
+// `start` waits for "running" even with no saved forwards: smolvm may
+// return while the VM is still starting, and a proxied attach's __session
+// right after it would be refused.
+func TestStartWaitsForRunning(t *testing.T) {
+	shrinkRunningPoll(t)
+	a := newTestApp(t)
+	dir := t.TempDir()
+	ls := filepath.Join(dir, "ls.json")
+	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"stopped","created_at":100}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The start leaves it starting; the second listing after it says running.
+	n := filepath.Join(dir, "n")
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"  'machine ls --json') if [ -f " + n + " ]; then c=$(cat " + n + "); echo $((c+1)) > " + n + "; [ $c -ge 2 ] && echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' && exit 0; fi; cat " + ls + ";;\n" +
+		"  'machine start --name web') echo 0 > " + n + "; echo '[{\"name\":\"web\",\"state\":\"starting\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTree(t, a, "start", "web"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if c, _ := os.ReadFile(n); strings.TrimSpace(string(c)) != "3" {
+		t.Errorf("listings after the start = %q, want start to poll until running", c)
+	}
+}
+
+// shell on a stopped VM devvm did not create starts it, as `start` does,
+// and nothing more: no bridge, no daemon, its stray saved forwards left.
+func TestUnmanagedShellStartsStoppedVM(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	shrinkRunningPoll(t)
+	a := newTestApp(t)
+	log := fakeBootingSmolvm(t, "stopped", "")
+	if err := config.SavePorts(a.Paths, "web", []string{"3000"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := stubBridge(t, &fakeBridge{}, nil)
+	if err := runTree(t, a, "shell", "web"); err != nil {
+		t.Fatalf("shell: %v\n%s", err, a.Stderr)
+	}
+	c := smolvmCalls(t, log)
+	if len(c) != 2 || c[0] != "machine start --name web" || !strings.HasPrefix(c[1], "machine exec") {
+		t.Errorf("smolvm calls = %q, want one start, then the shell", c)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("bridge opened for an unmanaged VM: %q", *calls)
+	}
+	if out := a.Stdout.(*bytes.Buffer).String() + a.Stderr.(*bytes.Buffer).String(); strings.Contains(out, "forward") {
+		t.Errorf("forwards touched for an unmanaged VM: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(a.Paths.RuntimeDir(), "web.sock")); err == nil {
+		t.Error("a daemon socket appeared")
+	}
+}
+
+// A saved forward that cannot be brought up after the boot is one warning
+// line; the session still runs.
+func TestAttachStartsStoppedSmolForwardsFail(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	shrinkRunningPoll(t)
+	a := newTestApp(t)
+	log := fakeBootingSmolvm(t, "stopped", "")
+	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SavePorts(a.Paths, "web", []string{"3000"}); err != nil {
+		t.Fatal(err)
+	}
+	stubBridge(t, &fakeBridge{}, nil)
+	if err := runTree(t, a, "shell", "web"); err != nil {
+		t.Fatalf("shell: %v\n%s", err, a.Stderr)
+	}
+	if !strings.Contains(a.Stderr.(*bytes.Buffer).String(), "devvm: saved forwards for web not brought up (") {
+		t.Errorf("stderr = %q", a.Stderr)
+	}
+	if c := smolvmCalls(t, log); len(c) < 2 || !strings.HasPrefix(c[len(c)-1], "machine exec") {
+		t.Errorf("smolvm calls = %q, want the shell's exec last", c)
+	}
+}
+
+// serialBoot is a smol VM listed "stopped" while its start is in flight
+// (smolvm 1.16.1), whose PowerStart blocks until the test releases it.
+type serialBoot struct {
+	backend.Backend
+	mu      sync.Mutex
+	running bool
+	starts  int
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *serialBoot) Status() (backend.State, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	raw := "stopped"
+	if b.running {
+		raw = "running"
+	}
+	return backend.State{Exists: true, Running: b.running, Raw: raw}, nil
+}
+
+func (b *serialBoot) PowerStart() error {
+	b.mu.Lock()
+	b.starts++
+	b.mu.Unlock()
+	b.entered <- struct{}{}
+	<-b.release
+	b.mu.Lock()
+	b.running = true
+	b.mu.Unlock()
+	return nil
+}
+
+// Two attaches starting one stopped VM at once: the second waits for the
+// first's start (lockStart) and finds it running, so smolvm is asked to
+// start it once (a second start would kill the first one's boot).
+func TestStartStoppedSerialized(t *testing.T) {
+	shrinkRunningPoll(t)
+	b := &serialBoot{release: make(chan struct{}), entered: make(chan struct{}, 2)}
+	a, _ := bridgeApp(t)
+	m := managedSmol("web")
+	errs := make(chan error, 2)
+	go func() { _, err := a.startStopped(m, b); errs <- err }()
+	<-b.entered // the first holds the lock inside PowerStart
+	go func() { _, err := a.startStopped(m, b); errs <- err }()
+	time.Sleep(20 * time.Millisecond) // give the second time to (wrongly) start too
+	close(b.release)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b.starts != 1 {
+		t.Fatalf("PowerStart ran %d times, want once", b.starts)
+	}
 }

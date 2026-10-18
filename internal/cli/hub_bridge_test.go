@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -660,5 +661,87 @@ func TestHubAuthRefusedWithoutEvents(t *testing.T) {
 	}
 	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
 		t.Error("auth ran on the hub for a machine without events")
+	}
+}
+
+// A hub whose start returns before the VM runs (no saved forwards there,
+// before start waited): the reopen after the boot is refused again, and
+// that is retried in the background, not a notice, so the session ends
+// with a bridge.
+func TestHubBridgeBootThenStillStoppedRetried(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	tick, ended := controlRetries(t)
+	stopped := errors.New("h/web: the hub's __session ended before it started: devvm: web is not running; start it first")
+	s := newSignalBridge()
+	opens := scriptedOpens(t, nil, stopped, stopped, s)
+	a, errBuf := bridgeApp(t)
+	boots := 0
+	release, err := a.hubBridge(hubMachine(), func() error { boots++; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick <- time.Time{}
+	<-ended
+	<-s.subscribed
+	release()
+	<-s.closed
+	if boots != 1 || opens.Load() != 3 {
+		t.Errorf("boots %d, opens %d; want 1 and 3", boots, opens.Load())
+	}
+	if msg := errBuf.String(); strings.Contains(msg, "bridge unavailable") || !strings.Contains(msg, "retrying in the background") {
+		t.Errorf("stderr = %q", msg)
+	}
+}
+
+// A late not-running refusal (the hub-side attach started the VM) that
+// ends in an adopted bridge brings this host's saved forwards up, as the
+// laptop's own boot would have; a failure there is one warning line.
+func TestHubLateAdoptBringsForwardsUp(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	shrinkRunningPoll(t)
+	tick, ended := controlRetries(t)
+	old := hubBridgeWait
+	hubBridgeWait = 20 * time.Millisecond
+	t.Cleanup(func() { hubBridgeWait = old })
+	a := newTestApp(t)
+	var errBuf bytes.Buffer
+	a.Stdout, a.Stderr = new(bytes.Buffer), &errBuf
+	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
+	gate := make(chan struct{})
+	s := newSignalBridge()
+	scriptedOpens(t, gate, errors.New("h/web: hub: devvm: web is not running; start it first"), s)
+	release := a.bridgeSession(hubMachine(), nil)
+	close(gate)
+	tick <- time.Time{}
+	<-ended
+	<-s.subscribed
+	release()
+	if !strings.Contains(errBuf.String(), "devvm: saved forwards for h/web not brought up (") {
+		t.Errorf("stderr = %q", errBuf.String())
+	}
+	if a.Stdout.(*bytes.Buffer).Len() != 0 {
+		t.Errorf("stdout written behind the session: %q", a.Stdout)
+	}
+}
+
+// A proxied attach that starts the VM, with a saved forward here that
+// cannot come up: one warning line, and the session still runs.
+func TestHubAttachStartsStoppedVMForwardsFail(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	shrinkRunningPoll(t)
+	noRetries(t)
+	a := newTestApp(t)
+	sshLog, _ := fakeHub(t, a) // saves h/web's 3000 here
+	pinTTY(t, true)
+	stopped := errors.New("h/web: the hub's __session ended before it started: devvm: web is not running; start it first")
+	scriptedOpens(t, nil, stopped, newSignalBridge())
+	if err := runTree(t, a, "attach", "h/web"); err != nil {
+		t.Fatalf("attach: %v\n%s", err, a.Stderr)
+	}
+	if lines := sshLines(t, sshLog); len(lines) < 2 || lines[len(lines)-1] != wantSSH(a, true, "attach", "web") {
+		t.Errorf("ssh lines = %q, want the attach last", lines)
+	}
+	if msg := a.Stderr.(interface{ String() string }).String(); !strings.Contains(msg, "devvm: saved forwards for h/web not brought up (") {
+		t.Errorf("stderr = %q", msg)
 	}
 }

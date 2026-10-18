@@ -624,7 +624,9 @@ permanent refusal is not. The hub's `__session` refuses a stopped VM: answered
 within the wait, the laptop proxies `start NAME` and opens the bridge again
 before the session runs; answered later, the retries adopt it once the
 hub-side attach has started the VM (attach/shell start a stopped VM first,
-everywhere). The
+everywhere, on a hub at that version; an older hub's attach still fails on a
+stopped VM, so only the fast path's proxied `start` helps there), and the
+laptop's own saved forwards for it come up then too. The
 hub daemon waits 40s (`relaySubscriberWait`) on a relay subscriber, which
 covers the laptop daemon's bind and its own 15s wait, and stays below the
 guest agent's 60s.
