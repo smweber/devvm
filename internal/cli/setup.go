@@ -377,7 +377,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 			return err
 		}
 	} else {
-		if err := a.startForSetup(m, b); err != nil {
+		if _, err := a.startStopped(m, b); err != nil {
 			return err
 		}
 		if err := bootstrap.EnsureUser(ctx, b, backend.ExecOpts{User: "root"}, backend.DefaultUser); err != nil {
@@ -429,25 +429,26 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	return a.seedPorts(m, t.Ports, o.fresh)
 }
 
-// startForSetup boots a stopped smol VM the way `start` does (PowerStart,
-// then wait for "running") before setup's first exec. Left to the exec,
-// smolvm would boot it implicitly, behind a forward daemon that may be
-// reconnecting and would start its serve exec mid-boot: the overlap of
-// exec startups the one-exec rule (and attach's refusal) exists to avoid.
-// After the --adopt prompt, so an unconfirmed VM is never booted.
-func (a *App) startForSetup(m *config.Machine, b backend.Backend) error {
+// startStopped boots a stopped smol VM the way `start` does (PowerStart,
+// then wait for "running") and reports whether it had to. setup calls it
+// before its first exec, attach/shell before theirs (bootForSession): on
+// smolvm 1.16.1 an exec into a stopped VM is refused, not a boot, and
+// starting it here also keeps a forward daemon that may be reconnecting
+// from starting its serve exec mid-boot. For setup it runs after the
+// --adopt prompt, so an unconfirmed VM is never booted.
+func (a *App) startStopped(m *config.Machine, b backend.Backend) (bool, error) {
 	st, err := b.Status()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if st.Running {
-		return nil
+		return false, nil
 	}
 	fmt.Fprintf(a.Stderr, "devvm: starting %s…\n", m.Name)
 	if err := b.PowerStart(); err != nil {
-		return err
+		return false, err
 	}
-	return requireRunningForForwards(m, b, runningPollTimeout)
+	return true, requireRunningForForwards(m, b, runningPollTimeout)
 }
 
 // warnIgnored names, in one line, the template fields that do not apply to

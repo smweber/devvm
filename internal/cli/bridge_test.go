@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -96,9 +98,9 @@ func TestBridgeSessionSkipped(t *testing.T) {
 	}
 }
 
-// attach on a stopped smol VM (which the attach boots) spawns no daemon
-// for it, now or later: a background open would overlap the attach's own
-// execs while the VM boots. One line says how to get the bridge.
+// A smol VM still stopped when the bridge opens (attach/shell started it
+// first, bootForSession, and it was stopped again) gets no daemon: its
+// first dial would exec into it. One line, no retry.
 func TestBridgeSessionStoppedVMIsANotice(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	noRetries(t)
@@ -111,7 +113,7 @@ func TestBridgeSessionStoppedVMIsANotice(t *testing.T) {
 	t.Cleanup(func() { openBridgeSession = old })
 	a, errBuf := bridgeApp(t)
 	a.bridgeSession(managedSmol("web"), &statusBackend{runningAfter: -1})()
-	want := "devvm: browser bridge unavailable: web was not running when this session started; re-attach (or run 'devvm shell web') for browser opens\n"
+	want := "devvm: browser bridge unavailable: web is not running; URLs opened in the guest will be printed there\n"
 	if errBuf.String() != want {
 		t.Fatalf("notice = %q, want %q", errBuf.String(), want)
 	}
@@ -130,8 +132,11 @@ func TestVMNotRunningMatchesRefusal(t *testing.T) {
 		t.Fatalf("vmNotRunning(%v) = false", err)
 	}
 	laptop := errors.New("forward daemon for 'h/web' exited: h/web: the hub's __session ended before it started: devvm: " + err.Error() + " (see run/h@web.log)")
-	if !vmNotRunning(laptop) || !noBridgeRetry(laptop) {
+	if !vmNotRunning(laptop) {
 		t.Fatalf("the hub's refusal as the laptop sees it is not recognized: %v", laptop)
+	}
+	if noBridgeRetry(laptop) {
+		t.Fatalf("a VM not running is a refusal for good: %v", laptop)
 	}
 	if vmNotRunning(errors.New("h/web: hub: connection refused")) {
 		t.Fatal("a link failure read as a stopped VM")
@@ -166,6 +171,90 @@ func TestTTLLeft(t *testing.T) {
 	if got := ttlLeft(-1); got != "expiring" {
 		t.Errorf("ttlLeft(past) = %q", got)
 	}
+}
+
+// attach/shell on a stopped smol VM start it the way `start` does (smolvm
+// 1.16.1 refuses an exec into a stopped VM; it never boots one) and only
+// then open the bridge and run their own execs, so the session is bridged.
+func TestAttachStartsStoppedSmol(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	shrinkRunningPoll(t)
+	for _, leaf := range []string{"attach", "shell"} {
+		t.Run(leaf, func(t *testing.T) {
+			a := newTestApp(t)
+			log := fakeBootingSmolvm(t, "stopped", "")
+			if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
+				t.Fatal(err)
+			}
+			var atOpen []string
+			old := openBridgeSession
+			openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
+				atOpen = smolvmCalls(t, log)
+				return &fakeBridge{}, nil
+			}
+			t.Cleanup(func() { openBridgeSession = old })
+			if err := runTree(t, a, leaf, "web"); err != nil {
+				t.Fatalf("%s: %v\n%s", leaf, err, a.Stderr)
+			}
+			if len(atOpen) != 1 || atOpen[0] != "machine start --name web" {
+				t.Errorf("smolvm calls when the bridge opened = %q, want only the start", atOpen)
+			}
+			calls := smolvmCalls(t, log)
+			if len(calls) < 2 || calls[0] != "machine start --name web" || !strings.HasPrefix(calls[1], "machine exec") {
+				t.Errorf("smolvm calls = %q, want the start before any exec", calls)
+			}
+			msg := a.Stderr.(*bytes.Buffer).String()
+			if !strings.Contains(msg, "devvm: starting web…") || strings.Contains(msg, "bridge unavailable") {
+				t.Errorf("stderr = %q", msg)
+			}
+		})
+	}
+
+	// A running VM is not started again; one that will not start fails the
+	// session before any exec or bridge.
+	a := newTestApp(t)
+	log := fakeBootingSmolvm(t, "running", "")
+	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
+		t.Fatal(err)
+	}
+	stubBridge(t, &fakeBridge{}, nil)
+	if err := runTree(t, a, "shell", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if calls := smolvmCalls(t, log); len(calls) != 1 || !strings.HasPrefix(calls[0], "machine exec") {
+		t.Errorf("smolvm calls = %q, want the shell's exec alone", calls)
+	}
+	log = fakeBootingSmolvm(t, "stopped", "exit 1")
+	calls := stubBridge(t, &fakeBridge{}, nil)
+	if err := runTree(t, a, "attach", "web"); err == nil {
+		t.Fatal("attach went ahead on a VM that did not start")
+	}
+	if c := smolvmCalls(t, log); len(c) != 1 || len(*calls) != 0 {
+		t.Errorf("smolvm calls %q, bridge opens %q: want the failed start alone", c, *calls)
+	}
+}
+
+// fakeBootingSmolvm is fakeLocalSmolvm for one VM, web, in state: `machine
+// start` runs startBody (exit 0 if empty) and then lists it running; every
+// other call succeeds.
+func fakeBootingSmolvm(t *testing.T, state, startBody string) (log string) {
+	t.Helper()
+	dir := t.TempDir()
+	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
+	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"`+state+`","created_at":100}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
+		"case \"$*\" in\n" +
+		"  'machine ls --json') cat " + ls + ";;\n" +
+		"  'machine start --name web') " + startBody + "\n" +
+		"    echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
 }
 
 // managedSmol is a smol record its discovery source settled as managed

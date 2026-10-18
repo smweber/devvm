@@ -165,11 +165,18 @@ func (a *App) startHubMachine(cmd *cobra.Command, args []string) error {
 	if err := a.proxy(cmd, args); err != nil {
 		return err
 	}
-	if _, err := config.LoadHubMachine(a.Paths, args[0]); err != nil {
+	return a.hubForwardsAfterStart(args[0])
+}
+
+// hubForwardsAfterStart brings this host's saved forwards for a hub
+// machine up once its hub has started it (`start HUB/NAME`, and a proxied
+// attach/shell that started it: hubBootForSession).
+func (a *App) hubForwardsAfterStart(name string) error {
+	if _, err := config.LoadHubMachine(a.Paths, name); err != nil {
 		return err
 	}
-	if saved, err := a.savedPorts(args[0]); err != nil || len(saved) == 0 {
+	if saved, err := a.savedPorts(name); err != nil || len(saved) == 0 {
 		return err
 	}
-	return a.tunnelUpWait(args[0], runningPollTimeout)
+	return a.tunnelUpWait(name, runningPollTimeout)
 }

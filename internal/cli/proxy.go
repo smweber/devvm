@@ -356,11 +356,37 @@ func (a *App) proxyInteractive(cmd *cobra.Command, args []string, transport stri
 	}
 	// Subscribed here, through this host's daemon for HUB@NAME, before the
 	// leaf runs on the hub with DEVVM_NO_SUBSCRIBE=1 (hub.md §8): a URL the
-	// session opens lands on this host, not the hub's.
-	release := a.bridgeSession(m, nil)
+	// session opens lands on this host, not the hub's. A VM the hub says is
+	// not running is started first (hubBootForSession), then subscribed.
+	release, err := a.hubBridge(m, func() error { return a.hubBootForSession(m, p) })
+	if err != nil {
+		return err
+	}
 	defer release()
 	leaf := strings.Fields(cmd.CommandPath())[1:]
 	return a.exitStatus(m, p.ProxyInteractive(tr, append(leaf, m.HubMachineName())...))
+}
+
+// hubBootForSession is bootForSession for a hub machine, run when the
+// hub's `__session` refused the bridge for a VM that is not running: the
+// proxied `start` (the hub waits for "running" and brings its own forwards
+// up), then this host's saved forwards for it, as `start HUB/NAME` does.
+// Proxied rather than left to the hub-side attach, so a hub of any version
+// boots it and the bridge is subscribed before the session runs.
+func (a *App) hubBootForSession(m *config.Machine, p backend.Proxier) error {
+	fmt.Fprintf(a.Stderr, "devvm: starting %s…\n", m.Name)
+	defer config.TouchChanged(a.Paths) // wake `status --watch`
+	// No terminal for it (start prompts for nothing on smol): with `-t` its
+	// ssh would read what the user types ahead into the session.
+	o := proxyExecOpts(false)
+	o.Stdout, o.Stderr = a.Stdout, a.Stderr
+	if err := a.exitStatus(m, p.Proxy(context.Background(), o, "start", m.HubMachineName())); err != nil {
+		return err
+	}
+	if err := a.hubForwardsAfterStart(m.Name); err != nil {
+		fmt.Fprintf(a.Stderr, "devvm: saved forwards for %s not brought up (%v); 'devvm ports up %s' retries\n", m.Name, err, m.Name)
+	}
+	return nil
 }
 
 // resolveProxy loads the hub-machine record and its proxy surface. Like

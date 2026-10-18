@@ -466,10 +466,8 @@ func noRetries(t *testing.T) {
 	t.Cleanup(func() { bridgeRetryAfter = oldAfter })
 }
 
-// A cold attach on a stopped VM on a hub: the hub's __session refuses it,
-// so the first open fails at once. The attach is not held up, and the open
-// is not retried into the boot the proxied attach starts: one line says
-// how to get the bridge.
+// A bridge open the hub refuses for a VM not running, with nothing to
+// start it (bridgeSession, not a proxied attach): one line, no retry.
 func TestHubAttachStoppedVMIsANotice(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	noRetries(t)
@@ -477,7 +475,7 @@ func TestHubAttachStoppedVMIsANotice(t *testing.T) {
 	opens := scriptedOpens(t, nil, stopped, newSignalBridge())
 	a, errBuf := bridgeApp(t)
 	a.bridgeSession(hubMachine(), nil)()
-	if msg := errBuf.String(); !strings.Contains(msg, "browser bridge unavailable: h/web was not running when this session started; re-attach") {
+	if msg := errBuf.String(); !strings.Contains(msg, "browser bridge unavailable: h/web is not running; URLs opened in the guest will be printed there") {
 		t.Fatalf("notice = %q", msg)
 	}
 	if opens.Load() != 1 {
@@ -485,25 +483,86 @@ func TestHubAttachStoppedVMIsANotice(t *testing.T) {
 	}
 }
 
-// Past hubBridgeWait too: a late not-running refusal ends it, no retry.
-func TestHubAttachLateStoppedVMNotRetried(t *testing.T) {
+// A proxied attach/shell on a VM its hub says is not running: the proxied
+// `start` first (no terminal: its ssh must not read the user's typeahead),
+// then the bridge opened again and subscribed, and only
+// then the session, so it is bridged from its first URL.
+func TestHubAttachStartsStoppedVM(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	noRetries(t)
-	ended := make(chan struct{}, 1)
-	oldEnded, oldWait := bridgeRetryEnded, hubBridgeWait
-	bridgeRetryEnded = func() { ended <- struct{}{} }
+	stopped := errors.New("h/web: the hub's __session ended before it started: devvm: web is not running; start it first")
+	for _, leaf := range []string{"attach", "shell"} {
+		t.Run(leaf, func(t *testing.T) {
+			a := newTestApp(t)
+			sshLog, argvLog := fakeHub(t, a)
+			if err := config.SavePorts(a.Paths, config.JoinHubName("h", "web"), nil); err != nil { // no daemon to dial after the start
+				t.Fatal(err)
+			}
+			pinTTY(t, true)
+			s := newSignalBridge()
+			var atOpen []int
+			old := openBridgeSession
+			openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
+				atOpen = append(atOpen, len(devvmCalls(t, argvLog)))
+				if len(atOpen) == 1 {
+					return nil, stopped
+				}
+				return s, nil
+			}
+			t.Cleanup(func() { openBridgeSession = old })
+			if err := runTree(t, a, leaf, "h/web"); err != nil {
+				t.Fatalf("%s: %v\n%s", leaf, err, a.Stderr)
+			}
+			if !slices.Equal(atOpen, []int{0, 1}) {
+				t.Errorf("hub calls before each open = %v, want none, then the start", atOpen)
+			}
+			if lines := sshLines(t, sshLog); len(lines) != 2 || lines[0] != wantSSH(a, false, "start", "web") || lines[1] != wantSSH(a, true, leaf, "web") {
+				t.Errorf("ssh lines = %q", lines)
+			}
+			<-s.closed
+			msg := a.Stderr.(interface{ String() string }).String()
+			if !strings.Contains(msg, "devvm: starting h/web…") || strings.Contains(msg, "bridge unavailable") {
+				t.Errorf("stderr = %q", msg)
+			}
+		})
+	}
+
+	// A start that fails is the attach's failure: nothing else runs.
+	a := newTestApp(t)
+	sshLog, _ := fakeHub(t, a)
+	pinTTY(t, true)
+	t.Setenv("FAKE_DEVVM_EXIT", "1")
+	opens := scriptedOpens(t, nil, stopped)
+	if err := runTree(t, a, "attach", "h/web"); err == nil {
+		t.Fatal("attach went ahead after a failed start")
+	}
+	if lines := sshLines(t, sshLog); len(lines) != 1 || lines[0] != wantSSH(a, false, "start", "web") || opens.Load() != 1 {
+		t.Errorf("ssh lines %q, opens %d: want the failed start alone", lines, opens.Load())
+	}
+}
+
+// Past hubBridgeWait a not-running refusal is retried: the hub-side
+// attach starts the VM (bootForSession), and the retry adopts the bridge.
+func TestHubAttachLateStoppedVMRetried(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	tick, ended := controlRetries(t)
+	old := hubBridgeWait
 	hubBridgeWait = 20 * time.Millisecond
-	t.Cleanup(func() { bridgeRetryEnded, hubBridgeWait = oldEnded, oldWait })
+	t.Cleanup(func() { hubBridgeWait = old })
 	gate := make(chan struct{})
-	opens := scriptedOpens(t, gate, errors.New("h/web: hub: devvm: web is not running; start it first"), newSignalBridge())
+	s := newSignalBridge()
+	opens := scriptedOpens(t, gate, errors.New("h/web: hub: devvm: web is not running; start it first"), s)
 	a, _ := bridgeApp(t)
 	release := a.bridgeSession(hubMachine(), nil)
-	defer release()
 	close(gate)
+	tick <- time.Time{}
 	<-ended
-	if opens.Load() != 1 {
-		t.Fatalf("opened %d times, want 1", opens.Load())
+	if opens.Load() != 2 {
+		t.Fatalf("opened %d times, want 2", opens.Load())
 	}
+	<-s.subscribed
+	release()
+	<-s.closed
 }
 
 // A transient failure after the attach stopped waiting (a slow hub): the

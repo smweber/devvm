@@ -195,9 +195,9 @@ it prints the URL (control characters replaced, lines ending `\r\n` for a
 raw-mode terminal) only when the opener is missing or fails to start, not
 for a refused URL. `hostbrowser.Sanitize` lost its `localhost:1455`
 rewrite. `attach`/`shell` open a session only on a running smol machine:
-remote boxes have no events until the ssh agent exec, and a stopped VM gets
-no daemon; a bridge that cannot be had is a one-line notice, never a failed
-shell.
+remote boxes have no events until the ssh agent exec, and a stopped VM is
+started first (as `start` does), so it never gets a daemon while stopped; a
+bridge that cannot be had is a one-line notice, never a failed shell.
 
 ### 2. Request/response events
 

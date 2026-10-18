@@ -139,7 +139,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   closer-less as *pending* and come back on the same host ports; a `kick` op
   (sent by `ports up`/`start`) resets the backoff. It never dials a stopped smol
   VM (`smolvm machine exec` may boot it) — neither does the CLI spawn a daemon
-  for one (`requireRunningForForwards`; `start` alone waits for "running").
+  for one (`requireRunningForForwards`; `start`, `setup` and attach/shell,
+  which start a stopped VM first, wait for "running").
   Shutdown closes the transport **before** unlinking the socket (`WaitGone`
   relies on that) and unlinks only its own (`ownsSocket`: inode check *plus* a
   dial — ext4/APFS reuse inode numbers, tmpfs doesn't, which hid the bug
@@ -399,11 +400,14 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   echoed `Bridge`. `Bridge` means "speaks the relay bridge *and* its transport
   has events"; `NoEvents` means a current hub whose machine is not smol;
   neither means a hub too old. A proxied attach waits at most 5s for its bridge,
-  then adopts a late one, retrying transient failures in the background. It
-  never retries into a VM that was not running (`__session` refuses one),
-  locally or on a hub: the daemon's exec startups would overlap the attach's
-  own while it boots the VM, so that session gets a one-line notice and no
-  bridge. Listings fan
+  then adopts a late one, retrying failures in the background (a refusal for
+  good excepted). attach/shell on a stopped VM **start it first**, as
+  `start` does (`bootForSession`; smolvm 1.16.1's `machine exec` refuses a
+  stopped VM, it never boots one), then open the bridge: on a hub, a
+  `__session` refusal for a VM not running within the 5s makes the laptop
+  proxy `start NAME` (no `-t`) and open once more (`hubBootForSession`);
+  past the 5s the retry adopts it once the hub-side attach has started it.
+  Listings fan
   out as `status --plain --local --watch` on each hub (`--local`, so hubs never
   chain) and are cached per hub. Minimum hub versions are pinned by tests
   (`hubMinVersion`, `session.HubForwardsMinVersion`, `HubBridgeMinVersion`).

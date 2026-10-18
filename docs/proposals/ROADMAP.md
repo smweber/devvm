@@ -184,8 +184,8 @@ redesign: they build on resolve's source list, templates, `setup` and
 ## After the config redesign (agreed order)
 
 1. **Known issues** (below), the real ones first: killed daemon orphaning
-   its ControlMaster, SIGINT leaking the cp spool, the cold-boot bridge
-   retry.
+   its ControlMaster, SIGINT leaking the cp spool, ~~the cold-boot bridge
+   retry~~ (fixed).
 2. **The ssh agent exec for remote boxes** (bridge §1 "Remote"): thin remote
    `auth`, `BROWSER` plumbing on remote boxes (bridge §5), deletion of
    `--auth` and the second agent socket. Deferred from the bridge plan
@@ -245,10 +245,8 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
 
 ## Known issues (pre-existing, found by live runs, not fixed)
 
-- **Cold-boot bridge retry**: `attach`/`shell` on a stopped VM, local or
-  `HUB/NAME`, gets no bridge for that session, only a notice, because the
-  daemon's exec startups would overlap the attach's own tmux execs while
-  the VM boots. Needs a live test on real smol before changing.
+None open; the cold-boot bridge retry was fixed 2026-10-18 (attach/shell
+start a stopped VM first, see Lessons).
 
 Cosmetic or accepted:
 
@@ -285,6 +283,15 @@ Cosmetic or accepted:
   on the ThinkPad, contrary to the Environments note of the long form.
 
 ## Lessons (don't relearn)
+
+- **smolvm 1.16.1's `machine exec` never boots a stopped VM** (2026-10-18,
+  ThinkPad): it fails at once (`machine 'raw' is not running. Use 'smolvm
+  machine start'`), so attach/shell on a stopped VM used to fail outright
+  (attach as a misleading "tmux not found"), not boot it. Execs that
+  overlap a boot are only slow: 50 parallel probes during `devvm start`
+  (two at a time, every 0.3s) all succeeded once the VM ran (~1s in, the
+  early ones waiting up to 1s), and `start` + `exec` + the daemon's serve
+  exec overlapped twice with no wedge. attach/shell now start the VM first.
 
 - **macOS kqueue coalesces a relink into nothing** (2026-10-17): a symlink
   created and renamed over `devvm.toml` under load merges into one dir
