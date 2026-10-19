@@ -266,31 +266,37 @@ func TestMenubarReplacesRunningApp(t *testing.T) {
 // closes our stdout; the relaunch must therefore happen before the first
 // line of output, or the app never comes back.
 func TestMenubarRelaunchesBeforeReporting(t *testing.T) {
-	for _, viaUpdate := range []bool{false, true} {
-		// The fixture pins Version to v0.1.0, which is what updateMenubar
-		// installs; runMenubar takes the tag explicitly.
-		f := newMenubarFixture(t, "v0.1.0", false)
-		f.mac.installed(t, "v0.0.9")
-		f.mac.running = true
-		var order []string
-		f.app.Stdout = writerFunc(func(p []byte) (int, error) {
-			order = append(order, "stdout")
-			return f.stdout.Write(p)
-		})
-		f.mac.onOpen = func() { order = append(order, "open") }
-		if viaUpdate {
-			f.app.updateMenubar()
-		} else if err := f.app.runMenubar(context.Background(), f.u, "v0.1.0", false); err != nil {
-			t.Fatal(err)
-		}
-		if len(order) == 0 || order[0] != "open" {
-			t.Errorf("viaUpdate=%v: relaunch must precede output, got %v", viaUpdate, order)
-		}
-		if n := strings.Count(strings.Join(f.mac.calls, "\n"), "open -a"); n != 1 {
-			t.Errorf("viaUpdate=%v: opened %d times, want 1: %v", viaUpdate, n, f.mac.calls)
-		}
-		if !strings.Contains(f.stdout.String(), "relaunched DevVM.app") {
-			t.Errorf("viaUpdate=%v: stdout = %q", viaUpdate, f.stdout.String())
+	// missed = 1 is the retried open (LaunchServices still holding the old
+	// instance): both opens must come before any output, too.
+	for _, missed := range []int{0, 1} {
+		for _, viaUpdate := range []bool{false, true} {
+			// The fixture pins Version to v0.1.0, which is what updateMenubar
+			// installs; runMenubar takes the tag explicitly.
+			f := newMenubarFixture(t, "v0.1.0", false)
+			f.mac.installed(t, "v0.0.9")
+			f.mac.running = true
+			f.mac.openNoLaunch = missed
+			var order []string
+			f.app.Stdout = writerFunc(func(p []byte) (int, error) {
+				order = append(order, "stdout")
+				return f.stdout.Write(p)
+			})
+			f.mac.onOpen = func() { order = append(order, "open") }
+			if viaUpdate {
+				f.app.updateMenubar()
+			} else if err := f.app.runMenubar(context.Background(), f.u, "v0.1.0", false); err != nil {
+				t.Fatal(err)
+			}
+			want := missed + 1
+			if len(order) <= want || strings.Count(strings.Join(order[:want], " "), "open") != want {
+				t.Errorf("missed=%d viaUpdate=%v: relaunch must precede output, got %v", missed, viaUpdate, order)
+			}
+			if n := strings.Count(strings.Join(f.mac.calls, "\n"), "open -a"); n != want {
+				t.Errorf("missed=%d viaUpdate=%v: opened %d times, want %d: %v", missed, viaUpdate, n, want, f.mac.calls)
+			}
+			if !strings.Contains(f.stdout.String(), "relaunched DevVM.app") {
+				t.Errorf("missed=%d viaUpdate=%v: stdout = %q", missed, viaUpdate, f.stdout.String())
+			}
 		}
 	}
 }

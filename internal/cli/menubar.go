@@ -64,8 +64,12 @@ type hostRunner func(name string, args ...string) (string, error)
 func runHostTool(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hostToolTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
-	if ctx.Err() != nil {
+	cmd := exec.CommandContext(ctx, name, args...)
+	// The kill reaches only the tool itself; a descendant still holding its
+	// stdout would keep Output waiting past the deadline without this.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", fmt.Errorf("%s: timed out after %s", name, hostToolTimeout)
 	}
 	if err != nil {
@@ -299,11 +303,12 @@ func (m *menubarInstaller) open() error {
 
 // install downloads the release's app zip, verifies it, quits a running app
 // (waiting until it has exited), swaps the bundle into place, and — if the
-// app was running — relaunches it and waits for it to start before returning. The relaunch has to come before the caller prints
-// anything: when the caller *is* the app (its "Update now" item runs
-// `devvm update`), quitting it closed our stdout, and a write there ends
-// the process (or, with SIGPIPE ignored, just fails) — either way the app
-// must already be back. Reports whether it relaunched. Nothing is replaced
+// app was running — relaunches it and waits for it to start before
+// returning. The relaunch has to come before the caller prints anything:
+// when the caller *is* the app (its "Update now" item runs `devvm update`),
+// quitting it closed our stdout, and a write there ends the process (or,
+// with SIGPIPE ignored, just fails) — either way the app must already be
+// back. Reports whether it relaunched. Nothing is replaced
 // until the download has verified.
 func (m *menubarInstaller) install(ctx context.Context, tag string) (relaunched bool, err error) {
 	if err := os.MkdirAll(m.appsDir, 0o755); err != nil {
