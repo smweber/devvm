@@ -38,7 +38,7 @@ func serveLaptop(t *testing.T, l *laptopRig) config.Paths {
 	}
 	l.d.ln, l.d.sockInfo = ln, info
 	go l.d.serveControl()
-	t.Cleanup(func() { ln.Close(); l.d.closeAllSessions() })
+	t.Cleanup(func() { ln.Close(); l.d.closeAllSessions(); waitHandlers(l.d) })
 	return dir
 }
 

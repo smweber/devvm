@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -215,6 +216,12 @@ type daemon struct {
 	ln       net.Listener
 	sockInfo os.FileInfo // the socket we created; shutdown unlinks only that inode
 	logf     func(format string, args ...any)
+
+	// handling counts control connections being served. The process
+	// exits without waiting on them; tests wait for zero before their
+	// state dir goes, since a session unwinding writes run/changed
+	// (closeSession) and would re-create a removed dir.
+	handling atomic.Int32
 
 	// late counts transports that arrived after a stop interrupted their
 	// dial; shutdown waits (bounded by lateWait) for them to be closed so the
@@ -1545,7 +1552,11 @@ func (d *daemon) serveControl() {
 		if err != nil {
 			return
 		}
-		go d.handleConn(conn)
+		d.handling.Add(1)
+		go func() {
+			defer d.handling.Add(-1)
+			d.handleConn(conn)
+		}()
 	}
 }
 

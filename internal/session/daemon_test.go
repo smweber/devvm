@@ -110,6 +110,17 @@ func newTestDaemon(t *testing.T) *daemon {
 func releaseDaemon(d *daemon) {
 	d.triggerStop()
 	d.teardown()
+	waitHandlers(d)
+}
+
+// waitHandlers waits, bounded, for every control connection's handler to
+// return. A session's closeSession writes run/changed on its way out
+// (MkdirAll included), so one still unwinding when shortTempDir's cleanup
+// ran re-created the removed dir: the leaked /tmp/devvm-test-*/s/run/changed.
+func waitHandlers(d *daemon) {
+	for deadline := time.Now().Add(5 * time.Second); d.handling.Load() > 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // runLoop runs the supervision loop in the background and returns a channel
