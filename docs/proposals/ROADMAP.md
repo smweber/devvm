@@ -1,232 +1,91 @@
 # Roadmap
 
-The single ordered plan for the design docs in this directory. The docs own
-the *what* and *why*; this file owns the *order*, what each step shipped, and
-the issues and lessons the live runs left behind. When they disagree, this
-file wins for sequencing and the design doc wins for mechanism.
+Once the single ordered plan for the design docs here; now a record, since
+every planned step has shipped, plus the live lists: shared decisions, known
+issues, lessons, live-test environments. The design docs (`hub.md`,
+`browser-bridge.md`, `config.md`, `providers.md`) own the *what* and *why*
+and carry "as shipped" notes where the code departed from them.
 
-Status, 2026-10-17: the **hubs + browser bridge** plan (`hub.md` v3.4,
-`browser-bridge.md` v2.6) landed in full as v0.1.13–v0.1.15. The **config
-redesign** (`config.md` v3.1) landed in full; the three hosts are migrated; v0.1.16 is the release. The
-**provider backend** (`providers.md` v1.5) landed in full the same day,
-steps 0–1 in v0.1.16 and steps 2–4 after it. Next: the known issues below,
-then the ssh agent exec for remote boxes.
+| Milestone | Design doc | Tags |
+|-----------|------------|------|
+| Hubs + browser bridge (steps 1–9) | `hub.md` v3.4, `browser-bridge.md` v2.6 | v0.1.13–v0.1.15 |
+| Config redesign (steps 1–6) | `config.md` v3.1 | v0.1.16 |
+| Provider backend (steps 0–4) | `providers.md` v1.5 | v0.1.16 (0–1), v0.1.17 (2–4) |
+| Known issues (the real ones) | this file | v0.1.18 |
+| ssh agent exec for remote boxes | `browser-bridge.md` §1, §5, §6 | v0.1.19 |
+| Menu bar relaunch fix | Lessons below | v0.1.20 |
 
-The long form of this file (per-step live-test lists and the detailed
-"what shipped differently" notes for hub steps 1–9) is in git history before
-the trim commit of 2026-10-17.
+The long form (per-step live-test lists, "what shipped differently" notes)
+is in git history before the commit "docs/proposals: ROADMAP trimmed to a
+record and the live lists" (2026-10-19).
 
-## Config redesign (in progress)
+## Config redesign (done, v0.1.16)
 
-`config.md` "Implementation order" owns the sequencing of its six steps; this
-records what landed. Loop per step: Opus implements, Opus reviews, live test
-on the ThinkPad, one `jj commit`, **no release before step 6**.
+Progress: all six steps landed 2026-10-17 (Opus implements and reviews,
+ThinkPad live test, one `jj commit` each); v0.1.16 shipped after a
+whole-redesign review with all three hosts hand-migrated.
 
-- **Step 1 landed 2026-10-17**: `config.Paths{Config, State}`; `run/`,
-  `cache/`, `known_hosts` and the ssh ControlMaster sockets (`c-%C`) move to
-  `$XDG_STATE_HOME/devvm`. Migration moves files with link+unlink (never
-  replacing one) and leaves a live daemon's run files alone; session clients
-  find an old-layout daemon where it is, so an `install.sh` upgrade never
-  spawns a sibling daemon (the review's blocker). Live-tested on the ThinkPad
-  with a v0.1.15 daemon holding forwards.
-- **Step 2 landed 2026-10-17**: saved forwards are `<State>/ports/NAME`
-  (`HUB@NAME` for hub machines), edited under a per-name flock, seeded once
-  from every conf by an all-or-nothing migration that never writes a conf.
-  `ports add` saves by default (`--ephemeral` opts out). `UpdateHubMachine`
-  and the hub-conf flock are gone (shared decision 6 superseded; hub.md §2
-  is stale on this). `delete` clears host state through `forgetHostState`.
-- **Step 3 landed 2026-10-17**: one `smolvm machine ls --json` snapshot in
-  resolve (`created_at` is Unix seconds and survives stop/start, confirmed on
-  smolvm 1.16.1); managed marker `<State>/managed/NAME`; unmanaged smol VMs
-  limited to status/start/stop/shell/exec; `provision`/`deprovision`/dormant
-  removed; fifth `--plain` column (`managed|unmanaged|shadowed|-`) with its
-  Swift change built blind. Live-tested on the ThinkPad against the devvm-made
-  `web` (managed via its conf) and a raw alpine VM `raw` (unmanaged; kept
-  there as the `setup --adopt` test subject), one agent exec throughout.
-- **Step 4 landed 2026-10-17**: `bootstrap` → `setup`; `[templates.*]`
-  from `devvm.toml` with one-level fallback to `default` (precedence flag >
-  `--template` > the box's old conf > `default` > `config.toml` > built-in);
-  fixed order user → prereqs (+tmux, gh, mosh) → agent/shim → hook → repos →
-  keys → harden → forwards; `setup --adopt NAME` on a discovered VM prints
-  its plan and requires the VM's name typed on a terminal (`--yes` is no
-  bypass); root adoption with a 90s bounded reachability wait and
-  `EnsureUser(name)`; `setup --host`; proxied `create`/`setup` send the
-  template inline and keep forwards on the laptop; `hubMinVersion` is
-  v0.1.16. Live on the ThinkPad: the refusals, a typed-name adoption of a
-  raw Ubuntu VM (`dev` user, prereqs, agent, `BROWSER`, forwards after),
-  idempotent re-run. The remote-box run on `cloud` passed once the box
-  recovered (prereqs including gh and mosh, the hook, nothing written to
-  config).
-- **Step 5 landed 2026-10-17**: `devvm.toml` is the only config file
-  (`[templates.*]` + `[machines.*]` with `backend ∈ remote|hub` mandatory,
-  `managed` default false, `host`/`user`/`transport`/`mosh_server`/
-  `identity`/`connect_timeout`; unknown tables and keys rejected); the old
-  `machines/*.toml` loader, `config.toml`, `defaults`, remote/hub `create`,
-  `repos rm/clone`, `--no-clone` and the root-adoption conf write are gone.
-  `config {path,show,edit,check,add,rm}`: `add` appends one table, `rm` cuts
-  one table's lines, both re-parse and deep-compare before an atomic rename
-  and refuse layouts they can't edit safely; `config rm` plans the edit,
-  then stops local daemons (refusing on live forwards without `--force`),
-  commits, and clears ports/reach/pin/cache. `delete` on an entry points at
-  `config rm`. First run on the new build seeds managed markers and saved
-  forwards from the old tree and prints a one-line pointer until `machines/`
-  is removed. Old-hub rows (`remote-managed`/`remote-unmanaged`, four
-  fields, `dormant`) are normalized. Live on the ThinkPad: pointer, seeds,
-  `machines/` removed with both VMs still managed, `config add/check/show/rm`
-  round trip, `delete` refusal.
-- **Step 6, hand migration**: ThinkPad done (only a smol conf; `machines/`
-  moved to `~/devvm-machines.bak`). This devvm guest done (`devvm.toml` with
-  the default template and `cloud`/`h`/`scottdev3`/`tp`; old tree in
-  `~/devvm-old-config/`). `cloud` done (`devvm.toml` with its adopted
-  `scottdev3`; the fake smolvm now emits `created_at`, so its `web` is
-  managed). **All three hosts run the step 5 build on the new layout.**
-  Release v0.1.16 after a whole-redesign review.
+| # | Step | Ships |
+|---|------|-------|
+| 1 | Config vs state | `config.Paths{Config, State}`; `run/`, `cache/`, `known_hosts`, `c-%C` move to `$XDG_STATE_HOME/devvm` by link+unlink; clients use an old-layout daemon where it is (no sibling on upgrade) |
+| 2 | Forwards as host state | `<State>/ports/NAME` (`HUB@NAME`), per-name flock, one all-or-nothing seed; `ports add` saves (`--ephemeral` opts out); `UpdateHubMachine` gone |
+| 3 | Discovery + managed marker | one `smolvm machine ls --json` in resolve (`created_at` is Unix seconds and survives stop/start on 1.16.1); `<State>/managed/NAME`; dormant gone; fifth `--plain` column |
+| 4 | `setup` + templates | `bootstrap` → `setup` in a fixed order; `[templates.*]`; `setup --adopt NAME` (typed name); root adoption, 90s wait; `setup --host`; proxied create/setup send the template inline; `hubMinVersion = v0.1.16` |
+| 5 | `devvm.toml` only | strict loader; `config.toml`, `defaults`, remote/hub `create` gone; `config {path,show,edit,check,add,rm}`; upgrade seeds + one-line pointer |
+| 6 | Hand migration | ThinkPad, this guest (old tree in `~/devvm-old-config/`), `cloud` (fake smolvm emits `created_at`) |
 
-## Provider backend (done, 2026-10-17)
+## Provider backend (done, v0.1.16–v0.1.17)
 
-`providers.md` "Implementation order" owns its five steps. Steps **0** (status
-truthfulness: `run/refresh` + hidden `__refresh`, remote boxes probed by a
-ControlMaster check then a 2s TCP connect, `cache/reach/NAME` with
-verified-at, `status -v` last-contact text, sixth `--plain` field, the
-`menuWillOpen` Swift line) and **1** (the `Provider` interface and the
-Hetzner REST client under `internal/provider`, a fake, tests against
-responses recorded from the user's **test project**, no CLI) depend on
-nothing in the config redesign, so they run now, in the jj workspace
-`providers` (`../devvm-providers`), with the usual loop (Opus implements,
-fresh Opus reviews, one commit per step, no push). Order: **1 first** (no
-shared files), then 0. Step 0 touches `status.go`, `status_watch.go` and
-`backend/ssh.go`, which config steps 3–5 also touch: it is rebased onto
-master when it lands and the config session is told. The token for the
-test project is at `~/.local/state/devvm/providers/hetzner.token` (0600,
-the path §1 names); the client reads `HCLOUD_TOKEN` first, then that file.
-Steps **2–4** (token command, discovery, lifecycle, live test) wait for the
-redesign: they build on resolve's source list, templates, `setup` and
-`config check`.
+| # | Step | Tag | Ships |
+|---|------|-----|-------|
+| 1 | Interface + Hetzner client | v0.1.16 | `internal/provider` (`Provider`, `KeyEnsurer`, sentinels), plain-REST `hetzner`, `fake`; fixtures from the test project |
+| 0 | Status truthfulness | v0.1.16 | `internal/reach` cache, `ssh -O check` → `ssh -G` → 2s TCP probe, `__refresh`, sixth `--plain` field, `status -v` last contact |
+| 2 | Token, loader, discovery | v0.1.17 | `[providers.hetzner]`, `providers token`, discovery last in resolve, `cache/provider-hetzner.list`, backend `hetzner`; daemon/`__session`/completion/`config rm` cache-only |
+| 3 | Lifecycle | v0.1.17 | `create --backend hetzner` (refusals before any API call, then `shape`), `delete`, `start`/`stop` |
+| 4 | Live test | v0.1.17 | full run in the test project from isolated dirs; left empty but one non-billing key `devvm-42dec2d3bc2d` |
 
-- **Step 1 landed 2026-10-17** (`providers` bookmark; onto master with step
-  0): `internal/provider` (`Provider` interface as §7, `KeyEnsurer`,
-  `ErrConflict`/`ErrNotFound` sentinels, `Managed`, state tokens),
-  `internal/provider/hetzner` (plain REST, pagination, action polling that
-  rejects unknown statuses, 30s/16 MB limits, errors with status+code+message,
-  no retry, `Token()` = `HCLOUD_TOKEN` then the state-dir file,
-  `EnsureSSHKey` resolving a 409 by fingerprint), `internal/provider/fake`
-  (same rules, `CallCount`, `CreateErr`). Fixtures recorded once against
-  the user's test project (two throwaway cx23 + a key, deleted and the
-  project verified empty); two hand-written (429, action error). Real API
-  drift: servers carry top-level `location`, no `datacenter`. `Create` may
-  return a server *and* an error (it bills): callers must handle both.
-  `Spec.IPv6Only` (zero value = v4, §1's default). `Power(off)` is hard
-  poweroff (graceful can hang; keep). Follow-up: the next recording should
-  use a throwaway key (fixtures hold the user's real pubkey + a released IP;
-  not secret, but persistent).
-- **Step 0 landed 2026-10-17** (same bookmark): `internal/reach` cache
-  (`<State>/cache/reach/NAME`, `key=value`, atomic; garbled → `?`),
-  `backend/ssh_reach.go` probe (daemon master `run/NAME.master` → shared
-  `c-%C` via `ssh -O check` → `ssh -G` → 2s TCP; ProxyJump/ProxyCommand ⇒
-  `?`; a `?` or a deadline cut never overwrites a recorded state),
-  `cli/reach.go` (round: 16 parallel, 5s; `noteContact` from exec/shell/
-  attach/bootstrap; hidden `__refresh` writes `run/refresh`),
-  `status`: one-shot probes, `--local`/`--watch` read the cache, the watch
-  runs a round at start and on `run/refresh` only (tested: `TouchChanged`
-  runs zero rounds), sixth `--plain` field `verified=<unix>:<how>` or `-`
-  (hub rows pass a newer hub's through), `-v` last-contact text,
-  `config.Machine.Probeable()` (a method, per config.md §9). Shared
-  ControlMaster gains `ServerAliveInterval=30/CountMax=3` so a box that
-  died during sleep can't show a stale `reachable (master)`. Swift (blind):
-  `?` remote stays live with glyph "◌"; the app does **not** call
-  `__refresh` (its one-shot `status` on menu open already probes;
-  providers.md v1.3). Reviews: Opus ×2 per step, Fable design review at the
-  boundary (ship). **Rebase onto master after config step 4**: contact hook
-  → end of `setup`'s `shape` (how=`setup`); `remoteConfs()` → the new
-  loader's remote entries (step 5); Status.swift live check →
-  `backend != "smol" && !isHub` when the column becomes `remote` (step 5).
-- **Step 2 built 2026-10-17** (`providers` bookmark; lands on master after
-  v0.1.16 is tagged): `[providers.hetzner]` in the loader (placement keys;
-  templates gain `server_type`/`location`/`image`/`ipv4`, template >
-  provider table > built-in), `providers token hetzner [--clear]`,
-  `BackendHetzner` on `sshBackend`, `config.NewProviderMachine` (record
-  never saved; `Machine.Server` carries id/status/address), discovery last
-  in resolve's source order (one `Get`, only with a table and a token),
-  provider listing in the live round with `cache/provider-hetzner.list`
-  (flock; live lookups merge rows in), `--plain` backend `hetzner` with the
-  §5 state mapping, shadowing by entry/smol/hub row, refusal matrix (§8),
-  lifecycle verbs refusing until step 3. Two Opus review rounds; the second
-  made the daemon/`__session`/`config rm`/completion cache-only and stripped
-  `HCLOUD_TOKEN` from the daemon env. Swift: unlabelled hetzner rows are
-  not usable; `starting`/`stopping` glyph (blind).
-- **Step 3 landed 2026-10-17**: `create NAME --backend hetzner` (name
-  checks, refusals before any API call, key by name or uploaded file as
-  `devvm-<12 hex>`, bill notice, 5m-deadline `Create`, cache merge, stale
-  pin dropped, then `shape`), `delete` (confirm, `Delete`, `forgetHostState`
-  incl. the known_hosts pin, cache row), `start`/`stop` (no-op paths, Power,
-  unmanaged confirm, billing warning, `start` waits for sshd), proxied
-  create pinned to `--backend=smol`, root flags before raw leaves, ControlPath
-  length check, interrupt handling in create/setup. Two Opus reviews plus the
-  live-test fixes.
-- **Step 4 done 2026-10-17**: live run in the user's test project from an
-  isolated config/state dir: create 118s (root adoption + prereqs), exec,
-  ports (curl through the forward), cp-in/out, stop/start, every unmanaged
-  refusal after removing the label via the API, delete clears the pin,
-  recreate at the reused address, interrupted create still listed and
-  deletable; project verified empty (one non-billing ssh key
-  `devvm-42dec2d3bc2d` left). Skipped: v6-only (no v6 route here), browser
-  shim on remote (deferred), interactive confirms (unit-tested). Not tested
-  from a second host.
-- Follow-ups (not scheduled): v6-only live test; mosh with a bare v6 host;
-  the next fixture recording should use a throwaway key; `cp-in` ~4× slower
-  than `cp-out`; let `[providers.hetzner]` carry a default `server_type`
-  (user, 2026-10-17: it is provider-specific, so it reads oddly in
-  `[templates.default]`; today it is a template field or `--server-type`,
-  built-in `cx23`). Notes for step 3 from review: put a
-  deadline on `Create`; `stop` should `Get` first and skip an already-off
-  server; step 2 warns on a token file mode wider than 0600.
+Facts providers.md doesn't carry: the API puts a top-level `location` on
+servers, no `datacenter`; `Create` may return a server *and* an error, and
+the server bills, so callers handle both; `Power(off)` is a hard poweroff
+(graceful can hang; keep); the shared ControlMaster has
+`ServerAliveInterval=30/CountMax=3` so a box that died during sleep can't
+read `reachable (master)`; the Swift app never calls `__refresh` (its
+one-shot `status` on menu open probes).
 
-## After the config redesign (agreed order)
+Follow-ups (not scheduled): v6-only live test (no v6 route here); mosh with
+a bare v6 host; a throwaway key for the next fixture recording (today's
+hold the user's real pubkey and a released IP: not secret, but
+persistent); `cp-in` ~4× slower than `cp-out`; a default `server_type` in
+`[providers.hetzner]` (user, 2026-10-17: provider-specific, so it reads
+oddly in `[templates.default]`; today a template field or `--server-type`,
+built-in `cx23`); a live test from a second host.
 
-1. **Known issues** (below), the real ones first: killed daemon orphaning
-   its ControlMaster, SIGINT leaking the cp spool, ~~the cold-boot bridge
-   retry~~ (fixed).
-2. ~~**The ssh agent exec for remote boxes**~~ done (bridge §1 "Remote",
-   §5, §6 "As shipped"). As shipped: a remote box's daemon runs one
-   `devvm-agent serve` on its own master (`backend.MasterBinder.OnMaster`,
-   which agentbin's probes and install ride too) for browser events only;
-   a managed box gets the agent installed by the daemon and by `setup`
-   (`bootstrap.Browser` now runs on every managed box, profile.d
-   included), an adopt host is only ever probed and gets the agent from
-   `auth`, with consent, which then kicks the daemon to pick it up. The
-   transport respawns a dead exec itself while the master lives and marks
-   itself dead when the master is gone. `attach`/`shell` subscribe on
-   remote boxes, `attach` copies a guarded `BROWSER` into the tmux
-   session, `auth` is thin everywhere, and the private session, `serve
-   --auth` and `agent-auth.sock` are deleted. A hub echoes `Bridge` for a
-   remote machine whose transport has a current agent.
-3. ~~Provider backend~~ done (above).
-4. **Mac tests** when at the laptop: the v0.1.14 menubar changes (drop shelf,
-   Tab completion, save panel), the step 3 fifth-column Swift change, and a
-   Mac as a smol hub (`smolvm machine create` and `open` from an sshd
-   session; a daemon spawned there surviving logout). Also cp-out path
-   completion into a directory (written blind): cycle to a directory, then
-   "/" goes in (no doubled slash) and Right arrow accepts so the next Tab
-   does; a unique directory is still entered by the next Tab.
+## After the config redesign (done)
 
-## Hubs + browser bridge (done)
+1. Known issues, the real ones (v0.1.18): a killed daemon orphaning its
+   ControlMaster, SIGINT leaking the cp spool, the cold-boot bridge retry.
+2. The ssh agent exec for remote boxes (v0.1.19; browser-bridge.md §1, §5,
+   §6 "As shipped"): one `devvm-agent serve` on the daemon's own master.
+3. Provider backend (above).
+4. Mac tests: still owed (Live-test environments).
 
-| # | Step | Shipped in | Ships |
-|---|------|-----------|-------|
-| 1 | Hub backend + `HUB/NAME` | v0.1.13 | `backend = "hub"` confs, runtime identifier `HUB@NAME`, `listMachines`, shaping verbs refuse the hub itself, min-version check |
-| 2 | Proxy | v0.1.13 | leaf argv rebuilt with the hub-side name, `env DEVVM_NO_SUBSCRIBE=1 devvm …` over the hub's ssh, `-t` iff stdin and stdout are TTYs, laptop-side inputs (`keys add`, `repos add`) resolved first |
-| 3 | Merged listing + watch | v0.1.13 | `status --plain --local`, per-hub fan-out with cache and deadline, `--watch` holds one hub pipe per hub, hidden `--exit-on-stdin-eof` |
-| 4 | cp over tar stdio | v0.1.13 | `cp-in --from-tar -` / `cp-out --to-tar -`, structural tar completeness check |
-| 5 | Daemon ownership + sessions | v0.1.14 | owner kinds `conf`/`connection`/`ttl`, exact-or-bump sticky bind policy, long-lived sessions with acked `subscribe`, `ports down` op, dual-stack binds, `up:N` counts `conf` only |
-| 6 | Hub forwards | v0.1.14 | relay sessions, `__session NAME` as a pure pipe, `hubTransport` (`-L` to the hub port the hub reports), relay heartbeat, `HubForwardsMinVersion = v0.1.14` |
-| 7 | Daemon bridge + agent reply | v0.1.15 | URL classify (external/direct/redirect), connection- and ttl-owned bridge forwards, rate limit 10/min, 20-forward cap, `open-url` request/response, one `agentbin.Install` op |
-| 8 | Thin `auth`, smol and hub | v0.1.15 | `auth` rides the daemon session (no second exec), capability echo `bridge`/`shim`, `auth HUB/NAME` proxies the leaf, `HubBridgeMinVersion = v0.1.15` |
-| 9 | `BROWSER` plumbing (smol) | v0.1.15 | agent + shim at bootstrap, guarded `/etc/profile.d/devvm.sh`, `tmux set-environment` on attach, guarded exec `Env` |
+## Hubs + browser bridge (done, v0.1.13–v0.1.15)
 
-Mechanism lives in the design docs; CLAUDE.md carries the operational rules
-(one exec, relay, bridge, thin auth). Minimum hub versions are pinned by
-tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
-`session.HubBridgeMinVersion = v0.1.15`.
+| # | Step | Tag | Ships |
+|---|------|-----|-------|
+| 1 | Hub backend + `HUB/NAME` | v0.1.13 | `backend = "hub"`, runtime identifier `HUB@NAME`, `listMachines`, shaping verbs refuse the hub, min-version check |
+| 2 | Proxy | v0.1.13 | leaf argv with the hub-side name, `env DEVVM_NO_SUBSCRIBE=1 devvm …` over the hub's ssh, `-t` iff stdin and stdout are TTYs, laptop-side inputs resolved first |
+| 3 | Merged listing + watch | v0.1.13 | `status --plain --local`, per-hub fan-out with cache and deadline, one hub pipe per hub, `--exit-on-stdin-eof` |
+| 4 | cp over tar stdio | v0.1.13 | `cp-in --from-tar -` / `cp-out --to-tar -`, structural completeness check |
+| 5 | Ownership + sessions | v0.1.14 | owner kinds `conf`/`connection`/`ttl`, sticky exact-or-bump, acked `subscribe`, `ports down` op, dual-stack binds |
+| 6 | Hub forwards | v0.1.14 | relay sessions, `__session NAME` as a pure pipe, `hubTransport`, relay heartbeat |
+| 7 | Daemon bridge + agent reply | v0.1.15 | URL classify, connection-/ttl-owned bridge forwards, 10/min, 20-forward cap, `open-url` reply, one `agentbin.Install` |
+| 8 | Thin `auth`, smol and hub | v0.1.15 | `auth` rides the daemon session, echo `bridge`/`shim`, `auth HUB/NAME` proxies the leaf |
+| 9 | `BROWSER` plumbing (smol) | v0.1.15 | agent + shim at setup, guarded profile.d, `tmux set-environment`, guarded exec `Env` |
+
+Pinned by tests: `hubMinVersion` (v0.1.13, v0.1.16 since config step 4),
+`session.HubForwardsMinVersion = v0.1.14`, `session.HubBridgeMinVersion =
+v0.1.15`.
 
 ## Shared decisions
 
@@ -246,12 +105,21 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
    `devvm-agent serve` into a VM. A remote box gets one too, on its
    daemon's own ssh master; `auth` never spawns its own anywhere.
 5. **`--plain` changes ship with their Swift change** in the same commit.
-6. ~~Hub-machine state lives in the hub's conf.~~ **Superseded by config
-   step 2:** a client's saved forwards for any machine, `HUB/NAME` included,
-   are host state in `$XDG_STATE_HOME/devvm/ports/`.
+6. ~~Hub-machine state lives in the hub's conf.~~ **Superseded by config.md
+   §5:** a client's saved forwards for any machine are host state,
+   `<State>/ports/NAME`, and `<State>/ports/HUB@NAME` for a hub machine,
+   whose record is derived from the hub's entry.
 7. **VM commands never write config; `config` commands never touch a box**
    (config §4). devvm modifies only boxes it manages: made by `create` or
    handed over with `setup --adopt` (config §2–3).
+8. **Two axes, not one enum** (config §1): `backend` says who owns the
+   registry and lifecycle, `managed` whether devvm owns the OS; code decides
+   on the predicates, never the backend string.
+9. **Smol VMs are discovered, never configured** (config §2): an entry
+   shadows a smol VM of the same name, and the managed marker
+   (`created_at`) settles whether devvm made it.
+10. **No dormant state** (config §2): a machine exists or it doesn't;
+    rebuilding is `delete` then `create`.
 
 ## Known issues (pre-existing, found by live runs, not fixed)
 
@@ -310,31 +178,28 @@ Cosmetic or accepted:
 ## Lessons (don't relearn)
 
 - **smolvm 1.16.1's `machine exec` never boots a stopped VM** (2026-10-18,
-  ThinkPad): it fails at once (`machine 'raw' is not running. Use 'smolvm
-  machine start'`), so attach/shell on a stopped VM used to fail outright
-  (attach as a misleading "tmux not found"), not boot it. Execs that
-  overlap a boot are only slow: 50 parallel probes during `devvm start`
-  (two at a time, every 0.3s) all succeeded once the VM ran (~1s in, the
-  early ones waiting up to 1s), and `start` + `exec` + the daemon's serve
-  exec overlapped twice with no wedge. attach/shell now start the VM first.
+  ThinkPad): it fails at once (`machine 'raw' is not running`), so
+  attach/shell on a stopped VM used to fail (attach as a misleading "tmux
+  not found"). Execs overlapping a boot are only slow: 50 parallel probes
+  during `devvm start` all succeeded once the VM ran (~1s, the early ones
+  waiting up to 1s), and `start` + `exec` + the daemon's serve exec
+  overlapped twice with no wedge. attach/shell now start the VM first.
 - **A smol VM whose start is in flight lists as `stopped`** (1.16.1 never
-  says `starting`), and a second `smolvm machine start` then kills the
-  first one's boot ("Killing orphaned _boot-vm process"; the first start
-  fails "boot process was killed by SIGTERM", the second boots it). Seen
-  with `devvm start raw &` and `devvm shell raw` 0.2s later. This host's
-  starts of one VM are serialized (`lockStart`, run/.start-NAME.lock);
-  `smolvm machine start` on a running VM is a harmless "already running".
-
+  says `starting`), and a second `smolvm machine start` kills the first
+  one's boot ("Killing orphaned _boot-vm process"; the first start fails
+  with SIGTERM, the second boots it). Seen with `devvm start raw &` and
+  `devvm shell raw` 0.2s later. This host's starts of one VM are serialized
+  (`lockStart`, `run/.start-NAME.lock`); `machine start` on a running VM is
+  a harmless "already running".
 - **macOS kqueue coalesces a relink into nothing** (2026-10-17): a symlink
-  created and renamed over `devvm.toml` under load merges into one dir
-  event; fsnotify's listing then finds nothing new and the old target's fd
-  stays watched, so no Create/Remove ever fires. `status --watch`
+  renamed over `devvm.toml` under load merges into one dir event, the old
+  target's fd stays watched, and no Create/Remove fires. `status --watch`
   re-resolves a symlinked `devvm.toml` on a 2s timer for that reason. A
   test that "passed once on macOS" after a kqueue change proved nothing.
 - **A scratch binary that imports `internal/session` must hand `__daemon`
   to the real devvm.** `spawnDaemon` re-execs `os.Executable()`; under a
-  scratch tool that recursed into a fork bomb that took the 2 GB guest down
-  twice. `spawnDaemon` now refuses an empty name.
+  scratch tool that was a fork bomb that took the 2 GB guest down twice.
+  `spawnDaemon` now refuses an empty name.
 - **A proxied command's stdin must be an `*os.File`, never an `io.Pipe`.**
   os/exec's `awaitGoroutines` blocks forever on the stdin copy after
   `WaitDelay`. Follow `internal/cli/hublist.go` (`os.Pipe`, write end held).
@@ -349,14 +214,14 @@ Cosmetic or accepted:
   run.
 - **The memory-capped guest** (`GOMEMLIMIT`) surfaced real leaks: test
   daemons that never closed transports hit the fd limit, and an in-process
-  relay's `*os.File` was finalized while in use. Keep those fixes; wait on
-  signals, never sleep, in late-dial tests.
+  relay's `*os.File` was finalized while in use. Keep those fixes; in
+  late-dial tests wait on signals, never sleep.
 - **Live testing**: refresh a hub's binary by `scp` to a temp path then `mv`
   (ETXTBSY otherwise). `script -qec "devvm …" /dev/null <<< y` drives
-  `[y/N]` prompts; the huh form is unreadable under `script`. From hub step 5
-  on the **ThinkPad is the default live hub**; `cloud` (fake smolvm) only
-  where `calls.log` must show the exact smolvm calls or a remote-managed ssh
-  target is named.
+  `[y/N]` prompts; the huh form is unreadable under `script`. The
+  **ThinkPad is the default live hub**; `cloud` (fake smolvm) only where
+  `calls.log` must show the exact smolvm calls or a managed remote ssh
+  target is needed.
 - **Reusable test scaffolding**: `fakeSSH`/`fakeHub`/`fakeHubWith` in
   `internal/cli` run the real remote string through `sh` and assert exact
   ssh argv; the cp round trip re-execs the test binary as the hub's `devvm`
@@ -365,36 +230,48 @@ Cosmetic or accepted:
 - **Unix sockets and inodes**: tmpfs hands out inodes monotonically, ext4
   and APFS reuse them; `ownsSocket` needs the dial, not just the inode.
 - **This dev guest is itself a devvm smol box** (2026-10-18): it has
-  `/usr/local/bin/devvm-open-url`, so a test that runs a guest script on
-  this host and expects the managed shim to be missing fails here. Test
-  the absence with a temp `$HOME` (the adopt path) and only assert the
-  managed path's text.
+  `/usr/local/bin/devvm-open-url`, so a test expecting the managed shim to
+  be missing fails here. Test the absence with a temp `$HOME` (the adopt
+  path) and assert only the managed path's text.
 - **`ControlMaster=no` with a missing ControlPath is a fresh connection,
-  not an error**: ssh falls back to connecting on its own. Anything run on
-  the daemon's master (`OnMaster`) checks the master is alive before a
-  respawn, and passes `BatchMode=yes` so the fallback can never prompt.
-
+  not an error**: ssh connects on its own. Anything run on the daemon's
+  master (`OnMaster`) checks the master is alive before a respawn and
+  passes `BatchMode=yes` so the fallback can never prompt.
 - **Quit a Mac app with a signal and wait for it to exit** (2026-10-19,
-  v0.1.18: "Update devvm" never relaunched the app). An `osascript` quit from
-  an unsigned CLI needs automation (TCC) consent: refused, or hung on a
-  prompt. And `open -a` on an app still exiting only activates the dying
-  instance. Now SIGTERM, wait until gone, then `open -a` and wait for it.
+  v0.1.18's "Update devvm" never relaunched the app). An `osascript` quit
+  from an unsigned CLI needs automation (TCC) consent: refused, or hung on
+  a prompt; and `open -a` on an app still exiting only activates the dying
+  instance. Now SIGTERM, wait until gone, then `open -a` and wait for it
+  (v0.1.20).
 
 ## Live-test environments
 
 - **This devvm guest** is the "laptop": no browser, so a fake `xdg-open` on
   `PATH` that logs its argument stands in for one. ~6 GB RAM, no swap: run
   go with `GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS=-p=1`, one command at a time.
-- **`cloud`** (Hetzner CX23, `dev@2.29.47.196`, registered here as
-  remote-managed; hub conf `h`): no `/dev/kvm`, so its `smolvm` is
+- **ThinkPad**, hub entry `tp` (`devvmtest@192.168.1.196`, Linux Mint, real
+  KVM, smolvm 1.16.1), **intermittently offline**. Dedicated user
+  `devvmtest`; nothing outside that home is touched. The only place
+  smolvm-specific behaviour (exec concurrency, boot, `machine cp` staging,
+  the 11 MiB cap) can be seen. VMs: `web` (managed; ubuntu:24.04, 1 GiB,
+  10 GB, with `python3`, `tmux`, `gh` and a persistent `dev` tmux session)
+  and `raw` (alpine, unmanaged: the `setup --adopt` and unmanaged-path test
+  subject). Guest fixture: `nohup devvm exec web -- python3 -m http.server
+  3000 --bind 127.0.0.1 >/dev/null 2>&1 &` on the hub.
+- **`cloud`** (Hetzner CX23, `dev@2.29.47.196`; a managed `remote` entry
+  `cloud` and a hub entry `h` here): no `/dev/kvm`, so its `smolvm` is
   `contrib/fakesmol/smolvm` (the "guest" is the box; every call appended to
-  `~/.local/share/fakesmol/calls.log`; guest port P bumps to P+1 on the hub).
-  It also holds the user's machine `scottdev3`: never touch it.
-- **ThinkPad** (`devvmtest@192.168.1.196`, Linux Mint, real KVM; hub conf
-  `tp`): real smolvm 1.16.1 and a real smol machine `web` (ubuntu:24.04,
-  1 GiB, 10 GB) under the dedicated user `devvmtest`; nothing outside that
-  home is touched. The only place smolvm-specific behaviour (exec
-  concurrency, boot, `machine cp` staging, the 11 MiB cap) can be seen.
-  `web` has `python3`, `tmux`, `gh` and a persistent `dev` tmux session.
-  Guest fixture: `nohup devvm exec web -- python3 -m http.server 3000
-  --bind 127.0.0.1 >/dev/null 2>&1 &` on the hub.
+  `~/.local/share/fakesmol/calls.log`; guest port P bumps to P+1 on the
+  hub). It also holds the user's machine `scottdev3`: never touch it.
+- **Hetzner test project**, for throwaway servers only: `create --backend
+  hetzner`, test, `delete` after, and leave the project empty (verify it).
+  The token is at `<State>/providers/hetzner.token` (0600; `HCLOUD_TOKEN`
+  wins): never print it.
+- **Mac tests the user still owes** (at the laptop): cp-out path completion
+  into a directory (written blind: cycle to a directory, then "/" goes in
+  with no doubled slash and Right arrow accepts so the next Tab does; a
+  unique directory is still entered by the next Tab); the v0.1.14 menu bar
+  changes (drop shelf, Tab completion, save panel); the fifth `--plain`
+  column's Swift change; a Mac as a smol hub (`smolvm machine create` and
+  `open` from an sshd session, a daemon spawned there surviving logout);
+  the v0.1.20 menu bar relaunch after "Update devvm".

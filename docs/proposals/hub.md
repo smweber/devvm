@@ -87,6 +87,14 @@ ssh timeout only when a command is actually run against it.
 Bare names never fall back to hubs. Completion of `desktop/` comes from a
 per-hub listing cache (section 5).
 
+**As shipped since the config redesign (v0.1.16, config.md §5):** the
+per-hub `[machines.NAME]` tables described from here to "Two consequences"
+(and in the enumeration bullet) are gone. A hub is a `[machines.HUB]` entry
+in `devvm.toml`, a `HUB/NAME` record is derived from it, and the laptop's
+saved forwards for a hub machine are host state in `<State>/ports/HUB@NAME`
+under a per-name lock (`UpdateHubMachine` and the hub-conf flock are gone);
+the hub entry itself goes with `config rm HUB`.
+
 Laptop-side state for a hub machine exists for one thing: the laptop's own
 port forwards, which are inherently per client. It lives **in the hub's own
 conf**, as a table keyed by machine name:
