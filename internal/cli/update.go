@@ -248,13 +248,22 @@ func packageManagerFor(exe string) string {
 // finishUpdate runs on the freshly installed binary (see the --finish-from
 // hand-off): report, cycle the forward daemons, then the menu bar app. It
 // exits non-zero if any daemon failed to come back, so a scripted update
-// can't mistake half-restarted forwards for success.
+// can't mistake half-restarted forwards for success, and if an installed
+// menu bar app was not updated: the app runs `devvm update` itself and, on
+// success, relaunches its bundle, which would silently bring the old app
+// back. Both failures are named, on one line, daemons first.
 func (a *App) finishUpdate(old string) error {
 	fmt.Fprintf(a.Stdout, "updated devvm %s -> %s\n", old, Version)
 	res := a.restartDaemons()
-	a.updateMenubar()
+	var errs []string
 	if len(res.failed) > 0 {
-		return fmt.Errorf("forwards not restarted for %s; run 'devvm ports up NAME' for each", strings.Join(res.failed, ", "))
+		errs = append(errs, fmt.Sprintf("forwards not restarted for %s; run 'devvm ports up NAME' for each", strings.Join(res.failed, ", ")))
+	}
+	if err := a.updateMenubar(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; and "))
 	}
 	return nil
 }

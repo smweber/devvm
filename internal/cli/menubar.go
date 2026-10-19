@@ -151,38 +151,43 @@ func (a *App) runMenubar(ctx context.Context, u *updater, version string, force 
 
 // updateMenubar is update's post-install step: if the menu bar app is
 // installed and on another version, re-install it at this build's version
-// (install relaunches it if it was running). The CLI itself updated fine by the time
-// this runs, so a failure here is reported with a hint, never an exit code.
-func (a *App) updateMenubar() {
+// (install relaunches it if it was running). A failure is an error naming
+// `devvm menubar` to retry, which finishUpdate turns into a non-zero exit
+// although the CLI itself updated fine: the app, when it ran the update,
+// reads a zero exit as "relaunch me", which would bring the old app back
+// silently; a failure shows the error in its notification instead.
+func (a *App) updateMenubar() error {
 	if menubarGOOS != "darwin" {
-		return
+		return nil
 	}
 	m, err := a.menubarInstaller(newMenubarUpdater(a.Stderr))
 	if err != nil {
-		return
+		return nil
 	}
 	installed := m.installedVersion()
 	if installed == "" {
-		return // not installed: nothing to keep in step
+		return nil // not installed: nothing to keep in step
 	}
 	tag := currentVersion()
 	if tag == "dev" {
 		fmt.Fprintf(a.Stdout, "%s.app %s left alone (this build has no release version)\n", menubarAppName, installed)
-		return
+		return nil
 	}
 	if compareVersions(installed, tag) == 0 {
 		fmt.Fprintf(a.Stdout, "%s.app already %s\n", menubarAppName, installed)
-		return
+		return nil
 	}
 	relaunched, err := m.install(context.Background(), tag)
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "devvm: menu bar app not updated: %v\n  run 'devvm menubar' to retry\n", err)
-		return
+		// One line: the app shows a failed update's last stderr line.
+		return fmt.Errorf("menu bar app not updated (%s); run 'devvm menubar' to retry",
+			strings.Join(strings.Fields(err.Error()), " "))
 	}
 	fmt.Fprintf(a.Stdout, "updated %s.app %s -> %s\n", menubarAppName, installed, tag)
 	if relaunched {
 		fmt.Fprintf(a.Stdout, "relaunched %s.app\n", menubarAppName)
 	}
+	return nil
 }
 
 // menubarInstaller installs the app bundle from a release into appsDir.

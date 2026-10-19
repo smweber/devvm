@@ -312,7 +312,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   cycle live forward daemons (skipping reconnecting/same-version ones; one
   holding no conf-owned forward is stopped, not respawned, so `ports down`
   sticks and session clients respawn it themselves) and bring an installed
-  menu bar app along. `menubar` installs/opens the
+  menu bar app along (a failed app update exits non-zero, naming `devvm
+  menubar`, so the app shows it instead of relaunching the old bundle). `menubar` installs/opens the
   app at this build's version (`.sha256` sidecar, `ditto` so the ad-hoc
   signature survives). Both need a real version: `-X cli.Version` is stamped by
   install.sh/release.sh from `git describe`; a plain `go build` (or a tagless

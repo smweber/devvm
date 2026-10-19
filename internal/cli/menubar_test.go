@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/smweber/devvm/internal/session"
 )
 
 // fakeMac stands in for the macOS tools the installer shells out to. Its
@@ -443,12 +445,19 @@ func TestUpdateMenubarKeepsInstalledAppInStep(t *testing.T) {
 	}
 }
 
-func TestUpdateMenubarFailureIsReportedNotFatal(t *testing.T) {
+// A failed app update is an error naming `devvm menubar`, on one line (the
+// app's notification shows a failed update's last stderr line), and
+// finishUpdate exits non-zero with it, so the app does not relaunch its
+// old bundle as if the update had worked.
+func TestUpdateMenubarFailureIsAnError(t *testing.T) {
 	f := newMenubarFixture(t, "v0.1.0", true)
 	f.mac.installed(t, "v0.0.9")
-	f.app.updateMenubar() // no return value: must not panic or exit
-	if !strings.Contains(f.stderr.String(), "menu bar app not updated") || !strings.Contains(f.stderr.String(), "devvm menubar") {
-		t.Errorf("stderr = %q", f.stderr.String())
+	err := f.app.updateMenubar()
+	if err == nil || !strings.Contains(err.Error(), "menu bar app not updated") || !strings.HasSuffix(err.Error(), "run 'devvm menubar' to retry") || strings.Contains(err.Error(), "\n") {
+		t.Errorf("err = %q", err)
+	}
+	if err := f.app.finishUpdate("v0.0.9"); err == nil || !strings.Contains(err.Error(), "devvm menubar") || strings.Contains(err.Error(), "forwards not restarted") {
+		t.Errorf("finishUpdate err = %v", err)
 	}
 	if got := f.installedVersion(t); got != "v0.0.9" {
 		t.Errorf("installed %q, want untouched v0.0.9", got)
@@ -456,9 +465,30 @@ func TestUpdateMenubarFailureIsReportedNotFatal(t *testing.T) {
 	// And a dev build says so instead of guessing.
 	Version = "dev"
 	f.stdout.Reset()
-	f.app.updateMenubar()
-	if !strings.Contains(f.stdout.String(), "left alone") {
+	if err := f.app.updateMenubar(); err != nil || !strings.Contains(f.stdout.String(), "left alone") {
 		t.Errorf("stdout = %q", f.stdout.String())
+	}
+}
+
+// Daemons that did not come back and an app that was not updated are both
+// named, daemons first, on one line.
+func TestFinishUpdateNamesBothFailures(t *testing.T) {
+	old := daemonGoneTimeout
+	daemonGoneTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { daemonGoneTimeout = old })
+	f := newMenubarFixture(t, "v0.1.0", true)
+	f.mac.installed(t, "v0.0.9")
+	f.app.Paths = testPaths(shortTempDir(t))
+	saveRemote(t, f.app.Paths, "stuck", "8080:8080")
+	serveFakeDaemon(t, f.app.Paths, "stuck", session.Response{State: session.StateUp, Version: "v0.0.1", Forwards: []session.Forward{{Host: 8080, Guest: 8080}}})
+	err := f.app.finishUpdate("v0.0.9")
+	if err == nil {
+		t.Fatal("finishUpdate succeeded")
+	}
+	msg := err.Error()
+	d, m := strings.Index(msg, "forwards not restarted for stuck"), strings.Index(msg, "menu bar app not updated")
+	if d < 0 || m < d || strings.Contains(msg, "\n") {
+		t.Errorf("finishUpdate err = %q, want both, daemons first, one line", msg)
 	}
 }
 
