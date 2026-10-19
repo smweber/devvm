@@ -192,6 +192,59 @@ func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
 	}
 }
 
+// attach/shell on a remote box wait at most remoteBridgeWait for the
+// bridge (a box that does not answer must not cost the session the
+// daemon's whole come-up before its own ssh fails too): past it they say
+// so in one line and go on, and the open lands behind them. A late
+// session whose daemon has an agent is adopted and closed by release; one
+// without is let go silently (the session owns the terminal by then).
+func TestRemoteBridgeBoundedWait(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	oldWait, oldEnded, oldOpen := remoteBridgeWait, bridgeRetryEnded, openBridgeSession
+	t.Cleanup(func() { remoteBridgeWait, bridgeRetryEnded, openBridgeSession = oldWait, oldEnded, oldOpen })
+	remoteBridgeWait = 20 * time.Millisecond
+	ended := make(chan struct{}, 1)
+	bridgeRetryEnded = func() { ended <- struct{}{} }
+	for _, shim := range []string{"/usr/local/bin/devvm-open-url", ""} {
+		gate := make(chan struct{})
+		pb := &pingBridge{info: session.PingInfo{State: session.StateUp, Version: "test", Shim: shim}}
+		openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
+			<-gate
+			return pb, nil
+		}
+		a, errBuf := bridgeApp(t)
+		start := time.Now()
+		release := a.bridgeSession(config.NewRemote("cloud", true, "dev@cloud"), &statusBackend{})
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("bridgeSession waited %s for a daemon that never came up", d)
+		}
+		want := "devvm: browser bridge for cloud not up yet; URLs opened before it is will print in the guest\n"
+		if errBuf.String() != want {
+			t.Fatalf("shim %q: notice %q", shim, errBuf.String())
+		}
+		close(gate)
+		select {
+		case <-ended:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the late open never ended")
+		}
+		if errBuf.String() != want {
+			t.Fatalf("shim %q: the late open printed %q", shim, errBuf.String())
+		}
+		wantClosed := 0
+		if shim == "" {
+			wantClosed = 1 // no agent: let go at once, quietly
+		}
+		if pb.subscribed != 1 || pb.closed != wantClosed {
+			t.Fatalf("shim %q: subscribed %d, closed %d before release", shim, pb.subscribed, pb.closed)
+		}
+		release()
+		if pb.closed != 1 {
+			t.Fatalf("shim %q: closed %d after release", shim, pb.closed)
+		}
+	}
+}
+
 // A bridge that cannot be had costs one line, never the shell.
 func TestBridgeSessionFailureIsANotice(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")

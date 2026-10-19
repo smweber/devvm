@@ -239,3 +239,24 @@ func TestRemoteAttachArgvSetsBrowserOnlyWithShim(t *testing.T) {
 		t.Errorf("managed attach does not use the root shim: %q", argv[2])
 	}
 }
+
+// The mosh-server discovery script exits 0 with the path when mosh-server
+// is on the login PATH. It used to chain `command -v` with `||` in front of
+// a loop whose trailing `exit 1` then ran after a find too, so every box
+// without mosh_server configured read as having none.
+func TestMoshDiscoverScriptFindsOnPath(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "mosh-server")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", moshDiscoverScript)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":/usr/bin:/bin")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("discover exited %v with %q, want 0", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != fake {
+		t.Fatalf("discover printed %q, want %q", got, fake)
+	}
+}

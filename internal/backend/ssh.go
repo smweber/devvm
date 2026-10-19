@@ -434,6 +434,16 @@ func (b *sshBackend) moshConnect(remoteArgv []string) error {
 	return cmd.Run()
 }
 
+// moshDiscoverScript finds mosh-server in the remote login environment.
+// `command -v` ends the script on success: chained with `||` in front
+// of the loop, the loop's trailing `exit 1` ran after a found one too,
+// so a mosh-server on the login PATH read as missing.
+const moshDiscoverScript = `command -v mosh-server 2>/dev/null && exit 0
+for c in /home/linuxbrew/.linuxbrew/bin/mosh-server /opt/homebrew/bin/mosh-server \
+	/usr/local/bin/mosh-server /usr/bin/mosh-server; do
+	[ -x "$c" ] && { printf '%s\n' "$c"; exit 0; }
+done; exit 1`
+
 // findMoshServer prefers a configured, still-executable path, else discovers
 // mosh-server in the remote login environment (config may be shared by hosts
 // with different Homebrew prefixes).
@@ -444,12 +454,7 @@ func (b *sshBackend) findMoshServer() (string, error) {
 			return b.m.MoshServer, nil
 		}
 	}
-	discover := `command -v mosh-server 2>/dev/null ||
-		for c in /home/linuxbrew/.linuxbrew/bin/mosh-server /opt/homebrew/bin/mosh-server \
-			/usr/local/bin/mosh-server /usr/bin/mosh-server; do
-			[ -x "$c" ] && { printf '%s\n' "$c"; exit 0; }
-		done; exit 1`
-	host := append(b.base(), b.m.SSHHost, "bash -lc "+posixQuote(discover))
+	host := append(b.base(), b.m.SSHHost, "bash -lc "+posixQuote(moshDiscoverScript))
 	out, err := captureHost(ctx, host)
 	if err != nil || out == "" {
 		return "", fmt.Errorf("mosh-server was not found on '%s'", b.m.Name)

@@ -162,7 +162,10 @@ func (a *sshAgent) supervise(first chan struct{}) {
 	}
 	for {
 		paths, st, err := a.prepare()
-		if err == nil && st == agentbin.Current {
+		// A prepare that Close cancelled may still answer Current (an
+		// install that finished as the context went): never spawn then.
+		// spawn's closed check is the backstop for a Close racing this.
+		if err == nil && st == agentbin.Current && !a.stopped() {
 			err = a.spawn(paths)
 		}
 		firstDone()
@@ -191,6 +194,9 @@ func (a *sshAgent) supervise(first chan struct{}) {
 			continue
 		}
 		setupBackoff, lastMsg = agentMinBackoff, ""
+		// Said once per exec, so the log shows the agent the bridge rides
+		// (a respawn's "ended" line is followed by this one again).
+		transportLogf("%s: agent exec up (%s serve, on the daemon's master)", a.name, paths.Agent)
 		started := time.Now()
 		ended := a.currentMuxClosed()
 	up:

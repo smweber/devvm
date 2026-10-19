@@ -206,8 +206,9 @@ type shimPinger interface {
 // host nobody consented for, or an install that failed), so the session is
 // let go with one line naming the way to get one, and the daemon idles out
 // as if never asked. A ping that fails says nothing either way: the
-// subscription is kept.
-func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub) bool {
+// subscription is kept. say false: the same check, silently (a late
+// bridge, behind a session that owns the terminal).
+func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool {
 	p, ok := s.(shimPinger)
 	if !m.IsRemote() || m.IsHubMachine() || !ok {
 		return false
@@ -220,7 +221,9 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub) bool {
 	if !m.Managed() {
 		why = "no current devvm agent there (an unmanaged host: 'devvm auth " + m.Name + "' offers to install one in ~/.local/bin)"
 	}
-	fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable: %s; URLs opened in the guest will be printed there\n", why)
+	if say {
+		fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable: %s; URLs opened in the guest will be printed there\n", why)
+	}
 	return true
 }
 
@@ -264,16 +267,71 @@ func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func(
 		a.notRunningNotice(m)
 		return release
 	}
+	if m.IsRemote() {
+		return a.remoteBridge(m)
+	}
 	s, err := a.openSubscribed(m)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable (%v); URLs opened in the guest will be printed there\n", err)
 		return release
 	}
-	if a.remoteWithoutAgent(m, s) {
-		s.Close()
-		return release
-	}
 	return func() { s.Close() }
+}
+
+// remoteBridgeWait bounds how long attach/shell on a remote box wait for
+// the bridge before their own ssh runs. The bridge may have to spawn the
+// daemon, whose first dial is a new ssh master (ConnectTimeout) plus the
+// agent's first attempt, and the daemon is not up until that dial ends:
+// unbounded, a box that does not answer cost the session the daemon's
+// whole come-up wait (ConnectTimeout + 10s) before its own ssh failed the
+// same way. Past it the session starts and the open finishes behind it
+// (lateBridge), as a hub machine's does. A var for tests.
+var remoteBridgeWait = 5 * time.Second
+
+// remoteBridge is bridgeSession on a remote box: the open bounded by
+// remoteBridgeWait, then adopted late if it lands (and only if its daemon
+// has an agent: one reporting no shim is let go quietly, the session owns
+// the terminal by then). A failure is not retried: the session's own ssh
+// says whether the box answers, and the next attach opens again.
+func (a *App) remoteBridge(m *config.Machine) (release func()) {
+	type opened struct {
+		s   bridgeSub
+		err error
+	}
+	done := make(chan opened, 1)
+	go func() {
+		s, err := a.openSubscribed(m)
+		done <- opened{s, err}
+	}()
+	t := time.NewTimer(remoteBridgeWait)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable (%v); URLs opened in the guest will be printed there\n", r.err)
+			return func() {}
+		}
+		if a.remoteWithoutAgent(m, r.s, true) {
+			r.s.Close()
+			return func() {}
+		}
+		return func() { r.s.Close() }
+	case <-t.C:
+		late := newLateBridge()
+		go func() {
+			defer bridgeRetryEnded()
+			r := <-done
+			switch {
+			case r.err != nil:
+			case a.remoteWithoutAgent(m, r.s, false):
+				r.s.Close()
+			default:
+				late.adopt(r.s)
+			}
+		}()
+		fmt.Fprintf(a.Stderr, "devvm: browser bridge for %s not up yet; URLs opened before it is will print in the guest\n", m.Name)
+		return late.release
+	}
 }
 
 // hubBridge is bridgeSession for a machine on a hub. The wait is bounded

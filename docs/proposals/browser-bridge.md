@@ -134,8 +134,8 @@ host has an IPv6 loopback, section 4).
 in `transport_smol.go` becomes the bridge handler. No new exec.
 
 **Remote (ssh)**: **deferred** from this plan, and shipped after the config
-redesign (as shipped, below). Until it shipped, `auth` on a remote backend keeps its private agent session and the
-agent keeps `--auth`; ssh has no one-exec limit, so that is duplication, not a
+redesign (as shipped, below). Until it shipped, `auth` on a remote backend kept its private agent session and the
+agent kept `--auth`; ssh has no one-exec limit, so that is duplication, not a
 violation. When it does ship: the ssh transport gains an agent exec **on the
 daemon's own ControlMaster**. Today `sshBackend.Spawn` goes through `base()`, which uses the
 CLI's `cm-%C` auto-master, not the daemon's `<name>.master`
@@ -240,7 +240,12 @@ for a refused URL. `hostbrowser.Sanitize` lost its `localhost:1455`
 rewrite. `attach`/`shell` open a session only on a running smol machine
 (and, since the ssh agent exec, on a remote box too): a stopped VM is
 started first (as `start` does), so it never gets a daemon while stopped; a
-bridge that cannot be had is a one-line notice, never a failed shell.
+bridge that cannot be had is a one-line notice, never a failed shell. On a
+remote box the open is bounded at 5s (`remoteBridgeWait`), as a hub
+machine's is: past it the session starts and a bridge that lands later is
+adopted (if its daemon has an agent), so a box that does not answer costs
+the session at most that before its own ssh fails, not the daemon's whole
+come-up (ConnectTimeout + 10s).
 
 ### 2. Request/response events
 

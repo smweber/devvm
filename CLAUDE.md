@@ -448,8 +448,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   (`eventCarrier.hasEvents`, which is also what a hub echoes as `Bridge` for
   it): its `events()` channel is fixed for the transport's life and fed only
   while the agent exec is up. `attach`/`shell` subscribe on remote boxes
-  too; a daemon that reports no shim gets the session released with one
-  line. Remote `BROWSER` comes from tmux (`attach` sets it in the `dev`
+  too, waiting at most 5s (`remoteBridgeWait`; a late bridge is adopted, so
+  a dead box doesn't cost the daemon's come-up first); a daemon that
+  reports no shim gets the session released with one line. Remote `BROWSER` comes from tmux (`attach` sets it in the `dev`
   session, guarded on the shim being executable) and, on a managed box,
   profile.d: bare `shell` sends no remote command and sshd drops `SetEnv`.
 - **Auth**: every machine uses **thin auth** over the daemon's session:

@@ -74,6 +74,16 @@ func (f *fakeAgents) count() int {
 	return len(f.spawns)
 }
 
+// first is the agent path of the first spawn, "" before any.
+func (f *fakeAgents) first() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.spawns) == 0 {
+		return ""
+	}
+	return f.spawns[0]
+}
+
 // kill ends the newest exec: its guest side goes away.
 func (f *fakeAgents) kill() {
 	f.mu.Lock()
@@ -214,8 +224,67 @@ func TestSSHAgentAdoptHostWaitsForNudge(t *testing.T) {
 	}
 	tr.nudge()
 	openURLRoundTrip(t, tr, fa.guest(t))
-	if tr.shimPath() != paths.Shim || !tr.hasEvents() || fa.spawns[0] != paths.Agent {
-		t.Fatalf("after the nudge: shim %q, hasEvents %v, spawned %v", tr.shimPath(), tr.hasEvents(), fa.spawns)
+	if got := fa.first(); tr.shimPath() != paths.Shim || !tr.hasEvents() || got != paths.Agent {
+		t.Fatalf("after the nudge: shim %q, hasEvents %v, spawned %q", tr.shimPath(), tr.hasEvents(), got)
+	}
+}
+
+// Close ends the supervisor wherever it is: a probe or install in flight
+// is cancelled (its context), a failure's backoff is cut short, and
+// nothing is spawned after, even by a prepare that answers Current once
+// its context is gone.
+func TestSSHAgentCloseStopsSupervisor(t *testing.T) {
+	fastAgentKnobs(t)
+	agentFirstWait = 10 * time.Millisecond
+	dir, tr := fakeMasterSSH(t)
+	if err := os.WriteFile(filepath.Join(dir, "alive"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fa := newFakeAgents(t)
+	inFlight := make(chan struct{}, 1)
+	returned := make(chan struct{})
+	tr.startAgent(context.Background(), "box", agentHooks{
+		prepare: func(ctx context.Context) (agentbin.Paths, agentbin.State, error) {
+			inFlight <- struct{}{}
+			<-ctx.Done() // a slow install: only Close ends it
+			defer close(returned)
+			return agentbin.Paths{Agent: "/usr/local/bin/devvm-agent", Shim: testShim}, agentbin.Current, nil
+		},
+		spawn: fa.spawn,
+	})
+	<-inFlight
+	tr.Close()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not cancel the prepare in flight")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := fa.count(); n != 0 || tr.hasEvents() {
+		t.Fatalf("after Close: %d spawns, hasEvents %v", n, tr.hasEvents())
+	}
+
+	// A failing prepare, Close during its backoff: no prepare after.
+	fastAgentKnobs(t)
+	agentSetupMaxBackoff, agentMinBackoff = time.Hour, time.Hour
+	_, tr = fakeMasterSSH(t)
+	var mu sync.Mutex
+	calls := 0
+	tr.startAgent(context.Background(), "box", agentHooks{
+		prepare: func(context.Context) (agentbin.Paths, agentbin.State, error) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			return agentbin.Paths{}, agentbin.Missing, fmt.Errorf("sudo: a password is required")
+		},
+		spawn: fa.spawn,
+	})
+	tr.Close()
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("%d prepares, want 1 (Close cut the backoff)", calls)
 	}
 }
 

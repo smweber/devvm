@@ -243,8 +243,8 @@ tests: `hubMinVersion = v0.1.13`, `session.HubForwardsMinVersion = v0.1.14`,
    wins; the hub proxy runs commands with `DEVVM_NO_SUBSCRIBE=1`. Clients
    always name guest ports.
 4. **One exec per smol VM, always.** Nothing on any host spawns a second
-   `devvm-agent serve` into a VM. Remote boxes keep `auth`'s private session
-   until the ssh agent exec ships.
+   `devvm-agent serve` into a VM. A remote box gets one too, on its
+   daemon's own ssh master; `auth` never spawns its own anywhere.
 5. **`--plain` changes ship with their Swift change** in the same commit.
 6. ~~Hub-machine state lives in the hub's conf.~~ **Superseded by config
    step 2:** a client's saved forwards for any machine, `HUB/NAME` included,
@@ -289,6 +289,23 @@ Cosmetic or accepted:
   the hub may still complete the copy".
 - A process backgrounded in a detached `exec` did *not* die with that exec
   on the ThinkPad, contrary to the Environments note of the long form.
+- Two hosts' daemons for one remote box (a laptop's own, and a hub's for
+  the same box as `HUB/NAME`) each run an agent exec as the same login
+  user, and both listen on `~/.devvm/agent.sock`: the one that bound last
+  (a respawn rebinds) gets every shim's URL, delivered to *its* daemon's
+  subscriber. Seen live 2026-10-18; per-host sockets would need the shim
+  to choose, so it is left as "the most recent wins".
+- A relay opened while a hub's remote machine had no current agent there
+  keeps `NoEvents` (no bridge) until the laptop's daemon cycles, even after
+  `auth` on the hub installs one: the echo is read once, at the open.
+- On an adopt host whose key is not yet in `~/.ssh/known_hosts` (adopt
+  entries are not pinned), the first `attach`/`shell` gets the "bridge
+  unavailable (… exit status 255)" line: the daemon's BatchMode master
+  refuses the unknown key before the session's own ssh asks about it.
+  The next attach is bridged.
+- On a managed remote box whose agent install fails (sudo refused before
+  `setup`), each of the daemon's retries copies the agent again (~3 MiB),
+  backing off to one try per five minutes.
 
 ## Lessons (don't relearn)
 
