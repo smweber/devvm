@@ -414,7 +414,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   the leaf's argv with the hub-side name and runs `env DEVVM_NO_SUBSCRIBE=1
   devvm …` over the hub's ssh. The env var keeps a proxied attach/shell/auth
   from subscribing on the hub, since the laptop subscribes through its own
-  daemon instead. Forwards: the laptop's daemon for `HUB@NAME` runs one hidden
+  daemon instead. A `-t` run's login-shell wrapper catches SIGINT
+  (`TTYLoginShellArgv`), so a ^C, which the hub's pty delivers, comes back
+  as 130 rather than ssh's 255 for an exit-signal ("cannot reach hub"). Forwards: the laptop's daemon for `HUB@NAME` runs one hidden
   `__session NAME` over its own ControlMaster. That is a **relay** session on the
   hub daemon: its adds are owned by the connection, it is heartbeated, and it is
   refused while the hub's transport is down and closed when it dies. The laptop

@@ -111,7 +111,8 @@ func sq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 // wantSSH renders the exact ssh argv line the proxy must produce for a
 // devvm argv: sshBackend.base()'s ControlMaster flags, BatchMode iff no
 // terminal, -t iff one, the hub's destination, then the login-shell wrapper
-// around `env DEVVM_NO_SUBSCRIBE=1 devvm …`, every token single-quoted.
+// (its ^C-catching form with -t) around `env DEVVM_NO_SUBSCRIBE=1 devvm …`,
+// every token single-quoted.
 func wantSSH(a *App, tty bool, devvmArgv ...string) string {
 	line := "-o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=" + a.Paths.ControlPath() + " -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
 	if tty {
@@ -119,18 +120,25 @@ func wantSSH(a *App, tty bool, devvmArgv ...string) string {
 	} else {
 		line += " -o BatchMode=yes -o RequestTTY=no"
 	}
+	if tty {
+		return line + " u@h.example " + wrapRemote(`trap : INT; "${SHELL:-sh}" -lc "$0"`, devvmArgv...)
+	}
 	return line + " u@h.example " + wantRemote(devvmArgv...)
 }
 
 // wantRemote is the remote half of a proxied ssh line: the login-shell
 // wrapper around `env DEVVM_NO_SUBSCRIBE=1 devvm …`, every token quoted.
 func wantRemote(devvmArgv ...string) string {
+	return wrapRemote(`exec "${SHELL:-sh}" -lc "$0"`, devvmArgv...)
+}
+
+func wrapRemote(script string, devvmArgv ...string) string {
 	inner := append([]string{"env", "DEVVM_NO_SUBSCRIBE=1", "devvm"}, devvmArgv...)
 	q := make([]string, len(inner))
 	for i, tok := range inner {
 		q[i] = sq(tok)
 	}
-	return sq("sh") + " " + sq("-c") + " " + sq(`exec "${SHELL:-sh}" -lc "$0"`) + " " + sq(strings.Join(q, " "))
+	return sq("sh") + " " + sq("-c") + " " + sq(script) + " " + sq(strings.Join(q, " "))
 }
 
 func sshLines(t *testing.T, log string) []string {
@@ -582,5 +590,22 @@ func TestDeleteHubMachineReapsRunFiles(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(run, f)); err != nil {
 			t.Errorf("delete h/web removed %s", f)
 		}
+	}
+}
+
+// exitStatus: a ^C'd proxied -t run comes back as 130 (the -t wrapper's
+// doing, see backend.TTYLoginShellArgv) and exits 130 silently; only ssh's
+// own 255 is "cannot reach hub".
+func TestExitStatusInterruptedIsNotUnreachable(t *testing.T) {
+	a := newTestApp(t)
+	m := &config.Machine{Name: "h/web", Hub: config.NewHub("h", "u@h.example")}
+	err := a.exitStatus(m, exec.Command("sh", "-c", "exit 130").Run())
+	var ec *exitCode
+	if !errors.As(err, &ec) || ec.code != 130 {
+		t.Errorf("130: err = %v, want a silent exit 130", err)
+	}
+	err = a.exitStatus(m, exec.Command("sh", "-c", "exit 255").Run())
+	if err == nil || !strings.Contains(err.Error(), "cannot reach hub 'h'") {
+		t.Errorf("255: err = %v, want cannot reach hub", err)
 	}
 }

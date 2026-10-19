@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/smweber/devvm/internal/config"
@@ -111,7 +112,7 @@ func TestHubBackendRunIsProxiedExec(t *testing.T) {
 	}
 	data, _ = os.ReadFile(log)
 	lines = strings.Split(strings.TrimSpace(string(data)), "\n")
-	wantEnv := remoteCommand(ExecOpts{}, LoginShellArgv(ProxyArgv("exec", "web", "--", "env", "A_B=x y $z", "BROWSER=/usr/local/bin/devvm-open-url", "bash", "-lc", "gh auth login")...))
+	wantEnv := remoteCommand(ExecOpts{}, TTYLoginShellArgv(ProxyArgv("exec", "web", "--", "env", "A_B=x y $z", "BROWSER=/usr/local/bin/devvm-open-url", "bash", "-lc", "gh auth login")...))
 	if len(lines) != 3 || !strings.HasSuffix(lines[2], " u@host "+wantEnv) || !strings.Contains(lines[2], " -t ") {
 		t.Errorf("env exec line = %q\nwant -t and suffix %q", lines[len(lines)-1], wantEnv)
 	}
@@ -156,6 +157,41 @@ func TestLoginShellArgvRunsUnderLoginShell(t *testing.T) {
 	}
 	if !strings.Contains(remote, `-lc "$0"`) {
 		t.Errorf("not a login shell invocation: %s", remote)
+	}
+}
+
+// A ^C in a -t proxied run SIGINTs the hub's whole foreground process
+// group. Under TTYLoginShellArgv the sh in front survives it and exits 130
+// for the devvm the signal killed, so ssh reports 130, not the 255 an
+// exit-signal gets; under LoginShellArgv (exec all the way down) the
+// signal is the command's end. The fake devvm signals its own group, as
+// the pty does; the group is the command's own (Setpgid), not the test's.
+func TestTTYLoginShellArgvTurnsSIGINTInto130(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := "#!/bin/sh\nkill -INT 0\nsleep 5\n"
+	if err := os.WriteFile(filepath.Join(bin, "devvm"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("PATH="+bin+":$PATH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(wrap func(...string) []string) *os.ProcessState {
+		argv := wrap("devvm", "start", "web")
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Env = append(os.Environ(), "HOME="+home, "SHELL=/bin/sh", "ENV=")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		_ = cmd.Run()
+		return cmd.ProcessState
+	}
+	if st := run(TTYLoginShellArgv); st == nil || st.ExitCode() != 130 {
+		t.Errorf("tty wrapper: %v, want exit status 130", st)
+	}
+	if st := run(LoginShellArgv); st == nil || st.ExitCode() != -1 {
+		t.Errorf("plain wrapper: %v, want death by signal (what ssh turns into 255)", st)
 	}
 }
 

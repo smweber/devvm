@@ -437,6 +437,12 @@ func proxyExecOpts(tty bool) backend.ExecOpts {
 // the hub unreachable (a remote box's own 255 never crosses: guestExit
 // makes it an error on the hub). A negative code —
 // ssh killed by a signal — is clamped to 1 so os.Exit never sees -1.
+//
+// A ^C typed into a -t run is no signal on this host (ssh's terminal is
+// raw): the hub's pty delivers it, and the hub devvm it kills used to come
+// back as ssh's 255 for an exit-signal, misread here as the hub
+// unreachable. The -t wrapper (backend.TTYLoginShellArgv) turns that death
+// into 130, which passes through below silently like any status.
 func (a *App) exitStatus(m *config.Machine, err error) error {
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) {

@@ -76,9 +76,16 @@ func ProxyArgv(argv ...string) []string {
 // closed." after the remote command exits on the ControlMaster, which is
 // noise under every proxied stop/create/delete; BatchMode runs never show
 // it and stay as they are.
+//
+// A -t run is wrapped by ttyLoginShellArgv instead, so a ^C typed into it
+// comes back as the hub devvm's 130, not as ssh's 255 ("cannot reach").
 func (b *hubBackend) Proxy(ctx context.Context, o ExecOpts, argv ...string) error {
 	o.Quiet = o.TTY
-	return b.hub.Run(ctx, o, LoginShellArgv(ProxyArgv(argv...)...)...)
+	wrap := LoginShellArgv
+	if o.TTY {
+		wrap = TTYLoginShellArgv
+	}
+	return b.hub.Run(ctx, o, wrap(ProxyArgv(argv...)...)...)
 }
 
 // ProxyInteractive runs a proxied leaf with a terminal: plain `ssh -t` on
@@ -251,4 +258,20 @@ func (b *hubBackend) SessionArgv() []string {
 // is the user's shell (sshd sets it) whose profile put devvm on PATH.
 func LoginShellArgv(argv ...string) []string {
 	return []string{"sh", "-c", `exec "${SHELL:-sh}" -lc "$0"`, shellJoin(argv)}
+}
+
+// TTYLoginShellArgv is LoginShellArgv for a run with a terminal (ssh -t).
+// There the laptop's terminal is raw, so a ^C is no signal here: it is a
+// byte the hub's pty turns into a SIGINT for the remote process group. The
+// hub devvm dies of it, sshd reports an exit-signal rather than a status,
+// and ssh exits 255 for that, which the laptop reads as "cannot reach hub".
+// So the sh here stays in between (no exec) and catches SIGINT with a
+// handler, which survives it without passing an ignored SIGINT on (a
+// handler is reset on exec, so the login shell and devvm get the default):
+// the death comes back as an ordinary 130 and ssh exits with it. (sshd's
+// `$SHELL -c` in front execs this lone command under bash and zsh, so this
+// sh is the one in the pty's group; a login shell that forks instead, as
+// dash would, still dies of the ^C and the 255 stays.)
+func TTYLoginShellArgv(argv ...string) []string {
+	return []string{"sh", "-c", `trap : INT; "${SHELL:-sh}" -lc "$0"`, shellJoin(argv)}
 }
