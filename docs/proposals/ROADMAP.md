@@ -374,6 +374,12 @@ Cosmetic or accepted:
   the daemon's master (`OnMaster`) checks the master is alive before a
   respawn, and passes `BatchMode=yes` so the fallback can never prompt.
 
+- **Quit a Mac app with a signal and wait for it to exit** (2026-10-19,
+  v0.1.18: "Update devvm" never relaunched the app). An `osascript` quit from
+  an unsigned CLI needs automation (TCC) consent: refused, or hung on a
+  prompt. And `open -a` on an app still exiting only activates the dying
+  instance. Now SIGTERM, wait until gone, then `open -a` and wait for it.
+
 ## Live-test environments
 
 - **This devvm guest** is the "laptop": no browser, so a fake `xdg-open` on

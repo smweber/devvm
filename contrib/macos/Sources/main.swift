@@ -9,8 +9,10 @@ app.delegate = delegate
 // LSUIElement so the policy holds from the first frame.
 app.setActivationPolicy(.accessory)
 
-// `devvm menubar` (and `devvm update`) stop a running copy with SIGTERM when
-// the AppleEvent quit is refused. A signal's default action skips
+// `devvm menubar` (and `devvm update`) stop a running copy with SIGTERM (no
+// AppleEvent quit: from an unsigned CLI that needs automation consent and can
+// be refused or hang), then wait for it to exit before relaunching the new
+// bundle, so this must actually terminate. A signal's default action skips
 // applicationWillTerminate, which would orphan the `status --watch` child;
 // route it through NSApp.terminate instead. The source must stay referenced
 // (a global) or it is cancelled immediately.

@@ -317,6 +317,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   signature survives). Both need a real version: `-X cli.Version` is stamped by
   install.sh/release.sh from `git describe`; a plain `go build` (or a tagless
   clone) is `dev` and they refuse without `--force`/`--version`. `install()`
+  quits the app with SIGTERM (SIGKILL if it lingers; never an Apple event,
+  which needs TCC consent and can hang), waits until it has exited, and only
+  then `open -a`s the new bundle (retried once if nothing starts), and it
   relaunches the app *before* printing anything — when the app itself ran the
   command, quitting it closed our stdout (SIGPIPE is ignored in `Execute` for
   the same reason).

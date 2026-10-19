@@ -20,6 +20,11 @@ type fakeMac struct {
 	calls   []string
 	appsDir string
 	onOpen  func() // observe relaunch ordering
+
+	ignoreTerm       bool // SIGTERM does not stop the app (stubborn)
+	unkillable       bool // nor does SIGKILL
+	openNoLaunch     int  // this many opens start nothing (stale LaunchServices)
+	openWhileRunning int  // opens issued while the app still ran
 }
 
 func (f *fakeMac) run(name string, args ...string) (string, error) {
@@ -30,14 +35,29 @@ func (f *fakeMac) run(name string, args ...string) (string, error) {
 			return "123", nil
 		}
 		return "", fmt.Errorf("pgrep: exit status 1")
-	case "osascript":
-		f.running = false
-		return "", nil
 	case "pkill":
-		f.running = false
+		was := f.running
+		switch args[0] {
+		case "-TERM":
+			f.running = f.running && f.ignoreTerm
+		case "-KILL":
+			f.running = f.running && f.unkillable
+		default:
+			return "", fmt.Errorf("pkill without an explicit signal: %v", args)
+		}
+		if !was {
+			return "", fmt.Errorf("pkill: exit status 1")
+		}
 		return "", nil
 	case "open":
-		f.running = true
+		if f.running {
+			f.openWhileRunning++
+		}
+		if f.openNoLaunch > 0 {
+			f.openNoLaunch--
+		} else {
+			f.running = true
+		}
 		if f.onOpen != nil {
 			f.onOpen()
 		}
@@ -108,13 +128,17 @@ func newMenubarFixture(t *testing.T, tag string, tamper bool) *menubarFixture {
 	f.app = &App{Paths: testPaths(t.TempDir()), Stdout: &f.stdout, Stderr: &f.stderr}
 
 	oldGOOS, oldDir, oldRun, oldQuit, oldVersion, oldUpdater := menubarGOOS, menubarAppsDir, menubarRun, menubarQuitTimeout, Version, newMenubarUpdater
+	oldKill, oldLaunch := menubarKillTimeout, menubarLaunchTimeout
 	menubarGOOS = "darwin"
 	newMenubarUpdater = func(io.Writer) *updater { return f.u }
 	menubarAppsDir = func() (string, error) { return f.mac.appsDir, nil }
 	menubarRun = f.mac.run
 	menubarQuitTimeout = 50 * time.Millisecond
+	menubarKillTimeout = 50 * time.Millisecond
+	menubarLaunchTimeout = 50 * time.Millisecond
 	Version = "v0.1.0"
 	t.Cleanup(func() {
+		menubarKillTimeout, menubarLaunchTimeout = oldKill, oldLaunch
 		menubarGOOS, menubarAppsDir, menubarRun, menubarQuitTimeout, Version, newMenubarUpdater = oldGOOS, oldDir, oldRun, oldQuit, oldVersion, oldUpdater
 	})
 	return f
@@ -164,7 +188,7 @@ func TestMenubarInstallsVerifiesAndOpens(t *testing.T) {
 	if !f.mac.calledWith("ditto -x -k") || !f.mac.calledWith("open -a "+filepath.Join(f.mac.appsDir, "DevVM.app")) {
 		t.Errorf("calls = %v", f.mac.calls)
 	}
-	if f.mac.calledWith("osascript") || f.mac.calledWith("pkill") {
+	if f.mac.calledWith("pkill") {
 		t.Errorf("quit a non-running app: %v", f.mac.calls)
 	}
 	if entries, _ := os.ReadDir(f.mac.appsDir); len(entries) != 1 {
@@ -208,11 +232,11 @@ func TestMenubarReplacesRunningApp(t *testing.T) {
 	if got := f.installedVersion(t); got != "v0.2.0" {
 		t.Errorf("installed %q, want v0.2.0", got)
 	}
-	// Quit politely before the swap, then reopened.
+	// SIGTERM before the swap, then reopened once the app was gone.
 	var quitAt, dittoAt, openAt int
 	for i, c := range f.mac.calls {
 		switch {
-		case strings.HasPrefix(c, "osascript"):
+		case strings.HasPrefix(c, "pkill -TERM -x -U "):
 			quitAt = i
 		case strings.HasPrefix(c, "ditto"):
 			dittoAt = i
@@ -223,8 +247,11 @@ func TestMenubarReplacesRunningApp(t *testing.T) {
 	if quitAt == 0 || !(dittoAt < quitAt && quitAt < openAt) {
 		t.Errorf("order: %v", f.mac.calls)
 	}
-	if f.mac.calledWith("pkill") {
-		t.Errorf("killed an app that quit politely: %v", f.mac.calls)
+	if f.mac.calledWith("pkill -KILL") || f.mac.calledWith("osascript") {
+		t.Errorf("killed (or Apple-evented) an app that quit on SIGTERM: %v", f.mac.calls)
+	}
+	if f.mac.openWhileRunning != 0 {
+		t.Errorf("opened while the old app still ran: %v", f.mac.calls)
 	}
 	// The old bundle is moved aside during the swap and cleaned up after.
 	if _, err := os.Lstat(filepath.Join(f.mac.appsDir, "DevVM.app.old")); err == nil {
@@ -268,6 +295,89 @@ func TestMenubarRelaunchesBeforeReporting(t *testing.T) {
 	}
 }
 
+// An app that ignores SIGTERM is SIGKILLed, and still opened only once gone.
+func TestMenubarKillsStubbornApp(t *testing.T) {
+	f := newMenubarFixture(t, "v0.2.0", false)
+	f.mac.installed(t, "v0.1.0")
+	f.mac.running = true
+	f.mac.ignoreTerm = true
+	if err := f.app.runMenubar(context.Background(), f.u, "v0.2.0", false); err != nil {
+		t.Fatal(err)
+	}
+	var termAt, killAt, openAt int
+	for i, c := range f.mac.calls {
+		switch {
+		case strings.HasPrefix(c, "pkill -TERM"):
+			termAt = i
+		case strings.HasPrefix(c, "pkill -KILL"):
+			killAt = i
+		case strings.HasPrefix(c, "open"):
+			openAt = i
+		}
+	}
+	if termAt == 0 || !(termAt < killAt && killAt < openAt) {
+		t.Errorf("order: %v", f.mac.calls)
+	}
+	if f.mac.openWhileRunning != 0 {
+		t.Errorf("opened while the old app still ran: %v", f.mac.calls)
+	}
+	if got := f.installedVersion(t); got != "v0.2.0" {
+		t.Errorf("installed %q, want v0.2.0", got)
+	}
+}
+
+// An app that survives SIGKILL too is an error before the bundle is touched,
+// and never an open of the still-running instance.
+func TestMenubarUnquittableAppLeavesBundle(t *testing.T) {
+	f := newMenubarFixture(t, "v0.2.0", false)
+	f.mac.installed(t, "v0.1.0")
+	f.mac.running = true
+	f.mac.ignoreTerm, f.mac.unkillable = true, true
+	err := f.app.runMenubar(context.Background(), f.u, "v0.2.0", false)
+	if err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := f.installedVersion(t); got != "v0.1.0" {
+		t.Errorf("installed %q, want untouched v0.1.0", got)
+	}
+	if f.mac.calledWith("open") {
+		t.Errorf("opened a running app: %v", f.mac.calls)
+	}
+}
+
+// LaunchServices may still hold the exited app for a moment, so an open that
+// starts nothing is retried once; a second miss is reported.
+func TestMenubarRelaunchRetriesOnce(t *testing.T) {
+	f := newMenubarFixture(t, "v0.2.0", false)
+	f.mac.installed(t, "v0.1.0")
+	f.mac.running = true
+	f.mac.openNoLaunch = 1
+	if err := f.app.runMenubar(context.Background(), f.u, "v0.2.0", false); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(strings.Join(f.mac.calls, "\n"), "open -a"); n != 2 {
+		t.Errorf("opened %d times, want 2: %v", n, f.mac.calls)
+	}
+	if !f.mac.running || !strings.Contains(f.stdout.String(), "relaunched DevVM.app") {
+		t.Errorf("running=%v stdout=%q", f.mac.running, f.stdout.String())
+	}
+
+	g := newMenubarFixture(t, "v0.2.0", false)
+	g.mac.installed(t, "v0.1.0")
+	g.mac.running = true
+	g.mac.openNoLaunch = 2
+	err := g.app.runMenubar(context.Background(), g.u, "v0.2.0", false)
+	if err == nil || !strings.Contains(err.Error(), "installed, but relaunch failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := strings.Count(strings.Join(g.mac.calls, "\n"), "open -a"); n != 2 {
+		t.Errorf("opened %d times, want 2: %v", n, g.mac.calls)
+	}
+	if got := g.installedVersion(t); got != "v0.2.0" {
+		t.Errorf("installed %q, want v0.2.0", got)
+	}
+}
+
 type writerFunc func([]byte) (int, error)
 
 func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
@@ -283,7 +393,7 @@ func TestMenubarChecksumMismatchInstallsNothing(t *testing.T) {
 	if got := f.installedVersion(t); got != "v0.1.0" {
 		t.Errorf("installed %q, want untouched v0.1.0", got)
 	}
-	if f.mac.calledWith("osascript") || f.mac.calledWith("ditto") {
+	if f.mac.calledWith("pkill") || f.mac.calledWith("ditto") {
 		t.Errorf("acted before verifying: %v", f.mac.calls)
 	}
 }
@@ -322,7 +432,7 @@ func TestUpdateMenubarKeepsInstalledAppInStep(t *testing.T) {
 	f.mac.running = true
 	f.mac.calls = nil
 	f.app.updateMenubar()
-	if !f.mac.calledWith("osascript") || !f.mac.calledWith("open -a") {
+	if !f.mac.calledWith("pkill -TERM") || !f.mac.calledWith("open -a") {
 		t.Errorf("calls = %v", f.mac.calls)
 	}
 }
@@ -364,5 +474,15 @@ func TestRunHostToolSurfacesStderr(t *testing.T) {
 	out, err := runHostTool("sh", "-c", "echo hi")
 	if err != nil || out != "hi" {
 		t.Errorf("out = %q, %v", out, err)
+	}
+	old := hostToolTimeout
+	hostToolTimeout = 100 * time.Millisecond
+	defer func() { hostToolTimeout = old }()
+	start := time.Now()
+	if _, err := runHostTool("sleep", "10"); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("hung tool err = %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("hung tool took %s", d)
 	}
 }

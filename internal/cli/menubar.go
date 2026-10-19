@@ -22,14 +22,20 @@ import (
 // version, so `menubar` installs the app for *this* build's version and
 // `update` re-installs it whenever the CLI moves.
 const (
-	menubarAppName  = "DevVM"
-	menubarBundleID = "com.smweber.devvm.menubar"
-	menubarAsset    = "devvm-menubar.zip"
+	menubarAppName = "DevVM"
+	menubarAsset   = "devvm-menubar.zip"
 )
 
-// menubarQuitTimeout bounds the wait for a politely quit app to exit before
-// it is killed. Var so tests don't wait.
-var menubarQuitTimeout = 5 * time.Second
+// Vars so tests don't wait. menubarQuitTimeout bounds the wait for the app
+// to exit after SIGTERM before it is killed; menubarKillTimeout the wait after
+// SIGKILL; menubarLaunchTimeout the wait for a relaunched app to show up.
+// hostToolTimeout bounds any one host tool, so no tool can hang `update`.
+var (
+	menubarQuitTimeout   = 5 * time.Second
+	menubarKillTimeout   = 2 * time.Second
+	menubarLaunchTimeout = 5 * time.Second
+	hostToolTimeout      = 30 * time.Second
+)
 
 // Vars so the flow can run under test on Linux against a temp directory:
 // the OS check, where ~/Applications is, and how host tools are invoked.
@@ -52,8 +58,16 @@ var (
 // is an error carrying the tool's stderr.
 type hostRunner func(name string, args ...string) (string, error)
 
+// runHostTool runs under hostToolTimeout: every tool used here (pgrep, pkill,
+// open, ditto, PlistBuddy) is quick, and `update` run by the app must never
+// hang on one, leaving the app up on the old version.
 func runHostTool(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), hostToolTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("%s: timed out after %s", name, hostToolTimeout)
+	}
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
@@ -208,28 +222,69 @@ func (m *menubarInstaller) running() bool {
 	return err == nil
 }
 
-// quit asks the app to exit and waits; a stubborn one is killed so the
-// bundle can be replaced underneath it.
-func (m *menubarInstaller) quit() error {
-	_, _ = m.run("osascript", "-e", fmt.Sprintf("tell application id %q to quit", menubarBundleID))
-	deadline := time.Now().Add(menubarQuitTimeout)
-	for time.Now().Before(deadline) {
-		if !m.running() {
-			return nil
+// waitRunning polls until running() reports want or d passes; it checks at
+// least once, so a tiny d still reads the current state.
+func (m *menubarInstaller) waitRunning(want bool, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if m.running() == want {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if _, err := m.run("pkill", "-x", "-U", strconv.Itoa(os.Getuid()), menubarAppName); err != nil {
-		return fmt.Errorf("quit %s.app: %w", menubarAppName, err)
+}
+
+// quit stops the app with SIGTERM, which it routes through NSApp.terminate
+// (contrib/macos main.swift), and returns only once the process is gone; a
+// stubborn one is SIGKILLed. There is deliberately no AppleEvent quit
+// (osascript): an Apple event from an unsigned CLI needs macOS automation
+// consent, so when the app's own "Update" runs us it is refused (-1743) or,
+// worse, blocks forever on a consent prompt, leaving `update` hung and the
+// app on the old version. A signal needs no consent. pkill's exit status is
+// ignored: "no match" means the app already exited, and running() decides.
+func (m *menubarInstaller) quit() error {
+	uid := strconv.Itoa(os.Getuid())
+	_, _ = m.run("pkill", "-TERM", "-x", "-U", uid, menubarAppName)
+	if m.waitRunning(false, menubarQuitTimeout) {
+		return nil
 	}
-	return nil
+	_, _ = m.run("pkill", "-KILL", "-x", "-U", uid, menubarAppName)
+	if m.waitRunning(false, menubarKillTimeout) {
+		return nil
+	}
+	return fmt.Errorf("quit %s.app: still running after SIGTERM and SIGKILL", menubarAppName)
+}
+
+// relaunch opens the app we quit and waits for it to show up. It runs only
+// after quit saw the old process gone: `open -a` on an app LaunchServices
+// still counts as running just activates the dying instance, and nothing
+// new starts. Even after the exit, LaunchServices can hold the old
+// registration for a moment, so an open that brings nothing up is retried
+// once. Never `open -n`: a wrong "gone" would then start a second copy.
+func (m *menubarInstaller) relaunch() error {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if m.running() {
+			return nil // came up late from the previous open
+		}
+		if err = m.open(); err == nil {
+			if m.waitRunning(true, menubarLaunchTimeout) {
+				return nil
+			}
+			err = fmt.Errorf("%s.app did not start", menubarAppName)
+		}
+	}
+	return err
 }
 
 // reopenAfterFailure brings back an app we quit when the install then
 // failed: the user should not lose their menu bar item over a bad download.
 func (m *menubarInstaller) reopenAfterFailure(wasRunning bool) {
 	if wasRunning {
-		if err := m.open(); err != nil {
+		if err := m.relaunch(); err != nil {
 			fmt.Fprintf(os.Stderr, "devvm: could not reopen %s.app after the failed install: %v\n", menubarAppName, err)
 		}
 	}
@@ -242,9 +297,9 @@ func (m *menubarInstaller) open() error {
 	return nil
 }
 
-// install downloads the release's app zip, verifies it, quits a running app,
-// swaps the bundle into place, and — if the app was running — relaunches it
-// before returning. The relaunch has to come before the caller prints
+// install downloads the release's app zip, verifies it, quits a running app
+// (waiting until it has exited), swaps the bundle into place, and — if the
+// app was running — relaunches it and waits for it to start before returning. The relaunch has to come before the caller prints
 // anything: when the caller *is* the app (its "Update now" item runs
 // `devvm update`), quitting it closed our stdout, and a write there ends
 // the process (or, with SIGPIPE ignored, just fails) — either way the app
@@ -320,7 +375,7 @@ func (m *menubarInstaller) install(ctx context.Context, tag string) (relaunched 
 		os.RemoveAll(old)
 	}
 	if wasRunning {
-		if err := m.open(); err != nil {
+		if err := m.relaunch(); err != nil {
 			return false, fmt.Errorf("installed, but relaunch failed: %w", err)
 		}
 		return true, nil
