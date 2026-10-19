@@ -446,7 +446,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   held by `attach`/`shell`/`auth`, which opens the URL on its own host (or prints
   it there if it has no opener); its answer goes back to the guest. The daemon
   never opens a browser itself. With no subscriber, the shim prints the URL in the
-  guest. Opens are rate-limited (10/min) and bridge forwards are capped per
+  guest. The shim exits 0 only when the URL was opened or printed on the
+  host (1 when refused, unattached or unanswered), so gh says it failed. Opens are rate-limited (10/min) and bridge forwards are capped per
   machine. A remote box has events while its daemon knows a current agent
   (`eventCarrier.hasEvents`, which is also what a hub echoes as `Bridge` for
   it): its `events()` channel is fixed for the transport's life and fed only
