@@ -297,6 +297,15 @@ func splitRootFlags(args []string) (set [][2]string, rest []string, err error) {
 	return set, args, nil
 }
 
+// wantsHelp reports whether a DisableFlagParsing leaf's args (after
+// leafArgs) ask for its help: --help or -h where NAME would be. cobra
+// parses no flag for such a leaf, so without this `devvm exec --help` was
+// an argument-count error (or NAME "--help"); a --help after NAME is the
+// guest command's (`devvm exec NAME -- --help`) and is passed through.
+func wantsHelp(args []string) bool {
+	return len(args) > 0 && (args[0] == "--help" || args[0] == "-h")
+}
+
 // leafArgs is a DisableFlagParsing leaf's args without the root flags the
 // root's PersistentPreRunE already applied.
 func leafArgs(args []string) []string {

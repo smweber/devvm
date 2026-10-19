@@ -132,10 +132,13 @@ func (a *App) execCmd() *cobra.Command {
 		Long: "Run a command as the dev user in a login shell on the machine.\n" +
 			"The command's exit status is devvm's, except 255 on a machine reached\n" +
 			"over ssh: ssh itself uses 255 for \"cannot reach\", and it is reported as such.",
-		Args:               cobra.MinimumNArgs(2),
-		DisableFlagParsing: true, // pass CMD's own flags through untouched
+		Args:               cobra.ArbitraryArgs, // counted below, after a --help
+		DisableFlagParsing: true,                // pass CMD's own flags through untouched
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args = leafArgs(args); len(args) < 2 {
+			if args = leafArgs(args); wantsHelp(args) {
+				return cmd.Help()
+			}
+			if len(args) < 2 {
 				return fmt.Errorf("requires at least 2 arg(s), only received %d", len(args))
 			}
 			return a.hubOr(func(cmd *cobra.Command, args []string) error {
@@ -392,10 +395,13 @@ func (a *App) keysCmd() *cobra.Command {
 	add := &cobra.Command{
 		Use:                "add NAME [KEY|--from-github USER]",
 		Short:              "Add a client pubkey (remote machines)",
-		Args:               cobra.MinimumNArgs(1),
-		DisableFlagParsing: true, // pass --from-github through untouched
+		Args:               cobra.ArbitraryArgs, // counted below, after a --help
+		DisableFlagParsing: true,                // pass --from-github through untouched
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args = leafArgs(args); len(args) < 1 {
+			if args = leafArgs(args); wantsHelp(args) {
+				return cmd.Help()
+			}
+			if len(args) < 1 {
 				return fmt.Errorf("requires at least 1 arg(s), only received 0")
 			}
 			return a.hubOr(func(cmd *cobra.Command, args []string) error {

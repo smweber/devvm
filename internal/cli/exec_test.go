@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -49,5 +50,33 @@ func TestExecPassesGuestExitStatus(t *testing.T) {
 	}
 	if string(out) != "oops\n" {
 		t.Errorf("output = %q, want only the guest's stderr", out)
+	}
+}
+
+// `devvm exec --help` (or -h) where NAME would be prints exec's help, as
+// `devvm help exec` does, though the leaf parses no flags; after NAME it is
+// the guest command's own flag and reaches the guest.
+func TestExecHelp(t *testing.T) {
+	a := newTestApp(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeSSH(t, `sh -c "$last"`)
+	saveBox(t, a, "box")
+	for _, argv := range [][]string{{"exec", "--help"}, {"exec", "-h"}, {"exec", "--help", "box", "ls"}, {"keys", "add", "--help"}} {
+		if err := runTree(t, a, argv...); err != nil {
+			t.Fatalf("%q: %v", argv, err)
+		}
+		if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "Usage:") {
+			t.Errorf("%q printed no help:\n%s", argv, out)
+		}
+	}
+	// The guest exits 0 only if it got --help as its own argument.
+	if err := runTree(t, a, "exec", "box", "--", "sh", "-c", `test "$1" = --help`, "_", "--help"); err != nil {
+		t.Errorf("exec box -- … --help did not reach the guest: %v", err)
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); strings.Contains(out, "Usage:") {
+		t.Errorf("exec box -- … --help printed devvm's help:\n%s", out)
+	}
+	if err := runTree(t, a, "exec", "box"); err == nil || !strings.Contains(err.Error(), "requires at least 2 arg(s)") {
+		t.Errorf("exec with no CMD: err = %v", err)
 	}
 }
