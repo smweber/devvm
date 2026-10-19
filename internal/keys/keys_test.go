@@ -66,6 +66,25 @@ func TestDedupRemovesOwn(t *testing.T) {
 	}
 }
 
+// Merge never drops a key already in authorized_keys, nor one that is the
+// machine's own: a loopback box keeps its own id_*.pub (its `ssh
+// localhost`) whether it was there already or is the key being added.
+func TestMergeKeepsOwnAndExisting(t *testing.T) {
+	existing := []string{"# header", edB + " self@box", edA + " me"}
+	kept := Merge(existing, []string{edA + " me-again", rsa + " new", edB + " self@box"})
+	want := []string{"# header", edB + " self@box", edA + " me", rsa + " new"}
+	if strings.Join(kept, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("kept = %q, want %q", kept, want)
+	}
+	if existing[2] != edA+" me" || len(existing) != 3 {
+		t.Errorf("Merge changed its input: %q", existing)
+	}
+	// The own key being added to a file without it lands.
+	if kept := Merge(nil, []string{edB + " self@box"}); len(kept) != 1 || kept[0] != edB+" self@box" {
+		t.Errorf("own key not added: %q", kept)
+	}
+}
+
 func TestRevokeSingle(t *testing.T) {
 	lines := []string{edA + " alice", edB + " bob"}
 	idx, _, err := Revoke(lines, "alice", nil)

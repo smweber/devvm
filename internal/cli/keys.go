@@ -36,7 +36,7 @@ func (a *App) guestAuthKeys(b backend.Backend) ([]string, error) {
 }
 
 // guestOwnIDs returns the identities of the guest's own keys (~/.ssh/id_*.pub),
-// which dedup strips and revoke protects. A missing glob is simply "none".
+// which `keys dedupe` strips. A missing glob is simply "none".
 func (a *App) guestOwnIDs(b backend.Backend) map[string]bool {
 	var buf bytes.Buffer
 	_ = b.Run(context.Background(), backend.ExecOpts{Stdout: &buf},
@@ -55,8 +55,10 @@ func (a *App) writeGuestAuthKeys(b backend.Backend, lines []string) error {
 		"sh", "-c", script)
 }
 
-// addGuestKeys merges incoming key lines into authorized_keys (dedup by material,
-// dropping the guest's own keys). Shared by authorize-key and setup seeding.
+// addGuestKeys merges incoming key lines into authorized_keys (dedup by
+// material). It drops none of the guest's own keys (keys.Merge says why), so
+// it needs no read of ~/.ssh/id_*.pub. Shared by authorize-key and setup
+// seeding.
 // The read-modify-write isn't locked: two concurrent invocations (from different
 // hosts, say) can lose one side's update — the atomic mv prevents corruption,
 // not lost writes. Re-running is always safe.
@@ -68,8 +70,7 @@ func (a *App) addGuestKeys(b backend.Backend, incoming []string) error {
 	if err != nil {
 		return err
 	}
-	kept, _, _ := keys.Dedup(append(existing, incoming...), a.guestOwnIDs(b))
-	return a.writeGuestAuthKeys(b, kept)
+	return a.writeGuestAuthKeys(b, keys.Merge(existing, incoming))
 }
 
 // requireRemote gates commands that act on a guest's authorized_keys — allowed

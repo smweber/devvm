@@ -131,6 +131,18 @@ func Dedup(lines []string, ownIDs map[string]bool) (kept []string, removedDup, r
 	return out, removedDup, removedOwn
 }
 
+// Merge adds incoming key lines to an authorized_keys file's lines, collapsing
+// duplicates by key material as Dedup does. Unlike Dedup it drops no key for
+// being the machine's own: an add only ever adds. A machine that reaches
+// itself (a loopback "self" entry, or any box whose user ssh-es to localhost)
+// has its own id_*.pub in authorized_keys on purpose, and stripping it there
+// broke that box's own `ssh localhost`. Removing own keys stays `keys
+// dedupe`'s explicit, reported job.
+func Merge(existing, incoming []string) []string {
+	kept, _, _ := Dedup(append(append([]string(nil), existing...), incoming...), nil)
+	return kept
+}
+
 // ErrNoMatch / ErrAmbiguous / ErrProtected classify Revoke failures.
 var (
 	ErrNoMatch  = fmt.Errorf("no key matches")
