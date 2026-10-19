@@ -135,21 +135,15 @@ Cosmetic or accepted:
   hook) OOM-killed the fake-smolvm cloud hub. Not devvm's to fix: every hub
   exec is a login shell by design, and a rate limit would only make the
   external client's calls fail (decided 2026-10-17).
-- `keys add` dedup strips the target's *own* `id_*.pub`, so a loopback
-  `self` machine breaks its own `ssh localhost`.
-- `^C` on a `-t` proxied command reports "cannot reach hub" (ssh's 255 is
-  read as unreachable by design). The remote huh form can take >10s to first
-  paint through a cold ControlMaster.
+- The remote huh form can take >10s to first paint through a cold
+  ControlMaster.
 - The ssh transport notices a dead ControlMaster only on its 30s
   `checkInterval`, so a forward reads `up` for up to 30s after `ssh -O exit`.
 - A hub `stop`→`start` waits out the laptop's reconnect backoff (≤30s).
 - A locally stamped build with a suffix (`…-dirty-step6`) sorts as a
   prerelease and refuses a hub as older than `hubMinVersion`.
-- `ports list NAME` prints "no ports configured" above a live list of
-  `connection`-owned forwards.
-- `devvm-open-url` exits 0 even when the open was refused (the reply text
-  says so); the redirect TTL's 10-minute expiry was never live-tested. The
-  host browser is opened by the subscribing `attach`/`shell` process, so its
+- The redirect TTL's 10-minute expiry was never live-tested. The host
+  browser is opened by the subscribing `attach`/`shell` process, so its
   PATH decides the opener.
 - Killing a laptop-side `cp-in HUB/NAME` after the archive is fully written
   does not abort it (no pty, no SIGINT propagation; "nothing created" holds
