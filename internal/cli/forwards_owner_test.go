@@ -239,6 +239,38 @@ func TestPortsListShowsOwners(t *testing.T) {
 	}
 }
 
+// `ports list NAME` with nothing saved but a session's live forwards says
+// neither "no ports configured" nor "configured:"; with nothing at all it
+// says the former.
+func TestPortsListNoSavedButLive(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
+	saveRemote(t, a.Paths, "box")
+	saveRemote(t, a.Paths, "idle")
+	serveOwnerDaemon(t, a.Paths, "box", map[string]session.Response{
+		session.OpList: {OK: true, State: session.StateUp, Sessions: 1, Forwards: []session.Forward{
+			{Host: 5173, Guest: 5173, Owners: []string{session.OwnerConnection}},
+		}},
+	}, false)
+	if err := a.runPortsList("box"); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "no ports configured") || strings.Contains(got, "configured:") {
+		t.Errorf("live forwards under a 'none saved' line:\n%s", got)
+	}
+	if !strings.Contains(got, "    guest 5173  -> localhost:5173  owner=connection\n") {
+		t.Errorf("live forward missing:\n%s", got)
+	}
+	out.Reset()
+	if err := a.runPortsList("idle"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out.String(), "devvm: no ports configured;") {
+		t.Errorf("idle machine:\n%s", out.String())
+	}
+}
+
 // status --plain's N counts conf owners only, through the real
 // forwardSummary: a daemon whose forwards are all session/ttl-owned reads
 // `down` (ports configured) or `-`, never `up:0`.

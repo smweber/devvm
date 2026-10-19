@@ -292,7 +292,9 @@ func (a *App) portsRecord(name string) (*config.Machine, error) {
 
 // runPortsList shows the machine's saved forwards plus any that are live.
 // The saved block keeps its "configured:" header: it is the same list, only
-// stored on this host now.
+// stored on this host now. It is printed only when there is one, and "no
+// ports configured" only when no live forward follows either, so a box
+// holding a session's forwards does not read as having none.
 func (a *App) runPortsList(name string) error {
 	if _, err := a.portsRecord(name); err != nil {
 		return err
@@ -301,15 +303,20 @@ func (a *App) runPortsList(name string) error {
 	if err != nil {
 		return err
 	}
-	if len(saved) == 0 {
-		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
-	} else {
+	st, live := a.liveForwards(name)
+	if len(saved) > 0 {
 		fmt.Fprintln(a.Stdout, "configured:")
 		for _, p := range saved {
 			fmt.Fprintf(a.Stdout, "  %s\n", p)
 		}
+	} else if !live || len(st.Forwards) == 0 {
+		// Only when nothing at all is forwarded: a session's or a bridge's
+		// live forwards below would contradict "no ports".
+		fmt.Fprintf(a.Stdout, "devvm: no ports configured; add one with 'devvm ports add %s HOST:GUEST'\n", name)
 	}
-	a.forwardReport(name)
+	if live {
+		a.printForwards(st)
+	}
 	return nil
 }
 
@@ -514,14 +521,27 @@ func forwardState(f session.Forward) string {
 // says so (and for how long) and each forward is marked pending, so a stuck
 // reconnect is visible rather than looking like healthy forwards.
 func (a *App) forwardReport(name string) {
+	if st, ok := a.liveForwards(name); ok {
+		a.printForwards(st)
+	}
+}
+
+// liveForwards asks the machine's forward daemon, if one is up, for its
+// forwards and sessions; ok is false when there is no daemon to ask.
+func (a *App) liveForwards(name string) (session.Status, bool) {
 	cl, err := session.Existing(a.Paths, name)
 	if err != nil {
-		return
+		return session.Status{}, false
 	}
 	st, err := cl.Status()
 	if err != nil {
-		return
+		return session.Status{}, false
 	}
+	return st, true
+}
+
+// printForwards renders a daemon's live forwards and sessions.
+func (a *App) printForwards(st session.Status) {
 	if len(st.Forwards) > 0 {
 		if st.Reconnecting() {
 			fmt.Fprintf(a.Stdout, "  forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
