@@ -180,7 +180,7 @@ func (a *App) updateMenubar() error {
 	relaunched, err := m.install(context.Background(), tag)
 	if err != nil {
 		// One line: the app shows a failed update's last stderr line.
-		return fmt.Errorf("menu bar app not updated (%s); run 'devvm menubar' to retry",
+		return fmt.Errorf("menu bar app update failed (%s); run 'devvm menubar' to retry",
 			strings.Join(strings.Fields(err.Error()), " "))
 	}
 	fmt.Fprintf(a.Stdout, "updated %s.app %s -> %s\n", menubarAppName, installed, tag)

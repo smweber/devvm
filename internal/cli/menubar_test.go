@@ -285,7 +285,9 @@ func TestMenubarRelaunchesBeforeReporting(t *testing.T) {
 			})
 			f.mac.onOpen = func() { order = append(order, "open") }
 			if viaUpdate {
-				f.app.updateMenubar()
+				if err := f.app.updateMenubar(); err != nil {
+					t.Fatal(err)
+				}
 			} else if err := f.app.runMenubar(context.Background(), f.u, "v0.1.0", false); err != nil {
 				t.Fatal(err)
 			}
@@ -410,14 +412,18 @@ func TestUpdateMenubarKeepsInstalledAppInStep(t *testing.T) {
 	f := newMenubarFixture(t, "v0.1.0", false)
 
 	// Not installed: nothing happens, nothing said.
-	f.app.updateMenubar()
+	if err := f.app.updateMenubar(); err != nil {
+		t.Fatal(err)
+	}
 	if len(f.mac.calls) != 0 || f.stdout.Len() != 0 {
 		t.Errorf("acted with no app installed: %v %q", f.mac.calls, f.stdout.String())
 	}
 
 	// Installed and stale, not running: replaced, not launched.
 	f.mac.installed(t, "v0.0.9")
-	f.app.updateMenubar()
+	if err := f.app.updateMenubar(); err != nil {
+		t.Fatal(err)
+	}
 	if got := f.installedVersion(t); got != "v0.1.0" {
 		t.Errorf("installed %q, want v0.1.0", got)
 	}
@@ -430,7 +436,9 @@ func TestUpdateMenubarKeepsInstalledAppInStep(t *testing.T) {
 
 	// Already current: left alone.
 	f.mac.calls = nil
-	f.app.updateMenubar()
+	if err := f.app.updateMenubar(); err != nil {
+		t.Fatal(err)
+	}
 	if f.mac.calledWith("ditto") {
 		t.Errorf("reinstalled a current app: %v", f.mac.calls)
 	}
@@ -439,7 +447,9 @@ func TestUpdateMenubarKeepsInstalledAppInStep(t *testing.T) {
 	f.mac.installed(t, "v0.0.9")
 	f.mac.running = true
 	f.mac.calls = nil
-	f.app.updateMenubar()
+	if err := f.app.updateMenubar(); err != nil {
+		t.Fatal(err)
+	}
 	if !f.mac.calledWith("pkill -TERM") || !f.mac.calledWith("open -a") {
 		t.Errorf("calls = %v", f.mac.calls)
 	}
@@ -453,7 +463,7 @@ func TestUpdateMenubarFailureIsAnError(t *testing.T) {
 	f := newMenubarFixture(t, "v0.1.0", true)
 	f.mac.installed(t, "v0.0.9")
 	err := f.app.updateMenubar()
-	if err == nil || !strings.Contains(err.Error(), "menu bar app not updated") || !strings.HasSuffix(err.Error(), "run 'devvm menubar' to retry") || strings.Contains(err.Error(), "\n") {
+	if err == nil || !strings.Contains(err.Error(), "menu bar app update failed") || !strings.HasSuffix(err.Error(), "run 'devvm menubar' to retry") || strings.Contains(err.Error(), "\n") {
 		t.Errorf("err = %q", err)
 	}
 	if err := f.app.finishUpdate("v0.0.9"); err == nil || !strings.Contains(err.Error(), "devvm menubar") || strings.Contains(err.Error(), "forwards not restarted") {
@@ -486,7 +496,7 @@ func TestFinishUpdateNamesBothFailures(t *testing.T) {
 		t.Fatal("finishUpdate succeeded")
 	}
 	msg := err.Error()
-	d, m := strings.Index(msg, "forwards not restarted for stuck"), strings.Index(msg, "menu bar app not updated")
+	d, m := strings.Index(msg, "forwards not restarted for stuck"), strings.Index(msg, "menu bar app update failed")
 	if d < 0 || m < d || strings.Contains(msg, "\n") {
 		t.Errorf("finishUpdate err = %q, want both, daemons first, one line", msg)
 	}
