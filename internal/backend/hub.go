@@ -77,7 +77,7 @@ func ProxyArgv(argv ...string) []string {
 // noise under every proxied stop/create/delete; BatchMode runs never show
 // it and stay as they are.
 //
-// A -t run is wrapped by ttyLoginShellArgv instead, so a ^C typed into it
+// A -t run is wrapped by TTYLoginShellArgv instead, so a ^C typed into it
 // comes back as the hub devvm's 130, not as ssh's 255 ("cannot reach").
 func (b *hubBackend) Proxy(ctx context.Context, o ExecOpts, argv ...string) error {
 	o.Quiet = o.TTY
