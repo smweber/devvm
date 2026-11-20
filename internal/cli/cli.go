@@ -114,9 +114,20 @@ func Execute() int {
 		}
 		// cobra already prints usage errors; print anything else once, plainly.
 		fmt.Fprintln(os.Stderr, "devvm:", err)
-		return 1
+		return failureStatus(err)
 	}
 	return 0
+}
+
+// failureStatus is the exit status for an error Execute printed: 1, except
+// a create/setup that finished with only clones failing
+// (exitSetupIncomplete).
+func failureStatus(err error) int {
+	var si *setupIncomplete
+	if errors.As(err, &si) {
+		return exitSetupIncomplete
+	}
+	return 1
 }
 
 // Command groups, so `--help` clusters the surface by concern instead of one flat

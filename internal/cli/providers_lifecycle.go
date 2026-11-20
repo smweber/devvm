@@ -204,6 +204,12 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 			return fmt.Errorf("'%s' was created (server %d at %s; it bills) but setup was interrupted; %s",
 				s.Name, srv.ID, srv.Address, next)
 		}
+		var si *setupIncomplete
+		if errors.As(err, &si) {
+			// Every step ran: created, with a problem, not "setup failed".
+			a.printCreateNext(s.Name, pn)
+			return fmt.Errorf("'%s' was created (server %d at %s; it bills); %w", s.Name, srv.ID, srv.Address, err)
+		}
 		if holder != "" && holder != "?" && hostKeyMismatch(err) {
 			next = fmt.Sprintf("the pinned host key for %s is kept for the entry [machines.%s], which reaches the same address; if that pin is stale, clear it with 'ssh-keygen -R %s -f %s', then %s",
 				pinKey, holder, pinKey, a.Paths.KnownHostsPath(), next)

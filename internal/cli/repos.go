@@ -82,7 +82,14 @@ func (a *App) runReposAdd(name string, repos []string) error {
 	if len(specs) == 0 {
 		return fmt.Errorf("no repo given")
 	}
-	return a.cloneRepos(b, specs)
+	failed, err := a.cloneRepos(context.Background(), b, specs)
+	if err != nil {
+		return err
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed to clone %d repo(s): %s", len(failed), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // promptRepo asks for one repo on the terminal, prefilling the current
@@ -112,7 +119,10 @@ func promptRepo() (string, error) {
 // clone so non-GitHub hosts work too. Runs in a login shell so gh (Homebrew) is
 // on PATH. When jj is installed on the guest, a fresh checkout is initialized as
 // a jj colocated repo — it stays a normal git repo, just jj-ready.
-func (a *App) cloneRepos(b backend.Backend, repos []string) error {
+//
+// It returns the repos that failed; err is only ctx's (an interrupt stops
+// the loop: the repos after it are not tried).
+func (a *App) cloneRepos(ctx context.Context, b backend.Backend, repos []string) (failed []string, err error) {
 	// $1 is the untrusted repo spec; it's only ever a positional arg to git/gh,
 	// never interpolated into the script text.
 	const script = `set -e
@@ -138,18 +148,17 @@ fi`
 	// an already-in-flight gh auth hiccup) doesn't strand the repos after it. The
 	// guest script already treats an existing checkout as success (exit 0), so a
 	// failure here is a real one worth surfacing but not aborting on.
-	var failed []string
 	for _, repo := range repos {
-		if err := b.Run(context.Background(), backend.ExecOpts{Login: true},
-			"bash", "-lc", script, "_", repo); err != nil {
+		err := b.Run(ctx, backend.ExecOpts{Login: true}, "bash", "-lc", script, "_", repo)
+		if ctx.Err() != nil {
+			return failed, ctx.Err()
+		}
+		if err != nil {
 			fmt.Fprintf(a.Stderr, "devvm: failed to clone %s: %v (continuing)\n", repo, err)
 			failed = append(failed, repo)
 		}
 	}
-	if len(failed) > 0 {
-		return fmt.Errorf("failed to clone %d repo(s): %s", len(failed), strings.Join(failed, ", "))
-	}
-	return nil
+	return failed, nil
 }
 
 // githubURLRe matches an https or scp-like github.com remote so we can fold it

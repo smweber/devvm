@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -105,11 +106,16 @@ func (a *App) runCreate(s createSpec) error {
 	// it resolves nothing again, and treats the box as fresh: a ports file
 	// a same-named predecessor left is replaced.
 	t := s.template()
-	if err := a.runSetup(s.Name, setupOpts{resolved: &t, fresh: true,
-		tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}}); err != nil {
+	err = a.runSetup(s.Name, setupOpts{resolved: &t, fresh: true,
+		tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}})
+	var si *setupIncomplete
+	if err != nil && !errors.As(err, &si) {
 		return fmt.Errorf("'%s' was created but setup failed: %w; re-run 'devvm setup %s'", s.Name, err, s.Name)
 	}
 	a.printCreateNext(s.Name, config.BackendSmol)
+	if si != nil {
+		return fmt.Errorf("'%s' was created; %w", s.Name, err) // created, with a problem
+	}
 	return nil
 }
 

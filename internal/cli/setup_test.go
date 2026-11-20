@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -831,5 +832,123 @@ func TestAdoptHintIsCurrent(t *testing.T) {
 	h := backend.AdoptHint("web")
 	if strings.Contains(h, "next release") || strings.Contains(h, "(") || !strings.Contains(h, "devvm setup --adopt web") {
 		t.Errorf("AdoptHint = %q", h)
+	}
+}
+
+// A failed clone does not end setup (simplify.md step 2): every repo is
+// tried, the steps after run (saved forwards), keys and hardening ran
+// before, and setup ends in setupIncomplete, exit status 3.
+func TestSetupFinishesPastFailedClone(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeRemote(t, `case "$last" in *o/bad*) echo "clone broke" >&2; exit 1;; esac`)
+	key := filepath.Join(t.TempDir(), "k.pub")
+	if err := os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxM5xX4pQ9bJ8u5Yb6m8yRZ3qWZJ1hX0b0W9b3G7k5f me@laptop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDevvmTOML(t, a, `
+[templates.default]
+repos = ["o/bad", "o/good"]
+ports = ["3000"]
+authorized_keys = ["`+key+`"]
+harden = true
+`)
+	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
+		t.Fatal(err)
+	}
+	err := runTree(t, a, "setup", "cloud")
+	var si *setupIncomplete
+	if !errors.As(err, &si) || err.Error() != "setup finished, but: failed to clone o/bad" {
+		t.Fatalf("err = %v, want setupIncomplete for o/bad", err)
+	}
+	if failureStatus(err) != exitSetupIncomplete || failureStatus(errors.New("x")) != 1 {
+		t.Errorf("failureStatus = %d / %d", failureStatus(err), failureStatus(errors.New("x")))
+	}
+	data, _ := os.ReadFile(log)
+	inOrder(t, string(data), "authorized_keys.devvm", "AllowUsers", "o/bad", "o/good")
+	if got, _ := config.LoadPorts(a.Paths, "cloud"); !slices.Equal(got, []string{"3000"}) {
+		t.Errorf("ports = %v: the step after the repos did not run", got)
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); strings.Contains(out, "is set up") {
+		t.Errorf("setup said it is set up: %q", out)
+	}
+}
+
+// A smol create whose setup ends in setupIncomplete reports the VM as
+// created, with the problem, not as "setup failed".
+func TestCreateSmolCloneFailure(t *testing.T) {
+	a := newTestApp(t)
+	dir := t.TempDir()
+	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
+		"case \"$*\" in\n" +
+		"  'machine ls --json') cat " + ls + " 2>/dev/null || echo '[]';;\n" +
+		"  'machine create'*) echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"  *o/bad*) exit 1;;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubBrowser(t, log)
+	writeDevvmTOML(t, a, "[templates.default]\nrepos = [\"o/bad\"]\n")
+	err := runTree(t, a, "create", "web", "--memory", "1024", "--yes")
+	var si *setupIncomplete
+	if !errors.As(err, &si) || err.Error() != "'web' was created; setup finished, but: failed to clone o/bad" {
+		t.Fatalf("err = %v", err)
+	}
+	if failureStatus(err) != exitSetupIncomplete {
+		t.Errorf("failureStatus = %d", failureStatus(err))
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "Machine 'web' (smol) is ready.") {
+		t.Errorf("no closing hints: %q", out)
+	}
+}
+
+// The hub signals "finished, but" with exit status 3: the laptop still
+// seeds its own HUB@NAME forwards and passes the status on silently. Any
+// other failure skips the seed, as before.
+func TestProxiedSetupIncomplete(t *testing.T) {
+	a := newTestApp(t)
+	fakeHub(t, a)
+	pinTTY(t, false)
+	t.Setenv("FAKE_DEVVM_EXIT", "3")
+	err := runTree(t, a, "setup", "h/web", "--port", "8080")
+	var ec *exitCode
+	if !errors.As(err, &ec) || ec.code != exitSetupIncomplete || !hubSetupIncomplete(err) {
+		t.Fatalf("err = %v, want the hub's exit status 3", err)
+	}
+	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000", "8080"}) {
+		t.Errorf("laptop forwards for h/web = %v, want 8080 seeded", got)
+	}
+	t.Setenv("FAKE_DEVVM_EXIT", "1")
+	err = runTree(t, a, "setup", "h/web", "--port", "9090")
+	if !errors.As(err, &ec) || ec.code != 1 {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000", "8080"}) {
+		t.Errorf("laptop forwards for h/web = %v after a failed setup", got)
+	}
+}
+
+// A ^C during the clones is an interrupt: the clone in flight is killed,
+// no further repo is tried, and setup does not report "finished, but"
+// (exit 3). The fake's SIGINT reaches this process, which setup's
+// interruptContext catches, as it would a terminal's ^C.
+func TestSetupInterruptedWhileCloning(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeRemote(t, `case "$last" in *o/a*) kill -INT $PPID; exec sleep 10;; esac`)
+	writeDevvmTOML(t, a, "[templates.default]\nrepos = [\"o/a\", \"o/b\"]\nports = [\"3000\"]\n")
+	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
+		t.Fatal(err)
+	}
+	err := runTree(t, a, "setup", "cloud")
+	var si *setupIncomplete
+	if err == nil || errors.As(err, &si) || failureStatus(err) == exitSetupIncomplete ||
+		!strings.Contains(err.Error(), "setup was interrupted while cloning") {
+		t.Fatalf("err = %v, want an interrupt", err)
+	}
+	data, _ := os.ReadFile(log)
+	if !strings.Contains(string(data), "o/a") || strings.Contains(string(data), "o/b") {
+		t.Errorf("clones after the interrupt:\n%s", data)
 	}
 }

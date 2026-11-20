@@ -807,3 +807,33 @@ func TestProviderWording(t *testing.T) {
 		t.Errorf("confirmYes: %v", err)
 	}
 }
+
+// A provider create whose setup ends in setupIncomplete (a clone failed,
+// keys and hardening ran) says the server was created, with the problem,
+// never "setup failed".
+func TestProviderCreateCloneFailure(t *testing.T) {
+	a := newTestApp(t)
+	fakeLocalSmolvm(t, `[]`)
+	shrinkReachWait(t, 2*time.Second, 10*time.Millisecond)
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("no ssh-keygen")
+	}
+	keyFile := filepath.Join(t.TempDir(), "id.pub")
+	os.WriteFile(keyFile, []byte(testPubKey+"\n"), 0o644)
+	p := withFakeHetzner(t, a, "ssh_key_file = \""+keyFile+"\"\n\n[templates.default]\nrepos = [\"o/bad\"]\n", false)
+	useSpy(a, p)
+	fakeRemote(t, `case "$last" in *o/bad*) exit 1;; esac`)
+	err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
+	var si *setupIncomplete
+	if !errors.As(err, &si) || !strings.Contains(err.Error(), "'web' was created (server ") ||
+		!strings.Contains(err.Error(), "it bills); setup finished, but: failed to clone o/bad") ||
+		strings.Contains(err.Error(), "setup failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "Machine 'web' (hetzner) is ready.") {
+		t.Errorf("no closing hints: %q", out)
+	}
+	if p.CallCount("Delete") != 0 {
+		t.Error("create deleted the server")
+	}
+}

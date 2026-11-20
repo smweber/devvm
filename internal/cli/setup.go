@@ -421,19 +421,53 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 		return err
 	}
 	// 7. Repos: cloneRepos skips a checkout that exists, so a re-run is
-	// idempotent.
+	// idempotent. A failed clone does not end setup: every repo is tried,
+	// the steps after run, and setup reports it last (setupIncomplete).
+	// An interrupt during the clones is an interrupt, never "finished".
+	var incomplete error
 	if len(t.Repos) > 0 {
-		if err := a.cloneRepos(b, t.Repos); err != nil {
-			return err
+		failed, err := a.cloneRepos(ctx, b, t.Repos)
+		if err != nil {
+			return fmt.Errorf("setup was interrupted while cloning: %w", err)
+		}
+		if len(failed) > 0 {
+			incomplete = &setupIncomplete{failed: failed}
 		}
 	}
 	a.noteContact(m, "setup", config.TransportSSH, nil) // every step above ran over ssh
 	// 8. Saved forwards (host state, config.md §5), unless they are the
 	// proxying laptop's.
-	if !o.savesPorts() {
-		return nil
+	if o.savesPorts() {
+		if err := a.seedPorts(m, t.Ports, o.fresh); err != nil {
+			return err
+		}
 	}
-	return a.seedPorts(m, t.Ports, o.fresh)
+	return incomplete
+}
+
+// setupIncomplete is a setup that ran every step, but some repos did not
+// clone. It is not "setup failed": every step ran, so create reports the
+// box as created with a problem, and the exit status is
+// exitSetupIncomplete rather than 1.
+type setupIncomplete struct{ failed []string }
+
+func (e *setupIncomplete) Error() string {
+	return "setup finished, but: failed to clone " + strings.Join(e.failed, ", ")
+}
+
+// exitSetupIncomplete is the exit status of a create/setup that ended in
+// setupIncomplete (failureStatus). It is how a hub's proxied create/setup
+// says "finished, but" to the laptop, which then still runs its own steps
+// after the run (proxy: seeding its HUB@NAME forwards) and passes the
+// status on. 3: not 1 (any failure), 127 (no devvm on the hub's PATH),
+// 130 (^C) or 255 (ssh).
+const exitSetupIncomplete = 3
+
+// hubSetupIncomplete reports whether a proxied create/setup's error is the
+// hub's setupIncomplete, carried across as its exit status.
+func hubSetupIncomplete(err error) bool {
+	var ec *exitCode
+	return errors.As(err, &ec) && ec.code == exitSetupIncomplete
 }
 
 // startStopped boots a stopped smol VM the way `start` does (PowerStart,

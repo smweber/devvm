@@ -197,19 +197,28 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 		}
 		runs = append(runs, argv)
 	}
+	var incomplete error
 	for _, argv := range runs {
 		run := a.runProxied
 		if shaping {
 			run = a.runProxiedShaping
 		}
 		if err := run(m, p, argv); err != nil {
-			return err
+			if !shaping || !hubSetupIncomplete(err) {
+				return err
+			}
+			// The hub's create/setup finished, but a clone failed (it said
+			// which): this host's own steps after it still run, and its
+			// status is passed on.
+			incomplete = err
 		}
 	}
 	if seed != nil {
-		return seed()
+		if err := seed(); err != nil {
+			return err
+		}
 	}
-	return nil
+	return incomplete
 }
 
 // proxyShaping builds a proxied `create`/`setup HUB/NAME` (config.md §7).
@@ -431,11 +440,12 @@ func proxyExecOpts(tty bool) backend.ExecOpts {
 // which is the hop failing and gets one line naming the hub. 255 is
 // conflated with "unreachable" by design: it is ssh's own code for a
 // connection or protocol failure, and the hub's devvm never produces it.
-// The hub's Execute flattens a leaf failure to 1, except where the leaf
-// returns an exitCode: a guest command's own status under `exec` comes
-// back as is (guestExit), and a guest's 255 is ssh's again here, read as
-// the hub unreachable (a remote box's own 255 never crosses: guestExit
-// makes it an error on the hub). A negative code —
+// The hub's Execute flattens a leaf failure to 1, except a create/setup
+// that finished with only a clone failing (exitSetupIncomplete, 3) and
+// where the leaf returns an exitCode: a guest command's own status under
+// `exec` comes back as is (guestExit), and a guest's 255 is ssh's again
+// here, read as the hub unreachable (a remote box's own 255 never
+// crosses: guestExit makes it an error on the hub). A negative code —
 // ssh killed by a signal — is clamped to 1 so os.Exit never sees -1.
 //
 // A ^C typed into a -t run is no signal on this host (ssh's terminal is
