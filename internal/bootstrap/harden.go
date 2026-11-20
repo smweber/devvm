@@ -8,7 +8,7 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// hardenBody is the lockdown script (ufw + sshd drop-in + auto-updates). It
+// hardenBody is setup's hardening script (ufw + sshd drop-in + auto-updates). It
 // reads SSH_PORT and WANT_FAIL2BAN prepended by Harden and takes the dev user
 // as $1. Preserves the two fail-safes from harden_machine: refuse if
 // authorized_keys is empty (would lock you out) and validate sshd config before
@@ -64,7 +64,7 @@ systemctl enable --now unattended-upgrades 2>/dev/null || true
 
 [ -n "$WANT_FAIL2BAN" ] && systemctl enable --now fail2ban 2>/dev/null || true
 
-echo "devvm: lockdown applied (firewall + sshd + auto-updates)"
+echo "devvm: hardening applied (firewall + sshd + auto-updates)"
 `
 
 // Harden applies firewall + sshd hardening + auto-updates to an ssh machine,

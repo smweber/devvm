@@ -360,13 +360,3 @@ func (a *App) keysCmd() *cobra.Command {
 	c.AddCommand(add, list, rm, dedupe)
 	return c
 }
-
-func (a *App) lockdownCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "lockdown NAME",
-		Short: "Firewall + sshd hardening + auto-updates (remote machines)",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runLockdown(args[0]) }),
-	}
-	a.machineArg(c)
-	return c
-}

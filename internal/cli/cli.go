@@ -220,7 +220,6 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(group(groupLifecycle,
 		a.createCmd(),
 		a.setupCmd(),
-		a.lockdownCmd(),
 		a.startCmd(),
 		a.stopCmd(),
 		a.deleteCmd(),

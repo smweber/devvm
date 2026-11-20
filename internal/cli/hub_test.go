@@ -93,7 +93,7 @@ func TestShapingVerbsRefuseHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	verbs := [][]string{
-		{"setup", "h"}, {"lockdown", "h"},
+		{"setup", "h"},
 		{"start", "h"}, {"stop", "h"},
 		{"attach", "h"}, {"shell", "h"}, {"exec", "h", "true"},
 		{"cp-in", "h", src, "/tmp"}, {"cp-out", "h", "/etc/hostname", t.TempDir()},

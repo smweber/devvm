@@ -880,32 +880,6 @@ func (a *App) reachForSetup(ctx context.Context, m *config.Machine, tmplUser, ho
 	return &um, ub, nil
 }
 
-func (a *App) runLockdown(name string) error {
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	if err := requireRemote(m, "lockdown"); err != nil {
-		return err
-	}
-	if !m.Managed() {
-		ok, err := confirm(fmt.Sprintf("'%s' is an unmanaged host — really run lockdown on it?", name))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("aborted")
-		}
-	}
-	// fail2ban is a template field now (the entry holds no shaping
-	// fields): [templates.default]'s, as for a setup with no --template.
-	t, err := a.resolveTemplate("", tmplFlags{})
-	if err != nil {
-		return err
-	}
-	return bootstrap.Harden(context.Background(), b, m, t.Fail2ban)
-}
-
 // seedAuthorizedKeys pushes a template's keys at setup. A source that
 // yields no keys (e.g. a keyless github user) warns and moves on rather
 // than aborting the whole setup.
