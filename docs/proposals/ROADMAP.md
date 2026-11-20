@@ -29,7 +29,7 @@ table as phases land.
 | # | Phase | Steps | Live test | State |
 |---|-------|-------|-----------|-------|
 | 0 | ThinkPad live checks (`simplify.md`) | – | ThinkPad, smolvm upgrade | done 2026-11-20 (smolvm 1.35.5; answers in simplify.md Unknowns) |
-| 1 | `setup` never skips keys and hardening; mosh UDP in harden | 1–3 | throwaway Hetzner server: create with a repo that cannot clone, harden applied, mosh connects | open |
+| 1 | `setup` never skips keys and hardening; mosh UDP in harden | 1–3 | throwaway Hetzner server: create with a repo that cannot clone, harden applied, mosh connects | done 2026-11-20 (live on Hetzner; mosh checked from the ThinkPad) |
 | 2 | Remove `auth`, `repos`, `lockdown`; `agent = true` | 4–8 | an entry with `agent = true` (not `scottdev3`: the user adds that line) | open |
 | 3 | Ports out of templates/create/setup; no `--ephemeral`; restore on attach | 9–11 | ThinkPad hub + local | open |
 | 4 | No "managed": labels, no adopt, no managed entries; Swift | 12–15 | ThinkPad (labels), Hetzner (unlabelled count) | open |

@@ -952,3 +952,98 @@ func TestSetupInterruptedWhileCloning(t *testing.T) {
 		t.Errorf("clones after the interrupt:\n%s", data)
 	}
 }
+
+// A guest gh with no working login: setup skips the owner/repo specs (the
+// clone script exits ghNoLoginExit for them), names them in one line with
+// the fix, still clones the URL specs, and succeeds (simplify.md step 3).
+func TestSetupSkipsGHLoggedOut(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeRemote(t, `case "$last" in *o/r*|*o/s*) exit 86;; esac`)
+	writeDevvmTOML(t, a, `
+[templates.default]
+repos = ["o/r", "https://x.example/u.git", "o/s"]
+`)
+	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTree(t, a, "setup", "cloud"); err != nil {
+		t.Fatalf("setup: %v\n%s", err, a.Stderr)
+	}
+	data, _ := os.ReadFile(log)
+	inOrder(t, string(data), "o/r", "https://x.example/u.git", "o/s")
+	want := "devvm: skipped o/r, o/s: gh in the box has no working login; run 'gh auth login' in the box, then clone them by hand\n"
+	if w := a.Stderr.(*bytes.Buffer).String(); strings.Count(w, want) != 1 || strings.Contains(w, "failed to clone") {
+		t.Errorf("stderr = %q, want the one skip line", w)
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "devvm: 'cloud' is set up\n") {
+		t.Errorf("stdout = %q", out)
+	}
+}
+
+// loginWrapBackend runs argv locally the way the real backends run a
+// Login exec: ssh's `bash -lc 'ARGV'` (remoteCommand), or smol's
+// `bash -lc 'exec "$@"' _ ARGV` (guestArgv).
+type loginWrapBackend struct {
+	*localCopyBackend
+	smol bool
+}
+
+func (b *loginWrapBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
+	if o.Login {
+		if b.smol {
+			argv = append([]string{"bash", "-lc", `exec "$@"`, "_"}, argv...)
+		} else {
+			q := make([]string, len(argv))
+			for i, t := range argv {
+				q[i] = sq(t)
+			}
+			argv = []string{"bash", "-lc", strings.Join(q, " ")}
+		}
+		o.Login = false
+	}
+	return b.localCopyBackend.Run(ctx, o, argv...)
+}
+
+// The clone script itself, run locally under both backends' login wraps:
+// gh's login is checked only for an owner/repo spec that is not cloned yet
+// (an existing checkout is never reported as skipped), a gh with no login
+// exits ghNoLoginExit, and a URL spec clones with git whatever gh says.
+// The ~/.bash_logout ends in a failing command, as Ubuntu's stock one does
+// without a console (clear_console): a script run as a login shell of its
+// own, under set -e, would then exit 1 for every `exit N`.
+func TestCloneScriptGHNoLogin(t *testing.T) {
+	for _, smol := range []bool{false, true} {
+		a := newTestApp(t)
+		home, bin := t.TempDir(), t.TempDir()
+		for name, body := range map[string]string{
+			"gh":  `[ "$1" = auth ] && exit 1; echo "gh $*" >&2; exit 0`,
+			"git": `[ "$1" = clone ] || exit 1; d="${2##*/}"; mkdir "${d%.git}"`,
+		} {
+			if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// bash -l resets PATH (/etc/profile, macOS's path_helper): restate it.
+		profile := "PATH=" + sq(bin+":"+os.Getenv("PATH")) + "\n"
+		for f, body := range map[string]string{".bash_profile": profile, ".bash_logout": "false\n"} {
+			if err := os.WriteFile(filepath.Join(home, f), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Join(home, "src", "done"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		a.Stderr = new(bytes.Buffer)
+		b := &loginWrapBackend{localCopyBackend: &localCopyBackend{home: home}, smol: smol}
+		failed, skipped, err := a.cloneRepos(context.Background(), b, []string{"o/done", "o/r", "https://x.example/u.git"})
+		if err != nil || len(failed) != 0 || !slices.Equal(skipped, []string{"o/r"}) {
+			t.Fatalf("smol=%v: failed %v, skipped %v, err %v\n%s", smol, failed, skipped, err, a.Stderr)
+		}
+		if _, err := os.Stat(filepath.Join(home, "src", "u")); err != nil {
+			t.Errorf("smol=%v: URL spec not cloned: %v", smol, err)
+		}
+		if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "devvm: skipped o/r: ") || strings.Contains(w, "o/done") || strings.Contains(w, "gh repo") {
+			t.Errorf("smol=%v: stderr = %q", smol, w)
+		}
+	}
+}

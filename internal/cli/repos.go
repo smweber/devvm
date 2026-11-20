@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -82,10 +84,11 @@ func (a *App) runReposAdd(name string, repos []string) error {
 	if len(specs) == 0 {
 		return fmt.Errorf("no repo given")
 	}
-	failed, err := a.cloneRepos(context.Background(), b, specs)
+	failed, skipped, err := a.cloneRepos(context.Background(), b, specs)
 	if err != nil {
 		return err
 	}
+	failed = append(failed, skipped...) // repos add asked for them by name
 	if len(failed) > 0 {
 		return fmt.Errorf("failed to clone %d repo(s): %s", len(failed), strings.Join(failed, ", "))
 	}
@@ -120,19 +123,27 @@ func promptRepo() (string, error) {
 // on PATH. When jj is installed on the guest, a fresh checkout is initialized as
 // a jj colocated repo — it stays a normal git repo, just jj-ready.
 //
-// It returns the repos that failed; err is only ctx's (an interrupt stops
-// the loop: the repos after it are not tried).
-func (a *App) cloneRepos(ctx context.Context, b backend.Backend, repos []string) (failed []string, err error) {
+// An owner/repo spec needs gh's login, which a fresh box lacks: the script
+// checks it after the already-cloned test (so a checkout there is never
+// reported) and exits ghNoLoginExit without one, and such specs are
+// skipped, named in one line with the fix, never counted as failed. A
+// missing gh, or an API outage, is no working login too. URL specs need no
+// login.
+//
+// It returns the repos that failed and those skipped; err is only ctx's
+// (an interrupt stops the loop: the repos after it are not tried).
+func (a *App) cloneRepos(ctx context.Context, b backend.Backend, repos []string) (failed, skipped []string, err error) {
 	// $1 is the untrusted repo spec; it's only ever a positional arg to git/gh,
 	// never interpolated into the script text.
-	const script = `set -e
+	script := `set -e
 mkdir -p "$HOME/src"; cd "$HOME/src"
 repo="$1"
 dir="${repo##*/}"; dir="${dir%.git}"
 if [ -d "$dir" ]; then echo "devvm: $dir already cloned"; exit 0; fi
 case "$repo" in
   *://*|*@*:*) git clone "$repo" ;;
-  */*)         gh repo clone "$repo" ;;
+  */*)         gh auth status --hostname github.com >/dev/null 2>&1 || exit ` + strconv.Itoa(ghNoLoginExit) + `
+               gh repo clone "$repo" ;;
   *)           echo "devvm: unrecognized repo '$repo'" >&2; exit 1 ;;
 esac
 # jj-colocate the fresh checkout when jj is on the guest, so it's jj-ready while
@@ -148,18 +159,37 @@ fi`
 	// an already-in-flight gh auth hiccup) doesn't strand the repos after it. The
 	// guest script already treats an existing checkout as success (exit 0), so a
 	// failure here is a real one worth surfacing but not aborting on.
+	//
+	// `bash -c`, not -lc: Login already wraps it in a login shell (the
+	// profile's PATH is inherited), and a second login shell, SHLVL=1 under
+	// smolvm's exec and ssh, runs ~/.bash_logout on `exit N`; Ubuntu's
+	// stock one ends in a clear_console that fails without a console, and
+	// under set -e that turns every exit status into 1.
 	for _, repo := range repos {
-		err := b.Run(ctx, backend.ExecOpts{Login: true}, "bash", "-lc", script, "_", repo)
-		if ctx.Err() != nil {
-			return failed, ctx.Err()
-		}
-		if err != nil {
+		err := b.Run(ctx, backend.ExecOpts{Login: true}, "bash", "-c", script, "_", repo)
+		var ee *exec.ExitError
+		switch {
+		case ctx.Err() != nil:
+			return failed, skipped, ctx.Err()
+		case errors.As(err, &ee) && ee.ExitCode() == ghNoLoginExit:
+			skipped = append(skipped, repo)
+		case err != nil:
 			fmt.Fprintf(a.Stderr, "devvm: failed to clone %s: %v (continuing)\n", repo, err)
 			failed = append(failed, repo)
 		}
 	}
-	return failed, nil
+	if len(skipped) > 0 {
+		fmt.Fprintf(a.Stderr, "devvm: skipped %s: gh in the box has no working login; run 'gh auth login' in the box, then clone them by hand\n",
+			strings.Join(skipped, ", "))
+	}
+	return failed, skipped, nil
 }
+
+// ghNoLoginExit is the clone script's exit for an owner/repo spec whose gh
+// has no working login. It passes through smolvm's exec and ssh as is, and
+// collides with nothing git, gh, bash (126, 127, 128+N) or ssh (255) exit
+// with.
+const ghNoLoginExit = 86
 
 // githubURLRe matches an https or scp-like github.com remote so we can fold it
 // down to "owner/repo" shorthand; non-GitHub remotes are kept verbatim.

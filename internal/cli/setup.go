@@ -424,9 +424,10 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	// idempotent. A failed clone does not end setup: every repo is tried,
 	// the steps after run, and setup reports it last (setupIncomplete).
 	// An interrupt during the clones is an interrupt, never "finished".
+	// owner/repo specs skipped for want of gh's login are no failure.
 	var incomplete error
 	if len(t.Repos) > 0 {
-		failed, err := a.cloneRepos(ctx, b, t.Repos)
+		failed, _, err := a.cloneRepos(ctx, b, t.Repos)
 		if err != nil {
 			return fmt.Errorf("setup was interrupted while cloning: %w", err)
 		}
