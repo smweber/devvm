@@ -210,6 +210,7 @@ func TestConfigCheck(t *testing.T) {
 	for body, want := range map[string]string{
 		"[machines.vm]\nbackend = \"smol\"\n":                                        "discovered",
 		"[machines.h]\nbackend = \"hub\"\nmanaged = true\nhost = \"h\"\n":            "managed applies only to remote",
+		"[machines.h]\nbackend = \"hub\"\nagent = true\nhost = \"h\"\n":              "agent applies only to remote",
 		"[providers.x]\na = 1\n":                                                     "unknown provider",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"x\"\nbogus = 1\n":              "unknown key \"bogus\"",
 		"[templates.t]\nhook = \"bogus\"\n":                                          "template t",
@@ -231,7 +232,8 @@ func TestConfigShow(t *testing.T) {
 	a := newTestApp(t)
 	fakeHostname(t, "mac.local")
 	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/d\"\nmemory = 4096\n\n[templates.big]\nmemory = 8192\n\n"+
-		"[machines.mac]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"c:2222\"\n")
+		"[machines.mac]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"c:2222\"\n"+
+		"\n[machines.box]\nbackend = \"remote\"\nagent = true\nhost = \"b\"\n")
 	if err := runTree(t, a, "config", "show"); err != nil {
 		t.Fatal(err)
 	}
@@ -246,6 +248,7 @@ func TestConfigShow(t *testing.T) {
 		"[machines.cloud]\n", "managed = true\n", `host = "c:2222"`,
 		"from [templates.default]: the user setup creates",
 		"connect_timeout = 10", "# default",
+		"[machines.box]\nbackend = \"remote\"\nmanaged = false                          # default\nagent = true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("show lacks %q:\n%s", want, out)

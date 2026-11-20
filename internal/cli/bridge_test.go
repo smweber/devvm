@@ -159,10 +159,13 @@ func (p *pingBridge) Ping() (session.PingInfo, error) { return p.info, nil }
 // reports a shim keeps the session for the shell's life.
 func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
+	consented := config.NewRemote("box", false, "me@box")
+	consented.Agent = true
 	for _, tc := range []struct {
 		m    *config.Machine
 		want string
 	}{
+		{consented, "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log; 'devvm auth box' retries the install); URLs opened in the guest will be printed there\n"},
 		{config.NewRemote("adopted", false, "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (an unmanaged host: 'devvm auth adopted' offers to install one in ~/.local/bin); URLs opened in the guest will be printed there\n"},
 		{config.NewRemote("cloud", true, "dev@cloud"), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log; 'devvm auth cloud' retries the install); URLs opened in the guest will be printed there\n"},
 	} {

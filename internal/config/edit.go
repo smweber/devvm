@@ -217,6 +217,9 @@ func renderEntry(name string, e Entry) string {
 	if e.Managed != nil {
 		fmt.Fprintf(&b, "managed = %t\n", *e.Managed)
 	}
+	if e.Agent != nil {
+		fmt.Fprintf(&b, "agent = %t\n", *e.Agent)
+	}
 	fmt.Fprintf(&b, "host = %s\n", tomlString(e.Host))
 	for _, kv := range []struct{ k, v string }{
 		{"user", e.User}, {"transport", e.Transport},

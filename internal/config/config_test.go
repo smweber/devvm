@@ -41,6 +41,7 @@ connect_timeout = 25
 
 [machines.scottdev3]
 backend = "remote"
+agent = true                     # the daemon installs its agent in ~/.local/bin
 host = "scottdev3"
 mosh_server = "/home/linuxbrew/.linuxbrew/bin/mosh-server"
 
@@ -84,8 +85,11 @@ func TestLoadFile(t *testing.T) {
 		}
 	}
 	cloud, _ := f.Entry("cloud")
-	if cloud.User != "" || cloud.Transport != TransportMosh || cloud.ConnectTimeout != 25 {
+	if cloud.User != "" || cloud.Transport != TransportMosh || cloud.ConnectTimeout != 25 || cloud.Agent {
 		t.Errorf("cloud fields = %+v", cloud)
+	}
+	if sd3, _ := f.Entry("scottdev3"); !sd3.Agent || sd3.Managed() {
+		t.Errorf("scottdev3 = %+v: agent = true is not managed", sd3)
 	}
 	// Entry hands out copies.
 	cloud.SSHHost = "changed"
@@ -129,6 +133,7 @@ func TestLoadFileRejects(t *testing.T) {
 		"[machines.x]\nbackend = \"hetzner\"\nhost = \"h\"\n":                        "discovered from the provider's API",
 		"[machines.x]\nbackend = \"aws\"\nhost = \"h\"\n":                            "unsupported backend",
 		"[machines.h]\nbackend = \"hub\"\nmanaged = false\nhost = \"h\"\n":           "managed applies only to remote",
+		"[machines.h]\nbackend = \"hub\"\nagent = false\nhost = \"h\"\n":             "agent applies only to remote",
 		"[machines.x]\nbackend = \"remote\"\n":                                       "host is required",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"u@h\"\n":                       "put it in user",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"::1\"\n":                       "needs brackets",
@@ -318,8 +323,21 @@ func TestAppendEntryCreatesFile(t *testing.T) {
 	}
 	// Round trip through EntryOf.
 	m, _ := Load(p, "h")
-	if e := EntryOf(m); e.Backend != BackendHub || e.Host != "h.example" || e.User != "u" || e.Managed != nil {
+	if e := EntryOf(m); e.Backend != BackendHub || e.Host != "h.example" || e.User != "u" || e.Managed != nil || e.Agent != nil {
 		t.Errorf("EntryOf = %+v", e)
+	}
+	// agent = true is written after managed and survives the round trip.
+	yes := true
+	if err := AppendEntry(p, "box", Entry{Backend: BackendRemote, Agent: &yes, Host: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(p.FilePath())
+	if !strings.HasSuffix(string(data), "\n[machines.box]\nbackend = \"remote\"\nmanaged = false\nagent = true\nhost = \"b\"\n") {
+		t.Errorf("agent entry:\n%s", data)
+	}
+	box, _ := Load(p, "box")
+	if e := EntryOf(box); !box.Agent || e.Agent == nil || !*e.Agent {
+		t.Errorf("box = %+v, EntryOf = %+v", box, e)
 	}
 }
 

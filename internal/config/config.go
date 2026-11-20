@@ -109,6 +109,11 @@ type Machine struct {
 	// ConnectTimeout is the entry's `connect_timeout` in seconds, 0 when
 	// unset (10s, or DEVVM_SSH_CONNECT_TIMEOUT, which wins when set).
 	ConnectTimeout int
+	// Agent is a remote entry's `agent = true`: writing the line is the
+	// consent for the box's forward daemon to install this build's agent
+	// and shim in the login user's ~/.local/bin (replacing another build's),
+	// for the browser bridge. Without it the daemon only probes for one.
+	Agent bool
 
 	// managed is the record's Managed bit: a remote entry's `managed`, or a
 	// smol VM's as its discovery source settled it (the managed marker

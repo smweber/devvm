@@ -26,14 +26,16 @@ import (
 // FilePath is the user's shared config file, devvm.toml.
 func (p Paths) FilePath() string { return filepath.Join(p.Config, "devvm.toml") }
 
-// Entry is one `[machines.NAME]` table as written. Managed is a pointer so
-// `managed = false` written explicitly (as `config add` always does) is told
-// apart from no key, which matters only for refusing it under a hub.
+// Entry is one `[machines.NAME]` table as written. Managed and Agent are
+// pointers so a key written explicitly as false (as `config add` always
+// writes `managed`) is told apart from no key, which matters only for
+// refusing it under a hub.
 type Entry struct {
 	Backend        string `toml:"backend"`
 	Managed        *bool  `toml:"managed"`
-	Host           string `toml:"host"` // host[:port], [v6]:port, or an ssh alias
-	User           string `toml:"user"` // unset: no user@, ssh config decides
+	Agent          *bool  `toml:"agent"` // remote: the daemon installs the agent in ~/.local/bin
+	Host           string `toml:"host"`  // host[:port], [v6]:port, or an ssh alias
+	User           string `toml:"user"`  // unset: no user@, ssh config decides
 	Transport      string `toml:"transport"`
 	MoshServer     string `toml:"mosh_server"`
 	Identity       string `toml:"identity"`
@@ -191,6 +193,9 @@ func (e Entry) machine(name, defUser string) (*Machine, error) {
 	if e.Backend == BackendHub && e.Managed != nil {
 		return nil, errors.New("managed applies only to remote entries: a hub is never shaped")
 	}
+	if e.Backend == BackendHub && e.Agent != nil {
+		return nil, errors.New("agent applies only to remote entries: a hub's machines get theirs from the hub")
+	}
 	host, port, err := ParseHost(e.Host)
 	if err != nil {
 		return nil, err
@@ -210,6 +215,7 @@ func (e Entry) machine(name, defUser string) (*Machine, error) {
 		Name: name, Backend: e.Backend, SSHPort: port, User: e.User,
 		Identity: e.Identity, Transport: e.Transport, MoshServer: e.MoshServer,
 		ConnectTimeout: e.ConnectTimeout,
+		Agent:          e.Agent != nil && *e.Agent,
 		managed:        e.Backend == BackendRemote && e.Managed != nil && *e.Managed,
 	}
 	user := e.User
@@ -332,6 +338,10 @@ func EntryOf(m *Machine) Entry {
 	if m.Backend == BackendRemote {
 		managed := m.Managed()
 		e.Managed = &managed
+	}
+	if m.Agent {
+		agent := true
+		e.Agent = &agent
 	}
 	return e
 }

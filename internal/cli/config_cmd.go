@@ -173,6 +173,7 @@ func (a *App) showConfig(f *config.File) {
 		showLine(w, "backend", strconv.Quote(m.Backend), "")
 		if m.IsRemote() && !m.IsHub() { // the posture line: never on a hub
 			showLine(w, "managed", strconv.FormatBool(m.Managed()), map[bool]string{true: "", false: "default"}[e.Managed != nil])
+			showLine(w, "agent", strconv.FormatBool(m.Agent), map[bool]string{true: "", false: "default"}[e.Agent != nil])
 		}
 		showLine(w, "host", strconv.Quote(e.Host), "")
 		switch {

@@ -335,10 +335,11 @@ func (g *guestRec) writes() []string {
 	return w
 }
 
-// The production hooks follow ownership: a managed remote box gets the
-// root /usr/local/bin install, as smol does; an adopt host is only probed,
-// and with no agent there nothing at all is written.
-func TestSSHAgentHooksInstallOnlyWhenManaged(t *testing.T) {
+// The production hooks follow the entry: a managed remote box gets the
+// root /usr/local/bin install, as smol does; an entry with agent = true
+// gets the user-scoped ~/.local/bin one, never as root; any other entry is
+// only probed, and with no agent there nothing at all is written.
+func TestSSHAgentHooksInstallOnlyWithConsent(t *testing.T) {
 	g := &guestRec{}
 	_, st, err := sshAgentHooks(config.NewRemote("adopted", false, "me@adopted"), g).prepare(context.Background())
 	if err != nil || st != agentbin.Missing {
@@ -357,6 +358,18 @@ func TestSSHAgentHooksInstallOnlyWhenManaged(t *testing.T) {
 	if !strings.Contains(w, "copy /home/me/.devvm-agent.new") || !strings.Contains(w, "run as root: sh -c install -m 0755") ||
 		!strings.Contains(w, "devvm-open-url") {
 		t.Fatalf("managed: writes\n%s\nwant the root install of agent and shim", w)
+	}
+
+	g = &guestRec{}
+	m := config.NewRemote("box", false, "me@box")
+	m.Agent = true
+	p, st, err = sshAgentHooks(m, g).prepare(context.Background())
+	if err != nil || st != agentbin.Current || p.Agent != "/home/me/.local/bin/devvm-agent" || p.Shim != "/home/me/.local/bin/devvm-open-url" {
+		t.Fatalf("agent = true: %+v, %v, %v", p, st, err)
+	}
+	w = strings.Join(g.writes(), "\n")
+	if !strings.Contains(w, "copy /home/me/.local/bin/.devvm-agent.new") || !strings.Contains(w, "devvm-open-url") || strings.Contains(w, "run as root") {
+		t.Fatalf("agent = true: writes\n%s\nwant the user-scoped install of agent and shim, nothing as root", w)
 	}
 }
 

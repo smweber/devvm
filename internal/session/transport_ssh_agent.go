@@ -38,12 +38,13 @@ import (
 // serving forwards. An agent known to be missing or stale reports no shim
 // and no events (hasEvents: the Bridge echo to a relay).
 //
-// Presence follows ownership. A managed box gets agentbin.Install, as smol
-// does (root /usr/local/bin, no prompt). An adopt host is only probed
-// (agentbin.Probe: this build's agent in ~/.local/bin, sha-matched, nothing
-// written); without one the supervisor waits for a nudge (a kick, a new
-// subscriber), which is how `auth`, having installed the agent with the
-// user's consent, hands it to this daemon.
+// Presence follows the entry. A managed box gets agentbin.Install, as smol
+// does (root /usr/local/bin, no prompt). An entry with `agent = true` gets
+// it too, user-scoped (~/.local/bin, no root): the line is the consent, and
+// the install also replaces another build's agent after `devvm update`.
+// Any other entry is only probed (agentbin.Probe: this build's agent in
+// ~/.local/bin, sha-matched, nothing written); without one the supervisor
+// waits for a nudge (a kick, a new subscriber) and looks again.
 type sshAgent struct {
 	name    string
 	hooks   agentHooks
@@ -94,18 +95,22 @@ var (
 )
 
 // sshAgentHooks are the production hooks: everything on ob, the backend
-// bound to the daemon's master (backend.MasterBinder).
+// bound to the daemon's master (backend.MasterBinder). m is the record the
+// daemon read once at start, so an `agent = true` added to the file counts
+// from the daemon's next start.
 func sshAgentHooks(m *config.Machine, ob backend.Backend) agentHooks {
 	return agentHooks{
 		prepare: func(ctx context.Context) (agentbin.Paths, agentbin.State, error) {
-			if m.Managed() {
+			if m.Managed() || m.Agent {
+				// Where follows Managed() (agentbin.plan): root on a
+				// managed box, the login user's ~/.local/bin otherwise.
 				p, err := agentbin.Install(ctx, ob, m, nil)
 				if err != nil {
 					return agentbin.Paths{}, agentbin.Missing, err
 				}
 				return p, agentbin.Current, nil
 			}
-			// An adopt host: never a write from a detached daemon.
+			// No consent in the entry: never a write from a detached daemon.
 			return agentbin.Probe(ctx, ob, m)
 		},
 		spawn: func(ctx context.Context, agentPath string) (*backend.Session, error) {

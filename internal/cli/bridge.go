@@ -218,7 +218,7 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool 
 		return false
 	}
 	why := "its devvm agent did not come up (see the daemon log; 'devvm auth " + m.Name + "' retries the install)"
-	if !m.Managed() {
+	if !m.Managed() && !m.Agent {
 		why = "no current devvm agent there (an unmanaged host: 'devvm auth " + m.Name + "' offers to install one in ~/.local/bin)"
 	}
 	if say {
