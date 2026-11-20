@@ -243,7 +243,7 @@ before the hook. It needs nothing from the agent or the daemon.
 
 ## What the user does by hand
 
-- **Before phase 4**: upgrade smolvm on the ThinkPad (and any other hub) to
+- **Before phase 4**: stop every VM, then upgrade smolvm on the ThinkPad (and any other hub) to
   a version with `--label` and run a live pass there, since devvm's smolvm
   assumptions (exec refusing a stopped VM, a booting VM listing as
   `stopped`, the 11 MiB stdout cap) are pinned to 1.16.1 and untested on
@@ -319,6 +319,12 @@ Before upgrading smolvm (1.16.1):
 
 1. `smolvm machine create --help` and `machine update --help`: is
    `--label` there? This settles the minimum smolvm for phase 4.
+
+**Stop every VM before upgrading smolvm.** On the user's Mac (2026-11-20,
+to 1.35.5) a VM left running across the upgrade could not be exec'd
+("image not found", "Stale file handle") or stopped ("running guest agent
+does not support safe shutdown"); it took a `kill` of its `_boot-vm`
+process and a fresh start. A stopped VM came up fine on the new version.
 
 After upgrading to the current release (1.35.5 when this was written; the
 official installer with `--no-modify-path` was used on the planning host):
