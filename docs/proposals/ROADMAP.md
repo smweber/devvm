@@ -28,7 +28,7 @@ table as phases land.
 
 | # | Phase | Steps | Live test | State |
 |---|-------|-------|-----------|-------|
-| 0 | ThinkPad live checks (`simplify.md`) | – | ThinkPad, smolvm upgrade | open |
+| 0 | ThinkPad live checks (`simplify.md`) | – | ThinkPad, smolvm upgrade | done 2026-11-20 (smolvm 1.35.5; answers in simplify.md Unknowns) |
 | 1 | `setup` never skips keys and hardening; mosh UDP in harden | 1–3 | throwaway Hetzner server: create with a repo that cannot clone, harden applied, mosh connects | open |
 | 2 | Remove `auth`, `repos`, `lockdown`; `agent = true` | 4–8 | an entry with `agent = true` (not `scottdev3`: the user adds that line) | open |
 | 3 | Ports out of templates/create/setup; no `--ephemeral`; restore on attach | 9–11 | ThinkPad hub + local | open |
@@ -261,7 +261,7 @@ Cosmetic or accepted:
   `PATH` that logs its argument stands in for one. ~6 GB RAM, no swap: run
   go with `GOMAXPROCS=2 GOMEMLIMIT=1GiB GOFLAGS=-p=1`, one command at a time.
 - **ThinkPad**, hub entry `tp` (`devvmtest@192.168.1.196`, Linux Mint, real
-  KVM, smolvm 1.16.1), **intermittently offline**. Dedicated user
+  KVM, smolvm 1.35.5 since 2026-11-20), **intermittently offline**. Dedicated user
   `devvmtest`; nothing outside that home is touched. The only place
   smolvm-specific behaviour (exec concurrency, boot, `machine cp` staging,
   the 11 MiB cap) can be seen. VMs: `web` (managed; ubuntu:24.04, 1 GiB,

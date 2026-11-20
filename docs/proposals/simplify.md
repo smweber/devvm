@@ -359,7 +359,73 @@ fix inside this plan's phases.
 - Which smolvm release added `--label` (the minimum devvm must require).
   1.16.1's `ls --json` already carries a `labels` field; its `create` flags
   were not checked.
+  **Check 1 (ThinkPad, smolvm 1.16.1, 2026-11-20):** `machine create`
+  has `--label KEY=VALUE` (repeatable, "read them back with `machine ls
+  --json`"). `machine update` has **no** `--label`/`--remove-label`, and
+  is "Modify settings on a stopped machine", so 1.16.1 can label a VM only
+  at create: an existing VM cannot be labelled there.
 - Whether harden's sshd reload mid-setup is safe on every image devvm
   supports (phase 1's live test).
 - Whether smolvm 1.35.5 changed the exec, boot or stdout-cap behaviour
-  devvm's comments pin to 1.16.1.
+  devvm's comments pin to 1.16.1. **Answered below.**
+
+### ThinkPad answers (2026-11-20)
+
+Upgraded 1.16.1 → **1.35.5** (official installer, `--no-modify-path`)
+with both VMs stopped; both started fine afterwards. devvm on the hub
+updated to v0.1.21 for check 5.
+
+2. **Labels (1.35.5)**: `create --label devvm=true --label probe=a`,
+   then on the *running* VM `update --label probe=b --label extra=1` and
+   `update --remove-label probe --remove-label nosuch` (an absent key is
+   ignored, rc 0): each showed at once in `ls --json` `labels`.
+   `update --help`: "Labels are host-side metadata, so they alone can
+   change while the machine runs". `web` and `raw` are labelled
+   `devvm=true` (both are devvm-managed). So devvm's own code needs only
+   `create --label` (in 1.16.1 already); the by-hand labelling of
+   existing VMs needs `update --label` (in 1.35.5, not in 1.16.1; the
+   release between that added it was not bisected).
+3. **stdin on a one-shot exec: passes.** `printf secret | smolvm machine
+   exec -i --name … -- sh -c 'cat; echo done'` prints `secretdone`, rc 0,
+   and returns: EOF arrives when the host closes the pipe. 200 KB of
+   random bytes arrive byte-exact (sha256), a slow writer (`a`, 2s, `b`)
+   arrives whole, `</dev/null` gives EOF at once. Without `-i` the input
+   does not arrive and the command still returns. The `Spawn` fallback is
+   not needed.
+4. **The 1.16.1 behaviours on 1.35.5:**
+   - exec on a stopped VM: **unchanged**, refuses at once (`machine 'raw'
+     is not running … if a start is already in progress, retry once it
+     finishes`), never boots it.
+   - a booting VM: **changed.** It lists as `unreachable` for ~0.3s (then
+     `running`), no longer `stopped`. A second `machine start` during the
+     boot answers "already running" (rc 0) and does **not** kill the
+     first boot (which also succeeds). `lockStart` is no longer needed
+     on 1.35.5, but harmless. New state strings devvm may pass through to
+     `--plain`: `unreachable` (booting) and **`created`** (a VM made but
+     never started: `create` lists it so between `machine create` and
+     `machine start`).
+   - the stdout cap: **unchanged for a plain exec**: exactly 11534336
+     bytes pass; more now fails with an explicit error ("command output
+     exceeded 11534336 bytes and was truncated … stream it with `machine
+     exec --stream`") instead of a silent cut. **`--stream` and `-i` execs
+     are not capped** (32 MiB came through both).
+   - `/tmp` under `machine cp`: **does not hold.** Neither `ubuntu:24.04`
+     (`web`) nor alpine has a tmpfs `/tmp` under 1.35.5, and a cp-in to
+     `/tmp` is visible in the guest. Staging in `/var/tmp` still works.
+   - parallel execs: **no problem seen.** 30 parallel short execs in
+     0.55s (all rc 0), the same with three long-held `-i` execs open; 25
+     concurrent `-i` execs each echoing 8 MiB, all checksums correct, in
+     3s; a short exec afterwards answers in 0.07s.
+   - `ls --json`: the fields devvm reads (`name`, `state`, `memory_mib`,
+     `storage_gb`, `cpus`, `created_at`) are unchanged; new keys only
+     (`agent_rootfs_digest`, `disks`, `port_mappings`, `state_reason`, …).
+     A stopped VM now keeps a stale `pid` (1.16.1: null); devvm does not
+     read it.
+5. **devvm v0.1.21 on 1.35.5** (on the hub, against `web`): `status`
+   (and `--plain`), `stop`, `start` (1.8s, saved forward back), `exec`
+   (as `dev`, exit 7 passed through), `ports add` (both forwards serve
+   HTTP 200), `attach` (detach clean, `dev` session alive on
+   `~/.devvm/tmux.sock`), one `devvm-agent serve` exec throughout, and a
+   `cp-in -r`/`cp-out -r` round trip of a 30 MB file, byte-exact both
+   ways. `tp/web` from this laptop (v0.1.20-7) reads `running`; a proxied
+   `exec` works.
