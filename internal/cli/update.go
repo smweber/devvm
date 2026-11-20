@@ -79,8 +79,7 @@ func (a *App) updateCmd() *cobra.Command {
 			"corrupt or partial download, not a compromised release.\n\n" +
 			"Release builds and `go install …@vX.Y.Z` builds know their version. A 'dev'\n" +
 			"build (go build / install.sh) cannot be compared and refuses without --force.\n" +
-			"First-time installs still go through your install route (bootstrap.sh or\n" +
-			"install.sh).",
+			"First-time installs still go through install.sh.",
 		Example: "  devvm update\n  devvm update --check\n  devvm update --check --plain   # current<TAB>latest<TAB>true|false\n  devvm update --version v0.1.10",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -238,9 +238,6 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		var f tmplFlags
 		f.User, _ = fs.GetString(flagUser)
 		f.Hook, _ = fs.GetString(flagHook)
-		if f.Hook == "" && fs.Lookup("bootstrap-hook") != nil {
-			f.Hook, _ = fs.GetString("bootstrap-hook")
-		}
 		f.Memory, _ = fs.GetInt(flagMemory)
 		f.Disk, _ = fs.GetInt(flagDisk)
 		if fs.Changed(flagRepo) {
@@ -262,7 +259,7 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		ports = t.Ports
 		// Everything the user typed except the template flags, which go
 		// across resolved instead.
-		skip = append(append(skip, flagTemplate, "bootstrap-hook"), templateFlagNames...)
+		skip = append(append(skip, flagTemplate), templateFlagNames...)
 		extra = templateArgv(t, keyLines)
 	}
 	// A create with no --backend says smol explicitly: the hub's own

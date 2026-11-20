@@ -78,9 +78,6 @@ func (a *App) createCmd() *cobra.Command {
 	f.StringVar(&s.Image, "image", "", "hetzner: image name or id (template, then [providers.hetzner]; default "+config.DefaultImage+")")
 	f.StringVarP(&s.Template, flagTemplate, "t", "", "template to create from (default: default)")
 	addTemplateFlags(f, &s.tmplFlags, flagMemory, flagDisk, flagHook)
-	// The pre-template name of --hook, kept so scripts keep working.
-	f.StringVar(&s.Hook, "bootstrap-hook", "", "deprecated: use --hook")
-	_ = f.MarkHidden("bootstrap-hook")
 	f.BoolVarP(&s.Yes, "yes", "y", false, "don't prompt; resolve unset fields from flags, the template, then built-in defaults")
 	_ = c.RegisterFlagCompletionFunc(flagTemplate, a.completeTemplates)
 	return c

@@ -178,7 +178,7 @@ func (s createSpec) template() config.Template {
 // A provider box is allocated by runCreateProvider instead.
 func (a *App) provisionResource(name string, memory, disk int) error {
 	if !backend.SmolAvailable() {
-		return fmt.Errorf("smolvm is not installed; run bootstrap.sh on the host")
+		return backend.ErrNoSmolvm
 	}
 	if disk <= 0 {
 		disk = backend.SmolDefaultDiskGiB

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Cross-compile the devvm HOST binary for every supported host platform into
-# dist/, for upload as GitHub release assets. bootstrap.sh downloads these so a
-# host needs no Go toolchain.
+# dist/, for upload as GitHub release assets (devvm update downloads them), so
+# a host needs no Go toolchain.
 #
 # Each host binary embeds the linux guest agents (see build.sh), so it is
 # self-contained. The guest is always linux; the host may be macOS or linux.

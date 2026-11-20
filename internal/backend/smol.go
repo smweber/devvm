@@ -34,9 +34,13 @@ type smolBackend struct {
 
 func (b *smolBackend) Kind() string { return config.BackendSmol }
 
+// ErrNoSmolvm is every refusal for a host without smolvm on PATH, naming
+// smolvm's own installer.
+var ErrNoSmolvm = errors.New("smolvm is not installed; install it with: curl -sSL https://smolmachines.com/install.sh | bash")
+
 func needSmolvm() error {
 	if _, err := exec.LookPath("smolvm"); err != nil {
-		return errors.New("smolvm is not installed; run bootstrap.sh on the host")
+		return ErrNoSmolvm
 	}
 	return nil
 }

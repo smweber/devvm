@@ -941,8 +941,7 @@ func templateArgv(t config.Template, keyLines []string) []string {
 // exist. GitHub "owner/repo" shorthand goes through gh (login token, private
 // repos); everything else (https://, ssh://, git@host:path) is a plain git
 // clone so non-GitHub hosts work too. Runs in a login shell so gh (Homebrew) is
-// on PATH. When jj is installed on the guest, a fresh checkout is initialized as
-// a jj colocated repo — it stays a normal git repo, just jj-ready.
+// on PATH.
 //
 // An owner/repo spec needs gh's login, which a fresh box lacks: the script
 // checks it after the already-cloned test (so a checkout there is never
@@ -966,16 +965,7 @@ case "$repo" in
   */*)         gh auth status --hostname github.com >/dev/null 2>&1 || exit ` + strconv.Itoa(ghNoLoginExit) + `
                gh repo clone "$repo" ;;
   *)           echo "devvm: unrecognized repo '$repo'" >&2; exit 1 ;;
-esac
-# jj-colocate the fresh checkout when jj is on the guest, so it's jj-ready while
-# staying a normal git repo. Best-effort: never fail the clone over it.
-if command -v jj >/dev/null 2>&1 && [ -d "$dir/.git" ] && [ ! -d "$dir/.jj" ]; then
-  if ( cd "$dir" && jj git init --colocate >/dev/null 2>&1 ); then
-    echo "devvm: initialized jj (colocated) in $dir"
-  else
-    echo "devvm: jj colocate skipped for $dir" >&2
-  fi
-fi`
+esac`
 	// Clone every repo, warning-and-continuing past a failure so one bad spec (or
 	// an already-in-flight gh auth hiccup) doesn't strand the repos after it. The
 	// guest script already treats an existing checkout as success (exit 0), so a

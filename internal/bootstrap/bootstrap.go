@@ -25,7 +25,7 @@ type Spec struct {
 
 // ParseSpec parses a template's hook string:
 //
-//	url:<URL> [args...]   curl the URL and run it with args (default: bootstrap.sh)
+//	url:<URL> [args...]   curl the URL and run it with args
 //	cmd:<path> [args...]  run a guest command
 //	none                  skip the hook
 //
