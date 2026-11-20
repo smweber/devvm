@@ -212,7 +212,6 @@ func (a *App) writeManagedMarker(name string) error {
 
 func (a *App) printCreateNext(name, backendName string) {
 	fmt.Fprintf(a.Stdout, "\nMachine '%s' (%s) is ready.\n\nNext:\n", name, backendName)
-	fmt.Fprintf(a.Stdout, "  devvm repos add %s owner/repo  # clone a repo into ~/src\n", name)
 	fmt.Fprintf(a.Stdout, "  devvm attach %s          # join the persistent dev tmux session\n", name)
 	fmt.Fprintln(a.Stdout, "  (log in inside it: gh auth login, codex login; the browser opens where you attach from)")
 }

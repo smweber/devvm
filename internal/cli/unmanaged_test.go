@@ -60,7 +60,6 @@ func TestUnmanagedSmolRefusals(t *testing.T) {
 		{"attach", "web"}, {"setup", "web"},
 		{"cp-in", "web", src, "/tmp"}, {"cp-out", "web", "/etc/hostname", t.TempDir()},
 		{"ports", "add", "web", "3000"}, {"ports", "up", "web"}, {"ports", "down", "web"},
-		{"repos", "add", "web", "o/r"}, {"repos", "list", "web"},
 		{"__daemon", "web"}, {"__session", "web"},
 	} {
 		err := runTree(t, a, argv...)

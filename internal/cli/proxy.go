@@ -126,10 +126,9 @@ type exitCode struct{ code int }
 func (e *exitCode) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 // proxy runs the parsed leaf on the hub named by args[0]. Laptop-side inputs
-// are resolved first (keys add, repos add): rebuilding argv preserves bytes,
-// not semantics, and a key file, the default key set or the current
-// directory's origin all belong to the laptop. Everything else goes across
-// as typed.
+// are resolved first (keys add): rebuilding argv preserves bytes, not
+// semantics, and a key file or the default key set belongs to the laptop.
+// Everything else goes across as typed.
 func (a *App) proxy(cmd *cobra.Command, args []string) error {
 	m, p, err := a.resolveProxy(args[0])
 	if err != nil {
@@ -164,22 +163,6 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 			}
 			runs = append(runs, argv)
 		}
-	case key == "repos add":
-		if len(args) == 1 {
-			// As the local leaf: prompt with the laptop cwd's origin prefilled
-			// when there is a terminal; without one the origin is the answer,
-			// and no origin is an error rather than a hung prompt.
-			repo, err := a.laptopRepo()
-			if err != nil {
-				return fmt.Errorf("repos add %s: %w", args[0], err)
-			}
-			args = append(args, repo)
-		}
-		argv, err := hubArgv(cmd, args)
-		if err != nil {
-			return err
-		}
-		runs = append(runs, argv)
 	case key == "start" || key == "stop":
 		// --yes is this host's (it skips the confirm a provider server
 		// devvm did not make gets, and a hub machine is never one); a hub
@@ -482,19 +465,6 @@ func laptopKeyLines(spec []string) ([]string, error) {
 		return nil, fmt.Errorf("no ~/.ssh/id_*.pub on this host; pass a key file or --from-github USER")
 	}
 	return labelKeys(lines)
-}
-
-// laptopRepo settles a bare `repos add HUB/NAME`: the local leaf's prompt
-// (origin prefilled) on a terminal, else the laptop cwd's origin itself.
-func (a *App) laptopRepo() (string, error) {
-	if stdinIsTTY() {
-		return promptRepo()
-	}
-	origin := normalizeRepo(originRemote())
-	if origin == "" {
-		return "", fmt.Errorf("no REPO given and the current directory has no git origin")
-	}
-	return origin, nil
 }
 
 // hubArgv rebuilds the devvm argv to run on the hub from a parsed leaf:

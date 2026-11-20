@@ -1035,9 +1035,9 @@ func TestCloneScriptGHNoLogin(t *testing.T) {
 		}
 		a.Stderr = new(bytes.Buffer)
 		b := &loginWrapBackend{localCopyBackend: &localCopyBackend{home: home}, smol: smol}
-		failed, skipped, err := a.cloneRepos(context.Background(), b, []string{"o/done", "o/r", "https://x.example/u.git"})
-		if err != nil || len(failed) != 0 || !slices.Equal(skipped, []string{"o/r"}) {
-			t.Fatalf("smol=%v: failed %v, skipped %v, err %v\n%s", smol, failed, skipped, err, a.Stderr)
+		failed, err := a.cloneRepos(context.Background(), b, []string{"o/done", "o/r", "https://x.example/u.git"})
+		if err != nil || len(failed) != 0 {
+			t.Fatalf("smol=%v: failed %v, err %v\n%s", smol, failed, err, a.Stderr)
 		}
 		if _, err := os.Stat(filepath.Join(home, "src", "u")); err != nil {
 			t.Errorf("smol=%v: URL spec not cloned: %v", smol, err)

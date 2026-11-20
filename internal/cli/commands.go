@@ -148,38 +148,6 @@ func (a *App) execCmd() *cobra.Command {
 	return c
 }
 
-// reposCmd groups per-machine git repo management. NAME is the first positional
-// of each leaf, keeping "first arg = machine" consistent across the whole CLI.
-// Repos are not tracked anywhere (config.md §3): `add` clones, `list` reads
-// the guest's ~/src.
-func (a *App) reposCmd() *cobra.Command {
-	c := &cobra.Command{Use: "repos", Short: "Clone and list a machine's git repositories"}
-
-	add := &cobra.Command{
-		Use:   "add NAME [REPO...]",
-		Short: "Clone repo(s) into ~/src (owner/repo, https://, ssh://)",
-		Long: "Clone repositories into ~/src on a machine; one already there is skipped.\n\n" +
-			"REPO may be GitHub \"owner/repo\" shorthand (cloned via gh) or any git\n" +
-			"URL (https://, ssh://, git@host:path — cloned via git). With no REPO and\n" +
-			"a terminal it prompts, prefilling from the current directory's git origin.",
-		Args: cobra.MinimumNArgs(1),
-		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
-			return a.runReposAdd(args[0], args[1:])
-		}),
-		ValidArgsFunction: a.completeMachines,
-	}
-
-	list := &cobra.Command{
-		Use:   "list NAME",
-		Short: "List the git checkouts in the machine's ~/src (needs it running)",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runReposList(args[0]) }),
-	}
-	a.machineArg(list)
-
-	c.AddCommand(add, list)
-	return c
-}
-
 // portsCmd groups per-machine port forwarding: add/rm/list edit this host's
 // saved forwards (<State>/ports/NAME, never the conf), up/down drive the live
 // forwards.

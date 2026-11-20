@@ -233,7 +233,6 @@ func (a *App) rootCmd() *cobra.Command {
 		a.cpOutCmd(),
 	)...)
 	root.AddCommand(group(groupConfigure,
-		a.reposCmd(),
 		a.portsCmd(),
 		a.keysCmd(),
 		a.statusCmd(),

@@ -97,7 +97,6 @@ func TestShapingVerbsRefuseHub(t *testing.T) {
 		{"start", "h"}, {"stop", "h"},
 		{"attach", "h"}, {"shell", "h"}, {"exec", "h", "true"},
 		{"cp-in", "h", src, "/tmp"}, {"cp-out", "h", "/etc/hostname", t.TempDir()},
-		{"repos", "add", "h", "o/r"}, {"repos", "list", "h"},
 		{"ports", "add", "h", "3000"}, {"ports", "rm", "h", "3000"}, {"ports", "list", "h"},
 		{"ports", "up", "h"}, {"ports", "down", "h"},
 		{"keys", "add", "h", src}, {"keys", "list", "h"}, {"keys", "rm", "h", "x"}, {"keys", "dedupe", "h"},

@@ -177,8 +177,6 @@ func TestProxyRebuildsArgv(t *testing.T) {
 		{[]string{"--state-dir", a.Paths.State, "stop", "h/web"}, []string{"stop", "web"}},
 		{[]string{"create", "h/api", "--backend", "smol", "--yes", "-m", "512", "-d", "1"},
 			[]string{"create", "api", "--no-ports", "--backend=smol", "--disk=1", "--memory=512", "--yes"}},
-		{[]string{"repos", "add", "h/web", "o/r", "https://x.example/a b.git"},
-			[]string{"repos", "add", "web", "o/r", "https://x.example/a b.git"}},
 		{[]string{"keys", "rm", "h/web", "--", "-odd/name"}, []string{"keys", "rm", "web", "--", "-odd/name"}},
 		{[]string{"keys", "rm", "h/web", "SHA256:abc"}, []string{"keys", "rm", "web", "SHA256:abc"}},
 		{[]string{"setup", "h/web"}, []string{"setup", "web", "--no-ports"}},
@@ -211,11 +209,11 @@ func TestProxyRebuildsArgv(t *testing.T) {
 	// State-changing verbs touch the local change marker; a read-only one
 	// does not.
 	os.Remove(a.Paths.ChangedPath())
-	if err := runTree(t, a, "repos", "list", "h/web"); err != nil {
+	if err := runTree(t, a, "keys", "list", "h/web"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(a.Paths.ChangedPath()); err == nil {
-		t.Error("repos list touched the change marker")
+		t.Error("keys list touched the change marker")
 	}
 	// start HUB/NAME proxies, then brings up this host's saved forwards
 	// for the machine (ports/h@web: 3000) on this host's daemon for h@web
@@ -347,47 +345,6 @@ func TestProxyKeysAddSendsInlineKeys(t *testing.T) {
 	}
 }
 
-// repos add with no REPO sends the laptop cwd's git origin, normalized as
-// the local leaf would store it.
-func TestProxyReposAddSendsLaptopOrigin(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	a := newTestApp(t)
-	sshLog, _ := fakeHub(t, a)
-	pinTTY(t, false)
-	repo := t.TempDir()
-	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "https://github.com/me/app.git"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	wd, _ := os.Getwd()
-	if err := os.Chdir(repo); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(wd)
-	if err := runTree(t, a, "repos", "add", "h/web"); err != nil {
-		t.Fatalf("repos add: %v\n%s", err, a.Stderr)
-	}
-	if lines := sshLines(t, sshLog); len(lines) != 1 || lines[0] != wantSSH(a, false, "repos", "add", "web", "me/app") {
-		t.Errorf("repos add ssh argv = %q", lines)
-	}
-	// Outside any work tree there is nothing to infer, and nothing is dialed.
-	os.Remove(sshLog)
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	if err := runTree(t, a, "repos", "add", "h/web"); err == nil || !strings.Contains(err.Error(), "no git origin") {
-		t.Errorf("repos add with no origin: err = %v", err)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("repos add with nothing to send dialed the hub")
-	}
-}
-
 // The remote command's exit status is the laptop's, silently (the hub's
 // devvm printed its error); ssh's own 255 names the hub instead.
 func TestProxyPropagatesExitStatus(t *testing.T) {
@@ -512,22 +469,6 @@ func TestHubArgvRejectsMalformedReference(t *testing.T) {
 	}
 	if argv, err := hubArgv(cmd, []string{"h/web"}); err != nil || !slices.Equal(argv, []string{"stop", "web"}) {
 		t.Errorf("hubArgv(h/web) = %q, %v", argv, err)
-	}
-}
-
-// A bare `repos add HUB/NAME` on a terminal goes through the local leaf's
-// prompt (which needs /dev/tty; none here, so its error), never a silent
-// substitution, and dials nothing.
-func TestProxyReposAddPromptsOnTTY(t *testing.T) {
-	a := newTestApp(t)
-	sshLog, _ := fakeHub(t, a)
-	pinTTY(t, true)
-	err := runTree(t, a, "repos", "add", "h/web")
-	if err == nil || !strings.Contains(err.Error(), "no terminal") {
-		t.Errorf("err = %v, want the prompt's no-terminal error", err)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("an unanswered prompt dialed the hub")
 	}
 }
 
