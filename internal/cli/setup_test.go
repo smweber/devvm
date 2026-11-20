@@ -190,7 +190,7 @@ authorized_keys_github = ["x"]
 	data, _ := os.ReadFile(log)
 	inOrder(t, string(data),
 		"useradd", "NOPASSWD", // ensure user
-		"apt-get install -y build-essential ca-certificates curl git rsync tmux mosh", "gh", // prereqs
+		"apt-get -o DPkg::Lock::Timeout=300 install -y build-essential ca-certificates curl git rsync tmux mosh", "gh", // prereqs
 		"AGENT-INSTALL web",    // agent + shim
 		"/opt/hook.sh",         // hook
 		"gh repo clone", "o/r", // repos
@@ -345,7 +345,8 @@ func shrinkReachWait(t *testing.T, budget, interval time.Duration) {
 }
 
 // The remote order: reach, prereqs, agent + shim + profile.d (as smol:
-// its daemon runs the agent exec too), hook, repos, keys, harden.
+// its daemon runs the agent exec too), keys, harden, hook, repos. The
+// security steps sit before user code and the network.
 func TestSetupRemoteOrder(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, "")
@@ -375,10 +376,10 @@ fail2ban = true
 		"'id' '-un'",                   // login user
 		"build-essential", "tmux mosh", // prereqs
 		"AGENT-INSTALL cloud",           // agent + shim + profile.d
-		"/opt/hook.sh",                  // hook
-		"gh repo clone",                 // repos
 		"authorized_keys.devvm",         // keys
 		"WANT_FAIL2BAN=1", "AllowUsers", // harden
+		"/opt/hook.sh",  // hook
+		"gh repo clone", // repos
 	)
 	for _, bad := range []string{"root@"} {
 		if strings.Contains(string(data), bad) {
@@ -394,6 +395,36 @@ fail2ban = true
 	// Every step above ran over ssh, so the box is a verified contact now.
 	if e := reach.Read(a.Paths, "cloud"); e.State != reach.Reachable || e.How != "setup" {
 		t.Errorf("setup recorded %+v, want reachable/setup", e)
+	}
+}
+
+// A failed hook still fails setup, but keys and hardening ran before it:
+// user code can no longer leave a cloud box unhardened. Nothing after the
+// hook runs.
+func TestSetupHardensBeforeFailedHook(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeRemote(t, `case "$last" in *hook.sh*) echo "hook broke" >&2; exit 7;; esac`)
+	key := filepath.Join(t.TempDir(), "k.pub")
+	if err := os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxM5xX4pQ9bJ8u5Yb6m8yRZ3qWZJ1hX0b0W9b3G7k5f me@laptop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDevvmTOML(t, a, `
+[templates.default]
+hook = "cmd:/opt/hook.sh"
+repos = ["o/r"]
+authorized_keys = ["`+key+`"]
+harden = true
+`)
+	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTree(t, a, "setup", "cloud"); err == nil {
+		t.Fatal("setup succeeded past a failed hook")
+	}
+	data, _ := os.ReadFile(log)
+	inOrder(t, string(data), "authorized_keys.devvm", "AllowUsers", "/opt/hook.sh")
+	if strings.Contains(string(data), "gh repo clone") {
+		t.Errorf("repos ran after a failed hook:\n%s", data)
 	}
 }
 

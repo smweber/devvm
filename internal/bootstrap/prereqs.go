@@ -1,8 +1,8 @@
 // Package bootstrap holds the guest-side steps of `devvm setup` (config.md
-// §3): the user devvm works as, devvm's own prereqs, the agent and BROWSER
-// shim, the user's hook (a dotfiles bootstrap.sh is just one instance; any
-// url:/cmd: works), and ssh hardening. The package keeps its old name; the
-// verb is `setup`.
+// §3), in setup's order: the user devvm works as, devvm's own prereqs, the
+// agent and BROWSER shim, ssh hardening (after setup's keys step), and the
+// user's hook (a dotfiles bootstrap.sh is just one instance; any url:/cmd:
+// works). The package keeps its old name; the verb is `setup`.
 package bootstrap
 
 import (
@@ -22,19 +22,40 @@ import (
 // tmux (RequireGuestTmux); setup installs them now (config.md §3).
 const devvmPackages = "build-essential ca-certificates curl git rsync tmux mosh"
 
+// aptGet is devvm's own apt-get for installs: it waits up to five minutes
+// for the dpkg lock instead of failing at once. A fresh cloud VM runs
+// apt-daily and unattended-upgrades from boot, and harden enables the
+// latter, so devvm's apt can meet another apt that holds the lock.
+const aptGet = "apt-get -o DPkg::Lock::Timeout=300"
+
+// aptUpdateFn defines apt_update, devvm's own `apt-get update`: the lock
+// timeout does not cover update's lists lock (it fails at once, rc 100,
+// while apt-daily holds it), so update is retried every 5s, for up to five
+// minutes. Each script that updates defines it once, after its set -e.
+const aptUpdateFn = `
+apt_update() {
+    tries=0
+    until apt-get update; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 60 ] || return 1
+        sleep 5
+    done
+}
+`
+
 // installGH installs gh from the distro when it has it (Debian 12+, Ubuntu
 // 22.04+) and from GitHub's own apt repository otherwise. Idempotent.
 const installGH = `
 if ! command -v gh >/dev/null 2>&1; then
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y gh; then
+    if ! DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y gh; then
         install -d -m 0755 /etc/apt/keyrings
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
             -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
         chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
         printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
             "$(dpkg --print-architecture)" >/etc/apt/sources.list.d/github-cli.list
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y gh
+        apt_update
+        DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y gh
     fi
 fi
 `
@@ -44,8 +65,9 @@ fi
 // machine name), after EnsureUser. Ports smol_prepare_guest.
 const smolPrereqs = `
 set -e
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ` + devvmPackages + `
+` + aptUpdateFn + `
+apt_update
+DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y ` + devvmPackages + `
 ` + installGH + `
 printf '%s\n' "$1" >/etc/hostname
 sed -i '/^127\.0\.1\.1[[:space:]]/d' /etc/hosts
@@ -70,7 +92,8 @@ const ensureUserScript = `
 set -e
 u="$1"
 export DEBIAN_FRONTEND=noninteractive
-command -v sudo >/dev/null 2>&1 || { apt-get update; apt-get install -y sudo; }
+` + aptUpdateFn + `
+command -v sudo >/dev/null 2>&1 || { apt_update; ` + aptGet + ` install -y sudo; }
 if ! id -u "$u" >/dev/null 2>&1; then
     useradd --create-home --shell /bin/bash "$u"
 fi
@@ -128,8 +151,9 @@ func SwitchUser(sshHost, user string) string {
 // box). Ports ssh_prepare_guest.
 const managedRemotePrereqs = `
 set -e
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ` + devvmPackages + `
+` + aptUpdateFn + `
+apt_update
+DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y ` + devvmPackages + `
 ` + installGH
 
 // checkPrereqs verifies (never installs) that an adopted (unmanaged) remote host

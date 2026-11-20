@@ -25,15 +25,19 @@ if [ ! -s "$AUTHKEYS" ]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y ufw unattended-upgrades${WANT_FAIL2BAN:+ fail2ban}
+` + aptUpdateFn + `
+apt_update
+` + aptGet + ` install -y ufw unattended-upgrades${WANT_FAIL2BAN:+ fail2ban}
 
-# Firewall: default-deny inbound; SSH is the only public port. Everything else is
-# reached over the SSH -L tunnel.
+# Firewall: default-deny inbound; SSH is the only public TCP port. Everything
+# else is reached over the SSH -L tunnel. mosh-server (a prereq) listens on
+# UDP 60000-61000, so that range is open too, or the mosh transport could
+# not reach a hardened box.
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow "${SSH_PORT}/tcp"
+ufw allow 60000:61000/udp
 ufw --force enable
 
 # sshd hardening as a drop-in, validated before reload so we can't lock out.

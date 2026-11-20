@@ -118,3 +118,40 @@ func TestParseSpecDefault(t *testing.T) {
 		t.Errorf("compiled default provision = %q, want %q", config.DefaultBootstrapHook, KindNone)
 	}
 }
+
+// Harden opens mosh's UDP range beside the ssh port (prereqs install
+// mosh-server, and the firewall is default-deny), and every apt-get devvm
+// runs itself waits for apt's locks: installs with the dpkg lock timeout,
+// updates through apt_update's bounded retry (the timeout does not cover
+// the lists lock). A fresh cloud VM runs apt-daily from boot.
+func TestHardenFirewallAndAptLock(t *testing.T) {
+	fb := &fakeBackend{loginUser: "dev"}
+	m := config.NewRemote("cloud", true, "dev@cloud.example")
+	m.SSHPort = 2222
+	if err := Harden(context.Background(), fb, m, false); err != nil {
+		t.Fatal(err)
+	}
+	script := fb.runs[len(fb.runs)-1][2]
+	for _, want := range []string{"SSH_PORT=2222\n", `ufw allow "${SSH_PORT}/tcp"` + "\nufw allow 60000:61000/udp\nufw --force enable"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("harden script lacks %q:\n%s", want, script)
+		}
+	}
+	for name, s := range map[string]string{"harden": script, "ensureUser": ensureUserScript,
+		"smolPrereqs": smolPrereqs, "managedRemotePrereqs": managedRemotePrereqs} {
+		if strings.Count(s, aptUpdateFn) != 1 || !strings.Contains(s, "apt_update;") && !strings.Contains(s, "\napt_update\n") {
+			t.Errorf("%s: apt_update not defined once and called", name)
+		}
+		// Outside apt_update's own update, every apt-get (several may share
+		// a line) is an install with the lock timeout.
+		rest := strings.Replace(s, aptUpdateFn, "", 1)
+		for i := strings.Index(rest, "apt-get"); i >= 0; i = strings.Index(rest, "apt-get") {
+			rest = rest[i:]
+			if !strings.HasPrefix(rest, aptGet+" install ") {
+				line, _, _ := strings.Cut(rest, "\n")
+				t.Errorf("%s: apt-get without the lock timeout or retry: %q", name, line)
+			}
+			rest = rest[len("apt-get"):]
+		}
+	}
+}

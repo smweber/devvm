@@ -27,10 +27,12 @@ import (
 // `devvm setup` (config.md §3) is the single place devvm touches a box's
 // contents, and the single promotion path to managed. It replaced
 // `bootstrap`, whose name also meant the user's own hook script. Its order
-// is fixed: ensure user → prereqs → agent + shim (+ profile.d on smol) →
-// hook → repos → keys → harden → seed saved forwards. The user comes first
+// is fixed: ensure user → prereqs → agent + shim (+ profile.d) → keys →
+// harden → hook → repos → seed saved forwards. The user comes first
 // because everything after it runs as that user or through its sudo;
-// harden comes after keys because it refuses on an empty authorized_keys.
+// harden comes after keys because it refuses on an empty authorized_keys,
+// and both come before the hook and the repos, so neither user code nor
+// the network can leave a billing cloud server unhardened.
 
 // tmplFlags are the template fields as flags, shared by `create` and
 // `setup`. They are the explicit form the laptop sends to a hub's proxied
@@ -226,12 +228,12 @@ func (a *App) setupCmd() *cobra.Command {
 	var o setupOpts
 	c := &cobra.Command{
 		Use:   "setup NAME",
-		Short: "Shape a box: user, prereqs, agent, hook, repos, keys, hardening",
+		Short: "Shape a box: user, prereqs, agent, keys, hardening, hook, repos",
 		Long: "Shape a box from a template ([templates.*] in devvm.toml; default without\n" +
 			"--template). The one place devvm changes a box's contents, in a fixed order:\n" +
-			"user, prereqs (incl. tmux, gh, mosh), agent + BROWSER shim, the template's\n" +
-			"hook, repos (cloned into ~/src), keys and hardening (remote), saved forwards.\n" +
-			"Safe to re-run.\n\n" +
+			"user, prereqs (incl. tmux, gh, mosh), agent + BROWSER shim, keys and\n" +
+			"hardening (remote), the template's hook, repos (cloned into ~/src), saved\n" +
+			"forwards. Safe to re-run.\n\n" +
 			"A managed smol VM or a remote entry with managed = true is shaped without\n" +
 			"asking. A smol VM devvm did not create needs --adopt, which asks you to type\n" +
 			"its name; a remote entry with managed = false is never shaped. A remote box\n" +
@@ -396,30 +398,33 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	if err := browserStep(ctx, b, m); err != nil {
 		return err
 	}
-	// 4. The user's hook.
-	if err := bootstrap.RunHook(ctx, b, t.Hook); err != nil {
-		return err
-	}
-	// 5. Repos: cloneRepos skips a checkout that exists, so a re-run is
-	// idempotent.
-	if len(t.Repos) > 0 {
-		if err := a.cloneRepos(b, t.Repos); err != nil {
-			return err
-		}
-	}
 	if m.IsRemote() {
-		// 6. Keys (a source that yields nothing warns and moves on).
+		// 4. Keys (a source that yields nothing warns and moves on).
 		if err := a.seedAuthorizedKeys(b, t.AuthorizedKeysGithub, t.AuthorizedKeys); err != nil {
 			return err
 		}
 		if err := a.addGuestKeys(b, o.Keys); err != nil {
 			return err
 		}
-		// 7. Hardening, after the keys it insists on.
+		// 5. Hardening, after the keys it insists on and before anything
+		// that runs user code or needs the network, so a failed hook or
+		// clone never leaves the box open. Its sshd reload pins AllowUsers
+		// to this login; the steps below run as it, on the same master.
 		if t.Harden {
 			if err := bootstrap.Harden(ctx, b, m, t.Fail2ban); err != nil {
 				return err
 			}
+		}
+	}
+	// 6. The user's hook.
+	if err := bootstrap.RunHook(ctx, b, t.Hook); err != nil {
+		return err
+	}
+	// 7. Repos: cloneRepos skips a checkout that exists, so a re-run is
+	// idempotent.
+	if len(t.Repos) > 0 {
+		if err := a.cloneRepos(b, t.Repos); err != nil {
+			return err
 		}
 	}
 	a.noteContact(m, "setup", config.TransportSSH, nil) // every step above ran over ssh
