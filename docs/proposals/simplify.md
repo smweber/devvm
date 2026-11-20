@@ -1,11 +1,10 @@
 # Proposal: simplify (fewer commands, no "managed", one ownership rule)
 
-Status: proposed, 2026-11-20, from a design discussion with the user
-(v1.2: a code review's findings folded in and its questions settled). Nothing
-built. The goal is that devvm only gets simpler and more robust:
+Status: **agreed** with the user, 2026-11-20 (v1.3: a code review's
+findings folded in and its questions settled). Nothing built; progress is
+tracked in `ROADMAP.md`. The goal is that devvm only gets simpler and more robust:
 every phase removes more than it adds. `share-auth.md` is built **after**
-this plan and is written against the model below. Once agreed, the order of
-work goes in `ROADMAP.md`.
+this plan and is written against the model below.
 
 ## Problem
 

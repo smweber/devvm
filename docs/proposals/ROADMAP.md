@@ -19,6 +19,23 @@ The long form (per-step live-test lists, "what shipped differently" notes)
 is in git history before the commit "docs/proposals: ROADMAP trimmed to a
 record and the live lists" (2026-10-19).
 
+## Simplify (agreed 2026-11-20, not started)
+
+Design: `simplify.md` v1.3, then `share-auth.md`. One `jj commit` per
+numbered step, tests green at each; a live test and a release per phase,
+because laptop and hubs must update together from phase 3 on. Update this
+table as phases land.
+
+| # | Phase | Steps | Live test | State |
+|---|-------|-------|-----------|-------|
+| 0 | ThinkPad live checks (`simplify.md`) | – | ThinkPad, smolvm upgrade | open |
+| 1 | `setup` never skips keys and hardening; mosh UDP in harden | 1–3 | throwaway Hetzner server: create with a repo that cannot clone, harden applied, mosh connects | open |
+| 2 | Remove `auth`, `repos`, `lockdown`; `agent = true` | 4–8 | an entry with `agent = true` (not `scottdev3`: the user adds that line) | open |
+| 3 | Ports out of templates/create/setup; no `--ephemeral`; restore on attach | 9–11 | ThinkPad hub + local | open |
+| 4 | No "managed": labels, no adopt, no managed entries; Swift | 12–15 | ThinkPad (labels), Hetzner (unlabelled count) | open |
+| 5 | Delete upgrade paths, shrink hub flags, docs | 16–18 | ThinkPad hub at the new minimum | open |
+| 6 | `share-auth.md` | its 0–5 | ThinkPad smol VM + Hetzner | open |
+
 ## Config redesign (done, v0.1.16)
 
 Progress: all six steps landed 2026-10-17 (Opus implements and reviews,
