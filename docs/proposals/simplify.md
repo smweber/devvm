@@ -303,11 +303,11 @@ From the code review of 2026-11-20; settled with the user the same day.
   provider `create` already refuses any template whose user differs from
   the default's. Cost: no other username on a devvm-made server. An entry's
   own `user` key is unaffected.
-- **mosh leaves prereqs** (phase 2, with the dotfiles residue). Harden's
-  firewall is `ufw default deny incoming` plus the ssh port over tcp, so
-  mosh's UDP ports are closed on every hardened box: the package is
-  installed and cannot be reached. `transport = "mosh"` stays for entries,
-  where the user installs mosh and owns the firewall.
+- **Harden opens mosh's UDP ports** (phase 1, with the reorder): `ufw
+  allow 60000:61000/udp` beside the ssh rule. Prereqs install mosh, and
+  harden's firewall is `ufw default deny incoming` plus the ssh port over
+  tcp, so by the script mosh cannot reach a hardened box today. Not tested
+  live; phase 1's live test on a provider server covers it.
 
 ## Unknowns
 
