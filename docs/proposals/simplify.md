@@ -309,6 +309,46 @@ From the code review of 2026-11-20; settled with the user the same day.
   tcp, so by the script mosh cannot reach a hardened box today. Not tested
   live; phase 1's live test on a provider server covers it.
 
+## ThinkPad live checks
+
+Not run yet (the ThinkPad was unreachable from the planning host). Run as
+`devvmtest`, touching nothing outside that home; see ROADMAP "Live-test
+environments". Record each answer under Unknowns, with the smolvm version.
+
+Before upgrading smolvm (1.16.1):
+
+1. `smolvm machine create --help` and `machine update --help`: is
+   `--label` there? This settles the minimum smolvm for phase 4.
+
+After upgrading to the current release (1.35.5 when this was written; the
+official installer with `--no-modify-path` was used on the planning host):
+
+2. **Labels** (step 14): `machine create --label devvm=true`, then
+   `machine update --label` / `--remove-label` on a running VM; each shows
+   in `machine ls --json`. Label `web` once, as the by-hand list says.
+3. **stdin on a one-shot exec** (`share-auth.md` step 0): `printf secret |
+   smolvm machine exec -i --name web -- sh -c 'cat; echo done'` (flag
+   spelling per `--help`). The guest must print the input **and** `done`,
+   and the command must return: that is EOF arriving when the host closes
+   the pipe. Without `-i`, confirm the input does not arrive. If it hangs,
+   say so: the fallback is `Spawn`, write, close.
+4. **The behaviours devvm's comments pin to 1.16.1**, each compared with
+   what the code assumes:
+   - `machine exec` on a stopped VM refuses and never boots it;
+   - a VM that is booting lists as `stopped`, and a second `machine start`
+     kills the in-flight boot (`lockStart`);
+   - exec stdout is capped at 11 MiB (the reason cp-out stages a tar);
+   - `/tmp` is tmpfs-shadowed under `machine cp` (staging in `/var/tmp`);
+   - parallel `machine exec` sessions are still poor (the one-exec rule);
+   - `ls --json` still has `created_at`, state and sizes in the shape
+     `backend/testdata` pins.
+5. **devvm itself on the new smolvm**: with the current release of devvm
+   on the hub, `status`, `start`/`stop`, `attach`, `exec`, `ports add` and
+   a `cp-in`/`cp-out` round trip against `web`.
+
+A changed behaviour in 4 or 5 is a finding to report, not something to
+fix inside this plan's phases.
+
 ## Unknowns
 
 - Which smolvm release added `--label` (the minimum devvm must require).
