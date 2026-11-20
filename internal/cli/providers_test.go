@@ -283,7 +283,7 @@ func TestProviderRefusals(t *testing.T) {
 	}
 	for _, argv := range [][]string{
 		{"attach", "prod"}, {"setup", "prod"}, {"setup", "--adopt", "prod"}, {"keys", "list", "prod"},
-		{"repos", "list", "prod"}, {"ports", "up", "prod"}, {"auth", "prod"}, {"cp-in", "prod", "providers_test.go"},
+		{"repos", "list", "prod"}, {"ports", "up", "prod"}, {"cp-in", "prod", "providers_test.go"},
 	} {
 		want := "devvm does not manage (no devvm=true label): only status, start, stop, shell and exec work"
 		if argv[0] == "setup" {

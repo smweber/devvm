@@ -127,11 +127,11 @@ var ErrHubMachine = errors.New("a hub machine's agent and shim are installed by 
 // (browser-bridge.md §5): each half is skipped when the guest already has
 // that exact content (sha256 match), so a box whose daemon is up has both.
 // Managed boxes (smol, managed remote) get a root-owned /usr/local/bin
-// install; adopted remote hosts get a user-scoped ~/.local/bin
-// install (no root, nothing system-level touched). approve, if non-nil, is
-// called once, only when something is actually written — returning an error
-// aborts, which is how the caller gates writes to an adopt host behind
-// explicit consent.
+// install; any other remote box (an entry with agent = true, whose daemon
+// is the only caller there) gets a user-scoped ~/.local/bin install (no
+// root, nothing system-level touched). approve, if non-nil, is called
+// once, only when something is actually written; returning an error aborts
+// (the smol transport's gate, which refuses a VM devvm does not manage).
 //
 // A machine on a hub is refused before anything runs: the hub's own daemon
 // installed agent and shim before spawning the VM's one agent exec, and
@@ -177,9 +177,9 @@ const (
 // Probe reports whether the guest already has this build's agent and shim
 // where Install would put them, writing nothing: the same read-only probes
 // Install starts with (uname, $HOME, one sha256 pass). The session daemon
-// on an adopt host runs only this (browser-bridge.md §1, "Remote": it never
-// installs there), and `auth` uses it to word its consent prompt (missing
-// versus outdated). A hub machine is refused, as by Install.
+// for an entry without agent = true runs only this (browser-bridge.md §1,
+// "Remote": it never installs there). A hub machine is refused, as by
+// Install.
 func Probe(ctx context.Context, b backend.Backend, m *config.Machine) (Paths, State, error) {
 	pl, err := plan(ctx, b, m)
 	if err != nil {

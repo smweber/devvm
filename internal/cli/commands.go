@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/smweber/devvm/internal/auth"
 	"github.com/smweber/devvm/internal/config"
 )
 
@@ -145,44 +144,6 @@ func (a *App) execCmd() *cobra.Command {
 				return a.runExec(args[0], args[1:])
 			})(cmd, args)
 		},
-	}
-	return c
-}
-
-func (a *App) authCmd() *cobra.Command {
-	var installAgent bool
-	// Selectors derive from auth.Choices() so adding a service updates the CLI
-	// surface (usage, completion, uninstalled-skipping) in one place.
-	choices := auth.Choices()
-	argChoices := append(append([]string{}, choices...), "all")
-	c := &cobra.Command{
-		Use:       "auth NAME [" + strings.Join(argChoices, "|") + "]",
-		Short:     "Log in to " + strings.Join(choices, "/") + " (all if omitted)",
-		Args:      cobra.RangeArgs(1, 2),
-		ValidArgs: argChoices,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if ok, err := hubMachineArg(args); err != nil {
-				return err
-			} else if ok {
-				return a.authHubMachine(cmd, args)
-			}
-			tool := "all"
-			if len(args) == 2 {
-				tool = args[1]
-			}
-			return a.runAuth(args[0], tool, installAgent)
-		},
-	}
-	c.Flags().BoolVar(&installAgent, "install-agent", false,
-		"pre-approve installing the helper agent in ~/.local/bin on an unmanaged host")
-	c.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		switch len(args) {
-		case 0:
-			return a.completeMachines(cmd, args, toComplete)
-		case 1:
-			return argChoices, cobra.ShellCompDirectiveNoFileComp
-		}
-		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	return c
 }

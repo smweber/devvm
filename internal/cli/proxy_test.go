@@ -461,10 +461,9 @@ func TestProxyInteractiveTransport(t *testing.T) {
 	}
 }
 
-// A bad hub reference fails on the conf alone, never dialing. (auth, the
-// last leaf refused for hub machines, subscribes here and proxies since
-// step 8: hub_bridge_test.go; cp proxies since step 4, cp_hub_test.go;
-// ports run here since step 6, hubforwards_test.go.)
+// A bad hub reference fails on the conf alone, never dialing. (cp proxies
+// since step 4, cp_hub_test.go; ports run here since step 6,
+// hubforwards_test.go.)
 func TestProxyBadReferenceNeverDials(t *testing.T) {
 	a := newTestApp(t)
 	sshLog, _ := fakeHub(t, a)

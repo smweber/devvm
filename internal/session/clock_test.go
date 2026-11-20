@@ -222,7 +222,7 @@ type nudgeTransport struct {
 
 func (n *nudgeTransport) nudge() { n.nudges <- struct{}{} }
 
-// A kick (ports up/start) and a new subscriber (attach/shell/auth) each
+// A kick (ports up/start) and a new subscriber (attach/shell) each
 // nudge the transport's clock sync.
 func TestDaemonNudgesClock(t *testing.T) {
 	dir := shortTempPaths(t)

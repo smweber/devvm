@@ -368,9 +368,9 @@ func (b *sshBackend) Attach(transport string) error {
 //
 // The shim is the one agentbin.Install puts beside the agent: root-owned on
 // a managed box, ~/.local/bin on an adopt host, where it exists only once
-// the user consented to the agent (`auth`): nothing is written here, and a
-// shim that is not executable leaves BROWSER alone, since a BROWSER naming
-// no file makes gh fail outright instead of printing the URL.
+// the user consented to the agent (agent = true): nothing is written here,
+// and a shim that is not executable leaves BROWSER alone, since a BROWSER
+// naming no file makes gh fail outright instead of printing the URL.
 func remoteAttachArgv(managed bool) []string {
 	shim := `s=` + ManagedShimPath
 	if !managed {

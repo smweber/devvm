@@ -112,7 +112,7 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 		writeResp(conn, Response{ID: open.ID, Err: err.Error()})
 		return
 	}
-	// Only a relay gets a deadline: a local session (a held attach, auth)
+	// Only a relay gets a deadline: a local session (a held attach)
 	// is idle by design, and its client is on this host, where a dead
 	// process closes its socket at once.
 	beat := 0
@@ -224,10 +224,9 @@ func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 		// too (errUpstreamReconnecting): an ack would claim a subscription
 		// the hub never saw.
 		d.subscribe(s)
-		// A new subscriber (attach/shell/auth) is about to use the guest:
-		// fix its clock now rather than at the next tick (syncClock), or
-		// look again for an agent exec it can hear (ssh; an `auth` that
-		// just installed the agent on an adopt host).
+		// A new subscriber (attach/shell) is about to use the guest: fix
+		// its clock now rather than at the next tick (syncClock), or look
+		// again for an agent exec it can hear (ssh).
 		d.nudge()
 		if err := d.syncUpstream(true); err != nil {
 			return Response{Err: NotUpstreamPrefix + err.Error()}

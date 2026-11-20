@@ -827,8 +827,8 @@ const upstreamSubscribeTimeout = 10 * time.Second
 // with none (reconnecting: restore re-subscribes), except that a local
 // subscribe on a hub machine's daemon with no transport is refused
 // (errUpstreamReconnecting): its ack would mean nothing upstream, and a
-// caller that trusts it (auth HUB/NAME) could run a command on a hub too
-// old to honour DEVVM_NO_SUBSCRIBE. Runs outside d.mu.
+// caller that trusts it (a proxied attach) would run on the hub with no
+// bridge it was told it had. Runs outside d.mu.
 func (d *daemon) syncUpstream(subscribing bool) error {
 	d.upMu.Lock()
 	defer d.upMu.Unlock()

@@ -29,8 +29,8 @@ var installAgent = agentbin.Install
 // other is attach's tmux session environment): a bare `shell` sends no
 // remote command, and sshd drops SetEnv. Everything else is left alone: an
 // adopt host never gets a profile.d write (its agent is the user's to
-// consent to, at `auth`), and a hub machine is set up by its hub, which
-// runs this itself.
+// consent to, with agent = true in its entry), and a hub machine is set up
+// by its hub, which runs this itself.
 func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
 	if !m.Managed() || m.IsHubMachine() {
 		return nil

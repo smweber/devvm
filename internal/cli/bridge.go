@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/smweber/devvm/internal/auth"
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/hostbrowser"
@@ -161,20 +160,13 @@ func noSubscribe() bool {
 	return v != "" && v != "0"
 }
 
-// openAuthBridge is openBridgeSession for thin `auth`, which also reads the
-// shim from ping and binds its callback port on the session (auth.Bridge);
-// a var so tests can stand in for the daemon.
-var openAuthBridge = func(paths config.Paths, name string, opts session.SessionOptions) (auth.Bridge, error) {
-	return session.OpenSession(paths, name, opts)
-}
-
 // hostOpener is the OnEvent of every session this host subscribes: open
 // the URL here, and print it on this terminal when no opener can.
 func (a *App) hostOpener() session.SessionOptions {
 	return session.SessionOptions{OnEvent: session.OpenOnHost(a.Stderr, hostbrowser.Open)}
 }
 
-// bridged reports whether attach/shell/auth hold a subscription for m: a
+// bridged reports whether attach/shell hold a subscription for m: a
 // local smol machine devvm manages (its daemon's agent exec carries
 // events), a remote box (its daemon runs the agent exec on its own ssh
 // master: browser-bridge.md §1, "Remote"; on an adopt host only once the
@@ -202,8 +194,8 @@ type shimPinger interface {
 }
 
 // remoteWithoutAgent is attach/shell's check on a remote box's bridge: a
-// daemon that reports no shim has no agent exec to hear the guest (an adopt
-// host nobody consented for, or an install that failed), so the session is
+// daemon that reports no shim has no agent exec to hear the guest (an entry
+// without agent = true, or an install that failed), so the session is
 // let go with one line naming the way to get one, and the daemon idles out
 // as if never asked. A ping that fails says nothing either way: the
 // subscription is kept. say false: the same check, silently (a late
@@ -217,9 +209,16 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool 
 	if err != nil || info.Shim != "" || info.State != session.StateUp {
 		return false
 	}
-	why := "its devvm agent did not come up (see the daemon log; 'devvm auth " + m.Name + "' retries the install)"
-	if !m.Managed() && !m.Agent {
-		why = "no current devvm agent there (an unmanaged host: 'devvm auth " + m.Name + "' offers to install one in ~/.local/bin)"
+	// The daemon decided from the record it read at its start, which may
+	// predate the file this record came from.
+	restart := "'devvm ports down " + m.Name + "', and end any attach holding it"
+	why := "its devvm agent did not come up (see the daemon log)"
+	switch {
+	case m.Managed():
+	case m.Agent:
+		why = "its devvm agent did not come up: its forward daemon may have started before agent = true was added (restart it: " + restart + "), or the install failed (see the daemon log)"
+	default:
+		why = "no current devvm agent there (agent = true in " + config.MachineTable(m.Name) + " lets devvm install one in ~/.local/bin once the forward daemon restarts: " + restart + ")"
 	}
 	if say {
 		fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable: %s; URLs opened in the guest will be printed there\n", why)

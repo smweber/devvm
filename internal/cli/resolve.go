@@ -12,7 +12,7 @@ import (
 )
 
 // resolve loads a machine and its backend for the verbs that act *on* a
-// machine (attach, ports, keys, setup, auth, cp, …). It refuses a hub:
+// machine (attach, ports, keys, setup, cp, …). It refuses a hub:
 // a hub is reached like a remote box but is never shaped, so every one of
 // those verbs fails here, in one place, with the same message. It also
 // refuses a local smol VM devvm did not create (requireManaged): only
@@ -47,9 +47,9 @@ func (a *App) resolveUnmanaged(name string) (*config.Machine, backend.Backend, e
 		// to a.proxy before the local handler runs (proxy.go), cp-in/cp-out
 		// to their tar-over-stdio loops (cp_hub.go), and ports/__daemon
 		// resolve through resolveForwards (hubforwards.go: this host's own
-		// forwards, over a __session, never an agent exec), and auth to
-		// authHubMachine. So this is the guard for everything else, which
-		// would otherwise act on the hub itself with the machine's record.
+		// forwards, over a __session, never an agent exec). So this is the
+		// guard for everything else, which would otherwise act on the hub
+		// itself with the machine's record.
 		return nil, nil, fmt.Errorf("%s: %w", name, backend.ErrHubProxy)
 	}
 	if m.IsProvider() && m.Server.Address == "" {
@@ -68,17 +68,17 @@ func requireMachine(m *config.Machine) error {
 }
 
 // requireManaged refuses a local VM devvm did not create (config.md §2):
-// attach, cp, ports, auth, setup, repos and the browser bridge all
+// attach, cp, ports, setup, repos and the browser bridge all
 // assume devvm's `dev` user, tmux socket and agent, none of which such a VM
 // has, and none of which devvm may put there unasked. Remote boxes are
 // never refused here: an adopted remote host has its own, consented,
-// posture (agentInstallApprover). A machine on a hub is refused by its
+// posture (agent = true in its entry). A machine on a hub is refused by its
 // hub, which holds the marker.
 //
 // A provider server without the devvm=true label is refused here too, and
 // unlike an adopted remote entry it gets no consented posture: it is
 // someone's server in the project (providers.md §8), so keys, repos, cp,
-// ports, auth and attach all refuse, and no flag promotes it.
+// ports and attach all refuse, and no flag promotes it.
 func requireManaged(m *config.Machine) error {
 	if m.IsProvider() && !m.Managed() {
 		return providerUnmanagedErr(m)

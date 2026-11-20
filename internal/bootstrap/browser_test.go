@@ -139,8 +139,8 @@ func TestBrowserManagedOnly(t *testing.T) {
 	}
 
 	// A smol VM devvm did not create gets nothing (config.md §2), nor does
-	// an adopt host (its agent waits for consent at auth, and it never
-	// gets a profile.d write).
+	// an adopt host (its agent waits for agent = true in its entry, and it
+	// never gets a profile.d write).
 	for _, m := range []*config.Machine{{Name: "found", Backend: config.BackendSmol}, config.NewRemote("adopted", false, "me@adopted")} {
 		installs = nil
 		rb := &recBackend{}

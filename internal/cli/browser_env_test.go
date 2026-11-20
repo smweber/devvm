@@ -15,7 +15,7 @@ import (
 // box's daemon (whose agent exec carries the events) and copies BROWSER
 // into the dev tmux session, guarded in the guest on the shim being
 // executable: root's on a managed box, ~/.local/bin's on an adopt host,
-// where it exists only once `auth` installed it with consent. attach
+// where it exists only once its daemon installed it (agent = true). attach
 // itself installs nothing and writes no profile.d.
 func TestRemoteSetupAndAttachBrowser(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")

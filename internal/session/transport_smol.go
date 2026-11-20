@@ -147,7 +147,7 @@ func smolInstallGate(m *config.Machine) func() error {
 func (t *smolTransport) events() <-chan bridgeRequest { return t.evCh }
 
 // shimPath is the shim this transport installed with the agent; ping
-// reports it to thin `auth` (browser-bridge.md §6).
+// reports it (browser-bridge.md §6).
 func (t *smolTransport) shimPath() string { return t.paths.Shim }
 
 // forward listens on both loopback families (listenLoopback); each accepted

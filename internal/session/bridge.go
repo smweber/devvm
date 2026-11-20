@@ -139,10 +139,8 @@ func classify(raw string) classified {
 // URL: its redirect_uri query parameter must itself parse as a URL pointing
 // at localhost/127.0.0.1/[::1]:PORT. The URL crosses the guest->host
 // boundary, so only the actual parameter is honored: a loopback address
-// elsewhere in the URL must not make the host bind a port. Moved here from
-// internal/auth (roadmap step 7) without its codex 1455 exclusion: that port
-// was skipped only because `auth` pre-bound it; the daemon binds codex's
-// callback like any other (browser-bridge.md §1).
+// elsewhere in the URL must not make the host bind a port. codex's 1455 is
+// bound like any other callback (browser-bridge.md §1).
 func CallbackPort(raw string) (int, bool) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -354,7 +352,7 @@ func printable(s string) string {
 }
 
 // OpenOnHost is the subscriber's side of the bridge, for `attach` and
-// `shell` (and thin `auth`, roadmap step 8): the session's OnEvent. It
+// `shell`: the session's OnEvent. It
 // opens the URL with open (hostbrowser.Open) on this host, rewriting a
 // bumped direct URL for the port this host actually forwarded (a
 // redirect_uri is never rewritten), and answers with what happened. When

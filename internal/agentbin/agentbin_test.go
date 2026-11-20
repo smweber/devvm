@@ -253,8 +253,8 @@ func managedSmol(name string) *config.Machine {
 }
 
 // Probe writes nothing and tells missing, stale (some other build's agent,
-// or this build's without its shim) and current apart: the adopt-host
-// daemon runs only this, and auth words its consent prompt from it.
+// or this build's without its shim) and current apart: the daemon of an
+// entry without agent = true runs only this.
 func TestProbeStatesWriteNothing(t *testing.T) {
 	g := newFakeGuest()
 	m := config.NewRemote("box", false, "")

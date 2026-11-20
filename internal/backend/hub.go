@@ -18,7 +18,7 @@ import (
 // leaves need. Proxy and ProxyInteractive are the transport the cli's
 // proxied leaves ride: a `devvm` command line rebuilt on the laptop, run on
 // the hub under the user's login shell. Run is the proxied `exec` for the
-// non-interactive probes later steps make (cp, auth). Power* and Copy stay
+// non-interactive probes later steps make (cp). Power* and Copy stay
 // refused: the cli proxies the lifecycle verbs itself (their remote argv
 // comes from the parsed command, flags included, which a bare PowerStop
 // cannot carry) and cp streams a tar over the proxy (cli's cp_hub.go).
@@ -52,11 +52,10 @@ type Proxier interface {
 }
 
 // NoSubscribeEnv is set on every proxied command line (roadmap shared
-// decision 3): a proxied attach/shell/auth must never subscribe to the hub
+// decision 3): a proxied attach/shell must never subscribe to the hub
 // daemon's browser events, because the laptop subscribes through its own
 // relay instead (hub.md §8). attach and shell read it (cli.noSubscribe) and
-// then leave the daemon alone entirely; thin auth neither dials nor
-// subscribes under it, and only pings a daemon already up for the shim.
+// then leave the daemon alone entirely.
 const NoSubscribeEnv = "DEVVM_NO_SUBSCRIBE"
 
 // ProxyArgv is the hub-side command line for a proxied devvm argv:

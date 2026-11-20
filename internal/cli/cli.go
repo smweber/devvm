@@ -231,7 +231,6 @@ func (a *App) rootCmd() *cobra.Command {
 		a.execCmd(),
 		a.cpInCmd(),
 		a.cpOutCmd(),
-		a.authCmd(),
 	)...)
 	root.AddCommand(group(groupConfigure,
 		a.reposCmd(),

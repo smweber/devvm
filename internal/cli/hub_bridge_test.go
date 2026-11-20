@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -12,14 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smweber/devvm/internal/auth"
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
 )
 
 // The laptop half of the bridge for hub machines (hub.md §8, roadmap step
-// 8): attach/shell/auth HUB/NAME subscribe on this host's daemon for
+// 8): attach/shell HUB/NAME subscribe on this host's daemon for
 // HUB@NAME before the leaf is proxied with DEVVM_NO_SUBSCRIBE=1 (the fake
 // hub devvm refuses to run without it).
 
@@ -29,9 +27,6 @@ type orderedBridge struct {
 	sshLog string
 	log    *[]string
 	subErr error
-	// ping is what Ping answers; the zero value is an up daemon reporting
-	// the shim.
-	ping *session.PingInfo
 }
 
 func (b *orderedBridge) note(what string) {
@@ -43,24 +38,12 @@ func (b *orderedBridge) note(what string) {
 
 func (b *orderedBridge) Subscribe() error { b.note("subscribe"); return b.subErr }
 func (b *orderedBridge) Close() error     { b.note("close"); return nil }
-func (b *orderedBridge) Kick() error      { b.note("kick"); return nil }
-func (b *orderedBridge) Ping() (session.PingInfo, error) {
-	b.note("ping")
-	if b.ping != nil {
-		return *b.ping, nil
-	}
-	return session.PingInfo{State: session.StateUp, Version: "test", Shim: "/usr/local/bin/devvm-open-url"}, nil
-}
-func (b *orderedBridge) Add(pref, guest int, exact bool) (int, bool, bool, error) {
-	b.note(fmt.Sprintf("add %d exact=%v", guest, exact))
-	return pref, false, false, nil
-}
 
-// stubHubBridges replaces both session openers for one test.
+// stubHubBridges replaces the session opener for one test.
 func stubHubBridges(t *testing.T, br *orderedBridge) *[]string {
 	t.Helper()
 	var dials []string
-	oldB, oldA := openBridgeSession, openAuthBridge
+	old := openBridgeSession
 	openBridgeSession = func(dir config.Paths, name string, opts session.SessionOptions) (bridgeSub, error) {
 		if opts.OnEvent == nil {
 			t.Error("bridge session opened without an event handler")
@@ -68,14 +51,7 @@ func stubHubBridges(t *testing.T, br *orderedBridge) *[]string {
 		dials = append(dials, name)
 		return br, nil
 	}
-	openAuthBridge = func(dir config.Paths, name string, opts session.SessionOptions) (auth.Bridge, error) {
-		if opts.OnEvent == nil {
-			t.Error("auth bridge opened without an event handler")
-		}
-		dials = append(dials, name)
-		return br, nil
-	}
-	t.Cleanup(func() { openBridgeSession, openAuthBridge = oldB, oldA })
+	t.Cleanup(func() { openBridgeSession = old })
 	return &dials
 }
 
@@ -143,78 +119,7 @@ func TestHubAttachOldHubIsANotice(t *testing.T) {
 	}
 }
 
-// auth HUB/NAME subscribes here, binds the tools' fixed callback ports on
-// that session (codex's 1455, exact), then proxies `auth NAME TOOL` to the
-// hub with DEVVM_NO_SUBSCRIBE=1, whose thin auth runs the logins. No shim
-// is read here (the hub's auth reads its own daemon's) and nothing is
-// installed.
-func TestHubAuthSubscribesThenProxies(t *testing.T) {
-	t.Setenv(backend.NoSubscribeEnv, "")
-	a := newTestApp(t)
-	sshLog, argvLog := fakeHub(t, a)
-	pinTTY(t, true)
-	var log []string
-	dials := stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log})
-	if err := runTree(t, a, "auth", "h/web", "codex"); err != nil {
-		t.Fatalf("auth: %v\n%s", err, a.Stderr)
-	}
-	if got := strings.Join(log, ", "); got != "subscribe, ping, add 1455 exact=true, close (after ssh)" {
-		t.Errorf("bridge calls = %q", got)
-	}
-	if !slices.Equal(*dials, []string{"h/web"}) {
-		t.Errorf("dialed %q", *dials)
-	}
-	if lines := sshLines(t, sshLog); len(lines) != 1 || lines[0] != wantSSH(a, true, "auth", "web", "codex") {
-		t.Errorf("auth ssh argv = %q\nwant %q", lines, wantSSH(a, true, "auth", "web", "codex"))
-	}
-	if got := devvmCalls(t, argvLog); len(got) != 1 || !slices.Equal(got[0], []string{"auth", "web", "codex"}) {
-		t.Errorf("hub devvm calls = %q", got)
-	}
-
-	// github needs no fixed port: nothing bound here.
-	log = nil
-	os.Remove(sshLog)
-	if err := runTree(t, a, "auth", "h/web", "github"); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(log, ", "); got != "subscribe, ping, close (after ssh)" {
-		t.Errorf("github: bridge calls = %q", got)
-	}
-}
-
-// A subscription that fails (the laptop daemon cannot come up, or the hub
-// is too old for browser opens) refuses auth HUB/NAME before anything runs
-// on the hub: an old hub's auth would spawn a second agent exec there.
-func TestHubAuthRefusedWithoutBridge(t *testing.T) {
-	t.Setenv(backend.NoSubscribeEnv, "")
-	a := newTestApp(t)
-	sshLog, _ := fakeHub(t, a)
-	pinTTY(t, true)
-	var log []string
-	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log,
-		subErr: errors.New("subscribed here, but not upstream: hub devvm too old for browser opens")})
-	err := runTree(t, a, "auth", "h/web")
-	if err == nil || !strings.HasPrefix(err.Error(), "auth h/web: hub devvm too old for browser opens") {
-		t.Fatalf("err = %v, want the refusal without the daemon's 'subscribed here' prefix", err)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("auth ran on a hub too old for browser opens")
-	}
-
-	old := openAuthBridge
-	openAuthBridge = func(config.Paths, string, session.SessionOptions) (auth.Bridge, error) {
-		return nil, errors.New("forward daemon for 'h/web' exited")
-	}
-	t.Cleanup(func() { openAuthBridge = old })
-	if err := runTree(t, a, "auth", "h/web"); err == nil || !strings.Contains(err.Error(), "browser bridge: forward daemon for 'h/web' exited") {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("auth ran on the hub without a bridge")
-	}
-}
-
-// bridged: the machines attach/shell/auth subscribe for.
+// bridged: the machines attach/shell subscribe for.
 func TestBridgedMachines(t *testing.T) {
 	hub := config.NewHub("h", "u@h.example")
 	for _, tc := range []struct {
@@ -230,53 +135,6 @@ func TestBridgedMachines(t *testing.T) {
 		if got := bridged(tc.m); got != tc.want {
 			t.Errorf("bridged(%s %s) = %v", tc.m.Name, tc.m.Backend, got)
 		}
-	}
-}
-
-// auth HUB/NAME runs nothing on the hub unless this host can prove the
-// hub's daemon is subscribed for it: after the ack a ping must report the
-// shim (none: this daemon lost its link, or the hub's machine has no
-// browser events), and a host that itself runs under DEVVM_NO_SUBSCRIBE
-// subscribes nothing, so it is refused before any dial.
-func TestHubAuthRefusedWithoutProof(t *testing.T) {
-	t.Setenv(backend.NoSubscribeEnv, "")
-	a := newTestApp(t)
-	sshLog, _ := fakeHub(t, a)
-	pinTTY(t, true)
-	for _, tc := range []struct {
-		ping session.PingInfo
-		want string
-	}{
-		{session.PingInfo{State: session.StateReconnecting}, "auth h/web: the link to hub h is reconnecting; retry in a moment"},
-		{session.PingInfo{State: session.StateUp}, "auth h/web: the hub's daemon for web reports no browser shim, so logins there would not open here"},
-	} {
-		var log []string
-		ping := tc.ping
-		stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log, ping: &ping})
-		err := runTree(t, a, "auth", "h/web", "codex")
-		if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
-			t.Errorf("%s: err = %v, want %q", tc.ping.State, err, tc.want)
-		}
-		if got := strings.Join(log, ", "); got != "subscribe, ping, close" {
-			t.Errorf("%s: bridge calls = %q (nothing bound, released before any ssh)", tc.ping.State, got)
-		}
-		if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-			t.Errorf("%s: auth ran on the hub without a shim reported", tc.ping.State)
-		}
-	}
-
-	t.Setenv(backend.NoSubscribeEnv, "1")
-	var log []string
-	dials := stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log})
-	err := runTree(t, a, "auth", "h/web")
-	if err == nil || !strings.Contains(err.Error(), backend.NoSubscribeEnv+" is set here") {
-		t.Fatalf("under %s: err = %v", backend.NoSubscribeEnv, err)
-	}
-	if len(*dials) != 0 {
-		t.Errorf("dialed %q under %s", *dials, backend.NoSubscribeEnv)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("auth ran on the hub with nothing subscribed here")
 	}
 }
 
@@ -630,25 +488,6 @@ func TestHubAttachNoRetryWhenRefusedForGood(t *testing.T) {
 		if opens.Load() != 1 || fb.closed != 1 {
 			t.Errorf("%q: opened %d, closed %d", msg, opens.Load(), fb.closed)
 		}
-	}
-}
-
-// auth HUB/NAME on a machine the hub's daemon says has no browser events
-// (NoEvents): refused, before anything runs on the hub.
-func TestHubAuthRefusedWithoutEvents(t *testing.T) {
-	t.Setenv(backend.NoSubscribeEnv, "")
-	a := newTestApp(t)
-	sshLog, _ := fakeHub(t, a)
-	pinTTY(t, true)
-	var log []string
-	stubHubBridges(t, &orderedBridge{sshLog: sshLog, log: &log,
-		subErr: errors.New("subscribed here, but not upstream: no browser events from this machine on its hub: web on hub h carries no browser events there")})
-	err := runTree(t, a, "auth", "h/web")
-	if err == nil || err.Error() != "auth h/web: its daemon on hub h carries no browser events (a remote box with no current devvm agent there, or a hub devvm that predates remote agents), so logins there would not open here" {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := os.Stat(sshLog); !os.IsNotExist(err) {
-		t.Error("auth ran on the hub for a machine without events")
 	}
 }
 

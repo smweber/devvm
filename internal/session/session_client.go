@@ -15,8 +15,8 @@ import (
 )
 
 // Session is the client side of a long-lived session connection
-// (browser-bridge.md §3): the one client `attach`, `shell`, `auth` and the
-// hub transport share. It owns dial (spawning the daemon if needed), the
+// (browser-bridge.md §3): the one client `attach`, `shell` and the hub
+// transport share. It owns dial (spawning the daemon if needed), the
 // `session` open, `subscribe` with its ack, and reconnect: when the
 // connection drops (the daemon was cycled by `update` or `stop`, or died) it
 // redials with backoff, opens a new session and re-subscribes, so a held
@@ -245,43 +245,27 @@ func (s *Session) Unsubscribe() error {
 	return err
 }
 
-// PingInfo is what a ping says about the daemon: its state, the build it
-// runs, and the guest path of the BROWSER shim its transport installed
-// (for a hub machine, the one the hub reported). Shim is "" when the
-// transport carries no events (an ssh box with no current agent: an adopt
-// host nobody consented for), while the daemon is between transports, or
-// from a daemon older than the field; State and Version tell the last two
-// apart. An ssh daemon whose agent exec is between respawns still reports
-// the shim of the agent it knows is installed.
+// PingInfo is what a ping says about the daemon: its state and the guest
+// path of the BROWSER shim its transport installed (for a hub machine, the
+// one the hub reported). Shim is "" when the transport carries no events
+// (an ssh box with no current agent: an entry without agent = true), while
+// the daemon is between transports (State says so), or from a daemon older
+// than the field. An ssh daemon whose agent exec is between respawns still
+// reports the shim of the agent it knows is installed.
 type PingInfo struct {
-	State   string
-	Version string
-	Shim    string
+	State string
+	Shim  string
 }
 
-// Ping asks the daemon over this session (PingInfo): thin `auth` sets
-// BROWSER to the shim it reports and installs nothing itself
-// (browser-bridge.md §6).
+// Ping asks the daemon over this session (PingInfo): attach/shell ask a
+// remote box's daemon whether it has an agent (a shim) at all.
 func (s *Session) Ping() (PingInfo, error) {
 	sc := s.current()
 	if sc == nil {
 		return PingInfo{}, ErrSessionDown
 	}
 	resp, err := sc.call(Request{Op: OpPing})
-	return PingInfo{State: resp.State, Version: resp.Version, Shim: resp.Shim}, err
-}
-
-// Kick is the one-shot kick over this session: a reconnecting daemon
-// retries now, and its transport is nudged (an ssh transport with no agent
-// exec looks for one at once). Thin `auth` sends it after installing the
-// agent on an adopt host, so the daemon it holds picks the agent up.
-func (s *Session) Kick() error {
-	sc := s.current()
-	if sc == nil {
-		return ErrSessionDown
-	}
-	_, err := sc.call(Request{Op: OpKick})
-	return err
+	return PingInfo{State: resp.State, Shim: resp.Shim}, err
 }
 
 // Add brings up a forward owned by this session's connection: it lives

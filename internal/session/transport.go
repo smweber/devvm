@@ -69,10 +69,10 @@ type subscriber interface {
 
 // nudger is a transport that does something better done now than on its
 // own timer when a user is about to use the guest: on a kick (`ports up`,
-// `start`) and on a new subscriber (attach/shell/auth), the moments after a
+// `start`) and on a new subscriber (attach/shell), the moments after a
 // host wake or a fresh install. smol syncs its guest's clock (syncClock);
-// ssh retries its agent exec at once if it has none (an adopt host whose
-// agent `auth` just installed, an exec waiting out its respawn backoff).
+// ssh retries its agent exec at once if it has none (an agent installed by
+// hand, an exec waiting out its respawn backoff).
 // Optional; a hub machine's are its hub daemon's, nudged there by the
 // relayed subscribe. Non-blocking.
 type nudger interface {
@@ -91,8 +91,7 @@ type eventCarrier interface {
 // shimReporter is a transport that knows the guest path of the BROWSER shim
 // (browser-bridge.md §5): smol's own install, ssh's install or probe (""
 // while it knows of no current agent), or a hub machine's as its hub
-// daemon reported it. ping carries it, so thin `auth` never installs
-// anything itself on smol (bridge §6).
+// daemon reported it. ping carries it (attach's check on a remote box).
 type shimReporter interface {
 	shimPath() string
 }
@@ -140,10 +139,10 @@ var transportLogf = log.New(os.Stderr, "devvm-daemon: ", log.LstdFlags).Printf
 
 // listenLoopback binds a forward's host side on both loopback families.
 // 127.0.0.1 must bind (failure is errPortBusy, which bumps or, for an exact
-// forward, refuses). [::1] is best-effort, as auth.ensureCallback always
-// was: macOS resolves localhost to ::1 first, so a browser reaches the
-// forward either way, but a host without an IPv6 loopback, or another
-// process already on [::1]:port, only costs the v6 listener. Classifying a
+// forward, refuses). [::1] is best-effort: macOS resolves localhost to ::1
+// first, so a browser reaches the forward either way, but a host without
+// an IPv6 loopback, or another process already on [::1]:port, only costs
+// the v6 listener. Classifying a
 // held ::1 as busy was considered and dropped (bridge §4): it needs errno
 // inspection on two transports and a v4 unbind for a conflict the old code
 // never hit.

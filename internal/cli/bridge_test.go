@@ -165,11 +165,11 @@ func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
 		m    *config.Machine
 		want string
 	}{
-		{consented, "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log; 'devvm auth box' retries the install); URLs opened in the guest will be printed there\n"},
-		{config.NewRemote("adopted", false, "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (an unmanaged host: 'devvm auth adopted' offers to install one in ~/.local/bin); URLs opened in the guest will be printed there\n"},
-		{config.NewRemote("cloud", true, "dev@cloud"), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log; 'devvm auth cloud' retries the install); URLs opened in the guest will be printed there\n"},
+		{consented, "devvm: browser bridge unavailable: its devvm agent did not come up: its forward daemon may have started before agent = true was added (restart it: 'devvm ports down box', and end any attach holding it), or the install failed (see the daemon log); URLs opened in the guest will be printed there\n"},
+		{config.NewRemote("adopted", false, "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (agent = true in [machines.adopted] lets devvm install one in ~/.local/bin once the forward daemon restarts: 'devvm ports down adopted', and end any attach holding it); URLs opened in the guest will be printed there\n"},
+		{config.NewRemote("cloud", true, "dev@cloud"), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log); URLs opened in the guest will be printed there\n"},
 	} {
-		pb := &pingBridge{info: session.PingInfo{State: session.StateUp, Version: "test"}}
+		pb := &pingBridge{info: session.PingInfo{State: session.StateUp}}
 		old := openBridgeSession
 		openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) { return pb, nil }
 		a, errBuf := bridgeApp(t)
@@ -210,7 +210,7 @@ func TestRemoteBridgeBoundedWait(t *testing.T) {
 	bridgeRetryEnded = func() { ended <- struct{}{} }
 	for _, shim := range []string{"/usr/local/bin/devvm-open-url", ""} {
 		gate := make(chan struct{})
-		pb := &pingBridge{info: session.PingInfo{State: session.StateUp, Version: "test", Shim: shim}}
+		pb := &pingBridge{info: session.PingInfo{State: session.StateUp, Shim: shim}}
 		openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
 			<-gate
 			return pb, nil
@@ -569,40 +569,5 @@ func TestStartStoppedSerialized(t *testing.T) {
 	}
 	if b.starts != 1 {
 		t.Fatalf("PowerStart ran %d times, want once", b.starts)
-	}
-}
-
-// auth's consent gate on an adopt host: none on a managed box; the flag
-// pre-approves; otherwise the prompt names a missing agent or an outdated
-// one (another build's, which the daemon will not run), and a no is an
-// error naming the flag.
-func TestAgentInstallApprover(t *testing.T) {
-	a, _ := bridgeApp(t)
-	if a.agentInstallApprover(config.NewRemote("cloud", true, "dev@cloud"), false) != nil {
-		t.Fatal("a managed box asks for consent")
-	}
-	adopted := config.NewRemote("box", false, "me@box")
-	if err := a.agentInstallApprover(adopted, true)(true); err != nil {
-		t.Fatalf("--install-agent: %v", err)
-	}
-	var asked []string
-	answer := true
-	old := askConfirm
-	askConfirm = func(q string) (bool, error) { asked = append(asked, q); return answer, nil }
-	t.Cleanup(func() { askConfirm = old })
-	gate := a.agentInstallApprover(adopted, false)
-	if err := gate(false); err != nil {
-		t.Fatal(err)
-	}
-	if err := gate(true); err != nil {
-		t.Fatal(err)
-	}
-	if len(asked) != 2 || !strings.HasPrefix(asked[0], "devvm needs to install a helper agent in ~/.local/bin on 'box'") ||
-		!strings.HasPrefix(asked[1], "The devvm helper agent in ~/.local/bin on 'box' (unmanaged host) is outdated") {
-		t.Fatalf("prompts = %q", asked)
-	}
-	answer = false
-	if err := gate(false); err == nil || !strings.Contains(err.Error(), "--install-agent") {
-		t.Fatalf("declined: %v", err)
 	}
 }

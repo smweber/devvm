@@ -19,7 +19,7 @@ import (
 // The bridge across a relay (hub.md §8, roadmap step 8), in process: the
 // step 6 rig (a hub daemon, `__session`'s Relay over os.Pipe, a laptop
 // daemon on a hubTransport with a fake -L), plus a control socket on the
-// laptop daemon so local sessions (a laptop attach/auth) can subscribe to
+// laptop daemon so local sessions (a laptop attach) can subscribe to
 // it. A hub event is the hub daemon's own handler (bridgeOpen), exactly
 // what its smol transport's events() would start.
 
@@ -596,9 +596,9 @@ func dropTransport(d *daemon) {
 }
 
 // A hub machine's daemon between transports refuses a local subscribe
-// rather than ack one nothing upstream will honour (the one-exec hole a
-// review found: `auth HUB/NAME` trusted that ack and proxied to a hub too
-// old to honour DEVVM_NO_SUBSCRIBE, whose auth spawned a second agent
+// rather than ack one nothing upstream will honour (a review found the
+// hole: a since-removed `auth HUB/NAME` trusted that ack and proxied to a
+// hub too old to honour DEVVM_NO_SUBSCRIBE, which spawned a second agent
 // exec). The registration stays for restore(); ping says reconnecting,
 // with no shim. A daemon for a machine of this host acks as before: its
 // events do not depend on anything upstream.

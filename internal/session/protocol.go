@@ -15,8 +15,7 @@ import (
 
 // NotUpstreamPrefix leads a subscribe refused upstream: the daemon has
 // registered the subscriber locally (restore() re-sends it upstream) but
-// cannot promise events from the far daemon. attach prints it as is; auth
-// HUB/NAME, which refuses on it, strips it.
+// cannot promise events from the far daemon. attach prints it as is.
 const NotUpstreamPrefix = "subscribed here, but not upstream: "
 
 // Request is a control message from a client to the daemon (one JSON line).
@@ -80,7 +79,7 @@ type Forward struct {
 
 // IsConf reports whether a conf owner holds the forward. A forward from a
 // pre-owner daemon lists no owners and counts as configured: that is what
-// every forward it held was, bar an old `auth` callback nobody counted
+// every forward it held was, bar an old login callback nobody counted
 // separately either.
 func (f Forward) IsConf() bool {
 	if len(f.Owners) == 0 {
@@ -156,8 +155,7 @@ type Response struct {
 	// Shim (ping and session open replies): the guest path of the BROWSER
 	// shim the daemon's transport installed (browser-bridge.md §5, §6), or,
 	// on a laptop daemon for a hub machine, the one the hub reported. Empty
-	// when the transport carries no events. Thin `auth` reads it here and
-	// installs nothing itself.
+	// when the transport carries no events.
 	Shim     string    `json:"shim,omitempty"`
 	Stopped  bool      `json:"stopped,omitempty"`  // down: nothing else held the daemon, so it is exiting
 	Forwards []Forward `json:"forwards,omitempty"` // list; remove/down: what survives

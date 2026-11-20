@@ -187,8 +187,9 @@ func TestSSHAgentRespawnsWithMasterAlive(t *testing.T) {
 
 // On an adopt host without a current agent the transport has an events
 // channel nothing feeds, reports no shim and no events (so a relay is told
-// NoEvents), and spawns nothing; a nudge (the kick `auth` sends after
-// installing the agent) makes it look again and bring the exec up.
+// NoEvents), and spawns nothing; a nudge (a kick, a new subscriber, after
+// an agent was installed by hand) makes it look again and bring the exec
+// up.
 func TestSSHAgentAdoptHostWaitsForNudge(t *testing.T) {
 	fastAgentKnobs(t)
 	dir, tr := fakeMasterSSH(t)

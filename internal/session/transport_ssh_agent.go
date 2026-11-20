@@ -123,7 +123,7 @@ func sshAgentHooks(m *config.Machine, ob backend.Backend) agentHooks {
 
 // startAgent starts the agent supervisor and waits, at most agentFirstWait,
 // for its first attempt, so a daemon that comes up with an agent reports
-// its shim on the first ping (thin `auth`, attach's check). A failure is
+// its shim on the first ping (attach's check). A failure is
 // the supervisor's to retry and log; it never fails the transport: the
 // forwards do not need the agent.
 func (t *sshTransport) startAgent(ctx context.Context, name string, h agentHooks) {
@@ -192,7 +192,7 @@ func (a *sshAgent) supervise(first chan struct{}) {
 			if st == agentbin.Stale {
 				what = "another build's devvm-agent"
 			}
-			logOnce(fmt.Sprintf("%s in ~/.local/bin (an adopt host: never installed from here); no browser events until 'devvm auth %s' installs it", what, a.name))
+			logOnce(fmt.Sprintf("%s in ~/.local/bin and no agent = true in the entry this daemon read at its start (never installed from here); no browser events until agent = true is added and this daemon restarts ('devvm ports down %s', and end any attach holding it)", what, a.name))
 			if !a.wait(0) {
 				return
 			}
@@ -365,8 +365,9 @@ func (t *sshTransport) shimPath() string {
 // daemon echoes to a relay as Bridge.
 func (t *sshTransport) hasEvents() bool { return t.shimPath() != "" }
 
-// nudge asks the supervisor to try now (nudger): an adopt host whose agent
-// `auth` just installed, or an exec waiting out its respawn backoff.
+// nudge asks the supervisor to try now (nudger): an entry without agent =
+// true whose agent someone installed by hand, or an exec waiting out its
+// respawn backoff.
 // Non-blocking; a no-op while an exec is up.
 func (t *sshTransport) nudge() {
 	if t.agent == nil {
