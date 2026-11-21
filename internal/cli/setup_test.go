@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,6 @@ func TestResolveTemplatePrecedence(t *testing.T) {
 hook = "cmd:/default"
 memory = 4096
 repos = ["o/default"]
-ports = ["3000"]
 
 [templates.web]
 memory = 8192
@@ -69,7 +69,7 @@ harden = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Memory != 8192 || !got.Harden || got.Hook != "cmd:/default" || !slices.Equal(got.Ports, []string{"3000"}) {
+	if got.Memory != 8192 || !got.Harden || got.Hook != "cmd:/default" || !slices.Equal(got.Repos, []string{"o/default"}) {
 		t.Errorf("web = %+v", got)
 	}
 	if got, err := a.resolveTemplate("default", tmplFlags{}); err != nil || got.Hook != "cmd:/default" || got.Name != "default" {
@@ -93,7 +93,7 @@ harden = true
 		t.Errorf("inline = %+v", got)
 	}
 	// Bad values are refused before anything runs.
-	for _, f := range []tmplFlags{{Hook: "bogus"}, {Ports: []string{"x"}}, {User: "root"}, {Memory: 1}} {
+	for _, f := range []tmplFlags{{Hook: "bogus"}, {User: "root"}, {Memory: 1}} {
 		if _, err := a.resolveTemplate("", f); err == nil {
 			t.Errorf("%+v accepted", f)
 		}
@@ -113,14 +113,13 @@ hook = "cmd:/d"
 [templates.big]
 memory = 8192
 repos = ["o/r"]
-ports = ["5173"]
 `)
 	s := createSpec{Name: "box", Template: "big", Yes: true, tmplFlags: tmplFlags{Disk: 3}}
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatal(err)
 	}
 	if s.Memory != 8192 || s.Disk != 3 || s.Hook != "cmd:/d" ||
-		!slices.Equal(s.Repos, []string{"o/r"}) || !slices.Equal(s.Ports, []string{"5173"}) {
+		!slices.Equal(s.Repos, []string{"o/r"}) {
 		t.Errorf("spec = %+v", s)
 	}
 	if tt := s.template(); tt.Name != "big" || tt.User != "dev" || tt.Memory != 8192 {
@@ -178,7 +177,6 @@ func TestSetupSmolOrder(t *testing.T) {
 [templates.default]
 hook = "cmd:/opt/hook.sh"
 repos = ["o/r"]
-ports = ["3000"]
 harden = true
 authorized_keys_github = ["x"]
 `)
@@ -202,9 +200,9 @@ authorized_keys_github = ["x"]
 	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring keys, harden") {
 		t.Errorf("no ignore warning: %q", w)
 	}
-	// A re-run merges the template's forwards into this host's own.
-	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"4000", "3000"}) {
-		t.Errorf("ports = %v, want the template's merged in", got)
+	// setup never touches this host's saved forwards.
+	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"4000"}) {
+		t.Errorf("ports = %v, want this host's own untouched", got)
 	}
 }
 
@@ -280,7 +278,7 @@ func TestSetupAdoptTypedName(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":100}]`)
 	stubBrowser(t, log)
-	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/opt/h\"\nrepos = [\"o/r\"]\nports = [\"3000\"]\n")
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/opt/h\"\nrepos = [\"o/r\"]\n")
 	if err := config.SavePorts(a.Paths, "web", []string{"9999"}); err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +291,7 @@ func TestSetupAdoptTypedName(t *testing.T) {
 	for _, want := range []string{
 		"hands the smol VM 'web' to devvm",
 		"install devvm's prereqs", "as root", "devvm agent",
-		"run the hook: cmd:/opt/h", "clone into ~/src: o/r", "save forwards: 3000",
+		"run the hook: cmd:/opt/h", "clone into ~/src: o/r",
 		"treat 'web' as managed from now on",
 		"Type the VM's name (web) to hand it over: ",
 	} {
@@ -315,8 +313,9 @@ func TestSetupAdoptTypedName(t *testing.T) {
 	data, _ := os.ReadFile(log)
 	// Managed now: the execs go through the dev-user wrapper.
 	inOrder(t, string(data), "useradd", "build-essential", "AGENT-INSTALL web", "/opt/h", "gh repo clone")
-	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"3000"}) {
-		t.Errorf("ports = %v: a fresh adoption replaces a stale file", got)
+	// setup never touches saved forwards (only create clears a leftover).
+	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"9999"}) {
+		t.Errorf("ports = %v after an adoption", got)
 	}
 }
 
@@ -665,7 +664,8 @@ func TestSetupStartsStoppedSmol(t *testing.T) {
 
 // setup HUB/NAME --template T resolves T here and sends every field as an
 // explicit flag; the hub's own templates never matter. The forwards are
-// this host's state for HUB@NAME, seeded here.
+// this host's state for HUB@NAME: setup leaves them alone, create clears a
+// leftover list.
 func TestProxiedTemplateFlags(t *testing.T) {
 	a := newTestApp(t)
 	_, argvLog := fakeHub(t, a)
@@ -677,9 +677,11 @@ memory = 4096
 [templates.devvm]
 memory = 8192
 repos = ["smweber/devvm", "https://x.example/a,b.git"]
-ports = ["3000", "5173"]
 harden = true
 `)
+	if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := runTree(t, a, "setup", "h/web", "--template", "devvm", "--yes", "--fail2ban"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
@@ -691,11 +693,11 @@ harden = true
 	if len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Errorf("hub got %q\nwant %q", calls, want)
 	}
-	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000", "5173"}) {
+	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000"}) {
 		t.Errorf("laptop forwards for h/web = %v", got)
 	}
 
-	// create: the same set, and its forwards replace a stale list.
+	// create: the same set, and a stale list is cleared.
 	os.Remove(argvLog)
 	if err := config.SavePorts(a.Paths, "h/api", []string{"1"}); err != nil {
 		t.Fatal(err)
@@ -709,12 +711,13 @@ harden = true
 		slices.ContainsFunc(calls[0], func(s string) bool { return strings.HasPrefix(s, "--template") || strings.HasPrefix(s, "--port") }) {
 		t.Errorf("create argv = %q", calls)
 	}
-	if got, _ := config.LoadPorts(a.Paths, "h/api"); !slices.Equal(got, []string{"3000", "5173"}) {
-		t.Errorf("laptop forwards for h/api = %v", got)
+	if got, _ := config.LoadPorts(a.Paths, "h/api"); len(got) != 0 {
+		t.Errorf("laptop forwards for h/api = %v, want the leftover cleared", got)
 	}
 
 	// Without --template (or with --template default, the same thing) the
-	// leaf goes across as typed, except --port: forwards stay this host's.
+	// leaf goes across as typed, except the ignored --port, which is
+	// stripped.
 	for _, argv := range [][]string{{"setup", "h/web", "--port", "8080"}, {"setup", "h/web", "-t", "default", "--port", "8080"}} {
 		os.Remove(argvLog)
 		if err := runTree(t, a, argv...); err != nil {
@@ -728,20 +731,8 @@ harden = true
 			t.Errorf("%v: argv = %q, want %q", argv, calls, want)
 		}
 	}
-	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000", "5173", "8080"}) {
+	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000"}) {
 		t.Errorf("laptop forwards for h/web after --port = %v", got)
-	}
-
-	// --adopt is fresh: the laptop's stale list is replaced.
-	os.Remove(argvLog)
-	if err := config.SavePorts(a.Paths, "h/old", []string{"1"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runTree(t, a, "setup", "--adopt", "h/old", "-t", "devvm"); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := config.LoadPorts(a.Paths, "h/old"); !slices.Equal(got, []string{"3000", "5173"}) {
-		t.Errorf("adopted h/old forwards = %v, want the template's alone", got)
 	}
 }
 
@@ -792,20 +783,84 @@ func TestProxiedSetupOldHub(t *testing.T) {
 	}
 }
 
-// On the hub side, --no-ports (sent on every proxied create) saves no
-// forwards and asks for none: they are the laptop's.
-func TestCreateNoPortsOnHub(t *testing.T) {
+// fakeCreateSmolvm is smolvm for a local `create web`: ls answers from a
+// file that starts as initial, `machine create` makes web listed (unless
+// listed is false: its managed marker then fails), and extra is one more
+// case arm (a command to fail). setup's agent step is stubbed.
+func fakeCreateSmolvm(t *testing.T, initial, extra string, listed bool) {
+	t.Helper()
+	dir := t.TempDir()
+	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
+	if err := os.WriteFile(ls, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	made := ":"
+	if listed {
+		made = "echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
+		"case \"$*\" in\n" +
+		"  'machine ls --json') cat " + ls + ";;\n" +
+		"  'machine create'*) " + made + ";;\n" +
+		extra +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stubBrowser(t, log)
+}
+
+// A local create of web that ends each way a hub's create can: made (and
+// then failing: setup, a clone, the marker) or refused before anything
+// exists. cleared is whether create clears a leftover ports file.
+var createOutcomes = []struct {
+	name, toml, initial, extra string
+	listed, cleared            bool
+}{
+	{"ok", "", "[]", "", true, true},
+	{"setup failed", "[templates.default]\nhook = \"cmd:/opt/hook-fails\"\n", "[]", "  *hook-fails*) exit 1;;\n", true, true},
+	{"clone failed", "[templates.default]\nrepos = [\"o/bad\"]\n", "[]", "  *o/bad*) exit 1;;\n", true, true},
+	{"marker failed", "", "[]", "", false, true},
+	{"an entry has the name", "[machines.web]\nbackend = \"remote\"\nhost = \"w.example\"\n", "[]", "", true, false},
+	{"a smol VM has the name", "", `[{"name":"web","state":"running","created_at":5}]`, "", true, false},
+}
+
+// runLocalCreate runs `create web` for one outcome with a leftover saved
+// forward, and reports create's error and whether the leftover went.
+func runLocalCreate(t *testing.T, tc int) (error, bool) {
+	t.Helper()
+	o := createOutcomes[tc]
 	a := newTestApp(t)
-	if err := config.SavePorts(a.Paths, "box", []string{"1"}); err != nil {
+	fakeCreateSmolvm(t, o.initial, o.extra, o.listed)
+	writeDevvmTOML(t, a, o.toml)
+	if err := config.SavePorts(a.Paths, "web", []string{"1"}); err != nil {
 		t.Fatal(err)
 	}
-	writeDevvmTOML(t, a, "[templates.default]\nmemory = 1024\nports = [\"3000\"]\n")
-	s := createSpec{Name: "box", Yes: true, tmplFlags: tmplFlags{NoPorts: true, Ports: []string{"9"}}}
-	if err := a.gatherCreateSpec(&s); err != nil {
-		t.Fatal(err)
-	}
-	if len(s.Ports) != 0 || s.template().Ports != nil {
-		t.Errorf("ports = %v under --no-ports", s.Ports)
+	err := runTree(t, a, "create", "web", "--memory", "1024", "--yes", "--no-ports", "--port", "9")
+	got, _ := config.LoadPorts(a.Paths, "web")
+	return err, len(got) == 0
+}
+
+// create clears a leftover ports file once its VM exists, however it ends
+// after that, and keeps the file of a name it refuses; --port and
+// --no-ports are hidden and ignored (a laptop one release older still
+// sends --no-ports). Every error after the VM exists carries wasCreated,
+// which a laptop reads in its hub's output; no refusal does.
+func TestCreateClearsLeftoverPorts(t *testing.T) {
+	for i, o := range createOutcomes {
+		t.Run(o.name, func(t *testing.T) {
+			err, cleared := runLocalCreate(t, i)
+			if cleared != o.cleared {
+				t.Errorf("leftover cleared = %v, want %v (err %v)", cleared, o.cleared, err)
+			}
+			if (o.name == "ok") != (err == nil) {
+				t.Fatalf("err = %v", err)
+			}
+			if err != nil && strings.Contains(err.Error(), wasCreated("web")) != o.cleared {
+				t.Errorf("err = %q: says %q = %v, want %v", err, wasCreated("web"), !o.cleared, o.cleared)
+			}
+		})
 	}
 }
 
@@ -815,16 +870,13 @@ func TestInlineTemplateIgnoresHostFile(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeManagedSmol(t, a, "web")
 	stubBrowser(t, log)
-	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/hub-own\"\nports = [\"7000\"]\n")
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/hub-own\"\n")
 	if err := runTree(t, a, "setup", "web", "--inline-template", "--hook=cmd:/laptop", "--repo=o/r", "--user=dev", "--harden=false"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
 	data, _ := os.ReadFile(log)
 	if strings.Contains(string(data), "hub-own") || !strings.Contains(string(data), "/laptop") {
 		t.Errorf("host file leaked into an inline setup:\n%s", data)
-	}
-	if got, _ := config.LoadPorts(a.Paths, "web"); len(got) != 0 {
-		t.Errorf("ports = %v", got)
 	}
 }
 
@@ -836,8 +888,8 @@ func TestAdoptHintIsCurrent(t *testing.T) {
 }
 
 // A failed clone does not end setup (simplify.md step 2): every repo is
-// tried, the steps after run (saved forwards), keys and hardening ran
-// before, and setup ends in setupIncomplete, exit status 3.
+// tried, keys and hardening ran before, and setup ends in
+// setupIncomplete, exit status 3.
 func TestSetupFinishesPastFailedClone(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, `case "$last" in *o/bad*) echo "clone broke" >&2; exit 1;; esac`)
@@ -848,7 +900,6 @@ func TestSetupFinishesPastFailedClone(t *testing.T) {
 	writeDevvmTOML(t, a, `
 [templates.default]
 repos = ["o/bad", "o/good"]
-ports = ["3000"]
 authorized_keys = ["`+key+`"]
 harden = true
 `)
@@ -865,9 +916,6 @@ harden = true
 	}
 	data, _ := os.ReadFile(log)
 	inOrder(t, string(data), "authorized_keys.devvm", "AllowUsers", "o/bad", "o/good")
-	if got, _ := config.LoadPorts(a.Paths, "cloud"); !slices.Equal(got, []string{"3000"}) {
-		t.Errorf("ports = %v: the step after the repos did not run", got)
-	}
 	if out := a.Stdout.(*bytes.Buffer).String(); strings.Contains(out, "is set up") {
 		t.Errorf("setup said it is set up: %q", out)
 	}
@@ -904,29 +952,54 @@ func TestCreateSmolCloneFailure(t *testing.T) {
 	}
 }
 
-// The hub signals "finished, but" with exit status 3: the laptop still
-// seeds its own HUB@NAME forwards and passes the status on silently. Any
-// other failure skips the seed, as before.
-func TestProxiedSetupIncomplete(t *testing.T) {
+// A proxied create clears this host's leftover HUB@NAME forwards when the
+// hub made the VM: it exited 0, or its error says wasCreated (setup
+// failed: 1; a clone failed: 3, passed on as is). A refusal keeps them.
+// The hub's output is the real create's, run here first: a wording change
+// that drops wasCreated breaks this.
+func TestProxiedCreateClearsWhenHubMadeVM(t *testing.T) {
+	type hubSays struct {
+		msg     string
+		code    int
+		cleared bool
+	}
+	var says []hubSays
+	for i, o := range createOutcomes {
+		err, _ := runLocalCreate(t, i)
+		h := hubSays{cleared: o.cleared}
+		if err != nil {
+			h.msg, h.code = "devvm: "+err.Error(), failureStatus(err)
+		}
+		says = append(says, h)
+	}
 	a := newTestApp(t)
-	fakeHub(t, a)
+	fakeHubWith(t, a, t.TempDir(), `[ -z "$FAKE_HUB_MSG" ] || printf '%s\n' "$FAKE_HUB_MSG" >&2; exit ${FAKE_DEVVM_EXIT:-0}`+"\n")
 	pinTTY(t, false)
+	for i, h := range says {
+		if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("FAKE_HUB_MSG", h.msg)
+		t.Setenv("FAKE_DEVVM_EXIT", strconv.Itoa(h.code))
+		err := runTree(t, a, "create", "h/web", "--yes")
+		var ec *exitCode
+		if (h.code == 0) != (err == nil) || (err != nil && (!errors.As(err, &ec) || ec.code != h.code)) {
+			t.Errorf("%s: err = %v, want the hub's status %d", createOutcomes[i].name, err, h.code)
+		}
+		if got, _ := config.LoadPorts(a.Paths, "h/web"); (len(got) == 0) != h.cleared {
+			t.Errorf("%s: laptop forwards = %v, want cleared %v", createOutcomes[i].name, got, h.cleared)
+		}
+	}
+	// setup never touches them, exit 3 or not.
+	t.Setenv("FAKE_HUB_MSG", says[2].msg)
 	t.Setenv("FAKE_DEVVM_EXIT", "3")
-	err := runTree(t, a, "setup", "h/web", "--port", "8080")
+	err := runTree(t, a, "setup", "h/web", "--yes")
 	var ec *exitCode
-	if !errors.As(err, &ec) || ec.code != exitSetupIncomplete || !hubSetupIncomplete(err) {
-		t.Fatalf("err = %v, want the hub's exit status 3", err)
+	if !errors.As(err, &ec) || ec.code != exitSetupIncomplete {
+		t.Fatalf("setup: err = %v, want the hub's exit status 3", err)
 	}
-	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000", "8080"}) {
-		t.Errorf("laptop forwards for h/web = %v, want 8080 seeded", got)
-	}
-	t.Setenv("FAKE_DEVVM_EXIT", "1")
-	err = runTree(t, a, "setup", "h/web", "--port", "9090")
-	if !errors.As(err, &ec) || ec.code != 1 {
-		t.Fatalf("err = %v", err)
-	}
-	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000", "8080"}) {
-		t.Errorf("laptop forwards for h/web = %v after a failed setup", got)
+	if got, _ := config.LoadPorts(a.Paths, "h/web"); len(got) != 1 {
+		t.Errorf("laptop forwards = %v after setup, want them untouched", got)
 	}
 }
 
@@ -937,7 +1010,7 @@ func TestProxiedSetupIncomplete(t *testing.T) {
 func TestSetupInterruptedWhileCloning(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, `case "$last" in *o/a*) kill -INT $PPID; exec sleep 10;; esac`)
-	writeDevvmTOML(t, a, "[templates.default]\nrepos = [\"o/a\", \"o/b\"]\nports = [\"3000\"]\n")
+	writeDevvmTOML(t, a, "[templates.default]\nrepos = [\"o/a\", \"o/b\"]\n")
 	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
 		t.Fatal(err)
 	}

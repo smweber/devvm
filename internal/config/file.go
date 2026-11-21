@@ -114,6 +114,10 @@ func undecodedError(k toml.Key) error {
 	switch {
 	case len(k) == 0:
 		return errors.New("unknown key")
+	case k[0] == "templates" && len(k) == 3 && k[2] == "ports":
+		// Retired (simplify.md step 9): a forward is saved on the host that
+		// uses it, never by a template.
+		return fmt.Errorf("[templates.%s]: ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'", k[1])
 	case k[0] == "templates" && len(k) > 2:
 		return fmt.Errorf("[templates.%s]: unknown key %q", k[1], strings.Join(k[2:], "."))
 	case k[0] == "machines" && len(k) > 2:

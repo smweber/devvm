@@ -27,9 +27,8 @@ type createSpec struct {
 	Location   string
 	Image      string
 
-	// The template fields (hook, memory, disk, repos, ports, user): flags
-	// here, then settled by gatherCreateSpec from flag > template >
-	// built-in. Ports are saved as this host's state (config.SavePorts).
+	// The template fields (hook, memory, disk, repos, user): flags here,
+	// then settled by gatherCreateSpec from flag > template > built-in.
 	tmplFlags
 	KeysGithub []string
 	KeyFiles   []string
@@ -103,18 +102,16 @@ func (a *App) runCreate(s createSpec) error {
 		return err
 	}
 	// setup gets the template create settled (flags, prompts and all), so
-	// it resolves nothing again, and treats the box as fresh: a ports file
-	// a same-named predecessor left is replaced.
+	// it resolves nothing again.
 	t := s.template()
-	err = a.runSetup(s.Name, setupOpts{resolved: &t, fresh: true,
-		tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}})
+	err = a.runSetup(s.Name, setupOpts{resolved: &t, tmplFlags: tmplFlags{Keys: s.Keys}})
 	var si *setupIncomplete
 	if err != nil && !errors.As(err, &si) {
-		return fmt.Errorf("'%s' was created but setup failed: %w; re-run 'devvm setup %s'", s.Name, err, s.Name)
+		return fmt.Errorf("%s but setup failed: %w; re-run 'devvm setup %s'", wasCreated(s.Name), err, s.Name)
 	}
 	a.printCreateNext(s.Name, config.BackendSmol)
 	if si != nil {
-		return fmt.Errorf("'%s' was created; %w", s.Name, err) // created, with a problem
+		return fmt.Errorf("%s; %w", wasCreated(s.Name), err) // created, with a problem
 	}
 	return nil
 }
@@ -166,8 +163,7 @@ func (s createSpec) template() config.Template {
 		hook = config.DefaultBootstrapHook
 	}
 	return config.Template{
-		Name: name, User: user, Hook: hook, Memory: s.Memory, Disk: s.Disk,
-		Repos: s.Repos, Ports: s.Ports,
+		Name: name, User: user, Hook: hook, Memory: s.Memory, Disk: s.Disk, Repos: s.Repos,
 		AuthorizedKeysGithub: s.KeysGithub, AuthorizedKeys: s.KeyFiles,
 		Harden: s.Harden, Fail2ban: s.Fail2ban,
 	}
@@ -187,12 +183,40 @@ func (a *App) provisionResource(name string, memory, disk int) error {
 	if err := backend.SmolCreate(name, memory, disk); err != nil {
 		return err
 	}
+	a.clearLeftoverPorts(name)
 	// A failure leaves the VM made but unmanaged, which the error says;
 	// nothing is installed into it.
 	if err := a.writeManagedMarker(name); err != nil {
-		return fmt.Errorf("created VM '%s' but could not mark it managed: %w; %s", name, err, backend.AdoptHint(name))
+		return fmt.Errorf("%s but could not be marked managed: %w; %s", wasCreated(name), err, backend.AdoptHint(name))
 	}
 	return nil
+}
+
+// wasCreated leads every error of a smol create that comes after its VM
+// exists (the marker, setup, a clone). A laptop proxying `create HUB/NAME`
+// reads it in the hub's output: it means the VM was made, so the laptop
+// clears its own leftover HUB@NAME forwards even though the hub's create
+// failed. No refusal says it.
+func wasCreated(name string) string { return "'" + name + "' was created" }
+
+// clearLeftoverPorts drops the saved forwards a same-named predecessor
+// left on this host (a VM removed with raw smolvm, a server deleted in the
+// provider console: nothing here saw it go) once a new box of the name
+// exists, so its first attach does not raise them. create's one rule about
+// forwards; for HUB/NAME the laptop runs it after the proxied create. A
+// failure is one line: the box exists all the same.
+func (a *App) clearLeftoverPorts(name string) {
+	err := func() error {
+		unlock, err := config.LockPorts(a.Paths, name)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		return config.RemovePorts(a.Paths, name)
+	}()
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "devvm: %s: could not clear saved forwards left by an earlier %s (%v); see 'devvm ports list %s'\n", name, name, err, name)
+	}
 }
 
 // writeManagedMarker records that devvm owns the smol VM NAME (config.md

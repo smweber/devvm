@@ -106,7 +106,6 @@ func (a *App) showConfig(f *config.File) {
 		showInt(w, "memory", t.Memory, src(own.Memory != nil, def.Memory != nil), "unset: create asks, or --memory")
 		showInt(w, "disk", t.Disk, src(own.Disk != nil, def.Disk != nil), fmt.Sprintf("unset: create uses %d", backend.SmolDefaultDiskGiB))
 		showLine(w, "repos", tomlList(t.Repos), src(own.Repos != nil, def.Repos != nil))
-		showLine(w, "ports", tomlList(t.Ports), src(own.Ports != nil, def.Ports != nil))
 		showLine(w, "authorized_keys_github", tomlList(t.AuthorizedKeysGithub), src(own.AuthorizedKeysGithub != nil, def.AuthorizedKeysGithub != nil))
 		showLine(w, "authorized_keys", tomlList(t.AuthorizedKeys), src(own.AuthorizedKeys != nil, def.AuthorizedKeys != nil))
 		showLine(w, "harden", strconv.FormatBool(t.Harden), src(own.Harden != nil, def.Harden != nil))
@@ -246,9 +245,8 @@ func (a *App) configCheckCmd() *cobra.Command {
 }
 
 // runConfigCheck validates the file as every command will read it, plus
-// what only the cli can check (each template's hook spec and port
-// mappings, resolved over default), and warns about entries that shadow a
-// local smol VM.
+// what only the cli can check (each template's hook spec, resolved over
+// default), and warns about entries that shadow a local smol VM.
 func (a *App) runConfigCheck() error {
 	f, err := config.LoadFile(a.Paths)
 	if err != nil {

@@ -155,8 +155,10 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	cancel()
 	if srv != nil {
 		// It exists and bills from here on: in the cache at once, so
-		// `status` and the menu show it whatever happens next.
+		// `status` and the menu show it whatever happens next. A
+		// predecessor's saved forwards go now, setup or no setup.
 		_ = a.mergeProviderRow(pn, srv.Name, srv)
+		a.clearLeftoverPorts(s.Name)
 	}
 	next := fmt.Sprintf("run: devvm setup %s or devvm delete %s", s.Name, s.Name)
 	if err != nil {
@@ -196,7 +198,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	// setup's own path from the user step on (runSetup's gates are for a
 	// name it resolved; this record is the one just created): reachForSetup
 	// waits for ssh and creates the user as root, shape does the rest.
-	o := setupOpts{resolved: &t, fresh: true, tmplFlags: tmplFlags{Keys: s.Keys, NoPorts: !s.savesPorts()}}
+	o := setupOpts{resolved: &t, tmplFlags: tmplFlags{Keys: s.Keys}}
 	sctx, stop := interruptContext()
 	defer stop()
 	if err := a.shape(sctx, m, b, t, o); err != nil {
@@ -258,7 +260,7 @@ func orDash(s string) string {
 // [providers.NAME] > built-in (Template.Placement) under the --server-type,
 // --location and --image flags. On a terminal without --yes it prompts for
 // the placement a flag did not give, seeded with the resolved value, then
-// the hook, repos and ports as smol's form does.
+// the hook and repos as smol's form does.
 func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (config.Template, config.Placement, error) {
 	tty := openTTY()
 	if tty != nil {
@@ -291,7 +293,7 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (confi
 		return config.Template{}, config.Placement{}, err
 	}
 	s.User = t.User
-	s.Repos, s.Ports = t.Repos, t.Ports
+	s.Repos = t.Repos
 	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
 	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
 	if interactive {

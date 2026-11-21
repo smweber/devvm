@@ -32,7 +32,6 @@ disk = 20
 [templates.devvm]
 memory = 8192
 repos = ["smweber/devvm"]
-ports = ["3000", "5173"]
 authorized_keys_github = ["smweber"]
 harden = false
 
@@ -57,12 +56,13 @@ host = "2.29.47.196"
 
 func TestLoadTemplatesRejects(t *testing.T) {
 	for body, want := range map[string]string{
-		"[templates.x]\nmemroy = 1\n":       "[templates.x]: unknown key \"memroy\"",
-		"[templates.x]\nmemory = 100\n":     "too small",
-		"[templates.x]\nuser = \"root\"\n":  "root",
-		"[templates.x]\nuser = \"A B\"\n":   "invalid user",
-		"[templates.\"a/b\"]\nmemory = 1\n": "invalid",
-		"[templates.x\n":                    "parse",
+		"[templates.x]\nmemroy = 1\n":         "[templates.x]: unknown key \"memroy\"",
+		"[templates.x]\nmemory = 100\n":       "too small",
+		"[templates.x]\nuser = \"root\"\n":    "root",
+		"[templates.x]\nuser = \"A B\"\n":     "invalid user",
+		"[templates.\"a/b\"]\nmemory = 1\n":   "invalid",
+		"[templates.x\n":                      "parse",
+		"[templates.x]\nports = [\"3000\"]\n": "ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'",
 	} {
 		p := Paths{Config: t.TempDir()}
 		writeFile(t, p, body)

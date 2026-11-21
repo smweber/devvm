@@ -214,7 +214,7 @@ func TestConfigCheck(t *testing.T) {
 		"[providers.x]\na = 1\n":                                                     "unknown provider",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"x\"\nbogus = 1\n":              "unknown key \"bogus\"",
 		"[templates.t]\nhook = \"bogus\"\n":                                          "template t",
-		"[templates.default]\nports = [\"x\"]\n":                                     "template default",
+		"[templates.default]\nports = [\"x\"]\n":                                     "ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'",
 		"[machines.x]\nbackend = \"remote\"\n\n[machines.y]\nbackend = \"remote\"\n": "[machines.y]",
 	} {
 		writeDevvmTOML(t, a, body)

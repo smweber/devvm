@@ -100,6 +100,12 @@ func TestProviderCreateRefusals(t *testing.T) {
 	p.AddKey("scott", testPubKey)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
 	addServer(t, p, "prod", "4.4.4.4", provider.StateRunning, false)
+	// A refused name is a live box's: its saved forwards stay.
+	for _, n := range []string{"web", "vm", "box"} {
+		if err := config.SavePorts(a.Paths, n, []string{"3000"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	for _, tc := range []struct {
 		argv []string
@@ -123,6 +129,11 @@ func TestProviderCreateRefusals(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(runTree(t, a, "create", "box", "--backend", "hetzner", "--yes")), "'devvm setup box' re-runs setup") {
 		t.Error("a managed duplicate does not name setup/delete")
+	}
+	for _, n := range []string{"web", "vm", "box"} {
+		if got, _ := config.LoadPorts(a.Paths, n); len(got) != 1 {
+			t.Errorf("%s: saved forwards = %v after a refused create, want them kept", n, got)
+		}
 	}
 
 	// Key problems, each before any API call that bills.
@@ -506,6 +517,9 @@ func TestProviderCreateDeadline(t *testing.T) {
 	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n", false)
 	p.AddKey("scott", testPubKey)
 	p.CreateBlocks = true
+	if err := config.SavePorts(a.Paths, "web", []string{"3000"}); err != nil {
+		t.Fatal(err)
+	}
 	old := providerTimes
 	providerTimes.create = 50 * time.Millisecond
 	t.Cleanup(func() { providerTimes = old })
@@ -516,6 +530,11 @@ func TestProviderCreateDeadline(t *testing.T) {
 	}
 	if cachedRow(a, "web") == nil || p.CallCount("Delete") != 0 {
 		t.Error("the server was lost track of, or deleted")
+	}
+	// Create handed back a server with its error: it exists, so a
+	// predecessor's saved forwards are gone.
+	if got, _ := config.LoadPorts(a.Paths, "web"); len(got) != 0 {
+		t.Errorf("saved forwards = %v, want the leftover cleared", got)
 	}
 	if data, _ := os.ReadFile(sshLog); len(data) != 0 {
 		t.Errorf("setup ran:\n%s", data)

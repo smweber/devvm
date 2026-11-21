@@ -28,8 +28,8 @@ import (
 // contents, and the single promotion path to managed. It replaced
 // `bootstrap`, whose name also meant the user's own hook script. Its order
 // is fixed: ensure user → prereqs → agent + shim (+ profile.d) → keys →
-// harden → hook → repos → seed saved forwards. The user comes first
-// because everything after it runs as that user or through its sudo;
+// harden → hook → repos. The user comes first because everything after
+// it runs as that user or through its sudo;
 // harden comes after keys because it refuses on an empty authorized_keys,
 // and both come before the hook and the repos, so neither user code nor
 // the network can leave a billing cloud server unhardened.
@@ -44,7 +44,6 @@ type tmplFlags struct {
 	Memory int
 	Disk   int
 	Repos  []string
-	Ports  []string
 	// Keys are authorized_keys lines, already resolved: the laptop turns a
 	// template's authorized_keys_github/authorized_keys into lines (as
 	// `keys add` inlines key lines), since the files and the network
@@ -57,17 +56,9 @@ type tmplFlags struct {
 	HardenSet   bool
 	Fail2banSet bool
 	// Inline: these flags are the whole template. The hub's own
-	// [templates.*] are not consulted; unset fields take the built-ins. It
-	// implies NoPorts.
+	// [templates.*] are not consulted; unset fields take the built-ins.
 	Inline bool
-	// NoPorts: this host saves no forwards and asks for none. A laptop
-	// proxying to its hub sends it, since the forwards for HUB/NAME are the
-	// laptop's own state (HUB@NAME), seeded there.
-	NoPorts bool
 }
-
-// savesPorts reports whether this run keeps saved forwards on this host.
-func (v tmplFlags) savesPorts() bool { return !v.Inline && !v.NoPorts }
 
 // Template flag names, defined once: addTemplateFlags registers them and
 // the proxy strips them before sending its own.
@@ -98,12 +89,16 @@ func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
 	fs.IntVarP(&v.Memory, flagMemory, "m", 0, "smol: VM memory in MiB (template memory)")
 	fs.IntVarP(&v.Disk, flagDisk, "d", 0, "smol: VM disk in GiB (template disk; default 50)")
 	fs.StringArrayVar(&v.Repos, flagRepo, nil, "repo to clone into ~/src (repeatable; template repos)")
-	fs.StringArrayVar(&v.Ports, flagPort, nil, "forward to save, HOST:GUEST or PORT (repeatable; template ports)")
+	// --port and --no-ports are gone ('ports add' saves a forward) but stay
+	// accepted, and ignored, until hubs and laptops are all past this
+	// release: a laptop still sends --no-ports to its hub, and a hub one
+	// release older still needs it (so it saves and asks for no forwards).
+	fs.StringArray(flagPort, nil, "ignored: save a forward with 'devvm ports add'")
+	fs.Bool(flagNoPorts, false, "ignored (a laptop sends it to its hub)")
 	fs.StringArrayVar(&v.Keys, flagKey, nil, "remote: authorized_keys line to add (repeatable)")
 	fs.BoolVar(&v.Harden, flagHarden, false, "remote: harden sshd + firewall (template harden)")
 	fs.BoolVar(&v.Fail2ban, flagFail2ban, false, "remote: install fail2ban with harden (template fail2ban)")
 	fs.BoolVar(&v.Inline, flagInline, false, "the template flags are the whole template (sent by a laptop to its hub)")
-	fs.BoolVar(&v.NoPorts, flagNoPorts, false, "save no forwards here (sent by a laptop to its hub: they are the laptop's)")
 	for _, n := range templateFlagNames {
 		if !slices.Contains(visible, n) {
 			_ = fs.MarkHidden(n)
@@ -140,10 +135,6 @@ func (v tmplFlags) layer() config.TemplateSpec {
 	if v.Repos != nil {
 		r := slices.Clone(v.Repos)
 		s.Repos = &r
-	}
-	if v.Ports != nil {
-		p := slices.Clone(v.Ports)
-		s.Ports = &p
 	}
 	if v.Harden || v.HardenSet {
 		h := v.Harden
@@ -191,16 +182,11 @@ func (a *App) resolveTemplate(name string, f tmplFlags) (config.Template, error)
 	return t, validateTemplate(t)
 }
 
-// validateTemplate checks what config cannot: the hook spec and the port
-// mappings, whose parsers live here and in bootstrap.
+// validateTemplate checks what config cannot: the hook spec, whose parser
+// lives in bootstrap.
 func validateTemplate(t config.Template) error {
 	if _, err := bootstrap.ParseSpec(t.Hook); err != nil {
 		return fmt.Errorf("template %s: %w", t.Name, err)
-	}
-	for _, p := range t.Ports {
-		if _, _, err := parseMapping(p); err != nil {
-			return fmt.Errorf("template %s: %w", t.Name, err)
-		}
 	}
 	if err := config.ValidUser(t.User); err != nil {
 		return fmt.Errorf("template %s: %w", t.Name, err)
@@ -219,9 +205,6 @@ type setupOpts struct {
 	// resolved is create's already-settled template (flags, prompts and
 	// all); setup then resolves nothing itself.
 	resolved *config.Template
-	// fresh: the box just became managed (create, --adopt), so a ports
-	// file a same-named predecessor left is replaced, not merged into.
-	fresh bool
 }
 
 func (a *App) setupCmd() *cobra.Command {
@@ -232,8 +215,8 @@ func (a *App) setupCmd() *cobra.Command {
 		Long: "Shape a box from a template ([templates.*] in devvm.toml; default without\n" +
 			"--template). The one place devvm changes a box's contents, in a fixed order:\n" +
 			"user, prereqs (incl. tmux, gh, mosh), agent + BROWSER shim, keys and\n" +
-			"hardening (remote), the template's hook, repos (cloned into ~/src), saved\n" +
-			"forwards. Safe to re-run.\n\n" +
+			"hardening (remote), the template's hook, repos (cloned into ~/src). Safe to\n" +
+			"re-run. Forwards are saved with 'devvm ports add', not here.\n\n" +
 			"A managed smol VM or a remote entry with managed = true is shaped without\n" +
 			"asking. A smol VM devvm did not create needs --adopt, which asks you to type\n" +
 			"its name; a remote entry with managed = false is never shaped. A remote box\n" +
@@ -329,7 +312,6 @@ func (a *App) runSetup(name string, o setupOpts) error {
 		if m, b, err = a.resolve(name); err != nil {
 			return err
 		}
-		o.fresh = true
 		fmt.Fprintf(a.Stderr, "devvm: '%s' is managed by devvm now\n", name)
 	}
 	ctx, stop := interruptContext()
@@ -422,7 +404,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	}
 	// 7. Repos: cloneRepos skips a checkout that exists, so a re-run is
 	// idempotent. A failed clone does not end setup: every repo is tried,
-	// the steps after run, and setup reports it last (setupIncomplete).
+	// and setup reports the failures last (setupIncomplete).
 	// An interrupt during the clones is an interrupt, never "finished".
 	// owner/repo specs skipped for want of gh's login are no failure.
 	var incomplete error
@@ -436,13 +418,6 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 		}
 	}
 	a.noteContact(m, "setup", config.TransportSSH, nil) // every step above ran over ssh
-	// 8. Saved forwards (host state, config.md §5), unless they are the
-	// proxying laptop's.
-	if o.savesPorts() {
-		if err := a.seedPorts(m, t.Ports, o.fresh); err != nil {
-			return err
-		}
-	}
 	return incomplete
 }
 
@@ -458,18 +433,9 @@ func (e *setupIncomplete) Error() string {
 
 // exitSetupIncomplete is the exit status of a create/setup that ended in
 // setupIncomplete (failureStatus). It is how a hub's proxied create/setup
-// says "finished, but" to the laptop, which then still runs its own steps
-// after the run (proxy: seeding its HUB@NAME forwards) and passes the
-// status on. 3: not 1 (any failure), 127 (no devvm on the hub's PATH),
-// 130 (^C) or 255 (ssh).
+// says "finished, but" to the laptop, which passes the status on. 3: not 1
+// (any failure), 127 (no devvm on the hub's PATH), 130 (^C) or 255 (ssh).
 const exitSetupIncomplete = 3
-
-// hubSetupIncomplete reports whether a proxied create/setup's error is the
-// hub's setupIncomplete, carried across as its exit status.
-func hubSetupIncomplete(err error) bool {
-	var ec *exitCode
-	return errors.As(err, &ec) && ec.code == exitSetupIncomplete
-}
 
 // startStopped boots a stopped smol VM the way `start` does (PowerStart,
 // then wait for "running") and reports whether it had to. setup calls it
@@ -594,31 +560,6 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 	}
 }
 
-// seedPorts saves the template's forwards. On a fresh box the list
-// replaces whatever file is there (a predecessor's of the same name, never
-// cleared), so a recreated VM never inherits old forwards; on a re-run it
-// is merged, so `ports add` work survives.
-func (a *App) seedPorts(m *config.Machine, ports []string, fresh bool) error {
-	if !fresh && len(ports) == 0 {
-		return nil
-	}
-	return a.editPorts(m, func(cur []string) []string {
-		if fresh {
-			return slices.Clone(ports)
-		}
-		for _, p := range ports {
-			pref, guest, err := parseMapping(p)
-			if err != nil {
-				continue // validateTemplate refused it already
-			}
-			if _, ok := findMappingIn(cur, pref, guest); !ok {
-				cur = append(cur, p)
-			}
-		}
-		return cur
-	})
-}
-
 // openAdoptTTY is the terminal the adoption prompt runs on, a var so a test
 // can type into it.
 var openAdoptTTY = func() (io.ReadWriteCloser, error) {
@@ -665,9 +606,6 @@ func adoptPlan(name string, t config.Template) string {
 	}
 	if len(t.Repos) > 0 {
 		fmt.Fprintf(&s, "  - clone into ~/src: %s\n", strings.Join(t.Repos, ", "))
-	}
-	if len(t.Ports) > 0 {
-		fmt.Fprintf(&s, "  - save forwards: %s\n", strings.Join(t.Ports, ", "))
 	}
 	fmt.Fprintf(&s, "  - treat '%s' as managed from now on: devvm installs into it, and 'devvm delete %s' destroys it\n", name, name)
 	return s.String()
@@ -914,9 +852,7 @@ func (a *App) templateKeyLines(githubUsers, files []string) []string {
 
 // templateArgv renders a resolved template as the explicit flag set the
 // laptop sends with a proxied create/setup --template (config.md §7):
-// every field, so nothing on the hub fills a gap. Ports are not sent: a
-// hub machine's saved forwards are this host's state (HUB@NAME), seeded
-// here after the proxied run.
+// every field, so nothing on the hub fills a gap.
 func templateArgv(t config.Template, keyLines []string) []string {
 	out := []string{"--" + flagInline, "--" + flagUser + "=" + t.User, "--" + flagHook + "=" + t.Hook}
 	if t.Memory != 0 {

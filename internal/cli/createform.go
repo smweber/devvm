@@ -40,14 +40,11 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 		return err
 	}
 	// The rest come from the template (flags already folded in); the form
-	// below offers repos and ports for editing, pre-filled.
+	// below offers repos for editing, pre-filled.
 	s.User = t.User
-	s.Repos, s.Ports = t.Repos, t.Ports
+	s.Repos = t.Repos
 	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
 	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
-	if !s.savesPorts() {
-		s.Ports = nil // the proxying laptop's (HUB@NAME), seeded there
-	}
 	if interactive {
 		if err := askExtras(tty, s); err != nil {
 			return err
@@ -162,26 +159,16 @@ func askDisk(tty *os.File, s *createSpec, t config.Template) error {
 	return nil
 }
 
-// askExtras prompts the optional create-time fields, repos and ports. Each
-// accepts a space-separated list and is safe to leave blank.
+// askExtras prompts the optional create-time field, repos: a
+// space-separated list, safe to leave blank. (Forwards are not asked:
+// 'devvm ports add' saves one.)
 func askExtras(tty *os.File, s *createSpec) error {
 	repos := strings.Join(s.Repos, " ")
-	ports := strings.Join(s.Ports, " ")
-	inputs := []huh.Field{huh.NewInput().Title("Repos to clone (owner/repo or URL, space-separated)").
-		Placeholder("me/app me/tools").Value(&repos)}
-	// No ports prompt on a hub running a laptop's create: the forwards are
-	// the laptop's, which seeds them from its own --port.
-	if s.savesPorts() {
-		inputs = append(inputs, huh.NewInput().Title("Ports to forward (HOST:GUEST or PORT, space-separated)").
-			Placeholder("3000 8080:80").Value(&ports))
-	}
-	if err := form(tty, inputs...); err != nil {
+	if err := form(tty, huh.NewInput().Title("Repos to clone (owner/repo or URL, space-separated)").
+		Placeholder("me/app me/tools").Value(&repos)); err != nil {
 		return err
 	}
 	s.Repos = fields(repos)
-	if s.savesPorts() {
-		s.Ports = fields(ports)
-	}
 	return nil
 }
 

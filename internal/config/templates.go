@@ -32,7 +32,6 @@ type TemplateSpec struct {
 	Memory               *int      `toml:"memory"` // MiB, create-time only
 	Disk                 *int      `toml:"disk"`   // GiB, create-time only
 	Repos                *[]string `toml:"repos"`
-	Ports                *[]string `toml:"ports"`
 	AuthorizedKeysGithub *[]string `toml:"authorized_keys_github"`
 	AuthorizedKeys       *[]string `toml:"authorized_keys"`
 	Harden               *bool     `toml:"harden"`
@@ -55,7 +54,6 @@ type Template struct {
 	Memory               int
 	Disk                 int
 	Repos                []string
-	Ports                []string
 	AuthorizedKeysGithub []string
 	AuthorizedKeys       []string
 	Harden               bool
@@ -92,9 +90,6 @@ func (s TemplateSpec) Under(lower TemplateSpec) TemplateSpec {
 	}
 	if out.Repos == nil {
 		out.Repos = lower.Repos
-	}
-	if out.Ports == nil {
-		out.Ports = lower.Ports
 	}
 	if out.AuthorizedKeysGithub == nil {
 		out.AuthorizedKeysGithub = lower.AuthorizedKeysGithub
@@ -140,7 +135,6 @@ func (s TemplateSpec) Resolve(name string) Template {
 		t.Disk = *s.Disk
 	}
 	t.Repos = deref(s.Repos)
-	t.Ports = deref(s.Ports)
 	t.AuthorizedKeysGithub = deref(s.AuthorizedKeysGithub)
 	t.AuthorizedKeys = deref(s.AuthorizedKeys)
 	if s.Harden != nil {
@@ -176,7 +170,7 @@ func deref(p *[]string) []string {
 // the proxied form sends exactly this, so the hub's own file never matters.
 func (t Template) Spec() TemplateSpec {
 	user, hook, mem, disk := t.User, t.Hook, t.Memory, t.Disk
-	repos, ports := slices.Clone(t.Repos), slices.Clone(t.Ports)
+	repos := slices.Clone(t.Repos)
 	gh, files := slices.Clone(t.AuthorizedKeysGithub), slices.Clone(t.AuthorizedKeys)
 	harden, f2b := t.Harden, t.Fail2ban
 	// Placement only where a layer set it: an empty field stays unset, so
@@ -193,7 +187,7 @@ func (t Template) Spec() TemplateSpec {
 		ipv4 = &v
 	}
 	return TemplateSpec{User: &user, Hook: &hook, Memory: &mem, Disk: &disk,
-		Repos: &repos, Ports: &ports, AuthorizedKeysGithub: &gh, AuthorizedKeys: &files,
+		Repos: &repos, AuthorizedKeysGithub: &gh, AuthorizedKeys: &files,
 		Harden: &harden, Fail2ban: &f2b,
 		ServerType: opt(t.ServerType), Location: opt(t.Location), Image: opt(t.Image), IPv4: ipv4}
 }
@@ -250,8 +244,8 @@ func ValidUser(u string) error {
 	return nil
 }
 
-// Validate checks the fields config can check on its own. The hook spec
-// and port mappings are checked by the cli, which owns their parsers.
+// Validate checks the fields config can check on its own. The hook spec is
+// checked by the cli, which owns its parser.
 func (s TemplateSpec) Validate() error {
 	if s.User != nil && *s.User != "" {
 		if err := ValidUser(*s.User); err != nil {
