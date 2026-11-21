@@ -41,17 +41,6 @@ func writeFile(t *testing.T, path, data string) {
 	}
 }
 
-func TestSmolInstallGate(t *testing.T) {
-	m := &config.Machine{Name: "web", Backend: config.BackendSmol}
-	if err := smolInstallGate(m)(); !errors.Is(err, backend.ErrUnmanaged) || !strings.Contains(err.Error(), "setup --adopt web") {
-		t.Errorf("unmanaged gate = %v, want ErrUnmanaged naming setup --adopt", err)
-	}
-	m.SetManaged(true)
-	if err := smolInstallGate(m)(); err != nil {
-		t.Errorf("managed gate = %v", err)
-	}
-}
-
 // runDaemonBounded is RunDaemon with a deadline: a daemon that dials (and
 // so serves) where it should refuse fails the test in seconds rather than
 // hanging the package until go test's own timeout.

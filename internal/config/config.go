@@ -153,9 +153,9 @@ func (m *Machine) IsHubMachine() bool { return m.Hub != nil }
 
 // Managed reports whether devvm owns this box's OS: it installs prereqs, may
 // harden, and pins known_hosts. Only a discovered machine can be: a smol VM
-// or a provider server whose discovery source said so (SetManaged), one
-// devvm created (or, for smol, was handed with `setup --adopt`), never one
-// it merely found (config.md §2). An entry (remote or hub) and a machine on
+// or a provider server whose discovery source said so (SetManaged): one
+// devvm created, by its devvm=true label (config.md §2); a source does not
+// return any other. An entry (remote or hub) and a machine on
 // a hub are never managed here: devvm only connects to an entry, and the
 // hub holds its machines' ownership. A plain field read: it never execs or
 // reads a file.

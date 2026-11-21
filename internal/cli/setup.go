@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -25,8 +24,8 @@ import (
 )
 
 // `devvm setup` (config.md §3) is the single place devvm touches a box's
-// contents, and only a box devvm made: a smol VM (and, through --adopt, one
-// handed over) or a provider server, never an entry. It replaced
+// contents, and only a box devvm made: a smol VM or a provider server (its
+// devvm=true label), never an entry. It replaced
 // `bootstrap`, whose name also meant the user's own hook script. Its order
 // is fixed: ensure user → prereqs → agent + shim (+ profile.d) → keys →
 // harden → hook → repos. The user comes first because everything after
@@ -193,8 +192,6 @@ func validateTemplate(t config.Template) error {
 // setupOpts is `setup`'s input.
 type setupOpts struct {
 	Template string
-	Adopt    bool
-	Yes      bool
 	tmplFlags
 
 	// resolved is create's already-settled template (flags, prompts and
@@ -212,10 +209,9 @@ func (a *App) setupCmd() *cobra.Command {
 			"user, prereqs (incl. tmux, gh, mosh), agent + BROWSER shim, keys and\n" +
 			"hardening (a provider server), the template's hook, repos (cloned into\n" +
 			"~/src). Safe to re-run. Forwards are saved with 'devvm ports add', not here.\n\n" +
-			"A smol VM or a provider server devvm made is shaped without asking. A smol\n" +
-			"VM devvm did not create needs --adopt, which asks you to type its name. An\n" +
-			"entry in devvm.toml (a remote box, a hub) is never shaped. A server that\n" +
-			"answers only as root gets its user created first.\n" +
+			"Only a smol VM or a provider server devvm made is shaped; an entry in\n" +
+			"devvm.toml (a remote box, a hub) never is. A server that answers only as\n" +
+			"root gets its user created first.\n" +
 			"Precedence: flag > --template > [templates.default] > built-in.",
 		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			o.noteSet(cmd.Flags())
@@ -229,8 +225,6 @@ func (a *App) setupCmd() *cobra.Command {
 	a.machineArg(c)
 	f := c.Flags()
 	f.StringVarP(&o.Template, flagTemplate, "t", "", "template to shape with (default: default)")
-	f.BoolVar(&o.Adopt, "adopt", false, "hand a smol VM devvm did not create over to devvm (asks you to type its name)")
-	f.BoolVarP(&o.Yes, "yes", "y", false, "don't prompt (never applies to --adopt)")
 	addTemplateFlags(f, &o.tmplFlags)
 	_ = c.RegisterFlagCompletionFunc(flagTemplate, a.completeTemplates)
 	return c
@@ -252,8 +246,8 @@ func (a *App) completeTemplates(*cobra.Command, []string, string) ([]string, cob
 
 // runSetup gates, resolves the template, and shapes the box.
 func (a *App) runSetup(name string, o setupOpts) error {
-	defer config.TouchChanged(a.Paths) // --adopt changes the managed column (the label)
-	m, b, err := a.resolveUnmanaged(name)
+	defer config.TouchChanged(a.Paths) // setup may start a stopped smol VM
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -261,40 +255,11 @@ func (a *App) runSetup(name string, o setupOpts) error {
 		// An entry (simplify.md step 12): devvm only connects to it.
 		return fmt.Errorf("'%s' is an entry in devvm.toml: devvm never shapes one (it connects: attach, shell, exec, ports, cp, keys)", name)
 	}
-	if m.IsProvider() {
-		if o.Adopt {
-			return fmt.Errorf("--adopt applies only to a local smol VM devvm did not create; '%s' is a %s server, whose label is the consent", name, providerTitle(m.Backend))
-		}
-	} else {
-		switch {
-		case m.Managed() && o.Adopt:
-			return fmt.Errorf("'%s' is already managed by devvm; re-run 'devvm setup %s' without --adopt", name, name)
-		case !m.Managed() && !o.Adopt:
-			return fmt.Errorf("'%s' is a smol VM devvm did not create; %s", name, backend.AdoptHint(name))
-		}
-	}
-	if o.Adopt && o.Yes {
-		return fmt.Errorf("--yes does not apply to --adopt: handing '%s' to devvm needs you to type its name", name)
-	}
 	var t config.Template
 	if o.resolved != nil {
 		t = *o.resolved
 	} else if t, err = a.resolveTemplate(o.Template, o.tmplFlags); err != nil {
 		return err
-	}
-	if o.Adopt {
-		if err := a.confirmAdopt(m, t); err != nil {
-			return err
-		}
-		if err := backend.SmolLabel(name); err != nil {
-			return fmt.Errorf("could not label '%s' as devvm's (devvm=true): %w", name, err)
-		}
-		// Re-resolve: the smol source settles Managed from the label, and
-		// only a managed record execs as dev and may install.
-		if m, b, err = a.resolve(name); err != nil {
-			return err
-		}
-		fmt.Fprintf(a.Stderr, "devvm: '%s' is managed by devvm now\n", name)
 	}
 	ctx, stop := interruptContext()
 	defer stop()
@@ -412,8 +377,7 @@ const exitSetupIncomplete = 3
 // before its first exec, attach/shell before theirs (bootForSession): on
 // smolvm 1.16.1 an exec into a stopped VM is refused, not a boot, and
 // starting it here also keeps a forward daemon that may be reconnecting
-// from starting its serve exec mid-boot. For setup it runs after the
-// --adopt prompt, so an unconfirmed VM is never booted.
+// from starting its serve exec mid-boot.
 //
 // Two starts at once (two attaches, an attach right after `start &`) are
 // serialized by lockStart and the second finds the VM running: smolvm
@@ -523,57 +487,6 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 		fmt.Fprintf(a.Stderr, "devvm: template %s: ignoring %s (not applicable to %s)\n",
 			t.Name, strings.Join(ignored, ", "), kind)
 	}
-}
-
-// openAdoptTTY is the terminal the adoption prompt runs on, a var so a test
-// can type into it.
-var openAdoptTTY = func() (io.ReadWriteCloser, error) {
-	return os.OpenFile("/dev/tty", os.O_RDWR, 0)
-}
-
-// confirmAdopt is the handover's gate (config.md §3): print exactly what
-// will happen and wait for the VM's name, typed. Deliberately harder than a
-// y/n: once managed, devvm installs into the VM, and `delete` destroys it.
-// No terminal, no adoption.
-func (a *App) confirmAdopt(m *config.Machine, t config.Template) error {
-	refuse := fmt.Errorf("setup --adopt %s needs a terminal: you confirm the handover by typing the VM's name", m.Name)
-	if !stdinIsTTY() {
-		return refuse
-	}
-	tty, err := openAdoptTTY()
-	if err != nil {
-		return refuse
-	}
-	defer tty.Close()
-	fmt.Fprint(tty, adoptPlan(m.Name, t))
-	fmt.Fprintf(tty, "Type the VM's name (%s) to hand it over: ", m.Name)
-	line, err := bufio.NewReader(tty).ReadString('\n')
-	if err != nil && line == "" {
-		return fmt.Errorf("aborted: '%s' was not adopted", m.Name)
-	}
-	if strings.TrimSpace(line) != m.Name {
-		return fmt.Errorf("aborted: '%s' was not adopted (typed %q)", m.Name, strings.TrimSpace(line))
-	}
-	return nil
-}
-
-// adoptPlan is what `setup --adopt` prints before asking.
-func adoptPlan(name string, t config.Template) string {
-	var s strings.Builder
-	fmt.Fprintf(&s, "devvm setup --adopt %s hands the smol VM '%s' to devvm. Using template %s, it will:\n", name, name, t.Name)
-	fmt.Fprintf(&s, "  - create the user '%s' with passwordless sudo (as root)\n", backend.DefaultUser)
-	fmt.Fprintf(&s, "  - install devvm's prereqs (build tools, curl, git, rsync, tmux, gh, mosh) as root\n")
-	fmt.Fprintf(&s, "  - install the devvm agent and BROWSER shim as root (and %s)\n", bootstrap.ProfilePath)
-	if t.Hook == bootstrap.KindNone {
-		fmt.Fprintf(&s, "  - run no hook (hook = none)\n")
-	} else {
-		fmt.Fprintf(&s, "  - run the hook: %s\n", t.Hook)
-	}
-	if len(t.Repos) > 0 {
-		fmt.Fprintf(&s, "  - clone into ~/src: %s\n", strings.Join(t.Repos, ", "))
-	}
-	fmt.Fprintf(&s, "  - treat '%s' as managed from now on: devvm installs into it, and 'devvm delete %s' destroys it\n", name, name)
-	return s.String()
 }
 
 // setupReachWait bounds how long setup waits for a remote box's ssh to

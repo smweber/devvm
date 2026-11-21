@@ -29,7 +29,7 @@ func TestConfigPath(t *testing.T) {
 func TestConfigAdd(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 0")
-	fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
+	fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`}]`)
 	head := "# my boxes\n[templates.default]\nhook = \"none\" # me\n"
 	writeDevvmTOML(t, a, head)
 	if err := runTree(t, a, "config", "add", "cloud", "--backend", "remote", "--host", "2.29.47.196", "--transport", "mosh", "--connect-timeout", "20"); err != nil {
@@ -183,7 +183,7 @@ func TestConfigRmHub(t *testing.T) {
 // mappings); a collision with a local smol VM is a warning.
 func TestConfigCheck(t *testing.T) {
 	a := newTestApp(t)
-	fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
+	fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`}]`)
 	if err := runTree(t, a, "config", "check"); err != nil {
 		t.Fatalf("missing file: %v", err)
 	}
@@ -396,8 +396,9 @@ func TestOldLayoutPointer(t *testing.T) {
 		t.Errorf("stderr = %q", w)
 	}
 	// The old conf is not an entry; the VM it named is devvm's only once
-	// labelled (smolvm machine update --label devvm=true).
-	if out := a.Stdout.(*bytes.Buffer).String(); out != "web\tsmol\trunning\t-\tunmanaged\t-\n" {
+	// labelled (smolvm machine update --label devvm=true): until then it
+	// is invisible.
+	if out := a.Stdout.(*bytes.Buffer).String(); out != "" {
 		t.Errorf("status = %q", out)
 	}
 	if got, _ := config.LoadPorts(a.Paths, "cloud"); strings.Join(got, ",") != "8080" {

@@ -10,10 +10,13 @@ import Foundation
 /// (its last listing, so the machines stay visible). The forwards column of
 /// a hub machine is this Mac's own.
 ///
-/// The fifth column says who owns the machine: managed | unmanaged |
-/// shadowed | - (entries in devvm.toml, which devvm never shapes: remote
-/// boxes and hubs; and a hub machine whose hub is too old to say). It is
-/// optional: a CLI from before it emits four fields, which read as `-`.
+/// The fifth column says who owns the machine: managed | shadowed | -
+/// (entries in devvm.toml, which devvm never shapes: remote boxes and hubs;
+/// and a hub machine whose hub is too old to say). It is optional: a CLI
+/// from before it emits four fields. The app does not read it (nor keep
+/// it): devvm lists no machine it did not create (no `unmanaged` row since
+/// simplify.md step 15; a hub one release older may still send one, and
+/// refuses what the app offers for it with its own message).
 ///
 /// A sixth column (`verified=<unix>:<how>` for a remote box, else `-` or
 /// `verified=-`) says when a remote box's state was last established; it
@@ -23,23 +26,11 @@ struct Machine {
     let backend: String
     let state: String    // running | stopped | reachable | unreachable | broken conf | ?
     let forwards: String // up:N | reconnecting:N | down | -
-    var managed: String = "-" // managed | unmanaged | shadowed | -
-
-    /// A smol VM devvm did not create: devvm will start, stop and open a
-    /// shell in it, but copies, ports and the drop shelf refuse until it is
-    /// handed over (`devvm setup --adopt NAME`). Smol only: a remote box
-    /// on a hub one release older may read `unmanaged` too, and does all
-    /// of those (a current CLI says `-` for every entry).
-    var needsAdopt: Bool { backend == "smol" && managed == "unmanaged" }
 
     /// A cloud provider's server (backend `hetzner`), discovered from its
     /// API. Start/stop/delete on one come later in the CLI, so the app
     /// offers none yet.
     var isProvider: Bool { backend == "hetzner" }
-    /// A provider server without devvm's `devvm=true` label: someone's
-    /// server in the project, which devvm never promotes. The CLI allows
-    /// status, shell and exec only, so no copies, ports or drop shelf.
-    var isUnlabelled: Bool { isProvider && managed == "unmanaged" }
 
     /// A hub's own row: a host machines live on, not a machine. Never a
     /// drop target, never started or stopped. The backend alone does not
@@ -73,12 +64,10 @@ struct Machine {
     /// Every action — start, stop, ports, copy in/out, the drop target —
     /// takes a hub machine by name (`h/web` is a machine name to every devvm
     /// command; its forwards are this Mac's own since devvm's hub forwards),
-    /// so it is gated on isLive (copies, ports and the shelf on isUsable).
+    /// so it is gated on isLive, copies, ports and the shelf included.
     var isLive: Bool {
         !isHub && (state == "running" || state == "reachable" || (state == "?" && backend != "smol" && backend != "hub"))
     }
-    /// Live and devvm may copy into it and forward its ports.
-    var isUsable: Bool { isLive && !needsAdopt && !isUnlabelled }
     var isReconnecting: Bool { forwards.hasPrefix("reconnecting") }
     var forwardsUp: Bool { forwards.hasPrefix("up:") && forwardCount > 0 }
     var forwardCount: Int {
@@ -130,8 +119,9 @@ func parseStatusBlock(_ text: String) -> [Machine] {
     for line in text.split(separator: "\n") {
         let f = line.split(separator: "\t", omittingEmptySubsequences: false).map { String($0) }
         guard f.count >= 3, !f[0].isEmpty else { continue }
-        out.append(Machine(name: f[0], backend: f[1], state: f[2], forwards: f.count > 3 ? f[3] : "-",
-                           managed: f.count > 4 && !f[4].isEmpty ? f[4] : "-"))
+        // Columns past the fourth (managed, verified) are not read: any
+        // number of them parses.
+        out.append(Machine(name: f[0], backend: f[1], state: f[2], forwards: f.count > 3 ? f[3] : "-"))
     }
     return out
 }

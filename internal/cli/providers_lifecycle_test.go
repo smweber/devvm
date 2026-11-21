@@ -88,7 +88,7 @@ func cachedRow(a *App, name string) *provider.Server {
 func TestProviderCreateRefusals(t *testing.T) {
 	a := newTestApp(t)
 	a.Stdin = strings.NewReader("") // never the first-use prompt
-	fakeLocalSmolvm(t, `[{"name":"vm","state":"running","created_at":1}]`)
+	fakeLocalSmolvm(t, `[{"name":"vm","state":"running",`+devvmLabel+`}]`)
 	sshLog := fakeSSH(t, "exit 0")
 	priv := filepath.Join(t.TempDir(), "id")
 	os.WriteFile(priv, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nxx\n"), 0o600)

@@ -164,15 +164,13 @@ func (a *App) hostOpener() session.SessionOptions {
 }
 
 // bridged reports whether attach/shell hold a subscription for m: a
-// local smol machine devvm manages (its daemon's agent exec carries
-// events), a remote box (its daemon runs the agent exec on its own ssh
-// master: browser-bridge.md §1, "Remote"; on an entry only once the
-// agent is there, which bridgeSession checks), or a machine on a hub,
-// through this host's daemon for HUB@NAME, whose relay subscribes on the
-// hub daemon (hub.md §8; the hub refuses a VM it does not manage). A smol
-// VM devvm did not create gets no bridge: subscribing would spawn a daemon
-// whose transport installs the agent (config.md §2). A hub itself is not a
-// machine.
+// local smol VM (Managed: devvm made it, which every smol record is; its
+// daemon's agent exec carries events), a remote box (its daemon runs the
+// agent exec on its own ssh master: browser-bridge.md §1, "Remote"; on an
+// entry only once the agent is there, which bridgeSession checks), or a
+// machine on a hub, through this host's daemon for HUB@NAME, whose relay
+// subscribes on the hub daemon (hub.md §8; the hub refuses a VM it did not
+// create). A hub itself is not a machine.
 func bridged(m *config.Machine) bool {
 	switch {
 	case m.IsHub():
@@ -253,8 +251,8 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool 
 //
 // The session's open also brings this host's saved forwards up behind it
 // (pushSaved), whichever backend, so connecting restores them as `start`
-// does; a machine that gets no bridge here (DEVVM_NO_SUBSCRIBE on a hub,
-// a smol VM devvm did not create) gets no push either.
+// does; a machine that gets no bridge here (DEVVM_NO_SUBSCRIBE on a hub)
+// gets no push either.
 func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func()) {
 	release = func() {}
 	if noSubscribe() || !bridged(m) {

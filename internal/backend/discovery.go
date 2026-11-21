@@ -42,27 +42,20 @@ func Discover(paths config.Paths, name string) (Discovered, bool, error) {
 }
 
 // discoverSmol is the local smol source: one `smolvm machine ls --json`,
-// the row kept on the backend. A host with no smolvm has no smol VMs, which
-// is "not mine", not an error: a laptop that only reaches remote boxes
-// never needs smolvm.
+// the row kept on the backend, for a VM with devvm's label only
+// (simplify.md step 15: devvm does not see what it did not create; resolve
+// names such a VM in its refusal). A host with no smolvm has no smol VMs,
+// which is "not mine", not an error: a laptop that only reaches remote
+// boxes never needs smolvm.
 func discoverSmol(paths config.Paths, name string) (Discovered, bool, error) {
 	if !SmolAvailable() {
 		return Discovered{}, false, nil
 	}
 	sm, ok, err := smolLookup(name)
-	if err != nil || !ok {
-		return Discovered{}, false, err
+	if err != nil || !ok || !sm.Labelled() {
+		return Discovered{}, false, err // a VM devvm did not create is not its to see
 	}
-	m := SmolRecord(sm)
-	return Discovered{Machine: m, Backend: &smolBackend{m: m, paths: paths, row: &sm}}, true, nil
-}
-
-// SmolRecord is the record the smol source makes of one listing row,
-// Managed settled: devvm's label on the VM (devvm=true, set by `create`).
-// The status snapshot uses it for every row of the one `ls` it took (not
-// one listing per row).
-func SmolRecord(sm SmolMachine) *config.Machine {
 	m := &config.Machine{Name: sm.Name, Backend: config.BackendSmol}
-	m.SetManaged(sm.Labelled())
-	return m
+	m.SetManaged(true) // its label (devvm=true, set by `create`)
+	return Discovered{Machine: m, Backend: &smolBackend{m: m, paths: paths, row: &sm}}, true, nil
 }

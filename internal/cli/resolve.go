@@ -12,29 +12,13 @@ import (
 )
 
 // resolve loads a machine and its backend for the verbs that act *on* a
-// machine (attach, ports, keys, setup, cp, …). It refuses a hub:
-// a hub is reached like a remote box but is never shaped, so every one of
-// those verbs fails here, in one place, with the same message. It also
-// refuses a local smol VM devvm did not create (requireManaged): only
-// status, start, stop, shell and exec reach one of those (resolveUnmanaged),
-// and `delete` refuses it on its own. `status` and `delete`, which do apply
-// to a hub, use resolveAny.
+// machine (attach, shell, exec, ports, keys, setup, cp, start, stop, …).
+// It refuses a hub: a hub is reached like a remote box but is never
+// shaped, so every one of those verbs fails here, in one place, with the
+// same message. Every machine it returns is either an entry or one devvm
+// made: a smol VM devvm did not create is not found at all (resolveAny).
+// `status` and `delete`, which do apply to a hub, use resolveAny.
 func (a *App) resolve(name string) (*config.Machine, backend.Backend, error) {
-	m, b, err := a.resolveUnmanaged(name)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := requireManaged(m); err != nil {
-		return nil, nil, err
-	}
-	return m, b, nil
-}
-
-// resolveUnmanaged is resolve without the managed gate, for the few verbs
-// an unmanaged smol VM supports (config.md §2): status, start, stop, and
-// shell/exec as smolvm's own default user. The backend itself keeps those
-// hands-off (plain `machine exec`, nothing installed).
-func (a *App) resolveUnmanaged(name string) (*config.Machine, backend.Backend, error) {
 	m, b, err := a.resolveAny(name)
 	if err != nil {
 		return nil, nil, err
@@ -67,22 +51,6 @@ func requireMachine(m *config.Machine) error {
 	return nil
 }
 
-// requireManaged refuses a local VM devvm did not create (config.md §2):
-// attach, cp, ports, setup and the browser bridge all assume devvm's `dev`
-// user, tmux socket and agent, none of which such a VM has, and none of
-// which devvm may put there unasked. Entries are
-// never refused here: devvm only connects to one, with the consented
-// posture its line gives (agent = true). A machine on a hub is refused by
-// its hub, which reads its label.
-// A provider server is always one devvm made: the provider source sees
-// only the servers with the devvm=true label (providers.go).
-func requireManaged(m *config.Machine) error {
-	if m.IsRemote() || m.Managed() {
-		return nil
-	}
-	return fmt.Errorf("'%s' is a smol VM devvm did not create; %s", m.Name, backend.AdoptHint(m.Name))
-}
-
 // resolveAny loads a machine, a hub, or a HUB/NAME hub-machine record and its
 // backend, in this order (config.md §2):
 //
@@ -91,7 +59,8 @@ func requireManaged(m *config.Machine) error {
 //     command, and the entry shadows a local smol VM of the same name
 //     (status reports that);
 //   - any other name goes to discovery (backend.Discover: today, one
-//     `smolvm machine ls --json`), whose source settles Managed;
+//     `smolvm machine ls --json`), which knows only the VMs with devvm's
+//     label (a smol VM devvm did not create is invisible to it);
 //   - and only then each configured provider (providerLookup: one API Get
 //     per provider with a token), whose label settles Managed. An entry or
 //     a smol VM therefore shadows a provider server of the same name.
@@ -141,6 +110,12 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 			return nil, nil, err
 		}
 		if pm == nil {
+			// Invisible is not unknown: a VM of that name without devvm's
+			// label is the user's to remove or rename (one more listing,
+			// on this failure path only).
+			if backend.SmolExists(name) {
+				return nil, nil, fmt.Errorf("a smol VM named %s exists, but devvm did not create it; if an older devvm made it, 'smolvm machine update --name %s --label devvm=true' makes it devvm's", name, name)
+			}
 			msg := fmt.Sprintf("unknown machine %q; run 'devvm status', 'devvm create %s' to make a smol VM, or 'devvm config add %s' for a remote box", name, name, name)
 			if hint != "" {
 				msg += " (" + hint + ")"

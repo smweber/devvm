@@ -16,7 +16,7 @@ import (
 )
 
 func (a *App) runExec(name string, argv []string) error {
-	m, b, err := a.resolveUnmanaged(name) // an unmanaged VM runs it as smolvm's default user (backend)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func guestExit(m *config.Machine, err error) error {
 // and hold the browser bridge (bridgeSession) for as long as they run. A
 // remote box that let one in is reachable as of its return (noteContact).
 func (a *App) runShell(name, transport string) error {
-	m, it, tr, release, err := a.interactive(name, transport, true)
+	m, it, tr, release, err := a.interactive(name, transport)
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func (a *App) runShell(name, transport string) error {
 }
 
 func (a *App) runAttach(name, transport string) error {
-	m, it, tr, release, err := a.interactive(name, transport, false)
+	m, it, tr, release, err := a.interactive(name, transport)
 	if err != nil {
 		return err
 	}
@@ -79,15 +79,8 @@ func (a *App) runAttach(name, transport string) error {
 	return err
 }
 
-// allowUnmanaged is shell's: an unmanaged smol VM gets a plain login shell
-// (the backend's), never attach's dev tmux session. bridgeSession holds
-// nothing for one (bridged).
-func (a *App) interactive(name, transport string, allowUnmanaged bool) (*config.Machine, backend.Interactive, string, func(), error) {
-	resolve := a.resolve
-	if allowUnmanaged {
-		resolve = a.resolveUnmanaged
-	}
-	m, b, err := resolve(name)
+func (a *App) interactive(name, transport string) (*config.Machine, backend.Interactive, string, func(), error) {
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -148,7 +141,7 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 func (a *App) runStart(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	a.providerAsk = true
-	m, b, err := a.resolveUnmanaged(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -157,9 +150,6 @@ func (a *App) runStart(name string) error {
 	}
 	if err := a.powerStartWait(m, b); err != nil {
 		return err
-	}
-	if requireManaged(m) != nil {
-		return nil // no forwards on a VM devvm did not create (nothing to resume)
 	}
 	// Forwards follow the VM: resume the saved ones on start.
 	saved, err := a.savedPorts(m.Name)
@@ -198,7 +188,7 @@ func (a *App) powerStartWait(m *config.Machine, b backend.Backend) error {
 func (a *App) runStop(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	a.providerAsk = true
-	m, b, err := a.resolveUnmanaged(name)
+	m, b, err := a.resolve(name)
 	if err != nil {
 		return err
 	}
@@ -241,11 +231,8 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 		}
 		return fmt.Errorf("'%s' is %s entry in devvm.toml; 'devvm config rm %s' removes the entry and this host's state for it (the box itself is never touched)", name, what, name)
 	}
-	// devvm destroys only what it made (config.md §2): a VM it merely
-	// discovered is smolvm's to remove.
-	if !m.Managed() {
-		return fmt.Errorf("'%s' is a smol VM devvm did not create; remove it with 'smolvm machine rm --name %s'", name, name)
-	}
+	// A smol VM resolve found is one devvm made (its label): devvm destroys
+	// only what it made, and one it did not is not found at all.
 	if !yes {
 		ok, err := confirmYes(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
 		if err != nil {

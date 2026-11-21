@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -203,7 +202,8 @@ authorized_keys_github = ["x"]
 	}
 }
 
-// Refusals, all before anything runs in the box.
+// Refusals, all before anything runs in the box. A VM devvm did not create
+// is not devvm's to shape, and there is no handover (no --adopt).
 func TestSetupRefusals(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","labels":{}},{"name":"made","state":"running",`+devvmLabel+`}]`)
@@ -216,11 +216,10 @@ func TestSetupRefusals(t *testing.T) {
 		argv []string
 		want string
 	}{
-		{[]string{"setup", "web"}, "devvm setup --adopt web"},
-		{[]string{"setup", "--adopt", "made"}, "already managed"},
+		{[]string{"setup", "web"}, "a smol VM named web exists, but devvm did not create it"},
 		{[]string{"setup", "box"}, "'box' is an entry in devvm.toml: devvm never shapes one"},
-		{[]string{"setup", "--adopt", "box"}, "never shapes"},
-		{[]string{"setup", "--adopt", "--yes", "web"}, "--yes does not apply"},
+		{[]string{"setup", "--adopt", "web"}, "unknown flag: --adopt"},
+		{[]string{"setup", "--yes", "made"}, "unknown flag: --yes"},
 		{[]string{"setup", "--host", "1.2.3.4", "made"}, "unknown flag: --host"},
 	} {
 		err := runTree(t, a, tc.argv...)
@@ -228,92 +227,11 @@ func TestSetupRefusals(t *testing.T) {
 			t.Errorf("%v: err = %v, want one line with %q", tc.argv, err, tc.want)
 		}
 	}
-	// No terminal: --adopt refuses.
-	pinTTYs(t, false, false)
-	if err := runTree(t, a, "setup", "--adopt", "web"); err == nil || !strings.Contains(err.Error(), "needs a terminal") {
-		t.Errorf("no tty: %v", err)
-	}
 	if calls := smolvmCalls(t, log); len(calls) > 0 {
 		t.Errorf("refusals ran smolvm: %q", calls)
 	}
 	if _, err := os.Stat(ssh); err == nil {
 		t.Error("refusals dialed ssh") // and smolvmCalls saw no label written
-	}
-}
-
-type fakeTTY struct {
-	io.Reader
-	out bytes.Buffer
-}
-
-func (f *fakeTTY) Write(p []byte) (int, error) { return f.out.Write(p) }
-func (f *fakeTTY) Close() error                { return nil }
-
-func typeIntoTTY(t *testing.T, typed string) *fakeTTY {
-	t.Helper()
-	tty := &fakeTTY{Reader: strings.NewReader(typed)}
-	orig := openAdoptTTY
-	openAdoptTTY = func() (io.ReadWriteCloser, error) { return tty, nil }
-	t.Cleanup(func() { openAdoptTTY = orig })
-	pinTTYs(t, true, true)
-	return tty
-}
-
-// --adopt prints the plan and needs the VM's name typed: a wrong answer
-// (y included) adopts nothing; the name labels the VM (smolvm machine
-// update --label devvm=true) and shapes it.
-func TestSetupAdoptTypedName(t *testing.T) {
-	a := newTestApp(t)
-	dir := t.TempDir()
-	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
-	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"running","labels":{}}]`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
-		"case \"$*\" in\n" +
-		"  'machine ls --json') cat " + ls + ";;\n" +
-		"  'machine update --name web --label devvm=true') echo '[{\"name\":\"web\",\"state\":\"running\"," + devvmLabel + "}]' > " + ls + ";;\n" +
-		"esac\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	stubBrowser(t, log)
-	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/opt/h\"\nrepos = [\"o/r\"]\n")
-	if err := config.SavePorts(a.Paths, "web", []string{"9999"}); err != nil {
-		t.Fatal(err)
-	}
-
-	tty := typeIntoTTY(t, "y\n")
-	err := runTree(t, a, "setup", "--adopt", "web")
-	if err == nil || !strings.Contains(err.Error(), "not adopted") {
-		t.Fatalf("typed y: %v", err)
-	}
-	for _, want := range []string{
-		"hands the smol VM 'web' to devvm",
-		"install devvm's prereqs", "as root", "devvm agent",
-		"run the hook: cmd:/opt/h", "clone into ~/src: o/r",
-		"treat 'web' as managed from now on",
-		"Type the VM's name (web) to hand it over: ",
-	} {
-		if !strings.Contains(tty.out.String(), want) {
-			t.Errorf("plan lacks %q:\n%s", want, tty.out.String())
-		}
-	}
-	if calls := smolvmCalls(t, log); len(calls) > 0 {
-		t.Fatalf("an aborted adoption labelled or touched the VM: %q", calls)
-	}
-
-	typeIntoTTY(t, "web\n")
-	if err := runTree(t, a, "setup", "--adopt", "web"); err != nil {
-		t.Fatalf("typed the name: %v\n%s", err, a.Stderr)
-	}
-	data, _ := os.ReadFile(log)
-	// Labelled first; managed then: the execs go through the dev-user wrapper.
-	inOrder(t, string(data), "machine update --name web --label devvm=true", "useradd", "build-essential", "AGENT-INSTALL web", "/opt/h", "gh repo clone")
-	// setup never touches saved forwards (only create clears a leftover).
-	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"9999"}) {
-		t.Errorf("ports = %v after an adoption", got)
 	}
 }
 
@@ -613,13 +531,13 @@ harden = true
 	if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runTree(t, a, "setup", "h/web", "--template", "devvm", "--yes", "--fail2ban"); err != nil {
+	if err := runTree(t, a, "setup", "h/web", "--template", "devvm", "--fail2ban"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
 	want := []string{"setup", "web", "--inline-template",
 		"--hook=url:https://x/b.sh --profile agent-vm --yes", "--memory=8192",
 		"--repo=smweber/devvm", "--repo=https://x.example/a,b.git",
-		"--harden=true", "--fail2ban=true", "--no-ports", "--yes"}
+		"--harden=true", "--fail2ban=true", "--no-ports"}
 	calls := devvmCalls(t, argvLog)
 	if len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Errorf("hub got %q\nwant %q", calls, want)
@@ -829,13 +747,6 @@ func TestInlineTemplateIgnoresHostFile(t *testing.T) {
 	}
 }
 
-func TestAdoptHintIsCurrent(t *testing.T) {
-	h := backend.AdoptHint("web")
-	if strings.Contains(h, "next release") || strings.Contains(h, "(") || !strings.Contains(h, "devvm setup --adopt web") {
-		t.Errorf("AdoptHint = %q", h)
-	}
-}
-
 // A failed clone does not end setup (simplify.md step 2): every repo is
 // tried, keys and hardening ran before, and setup ends in
 // setupIncomplete, exit status 3.
@@ -939,7 +850,7 @@ func TestProxiedCreateClearsWhenHubMadeVM(t *testing.T) {
 	// setup never touches them, exit 3 or not.
 	t.Setenv("FAKE_HUB_MSG", says[2].msg)
 	t.Setenv("FAKE_DEVVM_EXIT", "3")
-	err := runTree(t, a, "setup", "h/web", "--yes")
+	err := runTree(t, a, "setup", "h/web")
 	var ec *exitCode
 	if !errors.As(err, &ec) || ec.code != exitSetupIncomplete {
 		t.Fatalf("setup: err = %v, want the hub's exit status 3", err)

@@ -337,12 +337,8 @@ func TestAttachStartsStoppedSmol(t *testing.T) {
 // in state: `machine start` runs startBody (exit 0 if empty) and then lists
 // it running; every other call succeeds.
 func fakeBootingSmolvm(t *testing.T, state, startBody string) (log string) {
-	return fakeBootingSmolvmLabels(t, state, startBody, devvmLabel)
-}
-
-// fakeBootingSmolvmLabels is fakeBootingSmolvm with web's labels as given.
-func fakeBootingSmolvmLabels(t *testing.T, state, startBody, labels string) (log string) {
 	t.Helper()
+	labels := devvmLabel
 	dir := t.TempDir()
 	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
 	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"`+state+`",`+labels+`}]`), 0o644); err != nil {
@@ -454,35 +450,6 @@ func TestStartWaitsForRunning(t *testing.T) {
 	}
 	if c, _ := os.ReadFile(n); strings.TrimSpace(string(c)) != "3" {
 		t.Errorf("listings after the start = %q, want start to poll until running", c)
-	}
-}
-
-// shell on a stopped VM devvm did not create starts it, as `start` does,
-// and nothing more: no bridge, no daemon, its stray saved forwards left.
-func TestUnmanagedShellStartsStoppedVM(t *testing.T) {
-	t.Setenv(backend.NoSubscribeEnv, "")
-	shrinkRunningPoll(t)
-	a := newTestApp(t)
-	log := fakeBootingSmolvmLabels(t, "stopped", "", `"labels":{}`)
-	if err := config.SavePorts(a.Paths, "web", []string{"3000"}); err != nil {
-		t.Fatal(err)
-	}
-	calls := stubBridge(t, &fakeBridge{}, nil)
-	if err := runTree(t, a, "shell", "web"); err != nil {
-		t.Fatalf("shell: %v\n%s", err, a.Stderr)
-	}
-	c := smolvmCalls(t, log)
-	if len(c) != 2 || c[0] != "machine start --name web" || !strings.HasPrefix(c[1], "machine exec") {
-		t.Errorf("smolvm calls = %q, want one start, then the shell", c)
-	}
-	if len(*calls) != 0 {
-		t.Errorf("bridge opened for an unmanaged VM: %q", *calls)
-	}
-	if out := a.Stdout.(*bytes.Buffer).String() + a.Stderr.(*bytes.Buffer).String(); strings.Contains(out, "forward") {
-		t.Errorf("forwards touched for an unmanaged VM: %q", out)
-	}
-	if _, err := os.Stat(filepath.Join(a.Paths.RuntimeDir(), "web.sock")); err == nil {
-		t.Error("a daemon socket appeared")
 	}
 }
 

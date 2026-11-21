@@ -273,12 +273,6 @@ func (b *smolBackend) Spawn(ctx context.Context, o ExecOpts, argv ...string) (*S
 
 // execArgv builds the full `smolvm machine exec` host command. spawn forces the
 // `-i --stream` bytes-pipe mode used for the persistent agent (mux-style).
-//
-// An unmanaged VM (one devvm did not create, config.md §2) gets a plain
-// `machine exec` of argv as smolvm's own default user: no hostname
-// re-assert, no sudo to a `dev` user it has no reason to have, no login
-// wrap (its shell may not be bash). ExecOpts.User and Login are ignored
-// there, and Env rides smolvm's own -e flags.
 func (b *smolBackend) execArgv(o ExecOpts, spawn bool, argv []string) []string {
 	h := []string{"smolvm", "machine", "exec"}
 	switch {
@@ -288,13 +282,6 @@ func (b *smolBackend) execArgv(o ExecOpts, spawn bool, argv []string) []string {
 		h = append(h, "-it", "-e", "TERM="+term())
 	case o.Stream:
 		h = append(h, "--stream")
-	}
-	if !b.m.Managed() {
-		for _, kv := range envAssignments(o.Env) {
-			h = append(h, "-e", kv)
-		}
-		h = append(h, "--name", b.m.Name, "--")
-		return append(h, argv...)
 	}
 	h = append(h, "--name", b.m.Name, "--")
 	return append(h, b.guestArgv(o, argv)...)
@@ -362,15 +349,4 @@ func SmolCreate(name string, memoryMiB, diskGiB int) error {
 		return err
 	}
 	return smolCmd("machine", "start", "--name", name)
-}
-
-// SmolLabel puts devvm's label on a VM devvm did not create (`setup
-// --adopt`): `machine update --label`, which smolvm 1.35.5 has, on a
-// running VM too (1.16.1 has no update --label: it fails with smolvm's own
-// message).
-func SmolLabel(name string) error {
-	if err := needSmolvm(); err != nil {
-		return err
-	}
-	return smolCmd("machine", "update", "--name", name, "--label", smolLabel)
 }

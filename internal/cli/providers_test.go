@@ -55,7 +55,7 @@ func addServer(t *testing.T, p *fake.Provider, name, addr, state string, managed
 // smol sources miss, one Get, and only with a token.
 func TestProviderResolveOrder(t *testing.T) {
 	a := newTestApp(t)
-	fakeLocalSmolvm(t, `[{"name":"vm","state":"running","created_at":1}]`)
+	fakeLocalSmolvm(t, `[{"name":"vm","state":"running",`+devvmLabel+`}]`)
 	p := withFakeHetzner(t, a, "[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n", false)
 	addServer(t, p, "web", "1.1.1.1", provider.StateRunning, true)
 	addServer(t, p, "vm", "2.2.2.2", provider.StateRunning, true)
@@ -301,7 +301,7 @@ func TestProviderUnlabelledInvisible(t *testing.T) {
 func TestProviderStatusRows(t *testing.T) {
 	a := newTestApp(t)
 	fakeSSH(t, "exit 255")
-	fakeLocalSmolvm(t, `[{"name":"vm","state":"running","created_at":1}]`)
+	fakeLocalSmolvm(t, `[{"name":"vm","state":"running",`+devvmLabel+`}]`)
 	p := withFakeHetzner(t, a, "\n[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n", false)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
 	addServer(t, p, "off", "5.5.5.5", provider.StateStopped, true)

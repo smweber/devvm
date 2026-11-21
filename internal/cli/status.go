@@ -33,18 +33,11 @@ var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
 const (
-	ownManaged   = "managed"   // devvm made it: the devvm=true label (on a smol VM; every provider row has it)
-	ownUnmanaged = "unmanaged" // a smol VM devvm did not create
+	ownManaged   = "managed"   // devvm made it: the devvm=true label, which every smol and provider row has
+	ownUnmanaged = "unmanaged" // only from a hub one release older (an unlabelled VM there), or its old remote-unmanaged
 	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
 	ownNone      = "-"         // entries (devvm never shapes one) and hubs; a hub machine whose hub did not say
 )
-
-func ownership(managed bool) string {
-	if managed {
-		return ownManaged
-	}
-	return ownUnmanaged
-}
 
 // statusRow is one machine's resolved status for rendering.
 type statusRow struct {
@@ -185,19 +178,19 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 //
 //	state:    running | stopped | reachable | unreachable | ?
 //	forwards: up:N | reconnecting:N | down | -
-//	managed:  managed | unmanaged | shadowed | -
+//	managed:  managed | shadowed | - (an older hub may send unmanaged)
 //	verified: verified=<unix>:<how> | verified=- | -
 //
 // The fifth column was appended (config.md §7), so a consumer reading four
-// fields still works. `unmanaged` is a smol VM devvm did not create (it
-// supports status/start/stop/shell/exec only; `setup --adopt` hands it
-// over); `shadowed` is a entry hiding a local smol VM of the same name (the
-// entry wins for every command); `-` is an entry (remote or hub: devvm
-// never shapes one), or a machine on a hub too old to emit the column:
-// never `unmanaged`, which would be a claim nobody made. An older hub may
-// still send `managed`/`unmanaged` for its own remote entries. `dormant` is
-// gone (a smol VM exists or it doesn't), though an older hub may still send
-// it.
+// fields still works. `managed` is a smol VM or provider server devvm made
+// (its devvm=true label; one without it has no row at all); `shadowed` is
+// a entry hiding a local smol VM of the same name (the entry wins for
+// every command); `-` is an entry (remote or hub: devvm never shapes one),
+// or a machine on a hub too old to emit the column. This host never says
+// `unmanaged`; a hub one release older may (an unlabelled VM it still
+// lists, or `managed`/`unmanaged` for its own remote entries), passed
+// through. `dormant` is gone (a smol VM exists or it doesn't), though an
+// older hub may still send it.
 //
 // N is the number of configured (`conf`-owned) forwards the daemon holds; a
 // forward only a session or a ttl holds is not counted (browser-bridge.md
@@ -374,15 +367,12 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 	}
 }
 
-// rowNote is the human table's trailing remark: a VM devvm did not create
-// (with what hands it over), an entry shadowing a VM, the hub entry naming
-// this host.
+// rowNote is the human table's trailing remark: an entry shadowing a VM,
+// the hub entry naming this host.
 func rowNote(r statusRow) string {
 	switch {
 	case r.note != "":
 		return "  (" + r.note + ")"
-	case r.hub == "" && r.managed == ownUnmanaged && r.backend == config.BackendSmol:
-		return "  (unmanaged: " + backend.AdoptHint(r.name) + ")"
 	case r.managed == ownShadowed:
 		what := strings.Join(r.shadows, " and ")
 		if what == "" {
@@ -464,8 +454,8 @@ type statusScope struct {
 // listing (rather than the backend's per-machine Status probe): a snapshot is
 // re-taken on every --watch event, and N+1 `smolvm machine ls` subprocesses
 // per change would be the polling this command exists to avoid. The same
-// listing settles each VM's ownership (its label, the smol source's rule:
-// backend.SmolRecord) and carries its sizes.
+// listing says which VMs are devvm's (their label, the smol source's rule)
+// and carries their sizes.
 func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 	f, err := config.LoadFile(a.Paths)
 	if err != nil {
@@ -490,20 +480,16 @@ func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 		}
 		rows = append(rows, a.rowFor(m, smols))
 	}
-	// Local smol VMs with no entry: discovered (config.md §2). One devvm
-	// made reads managed and can hold forwards; any other reads unmanaged,
-	// and a stray ports file for it reads `-`, since nothing may bring its
-	// forwards up. One shadowed by an entry has no row of its own.
+	// Local smol VMs with no entry: discovered (config.md §2), devvm's
+	// own only (smolSnapshot). One shadowed by an entry has no row of its
+	// own.
 	for _, sm := range smols.list {
 		if _, ok := f.Entries[sm.Name]; ok {
 			continue
 		}
-		managed := sm.Labelled()
-		r := smolRow(statusRow{name: sm.Name, backend: config.BackendSmol, managed: ownership(managed)}, sm)
+		r := smolRow(statusRow{name: sm.Name, backend: config.BackendSmol, managed: ownManaged}, sm)
 		r.fwds = a.forwardSummary(sm.Name)
-		if managed {
-			r.saved = a.hasSavedPorts(sm.Name)
-		}
+		r.saved = a.hasSavedPorts(sm.Name)
 		rows = append(rows, r)
 	}
 	if sc.local {
@@ -671,7 +657,10 @@ func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config
 	return rows
 }
 
-// smolMachines is one `smolvm machine ls` taken for a whole status snapshot.
+// smolMachines is one `smolvm machine ls` taken for a whole status
+// snapshot, the VMs with devvm's label only (simplify.md step 15): a VM
+// devvm did not create is invisible to it, so it has no row, no
+// completion, and shadows nothing.
 type smolMachines struct {
 	available bool // smolvm is installed; otherwise every smol row is "?"
 	list      []backend.SmolMachine
@@ -683,9 +672,12 @@ func smolSnapshot() smolMachines {
 	if !s.available {
 		return s
 	}
-	s.list, _ = backend.SmolList()
-	for _, sm := range s.list {
-		s.byName[sm.Name] = sm
+	all, _ := backend.SmolList()
+	for _, sm := range all {
+		if sm.Labelled() {
+			s.list = append(s.list, sm)
+			s.byName[sm.Name] = sm
+		}
 	}
 	return s
 }
@@ -779,11 +771,7 @@ func (a *App) runStatus(name string) error {
 		fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
 		fmt.Fprintf(a.Stdout, "  lifecycle: %s\n", lifecycleTrack(smolLifecycle, smolStateLabel(sm)))
 		fmt.Fprintf(a.Stdout, "  resources: %d CPUs, %s RAM, %s disk\n", sm.CPUs, memHuman(sm.MemoryMiB), diskHuman(sm.StorageGB))
-		if m.Managed() {
-			fmt.Fprintln(a.Stdout, "  managed: yes (created by devvm)")
-		} else {
-			fmt.Fprintf(a.Stdout, "  managed: no (not created by devvm: status, start, stop, shell and exec only; %s)\n", backend.AdoptHint(m.Name))
-		}
+		fmt.Fprintln(a.Stdout, "  managed: yes (created by devvm: the devvm=true label)")
 	} else {
 		// A entry: no smolvm call (a shadowed VM shows in the
 		// listing's fifth column, not here).

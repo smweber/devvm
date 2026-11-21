@@ -108,8 +108,9 @@ func testPaths(t *testing.T) config.Paths {
 	return config.Paths{Config: filepath.Join(d, "config"), State: filepath.Join(d, "state")}
 }
 
-// The smol source settles Managed from devvm's label (config.md §2): with
-// it the VM is devvm's, without it not, and discovery writes nothing.
+// The smol source knows only the VMs with devvm's label (config.md §2,
+// simplify.md step 15): one with it is devvm's, one without is not found,
+// and discovery writes nothing.
 func TestDiscoverSmolSettlesManaged(t *testing.T) {
 	ls := `[{"name":"web","state":"running","memory_mib":2048,"storage_gb":20,"cpus":4,"labels":{"devvm":"true"}},
 		{"name":"raw","state":"stopped","labels":{}}]`
@@ -131,8 +132,8 @@ func TestDiscoverSmolSettlesManaged(t *testing.T) {
 	if row, ok := SmolRow(d.Backend); !ok || row.MemoryMiB != 2048 || row.StorageGB != 20 || row.CPUs != 4 {
 		t.Errorf("backend row = %+v, %v; want the listing's sizes", row, ok)
 	}
-	if discover("raw").Machine.Managed() {
-		t.Error("an unlabelled VM reads managed")
+	if _, ok, err := Discover(p, "raw"); ok || err != nil {
+		t.Errorf("Discover(raw) = %v, %v; want an unlabelled VM not found", ok, err)
 	}
 	// Nobody knows the name: not found, no error.
 	if _, ok, err := Discover(p, "nope"); ok || err != nil {
@@ -185,24 +186,5 @@ func TestSmolRefreshResettles(t *testing.T) {
 	ls = `[]`
 	if fresh, running, err := r.Refresh(); err != nil || running || fresh != nil {
 		t.Errorf("deleted VM: Refresh = %v, %v, %v; want nil, not running, no error", fresh, running, err)
-	}
-}
-
-// An unmanaged VM is reached as smolvm's own default user over a plain
-// `machine exec`: no hostname re-assert, no sudo to `dev`, no login wrap,
-// Env through smolvm's -e (config.md §2).
-func TestUnmanagedSmolExecIsPlain(t *testing.T) {
-	b := &smolBackend{m: &config.Machine{Name: "web", Backend: config.BackendSmol}}
-	got := strings.Join(b.execArgv(ExecOpts{Login: true, User: "root", Env: map[string]string{"A": "1"}}, false, []string{"ls", "-l"}), " ")
-	if want := "smolvm machine exec -e A=1 --name web -- ls -l"; got != want {
-		t.Errorf("unmanaged exec = %q, want %q", got, want)
-	}
-	managed := &smolBackend{m: managedSmol("web")}
-	if got := strings.Join(managed.execArgv(ExecOpts{}, false, []string{"ls"}), " "); !strings.Contains(got, "sudo -u dev") {
-		t.Errorf("managed exec = %q, want the dev-user drop", got)
-	}
-	if err := b.Attach(""); err == nil {
-		// needSmolvm may fail first on a host with no smolvm; either way no attach.
-		t.Error("unmanaged Attach succeeded")
 	}
 }

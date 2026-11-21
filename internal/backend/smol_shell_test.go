@@ -96,32 +96,6 @@ func TestSmolShellCarriesBrowser(t *testing.T) {
 	}
 }
 
-// A VM devvm did not create gets a plain login shell as smolvm's default
-// user, with nothing of devvm's in it (config.md §2), and no attach at all:
-// no BROWSER, no sudo, no tmux keeper.
-func TestUnmanagedSmolShellIsBare(t *testing.T) {
-	log := fakeSmolvm(t, false)
-	b := &smolBackend{m: &config.Machine{Name: "web", Backend: config.BackendSmol}}
-	if err := b.Shell(""); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Attach(""); err == nil {
-		t.Error("unmanaged Attach succeeded")
-	}
-	calls := readLines(t, log)
-	if len(calls) != 1 {
-		t.Fatalf("ran %d execs, want only the shell's: %q", len(calls), calls)
-	}
-	for _, bad := range []string{"BROWSER", "sudo", "tmux -S", "hostname"} {
-		if strings.Contains(calls[0], bad) {
-			t.Errorf("unmanaged shell exec %q carries %s", calls[0], bad)
-		}
-	}
-	if !strings.HasPrefix(calls[0], "machine exec -it -e TERM=") || !strings.Contains(calls[0], " --name web -- sh -c ") {
-		t.Errorf("unmanaged shell exec = %q, want a plain -it exec of sh", calls[0])
-	}
-}
-
 // fakeGuestBin is a directory holding a fake command that prints BROWSER.
 func fakeGuestBin(t *testing.T, name string) string {
 	t.Helper()

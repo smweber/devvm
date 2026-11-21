@@ -29,8 +29,8 @@ import (
 //go:embed bin/devvm-agent-linux-amd64 bin/devvm-agent-linux-arm64
 var binFS embed.FS
 
-// managedPath is where the agent lives on a box devvm owns: root-owned, on PATH.
-// Adopted (unmanaged) hosts instead get a user-scoped ~/.local/bin install.
+// managedPath is where the agent lives on a box devvm made: root-owned, on
+// PATH. An entry (agent = true) gets a user-scoped ~/.local/bin install.
 const managedPath = "/usr/local/bin/devvm-agent"
 
 // binFor returns the embedded agent bytes for a guest's `uname -s -m` (e.g.
@@ -129,25 +129,19 @@ var ErrHubMachine = errors.New("a hub machine's agent and shim are installed by 
 // Managed boxes (smol, a provider server devvm made) get a root-owned
 // /usr/local/bin install; any other remote box (an entry with agent = true, whose daemon
 // is the only caller there) gets a user-scoped ~/.local/bin install (no
-// root, nothing system-level touched). approve, if non-nil, is called
-// once, only when something is actually written; returning an error aborts
-// (the smol transport's gate, which refuses a VM devvm does not manage).
+// root, nothing system-level touched). The caller decides whether devvm
+// may write at all (a box it made, or agent = true): Install only writes.
 //
 // A machine on a hub is refused before anything runs: the hub's own daemon
 // installed agent and shim before spawning the VM's one agent exec, and
 // this host never writes to a hub VM (hub.md §8, §9).
-func Install(ctx context.Context, b backend.Backend, m *config.Machine, approve func() error) (Paths, error) {
+func Install(ctx context.Context, b backend.Backend, m *config.Machine) (Paths, error) {
 	pl, err := plan(ctx, b, m)
 	if err != nil {
 		return Paths{}, err
 	}
 	if !pl.needAgent && !pl.needShim {
 		return pl.p, nil
-	}
-	if approve != nil {
-		if err := approve(); err != nil {
-			return Paths{}, err
-		}
 	}
 	if pl.needAgent {
 		if err := installAgent(ctx, b, m, pl.data, pl.arch, pl.p.Agent, pl.staging); err != nil {

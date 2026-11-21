@@ -107,7 +107,7 @@ func sshAgentHooks(m *config.Machine, ob backend.Backend) agentHooks {
 				// Where follows Managed() (agentbin.plan): root on a
 				// provider server devvm made, the login user's
 				// ~/.local/bin on an entry (never managed).
-				p, err := agentbin.Install(ctx, ob, m, nil)
+				p, err := agentbin.Install(ctx, ob, m)
 				if err != nil {
 					return agentbin.Paths{}, agentbin.Missing, err
 				}

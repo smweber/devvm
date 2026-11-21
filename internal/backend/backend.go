@@ -7,7 +7,6 @@ package backend
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -106,11 +105,6 @@ type Refresher interface {
 	Refresh() (m *config.Machine, running bool, err error)
 }
 
-// ErrUnmanaged is what the backend says when asked to shape a local VM devvm
-// did not create (config.md §2). The cli refuses such commands first, with
-// the `setup --adopt` hint; this is the backstop.
-var ErrUnmanaged = errors.New("this smol VM was not created by devvm (unmanaged)")
-
 // RootCopier is a backend whose Copy leaves files owned by root (smol:
 // `smolvm machine cp` writes into the overlay as root), so a caller that
 // hands the file to the guest user must make it readable first. A
@@ -129,12 +123,6 @@ type RootCopier interface {
 // backend name (config.md §9 item 1).
 type Downloader interface {
 	CopyOut(ctx context.Context, guestSrc, hostDst string) error
-}
-
-// AdoptHint is the one next step every refusal of an unmanaged smol VM
-// names: the handover, or the removal route.
-func AdoptHint(name string) string {
-	return fmt.Sprintf("hand it over with 'devvm setup --adopt %s', or remove it with 'smolvm machine rm --name %s' and 'devvm create %s'", name, name, name)
 }
 
 // Interactive is the connect surface every backend implements. Shell opens a raw

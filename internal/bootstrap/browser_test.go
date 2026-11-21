@@ -114,10 +114,7 @@ func (r *recBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string
 func TestBrowserInstallsAndWritesProfile(t *testing.T) {
 	var installs []string
 	old := installAgent
-	installAgent = func(_ context.Context, _ backend.Backend, m *config.Machine, approve func() error) (agentbin.Paths, error) {
-		if approve != nil {
-			t.Errorf("%s: install gated behind approve on a managed box", m.Name)
-		}
+	installAgent = func(_ context.Context, _ backend.Backend, m *config.Machine) (agentbin.Paths, error) {
 		installs = append(installs, m.Name)
 		return agentbin.Paths{Agent: "/usr/local/bin/devvm-agent", Shim: backend.ManagedShimPath}, nil
 	}

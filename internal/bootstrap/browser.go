@@ -32,7 +32,7 @@ var installAgent = agentbin.Install
 // profile.d write (its agent is the user's to consent to, with agent =
 // true, and lives in ~/.local/bin), and a hub machine is set up by its hub.
 func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
-	p, err := installAgent(ctx, b, m, nil)
+	p, err := installAgent(ctx, b, m)
 	if err != nil {
 		return fmt.Errorf("install devvm-agent and browser shim: %w", err)
 	}

@@ -89,7 +89,7 @@ func (g *fakeGuest) Run(_ context.Context, o backend.ExecOpts, argv ...string) e
 func TestInstallAgentAndShimIdempotent(t *testing.T) {
 	g := newFakeGuest()
 	m := managedSmol("web")
-	p, err := Install(context.Background(), g, m, nil)
+	p, err := Install(context.Background(), g, m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestInstallAgentAndShimIdempotent(t *testing.T) {
 		t.Fatalf("shim = %q", got)
 	}
 	g.writes = nil
-	if _, err := Install(context.Background(), g, m, func() error { return errors.New("approve called") }); err != nil {
+	if _, err := Install(context.Background(), g, m); err != nil {
 		t.Fatal(err)
 	}
 	if len(g.writes) != 0 {
@@ -117,8 +117,8 @@ func TestInstallAgentAndShimIdempotent(t *testing.T) {
 }
 
 // A box with the agent but no shim (installed by a devvm before step 7)
-// gets the shim alone; on an adopt host that write is gated like any other.
-func TestInstallShimOnlyGated(t *testing.T) {
+// gets the shim alone.
+func TestInstallShimOnly(t *testing.T) {
 	g := newFakeGuest()
 	m := config.NewRemote("box", "")
 	data, _, err := binFor("Linux x86_64")
@@ -126,19 +126,12 @@ func TestInstallShimOnlyGated(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.files["/home/dev/.local/bin/devvm-agent"] = data
-	if _, err := Install(context.Background(), g, m, func() error { return errors.New("declined") }); err == nil || err.Error() != "declined" {
-		t.Fatalf("install without consent = %v", err)
-	}
-	if len(g.writes) != 0 {
-		t.Fatalf("declined install wrote %v", g.writes)
-	}
-	approved := 0
-	p, err := Install(context.Background(), g, m, func() error { approved++; return nil })
+	p, err := Install(context.Background(), g, m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if approved != 1 || strings.Join(g.writes, "|") != "shim /home/dev/.local/bin/devvm-open-url as " {
-		t.Fatalf("approved %d, writes %v", approved, g.writes)
+	if strings.Join(g.writes, "|") != "shim /home/dev/.local/bin/devvm-open-url as " {
+		t.Fatalf("writes %v", g.writes)
 	}
 	if p.Shim != "/home/dev/.local/bin/devvm-open-url" {
 		t.Fatalf("paths = %+v", p)
@@ -191,7 +184,7 @@ func TestInstallQuotesHostilePaths(t *testing.T) {
 	}
 	g := localGuest{home: home}
 	m := config.NewRemote("box", "")
-	p, err := Install(context.Background(), g, m, nil)
+	p, err := Install(context.Background(), g, m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,9 +196,12 @@ func TestInstallQuotesHostilePaths(t *testing.T) {
 		t.Fatalf("shim = %q, %v; want %q", b, err, shimScript(p.Agent))
 	}
 	if _, err := exec.LookPath("sha256sum"); err == nil {
-		calls := 0
-		if _, err := Install(context.Background(), g, m, func() error { calls++; return nil }); err != nil || calls != 0 {
-			t.Fatalf("second install: approve called %d times, %v", calls, err)
+		before, _ := os.Stat(p.Agent)
+		if _, err := Install(context.Background(), g, m); err != nil {
+			t.Fatalf("second install: %v", err)
+		}
+		if after, _ := os.Stat(p.Agent); !after.ModTime().Equal(before.ModTime()) {
+			t.Fatal("second install rewrote the agent")
 		}
 	}
 	// Stand in for the agent, and run the shim as a login tool would.
@@ -239,7 +235,7 @@ func TestShimScriptUnchangedForPlainPaths(t *testing.T) {
 func TestInstallRefusesHubMachine(t *testing.T) {
 	hub := config.NewHub("h", "u@h.example")
 	m := &config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}
-	if _, err := Install(context.Background(), nil, m, nil); !errors.Is(err, ErrHubMachine) {
+	if _, err := Install(context.Background(), nil, m); !errors.Is(err, ErrHubMachine) {
 		t.Fatalf("Install on a hub machine = %v, want ErrHubMachine", err)
 	}
 }

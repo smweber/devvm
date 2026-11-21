@@ -50,26 +50,26 @@ func smolvmCalls(t *testing.T, log string) []string {
 	return calls
 }
 
-// A smol VM devvm did not create does little (config.md §2): every verb
-// beyond status/start/stop/shell/exec refuses in one line naming the
-// handover, before anything runs in the VM.
-func TestUnmanagedSmolRefusals(t *testing.T) {
+// A smol VM devvm did not create (no devvm=true label) is invisible to it
+// (simplify.md step 15): every verb that names it says so in one line,
+// before anything runs in the VM, and status lists nothing.
+func TestUnlabelledSmolInvisible(t *testing.T) {
 	a := newTestApp(t)
-	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":100}]`)
+	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","labels":{}}]`)
 	src := filepath.Join(t.TempDir(), "f")
 	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, argv := range [][]string{
-		{"attach", "web"}, {"setup", "web"},
+		{"attach", "web"}, {"shell", "web"}, {"exec", "web", "--", "id"}, {"setup", "web"},
+		{"start", "web"}, {"stop", "web"}, {"delete", "web", "--yes"}, {"status", "web"},
 		{"cp-in", "web", src, "/tmp"}, {"cp-out", "web", "/etc/hostname", t.TempDir()},
 		{"ports", "add", "web", "3000"}, {"ports", "up", "web"}, {"ports", "down", "web"},
 		{"__daemon", "web"}, {"__session", "web"},
 	} {
 		err := runTree(t, a, argv...)
-		if err == nil || !strings.Contains(err.Error(), "devvm setup --adopt web") ||
-			!strings.Contains(err.Error(), "smolvm machine rm --name web") || strings.Contains(err.Error(), "\n") {
-			t.Errorf("%v: err = %v, want one line naming the handover and the removal", argv, err)
+		if err == nil || err.Error() != "a smol VM named web exists, but devvm did not create it; if an older devvm made it, 'smolvm machine update --name web --label devvm=true' makes it devvm's" {
+			t.Errorf("%v: err = %v, want the one line", argv, err)
 		}
 	}
 	if calls := smolvmCalls(t, log); len(calls) > 0 {
@@ -78,28 +78,21 @@ func TestUnmanagedSmolRefusals(t *testing.T) {
 	if _, err := os.Stat(a.Paths.PortsPath("web")); err == nil {
 		t.Error("a refused `ports add` saved a forward")
 	}
-
-	// delete refuses too, pointing at smolvm: devvm destroys only what it made.
-	err := runTree(t, a, "delete", "web")
-	if err == nil || !strings.Contains(err.Error(), "smolvm machine rm --name web") {
-		t.Errorf("delete: err = %v, want a pointer at smolvm machine rm", err)
+	// create refuses the name: smolvm cannot make a second VM of it.
+	if err := runTree(t, a, "create", "web", "--memory", "1024", "--yes"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("create: err = %v, want the name refused", err)
 	}
-
-	// exec runs, as smolvm's default user over a plain exec; start and stop too.
-	for _, argv := range [][]string{{"exec", "web", "--", "id"}, {"start", "web"}, {"stop", "web"}} {
-		if err := runTree(t, a, argv...); err != nil {
-			t.Errorf("%v: %v", argv, err)
-		}
+	if err := runTree(t, a, "status", "--plain", "--local"); err != nil {
+		t.Fatal(err)
 	}
-	want := []string{"machine exec --name web -- id", "machine start --name web", "machine stop --name web"}
-	if calls := smolvmCalls(t, log); strings.Join(calls, "\n") != strings.Join(want, "\n") {
-		t.Errorf("smolvm calls = %q, want %q", calls, want)
+	if out := a.Stdout.(*bytes.Buffer).String(); strings.Contains(out, "web") {
+		t.Errorf("status lists the unlabelled VM:\n%s", out)
 	}
 }
 
 // `ports list` and `ports rm` are host-side only: a stray ports file for a
 // VM devvm did not create, or for one that is gone, can be seen and emptied
-// (delete refuses the first and has nothing to delete for the second).
+// (delete finds neither).
 func TestStrayPortsFileIsRemovable(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":100}]`)
@@ -125,19 +118,8 @@ func TestStrayPortsFileIsRemovable(t *testing.T) {
 	}
 }
 
-// bridged needs Managed on smol: an unmanaged VM's shell holds no bridge,
-// since subscribing would spawn a daemon (and an agent install).
-func TestBridgedRequiresManagedSmol(t *testing.T) {
-	if bridged(&config.Machine{Name: "web", Backend: config.BackendSmol}) {
-		t.Error("an unmanaged smol VM is bridged")
-	}
-	if !bridged(managedSmol("web")) {
-		t.Error("a managed smol VM is not bridged")
-	}
-}
-
 // The --plain fifth column for every local row kind (config.md §7): a VM
-// devvm made (its label), one it did not, a remote entry (`-`), a remote
+// devvm made (its label; one it did not has no row), a remote entry (`-`), a remote
 // entry shadowing a VM of the same name, a broken conf, and a hub, whose
 // own row is `-` (unless it too shadows a VM).
 func TestStatusPlainManagedColumn(t *testing.T) {
@@ -145,8 +127,8 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	fakeLocalSmolvm(t, `[
 		{"name":"made","state":"running",`+devvmLabel+`},
 		{"name":"found","state":"stopped","created_at":2},
-		{"name":"cloud","state":"stopped","created_at":4},
-		{"name":"h","state":"stopped","created_at":5}
+		{"name":"cloud","state":"stopped",`+devvmLabel+`},
+		{"name":"h","state":"stopped",`+devvmLabel+`}
 	]`)
 	for _, m := range []*config.Machine{
 		config.NewRemote("cloud", "u@cloud"),
@@ -162,7 +144,6 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	got := a.Stdout.(*bytes.Buffer).String()
 	for _, want := range []string{
 		"made\tsmol\trunning\t-\tmanaged\t-\n",
-		"found\tsmol\tstopped\t-\tunmanaged\t-\n",
 		"cloud\tremote\t?\t-\tshadowed\tverified=-\n",
 		"box\tremote\t?\t-\t-\tverified=-\n", // an entry: devvm never shapes one
 	} {
@@ -172,6 +153,9 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	}
 	if strings.Count(got, "cloud\t") != 1 {
 		t.Errorf("the shadowed VM got a row of its own:\n%s", got)
+	}
+	if strings.Contains(got, "found") || strings.Contains(got, "unmanaged") {
+		t.Errorf("a VM devvm did not create has a row:\n%s", got)
 	}
 	if strings.Contains(got, "dormant") {
 		t.Errorf("dormant is gone:\n%s", got)

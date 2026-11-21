@@ -20,7 +20,7 @@ import (
 // v0.1.15 one) is listed with no cache or ports file naming it.
 func TestListMachinesSmolAndLegacyHubSocket(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
-	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1},{"name":"box","state":"stopped","created_at":2}]`)
+	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`},{"name":"box","state":"stopped",`+devvmLabel+`}]`)
 	saveRemote(t, a.Paths, "box")
 	legacy := config.LegacyPaths(a.Paths.Config)
 	serveOwnerDaemon(t, legacy, "h/leg", nil, true)
@@ -65,7 +65,7 @@ func TestRestartDaemonsCyclesSmolBothLayouts(t *testing.T) {
 	t.Cleanup(func() { daemonGoneTimeout = old })
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
-	fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1},{"name":"api","state":"running","created_at":2}]`)
+	fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`},{"name":"api","state":"running",`+devvmLabel+`}]`)
 	up := map[string]session.Response{session.OpList: {OK: true, State: session.StateUp, Version: "v0.1.15"}}
 	legacy := config.LegacyPaths(a.Paths.Config)
 	web := serveOwnerDaemon(t, a.Paths, "web", up, true)
@@ -86,7 +86,7 @@ func TestRestartDaemonsCyclesSmolBothLayouts(t *testing.T) {
 // The global `ports list` lists a smol VM's saved forwards.
 func TestPortsListAllListsSmol(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t))}
-	fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
+	fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`}]`)
 	if err := config.SavePorts(a.Paths, "web", []string{"3000:3000"}); err != nil {
 		t.Fatal(err)
 	}

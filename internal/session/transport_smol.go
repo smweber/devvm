@@ -32,12 +32,11 @@ func newSmolTransport(ctx context.Context, m *config.Machine, b backend.Backend)
 	// The agent and the BROWSER shim, in one install, before the exec that
 	// runs the agent (browser-bridge.md §5): a smol box whose daemon is up
 	// has both, which is what `attach` relies on the moment it subscribes.
-	// A managed VM gets the root /usr/local/bin install with no prompt. The
-	// gate fails for one devvm did not create (config.md §2): this runs in
-	// a detached daemon, nobody could consent, and m is the record the
-	// daemon re-settled for this very dial, so a VM recreated under the
-	// same name while the daemon slept is refused here too.
-	paths, err := agentbin.Install(ctx, b, m, smolInstallGate(m))
+	// The root /usr/local/bin install, with no prompt: m is the record the
+	// daemon re-read for this very dial (backend.Refresher), so the VM is
+	// still listed with devvm's label; one recreated under the same name
+	// without it never gets here (config.md §2).
+	paths, err := agentbin.Install(ctx, b, m)
 	if err != nil {
 		return nil, err
 	}
@@ -68,9 +67,9 @@ const clockSyncInterval = 60 * time.Second
 // subscriber: nudge) and every interval, until the session dies; the agent steps the guest's clock when it is 2s or more
 // off. A smol guest does not resync after the host suspends, and its init
 // runs no time daemon, so this is its time sync: over the one agent exec,
-// nothing installed. Only while a daemon holds the exec: an unmanaged VM
-// never gets one, and a hub machine's exec (and its sync) is the hub
-// daemon's, so neither the ssh nor the hub transport does this.
+// nothing installed. Only while a daemon holds the exec: a hub machine's
+// exec (and its sync) is the hub daemon's, so neither the ssh nor the hub
+// transport does this.
 //
 // The nudges matter after a host wake: the ticker runs on the monotonic
 // clock, which stops during suspend, so its first tick after a wake can be
@@ -130,17 +129,6 @@ func (t *smolTransport) nudge() {
 	select {
 	case t.clock <- struct{}{}:
 	default:
-	}
-}
-
-// smolInstallGate is the approve callback of the smol transport's install:
-// agentbin calls it only when something would be written.
-func smolInstallGate(m *config.Machine) func() error {
-	return func() error {
-		if !m.Managed() {
-			return fmt.Errorf("%s: %w; refusing to install the agent: %s", m.Name, backend.ErrUnmanaged, backend.AdoptHint(m.Name))
-		}
-		return nil
 	}
 }
 

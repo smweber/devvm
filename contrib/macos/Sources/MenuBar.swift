@@ -337,7 +337,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     private func fillSubmenu(_ sub: NSMenu, for m: Machine) {
         sub.removeAllItems()
-        if m.isUsable {
+        if m.isLive {
             sub.addItem(item("Open Drop Shelf", #selector(openShelf(_:)), m.name))
             sub.addItem(.separator())
         }
@@ -350,8 +350,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
             break
         }
         // Hub machines too: `ports up/down/list h/web` run on this Mac and
-        // forward to its own localhost, like a local machine's (step 6).
-        if m.isUsable {
+        // forward to its own localhost, like a local machine's (step 6), and
+        // copy in/out shell out to cp-in/cp-out by name, which take `h/web`
+        // since devvm's hub cp (step 4).
+        if m.isLive {
             if m.forwards != "-" {
                 sub.addItem(item("Ports up", #selector(portsUp(_:)), m.name))
                 sub.addItem(item("Ports down", #selector(portsDown(_:)), m.name))
@@ -362,26 +364,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 let it = item(title, f.pending ? nil : #selector(openPort(_:)), f.host)
                 sub.addItem(it)
             }
-        }
-        // Copy in/out shell out to cp-in/cp-out by name, which take `h/web`
-        // since devvm's hub cp (step 4).
-        if m.isUsable {
             sub.addItem(.separator())
             sub.addItem(item("Copy in…", #selector(copyInPanel(_:)), m.name))
             sub.addItem(item("Copy out…", #selector(copyOut(_:)), m.name))
             sub.addItem(item("Set inbox folder… (\(inbox(for: m.name)))", #selector(setInbox(_:)), m.name))
-        }
-        if m.needsAdopt {
-            // Start/Stop still apply; copies and ports wait for the handover.
-            if !sub.items.isEmpty { sub.addItem(.separator()) }
-            // Same next step as the CLI's refusals (backend.AdoptHint).
-            sub.addItem(item("Not created by devvm: hand it over with 'devvm setup --adopt \(m.name)',", nil))
-            sub.addItem(item("or remove it with 'smolvm machine rm --name \(m.label)' and 'devvm create \(m.name)'", nil))
-        }
-        if m.isUnlabelled {
-            if !sub.items.isEmpty { sub.addItem(.separator()) }
-            // Same rule as the CLI's refusal: devvm never promotes one.
-            sub.addItem(item("Not made by devvm (no devvm=true label): shell and exec only", nil))
         }
         if sub.items.isEmpty {
             let note: String

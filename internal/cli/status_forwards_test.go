@@ -72,8 +72,7 @@ func TestSinceHuman(t *testing.T) {
 // Smol rows come from one `smolvm machine ls` per snapshot, not a probe per
 // machine (a --watch re-emit would otherwise spawn N+1 subprocesses), with
 // smolvm's own sizes for a stopped VM too (config.md §3), and `down` for a
-// managed VM with saved forwards and no daemon, since the list is on this
-// host.
+// VM with saved forwards and no daemon, since the list is on this host.
 func TestSmolRowsUseSnapshot(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeLocalSmolvm(t, `[{"name":"vm","state":"stopped","memory_mib":2048,"storage_gb":20,"cpus":4,"labels":{"devvm":"true"}},{"name":"other","state":"running","created_at":7}]`)
@@ -87,16 +86,14 @@ func TestSmolRowsUseSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
+	// A VM devvm did not create (no label) has no row, whatever this host
+	// still has saved for it.
+	if len(rows) != 1 {
 		t.Fatalf("rows = %+v", rows)
 	}
-	vm, other := rows[0], rows[1]
+	vm := rows[0]
 	if vm.state != "stopped" || plainForwards(vm) != "down" || vm.mem != 2048 || vm.disk != 20 || vm.cpus != 4 || plainManaged(vm) != "managed" {
 		t.Errorf("vm = %+v, forwards %q", vm, plainForwards(vm))
-	}
-	// An unmanaged VM's stray ports file reads `-`: nothing may bring it up.
-	if other.state != "running" || plainForwards(other) != "-" || plainManaged(other) != "unmanaged" {
-		t.Errorf("other = %+v", other)
 	}
 	if data, _ := os.ReadFile(log); strings.Count(string(data), "machine ls --json") != 1 {
 		t.Errorf("smolvm calls =\n%s\nwant one listing", data)
