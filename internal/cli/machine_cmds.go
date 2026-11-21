@@ -217,7 +217,7 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 		return err
 	}
 	if m.IsHubMachine() {
-		return a.deleteHubMachine(m, b)
+		return a.deleteHubMachine(m, b, yes)
 	}
 	// A provider server: devvm sees only the servers it made (the label),
 	// so every one it resolves is its to delete.
@@ -393,14 +393,20 @@ func (a *App) reapRunFiles(name string) {
 // devvm.toml is never written. The one confirmation is the hub's: its
 // delete prompts through the forwarded terminal before destroying a real VM
 // (and refuses with no terminal), so a second prompt here would only ask the
-// same question twice.
-func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend) error {
+// same question twice. --yes given here goes to the hub's delete, and only
+// then: without a terminal (no -t) the hub cannot ask. A hub older than
+// v0.1.17 has no delete --yes and refuses the flag (cobra's own line).
+func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend, yes bool) error {
 	hub, machine := m.Hub, m.HubMachineName()
 	p, ok := b.(backend.Proxier)
 	if !ok {
 		return fmt.Errorf("%s: backend %q cannot proxy", m.Name, b.Kind())
 	}
-	if err := a.runProxied(m, p, []string{"delete", machine}); err != nil {
+	argv := []string{"delete", machine}
+	if yes {
+		argv = append(argv, "--yes")
+	}
+	if err := a.runProxied(m, p, argv); err != nil {
 		return err
 	}
 	a.reapRunFiles(m.Name)

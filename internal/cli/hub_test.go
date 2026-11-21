@@ -228,6 +228,59 @@ func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 	}
 }
 
+// delete HUB/NAME --yes passes --yes to the hub's delete, and only then:
+// with no terminal the hub cannot ask, so a bare delete there aborts; with a
+// terminal and no --yes the hub's own prompt runs over -t, as before. The
+// laptop's cleanup (run files, the hub cache row, saved forwards) follows
+// the hub's success either way.
+func TestDeleteHubMachineForwardsYes(t *testing.T) {
+	for _, tc := range []struct {
+		argv []string
+		tty  bool
+		want []string
+	}{
+		{[]string{"delete", "h/web", "--yes"}, false, []string{"delete", "web", "--yes"}},
+		{[]string{"delete", "-y", "h/web"}, false, []string{"delete", "web", "--yes"}},
+		{[]string{"delete", "h/web"}, true, []string{"delete", "web"}},
+		{[]string{"delete", "h/web", "--yes"}, true, []string{"delete", "web", "--yes"}},
+	} {
+		a := newTestApp(t)
+		sshLog, argvLog := fakeHub(t, a)
+		pinTTY(t, tc.tty)
+		if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeHubCache(a.Paths, "h", []hubRow{{name: "web", backend: "smol", state: "running", forwards: "-", managed: "managed"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Paths.EnsureRuntimeDir(); err != nil {
+			t.Fatal(err)
+		}
+		stale := filepath.Join(a.Paths.RuntimeDir(), config.RuntimeName("h/web")+".sock")
+		if err := os.WriteFile(stale, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTree(t, a, tc.argv...); err != nil {
+			t.Fatalf("%v: %v\n%s", tc.argv, err, a.Stderr)
+		}
+		if calls := devvmCalls(t, argvLog); len(calls) != 1 || !slices.Equal(calls[0], tc.want) {
+			t.Errorf("%v: hub got %q, want %q", tc.argv, calls, tc.want)
+		}
+		if lines := sshLines(t, sshLog); len(lines) != 1 || lines[0] != wantSSH(a, tc.tty, tc.want...) {
+			t.Errorf("%v: ssh argv:\n%s\nwant\n%s", tc.argv, strings.Join(lines, "\n"), wantSSH(a, tc.tty, tc.want...))
+		}
+		if got, _ := config.SavedPortsNames(a.Paths); len(got) != 0 {
+			t.Errorf("%v: saved forwards left: %v", tc.argv, got)
+		}
+		if got := cachedHubMachines(a.Paths, "h"); len(got) != 0 {
+			t.Errorf("%v: hub cache still lists %v", tc.argv, got)
+		}
+		if _, err := os.Stat(stale); !os.IsNotExist(err) {
+			t.Errorf("%v: run file left: %v", tc.argv, err)
+		}
+	}
+}
+
 // Verbs that refuse hubs do not offer them; status offers everything; delete
 // offers no devvm.toml entry (it refuses those: `config rm`).
 func TestCompletionOmitsHubsForShapingVerbs(t *testing.T) {
