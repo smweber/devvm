@@ -264,7 +264,7 @@ func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	sshWithConfig(t, "")
-	gone := config.NewProviderMachine("gone", config.BackendHetzner, "dev", true, config.ProviderServer{Address: "gone.example"})
+	gone := config.NewProviderMachine("gone", config.BackendHetzner, true, config.ProviderServer{Address: "gone.example"})
 	entry := config.NewRemote("kept", "dev@kept.example")
 	if err := config.WriteManagedMarker(a.Paths, "gone", "1"); err != nil {
 		t.Fatal(err)

@@ -101,7 +101,6 @@ func (a *App) showConfig(f *config.File) {
 				return "built-in"
 			}
 		}
-		showLine(w, "user", strconv.Quote(t.User), src(own.User != nil && *own.User != "", def.User != nil && *def.User != ""))
 		showLine(w, "hook", strconv.Quote(t.Hook), src(own.Hook != nil && strings.TrimSpace(*own.Hook) != "", def.Hook != nil && strings.TrimSpace(*def.Hook) != ""))
 		showInt(w, "memory", t.Memory, src(own.Memory != nil, def.Memory != nil), "unset: create asks, or --memory")
 		showInt(w, "disk", t.Disk, src(own.Disk != nil, def.Disk != nil), fmt.Sprintf("unset: create uses %d", backend.SmolDefaultDiskGiB))

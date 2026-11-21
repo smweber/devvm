@@ -17,17 +17,18 @@ import (
 // and the one every other template falls back to (one level, no chains).
 const DefaultTemplate = "default"
 
-// DefaultTemplateUser is the built-in `user`: the account `setup` creates
-// and logs in as on a managed remote box. smol VMs always use it (the smol
-// backend is wired to it), so a template's user applies to remote only.
-const DefaultTemplateUser = "dev"
+// DefaultUser is the account setup creates in every box devvm makes, and
+// the one devvm works as there: a smol VM (the smol backend is wired to
+// it) and a provider server (its login). Templates have no user (it was
+// retired: devvm stores nothing per box, so it could not remember another
+// one). An entry's own `user` is unrelated: it is how that box is reached.
+const DefaultUser = "dev"
 
 // TemplateSpec is one layer of template values: a `[templates.NAME]`
 // table, or the flags given on the command line. Every field is a pointer so "unset" (fall back to the next
 // layer) is told apart from a deliberate zero (`harden = false`, `repos =
 // []`). Key names match the old per-machine confs where they existed.
 type TemplateSpec struct {
-	User                 *string   `toml:"user"`
 	Hook                 *string   `toml:"hook"`
 	Memory               *int      `toml:"memory"` // MiB, create-time only
 	Disk                 *int      `toml:"disk"`   // GiB, create-time only
@@ -49,7 +50,6 @@ type TemplateSpec struct {
 // prompts, errors, or uses the backend's default disk).
 type Template struct {
 	Name                 string
-	User                 string
 	Hook                 string
 	Memory               int
 	Disk                 int
@@ -76,9 +76,6 @@ type Template struct {
 // a missing key, so a blank line in a template never masks default's hook.
 func (s TemplateSpec) Under(lower TemplateSpec) TemplateSpec {
 	out := s
-	if blank(out.User) {
-		out.User = lower.User
-	}
 	if blank(out.Hook) {
 		out.Hook = lower.Hook
 	}
@@ -118,13 +115,10 @@ func (s TemplateSpec) Under(lower TemplateSpec) TemplateSpec {
 	return out
 }
 
-// Resolve fills the built-ins under every unset field: user dev, hook
-// none, everything else empty.
+// Resolve fills the built-ins under every unset field: hook none,
+// everything else empty.
 func (s TemplateSpec) Resolve(name string) Template {
-	t := Template{Name: name, User: DefaultTemplateUser, Hook: DefaultBootstrapHook}
-	if s.User != nil && *s.User != "" {
-		t.User = *s.User
-	}
+	t := Template{Name: name, Hook: DefaultBootstrapHook}
 	if s.Hook != nil && strings.TrimSpace(*s.Hook) != "" {
 		t.Hook = strings.TrimSpace(*s.Hook)
 	}
@@ -169,7 +163,7 @@ func deref(p *[]string) []string {
 // Spec turns a resolved template back into a layer with every field set:
 // the proxied form sends exactly this, so the hub's own file never matters.
 func (t Template) Spec() TemplateSpec {
-	user, hook, mem, disk := t.User, t.Hook, t.Memory, t.Disk
+	hook, mem, disk := t.Hook, t.Memory, t.Disk
 	repos := slices.Clone(t.Repos)
 	gh, files := slices.Clone(t.AuthorizedKeysGithub), slices.Clone(t.AuthorizedKeys)
 	harden, f2b := t.Harden, t.Fail2ban
@@ -186,7 +180,7 @@ func (t Template) Spec() TemplateSpec {
 		v := *t.IPv4
 		ipv4 = &v
 	}
-	return TemplateSpec{User: &user, Hook: &hook, Memory: &mem, Disk: &disk,
+	return TemplateSpec{Hook: &hook, Memory: &mem, Disk: &disk,
 		Repos: &repos, AuthorizedKeysGithub: &gh, AuthorizedKeys: &files,
 		Harden: &harden, Fail2ban: &f2b,
 		ServerType: opt(t.ServerType), Location: opt(t.Location), Image: opt(t.Image), IPv4: ipv4}
@@ -233,7 +227,7 @@ func TemplateLayers(p Paths, name string) (named, def TemplateSpec, err error) {
 // and sshd's AllowUsers.
 var userRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
-// ValidUser reports whether a template user is safe to create and pin.
+// ValidUser reports whether a user is safe for setup to create and pin.
 func ValidUser(u string) error {
 	if !userRe.MatchString(u) {
 		return fmt.Errorf("invalid user %q (lowercase letters, digits, _ and -, starting with a letter or _)", u)
@@ -247,11 +241,6 @@ func ValidUser(u string) error {
 // Validate checks the fields config can check on its own. The hook spec is
 // checked by the cli, which owns its parser.
 func (s TemplateSpec) Validate() error {
-	if s.User != nil && *s.User != "" {
-		if err := ValidUser(*s.User); err != nil {
-			return err
-		}
-	}
 	if s.Memory != nil && *s.Memory != 0 && *s.Memory < 512 {
 		return fmt.Errorf("memory %d too small (min 512 MiB)", *s.Memory)
 	}

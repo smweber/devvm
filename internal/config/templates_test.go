@@ -49,7 +49,7 @@ host = "2.29.47.196"
 	if h := ts["devvm"].Harden; h == nil || *h {
 		t.Errorf("harden = false must read as set: %v", h)
 	}
-	if ts["devvm"].Disk != nil || ts["devvm"].User != nil {
+	if ts["devvm"].Disk != nil || ts["devvm"].Hook != nil {
 		t.Error("unset fields must stay unset")
 	}
 }
@@ -58,8 +58,7 @@ func TestLoadTemplatesRejects(t *testing.T) {
 	for body, want := range map[string]string{
 		"[templates.x]\nmemroy = 1\n":         "[templates.x]: unknown key \"memroy\"",
 		"[templates.x]\nmemory = 100\n":       "too small",
-		"[templates.x]\nuser = \"root\"\n":    "root",
-		"[templates.x]\nuser = \"A B\"\n":     "invalid user",
+		"[templates.x]\nuser = \"dev\"\n":     "[templates.x]: user is gone from templates (a box devvm makes always has the user dev); delete the line",
 		"[templates.\"a/b\"]\nmemory = 1\n":   "invalid",
 		"[templates.x\n":                      "parse",
 		"[templates.x]\nports = [\"3000\"]\n": "ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'",
@@ -79,7 +78,6 @@ func TestTemplateFallbackChain(t *testing.T) {
 	p := Paths{Config: t.TempDir()}
 	writeFile(t, p, `
 [templates.default]
-user = "alice"
 hook = "cmd:/d"
 memory = 4096
 repos = ["o/default"]
@@ -95,8 +93,8 @@ harden = false
 		t.Fatal(err)
 	}
 	got := named.Under(def).Resolve("web")
-	want := Template{Name: "web", User: "alice", Hook: "cmd:/d", Memory: 8192, Repos: []string{}, Harden: false}
-	if got.Name != want.Name || got.User != want.User || got.Hook != want.Hook || got.Memory != want.Memory ||
+	want := Template{Name: "web", Hook: "cmd:/d", Memory: 8192, Repos: []string{}, Harden: false}
+	if got.Name != want.Name || got.Hook != want.Hook || got.Memory != want.Memory ||
 		len(got.Repos) != 0 || got.Harden || got.Disk != 0 {
 		t.Errorf("web = %+v, want %+v", got, want)
 	}
@@ -105,7 +103,7 @@ harden = false
 	if d := def.Resolve(DefaultTemplate); d.Memory != 4096 || !slices.Equal(d.Repos, []string{"o/default"}) || !d.Harden {
 		t.Errorf("default = %+v", d)
 	}
-	if b := (TemplateSpec{}).Resolve(DefaultTemplate); b.User != "dev" || b.Hook != "none" || b.Memory != 0 {
+	if b := (TemplateSpec{}).Resolve(DefaultTemplate); b.Hook != "none" || b.Memory != 0 {
 		t.Errorf("built-ins = %+v", b)
 	}
 	if _, _, err := TemplateLayers(p, "nope"); err == nil || !strings.Contains(err.Error(), "default, web") {
@@ -120,9 +118,9 @@ harden = false
 // Spec round-trips a resolved template with every field set, so nothing
 // below it can fill a gap.
 func TestTemplateSpecRoundTrip(t *testing.T) {
-	in := Template{Name: "x", User: "u", Hook: "none", Repos: []string{"a"}}
+	in := Template{Name: "x", Hook: "none", Repos: []string{"a"}}
 	out := in.Spec().Under(TemplateSpec{Memory: ptr(4096), Harden: ptr(true)}).Resolve("x")
-	if out.Memory != 0 || out.Harden || out.User != "u" || !slices.Equal(out.Repos, []string{"a"}) {
+	if out.Memory != 0 || out.Harden || !slices.Equal(out.Repos, []string{"a"}) {
 		t.Errorf("round trip = %+v", out)
 	}
 }
@@ -130,13 +128,13 @@ func TestTemplateSpecRoundTrip(t *testing.T) {
 // An empty string is unset: it falls through like a missing key.
 func TestTemplateEmptyStringIsUnset(t *testing.T) {
 	p := Paths{Config: t.TempDir()}
-	writeFile(t, p, "[templates.default]\nhook = \"cmd:/d\"\nuser = \"alice\"\n[templates.x]\nhook = \"\"\nuser = \"\"\n")
+	writeFile(t, p, "[templates.default]\nhook = \"cmd:/d\"\n[templates.x]\nhook = \"\"\n")
 	named, def, err := TemplateLayers(p, "x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := named.Under(def).Resolve("x"); got.Hook != "cmd:/d" || got.User != "alice" {
-		t.Errorf("x = %+v, want default's hook and user", got)
+	if got := named.Under(def).Resolve("x"); got.Hook != "cmd:/d" {
+		t.Errorf("x = %+v, want default's hook", got)
 	}
 }
 

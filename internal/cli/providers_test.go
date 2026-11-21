@@ -55,7 +55,7 @@ func addServer(t *testing.T, p *fake.Provider, name, addr, state string, managed
 func TestProviderResolveOrder(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[{"name":"vm","state":"running","created_at":1}]`)
-	p := withFakeHetzner(t, a, "[templates.default]\nuser = \"ops\"\n\n[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n", false)
+	p := withFakeHetzner(t, a, "[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n", false)
 	addServer(t, p, "web", "1.1.1.1", provider.StateRunning, true)
 	addServer(t, p, "vm", "2.2.2.2", provider.StateRunning, true)
 	addServer(t, p, "box", "3.3.3.3", provider.StateStopped, true)
@@ -75,7 +75,7 @@ func TestProviderResolveOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !m.IsProvider() || m.Backend != config.BackendHetzner || !m.Managed() || !m.IsRemote() || !m.Probeable() ||
-		m.SSHHost != "ops@3.3.3.3" || m.SSHPort != 22 || m.User != "" || m.Server.ID == 0 || m.Server.Status != "off" {
+		m.SSHHost != "dev@3.3.3.3" || m.SSHPort != 22 || m.User != "" || m.Server.ID == 0 || m.Server.Status != "off" {
 		t.Fatalf("box record = %+v %+v", m, m.Server)
 	}
 	if b.Kind() != config.BackendHetzner {
@@ -122,7 +122,7 @@ func TestProviderResolveNeedsTable(t *testing.T) {
 	a := newTestApp(t)
 	p := withFakeHetzner(t, a, "", false)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
-	writeDevvmTOML(t, a, "[templates.default]\nuser = \"dev\"\n")
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"none\"\n")
 	if _, _, err := a.resolveAny("box"); err == nil {
 		t.Fatal("resolved a provider server with no [providers.*]")
 	}
@@ -527,8 +527,8 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 	a := newTestApp(t)
 	var w bytes.Buffer
 	a.Stderr = &w
-	pm := config.NewProviderMachine("box", config.BackendHetzner, "dev", true, config.ProviderServer{Address: "1.2.3.4"})
-	a.warnIgnored(pm, config.Template{Name: "big", User: "dev", Memory: 8192, ServerType: "cx43"}, setupOpts{})
+	pm := config.NewProviderMachine("box", config.BackendHetzner, true, config.ProviderServer{Address: "1.2.3.4"})
+	a.warnIgnored(pm, config.Template{Name: "big", Memory: 8192, ServerType: "cx43"}, setupOpts{})
 	if got := w.String(); !strings.Contains(got, "ignoring memory (not applicable to a Hetzner server)") {
 		t.Errorf("provider: %q", got)
 	}
@@ -541,7 +541,7 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 		{config.DefaultTemplate, ""},
 	} {
 		w.Reset()
-		a.warnIgnored(&config.Machine{Name: "r", Backend: config.BackendSmol}, config.Template{Name: tc.tmpl, User: "dev", ServerType: "cx43", Location: "fsn1", IPv4: &v}, setupOpts{})
+		a.warnIgnored(&config.Machine{Name: "r", Backend: config.BackendSmol}, config.Template{Name: tc.tmpl, ServerType: "cx43", Location: "fsn1", IPv4: &v}, setupOpts{})
 		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
 			t.Errorf("smol, %s: %q", tc.tmpl, got)
 		}

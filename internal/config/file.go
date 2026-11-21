@@ -48,7 +48,6 @@ type File struct {
 	Providers map[string]ProviderSpec
 	// machines are the entries as records, built once by validate.
 	machines map[string]*Machine
-	defUser  string
 }
 
 type rawFile struct {
@@ -116,6 +115,10 @@ func undecodedError(k toml.Key) error {
 		// Retired (simplify.md step 9): a forward is saved on the host that
 		// uses it, never by a template.
 		return fmt.Errorf("[templates.%s]: ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'", k[1])
+	case k[0] == "templates" && len(k) == 3 && k[2] == "user":
+		// Retired (simplify.md, after step 12): every box devvm makes has
+		// the user dev, and an entry's own user is its [machines.*] key.
+		return fmt.Errorf("[templates.%s]: user is gone from templates (a box devvm makes always has the user %s); delete the line", k[1], DefaultUser)
 	case k[0] == "machines" && len(k) == 3 && k[2] == "managed":
 		// Retired (simplify.md step 12): devvm shapes only the boxes it
 		// creates, so an entry is never managed, whatever the line says.
@@ -155,11 +158,6 @@ func (f *File) validate() []error {
 			errs = append(errs, fmt.Errorf("[providers.%s]: %w", name, err))
 		}
 	}
-	defUser := DefaultTemplateUser
-	if u := f.Templates[DefaultTemplate].User; u != nil && *u != "" && ValidUser(*u) == nil {
-		defUser = *u
-	}
-	f.defUser = defUser
 	f.machines = map[string]*Machine{}
 	for _, name := range sortedKeys(f.Entries) {
 		m, err := f.Entries[name].machine(name)

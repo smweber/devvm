@@ -24,7 +24,6 @@ func TestValidName(t *testing.T) {
 const sampleFile = `# ~/.config/devvm/devvm.toml, shared by every host.
 
 [templates.default]              # what create/setup use
-user = "ops"
 hook = "none"
 
 [machines.thinkpad]
@@ -354,7 +353,7 @@ func TestRemoveEntry(t *testing.T) {
 	body := `# head
 
 [templates.default]
-user = "ops"
+hook = "cmd:/ops"
 
 # the cloud box
 [machines.cloud]
@@ -383,7 +382,7 @@ host = "l"
 	want := `# head
 
 [templates.default]
-user = "ops"
+hook = "cmd:/ops"
 
 # the cloud box
 # describes old, after a blank: kept
@@ -416,7 +415,7 @@ host = "l"
 	if !strings.HasSuffix(string(data), "# about last\n") {
 		t.Errorf("after rm last:\n%q", data)
 	}
-	if f, err := LoadFile(p); err != nil || len(f.Entries) != 0 || *f.Templates["default"].User != "ops" {
+	if f, err := LoadFile(p); err != nil || len(f.Entries) != 0 || *f.Templates["default"].Hook != "cmd:/ops" {
 		t.Errorf("result = %+v, %v", f, err)
 	}
 	if err := RemoveEntry(p, "ghost"); !errors.Is(err, ErrNotFound) {
@@ -522,19 +521,19 @@ func TestDanglingSymlink(t *testing.T) {
 // A CRLF file gets a CRLF table.
 func TestAppendEntryCRLF(t *testing.T) {
 	p := testPaths(t)
-	writeFile(t, p, "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n")
+	writeFile(t, p, "# mine\r\n[templates.default]\r\nhook = \"none\"\r\n")
 	if err := AppendEntry(p, "r", Entry{Backend: BackendRemote, Host: "r"}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(p.FilePath())
-	want := "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n\r\n[machines.r]\r\nbackend = \"remote\"\r\nhost = \"r\"\r\n"
+	want := "# mine\r\n[templates.default]\r\nhook = \"none\"\r\n\r\n[machines.r]\r\nbackend = \"remote\"\r\nhost = \"r\"\r\n"
 	if string(data) != want {
 		t.Errorf("file = %q", data)
 	}
 	if err := RemoveEntry(p, "r"); err != nil {
 		t.Fatal(err)
 	}
-	if data, _ := os.ReadFile(p.FilePath()); string(data) != "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n" {
+	if data, _ := os.ReadFile(p.FilePath()); string(data) != "# mine\r\n[templates.default]\r\nhook = \"none\"\r\n" {
 		t.Errorf("after rm = %q", data)
 	}
 }

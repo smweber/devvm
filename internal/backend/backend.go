@@ -17,7 +17,7 @@ import (
 )
 
 // DefaultUser is the unprivileged guest user devvm runs work as.
-const DefaultUser = "dev"
+const DefaultUser = config.DefaultUser
 
 // State is a machine's lifecycle snapshot for `devvm status`.
 type State struct {

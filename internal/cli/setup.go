@@ -40,7 +40,6 @@ import (
 // create/setup (config.md §7), so the hub's own file never matters there;
 // they also work directly. Each overrides the resolved template field.
 type tmplFlags struct {
-	User   string
 	Hook   string
 	Memory int
 	Disk   int
@@ -85,7 +84,10 @@ var templateFlagNames = []string{flagUser, flagHook, flagMemory, flagDisk, flagR
 // names in visible (create shows --memory/--disk/--hook). memory and disk
 // keep create's -m/-d shorthands.
 func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
-	fs.StringVar(&v.User, flagUser, "", "remote: the user setup creates and logs in as (template user; default dev)")
+	// --user is gone with the template's user (every box devvm makes has
+	// the user dev) but stays accepted, and ignored, until hubs and laptops
+	// are all past this release: a laptop one release older still sends it.
+	fs.String(flagUser, "", "ignored (a laptop one release older sends it to its hub)")
 	fs.StringVar(&v.Hook, flagHook, "", "hook: url:<URL> [args] | cmd:<path> [args] | none (template hook)")
 	fs.IntVarP(&v.Memory, flagMemory, "m", 0, "smol: VM memory in MiB (template memory)")
 	fs.IntVarP(&v.Disk, flagDisk, "d", 0, "smol: VM disk in GiB (template disk; default 50)")
@@ -117,10 +119,6 @@ func (v *tmplFlags) noteSet(fs *pflag.FlagSet) {
 // bool) wins over every template.
 func (v tmplFlags) layer() config.TemplateSpec {
 	var s config.TemplateSpec
-	if v.User != "" {
-		u := v.User
-		s.User = &u
-	}
 	if v.Hook != "" {
 		h := v.Hook
 		s.Hook = &h
@@ -187,9 +185,6 @@ func (a *App) resolveTemplate(name string, f tmplFlags) (config.Template, error)
 // lives in bootstrap.
 func validateTemplate(t config.Template) error {
 	if _, err := bootstrap.ParseSpec(t.Hook); err != nil {
-		return fmt.Errorf("template %s: %w", t.Name, err)
-	}
-	if err := config.ValidUser(t.User); err != nil {
 		return fmt.Errorf("template %s: %w", t.Name, err)
 	}
 	return nil
@@ -337,7 +332,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	// the exec enters as root and the backend is wired to dev.
 	if m.IsRemote() {
 		var err error
-		if m, b, err = a.reachForSetup(ctx, m, t.User); err != nil {
+		if m, b, err = a.reachForSetup(ctx, m); err != nil {
 			return err
 		}
 	} else {
@@ -492,7 +487,7 @@ func waitRunning(m *config.Machine, b backend.Backend) error {
 
 // warnIgnored names, in one line, the template fields that do not apply to
 // this box: sizes are create-time and smol-only; keys and hardening are for
-// boxes reached over ssh; smol is wired to the dev user.
+// boxes reached over ssh.
 func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 	var ignored []string
 	if m.IsRemote() {
@@ -503,9 +498,6 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 			ignored = append(ignored, "disk")
 		}
 	} else {
-		if t.User != backend.DefaultUser {
-			ignored = append(ignored, "user")
-		}
 		if len(t.AuthorizedKeysGithub) > 0 || len(t.AuthorizedKeys) > 0 || len(o.Keys) > 0 {
 			ignored = append(ignored, "keys")
 		}
@@ -699,55 +691,38 @@ func (a *App) waitSSH(ctx context.Context, m *config.Machine) (reachResult, erro
 
 // reachForSetup settles how setup reaches a provider server devvm made, and
 // makes sure the user exists. The login it tries first is the record's
-// ([templates.default]'s user, which every later command logs in as),
-// waiting a bounded time for a box that does not answer yet. If that login
+// (config.DefaultUser, which every later command logs in as), waiting a
+// bounded time for a box that does not answer yet. If that login
 // is refused it tries root@; a box that answers only as root (a fresh cloud
 // VM) gets that user, with NOPASSWD sudo and root's keys (EnsureUser), and
 // setup continues as it. Only setup ever tries root, and only here. Nothing
 // is written: devvm stores nothing per server (config.md §1, §3).
-func (a *App) reachForSetup(ctx context.Context, m *config.Machine, tmplUser string) (*config.Machine, backend.Backend, error) {
+func (a *App) reachForSetup(ctx context.Context, m *config.Machine) (*config.Machine, backend.Backend, error) {
 	cur := *m
-	// The login every later command uses; create refused a template that
-	// would make another one, so this is also the user setup creates.
+	// The login every later command uses, and so the user setup creates.
 	user := loginUser(m)
 	r, err := a.waitSSH(ctx, &cur)
 	if err != nil {
 		return nil, nil, err
 	}
-	var root *config.Machine
-	switch r {
-	case reachOK:
+	if r == reachOK {
+		// The login is dev@address (config.NewProviderMachine), never root.
 		b, err := backend.For(&cur, a.Paths)
 		if err != nil {
 			return nil, nil, err
 		}
-		login, err := bootstrap.LoginUser(ctx, b)
-		if err != nil {
-			return nil, nil, err
-		}
-		if login != "root" {
-			if login != "" && login != tmplUser {
-				// setup --template T with another user: the server's login
-				// wins, setup runs as it, and Harden pins AllowUsers to it,
-				// not to the template's user.
-				fmt.Fprintf(a.Stderr, "devvm: '%s' logs in as %s: template user %q is ignored, and hardening would pin AllowUsers to %s\n",
-					m.Name, login, tmplUser, login)
-			}
-			return &cur, b, nil
-		}
-		root = &cur // the configured login is root itself
-	case reachDenied:
-		rm := cur
-		rm.SSHHost = bootstrap.SwitchUser(cur.SSHHost, "root")
-		if r2, _, err := a.probeSSH(ctx, &rm); err != nil {
-			return nil, nil, err
-		} else if r2 != reachOK {
-			return nil, nil, fmt.Errorf("ssh to %s was refused (permission denied), and so was %s; check that the ssh key in [providers.%s] is this host's",
-				cur.SSHHost, rm.SSHHost, m.Backend)
-		}
-		root = &rm
+		return &cur, b, nil
 	}
-	rb, err := backend.For(root, a.Paths)
+	// Denied: a fresh server answers only as root.
+	root := cur
+	root.SSHHost = bootstrap.SwitchUser(cur.SSHHost, "root")
+	if r2, _, err := a.probeSSH(ctx, &root); err != nil {
+		return nil, nil, err
+	} else if r2 != reachOK {
+		return nil, nil, fmt.Errorf("ssh to %s was refused (permission denied), and so was %s; check that the ssh key in [providers.%s] is this host's",
+			cur.SSHHost, root.SSHHost, m.Backend)
+	}
+	rb, err := backend.For(&root, a.Paths)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -809,7 +784,7 @@ func (a *App) templateKeyLines(githubUsers, files []string) []string {
 // laptop sends with a proxied create/setup --template (config.md §7):
 // every field, so nothing on the hub fills a gap.
 func templateArgv(t config.Template, keyLines []string) []string {
-	out := []string{"--" + flagInline, "--" + flagUser + "=" + t.User, "--" + flagHook + "=" + t.Hook}
+	out := []string{"--" + flagInline, "--" + flagHook + "=" + t.Hook}
 	if t.Memory != 0 {
 		out = append(out, "--"+flagMemory+"="+strconv.Itoa(t.Memory))
 	}

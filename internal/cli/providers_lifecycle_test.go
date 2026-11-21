@@ -95,7 +95,7 @@ func TestProviderCreateRefusals(t *testing.T) {
 	notKey := filepath.Join(t.TempDir(), "x.pub")
 	os.WriteFile(notKey, []byte("hello world\n"), 0o644)
 
-	base := "ssh_key = \"scott\"\n\n[templates.ops]\nuser = \"alice\"\n\n[machines.web]\nbackend = \"remote\"\nhost = \"w.example\"\n"
+	base := "ssh_key = \"scott\"\n\n[machines.web]\nbackend = \"remote\"\nhost = \"w.example\"\n"
 	p := withFakeHetzner(t, a, base, false)
 	p.AddKey("scott", testPubKey)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
@@ -116,7 +116,6 @@ func TestProviderCreateRefusals(t *testing.T) {
 		{[]string{"create", "vm", "--backend", "hetzner", "--yes"}, "the local smol VM 'vm'"},
 		{[]string{"create", "box", "--backend", "hetzner", "--yes"}, "already exists (server"},
 		{[]string{"create", "prod", "--backend", "hetzner", "--yes"}, "pick another name"},
-		{[]string{"create", "new", "--backend", "hetzner", "--yes", "--template", "ops"}, "always reached as [templates.default]'s user (dev)"},
 		{[]string{"create", "new", "--backend", "hetzner", "--yes", "--memory", "2048"}, "--memory and --disk size a smol VM"},
 		{[]string{"create", "new", "--backend", "hetzner", "--yes", "--location", "a b"}, "invalid location"},
 		{[]string{"create", "h/new", "--backend", "hetzner", "--yes"}, "never on a hub"},
@@ -150,7 +149,7 @@ func TestProviderCreateRefusals(t *testing.T) {
 		}
 	}
 	// No [providers.hetzner] at all.
-	writeDevvmTOML(t, a, "[templates.default]\nuser = \"dev\"\n")
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"none\"\n")
 	if err := runTree(t, a, "create", "new", "--backend", "hetzner", "--yes"); err == nil || !strings.Contains(err.Error(), "needs a [providers.hetzner] table") {
 		t.Errorf("no table: %v", err)
 	}
@@ -633,7 +632,7 @@ func TestAskBackend(t *testing.T) {
 			t.Fatalf("backend %q asked %d, want %q %d", s.Backend, len(asked), wantBackend, wantAsked)
 		}
 	}
-	writeDevvmTOML(t, a, "[templates.default]\nuser = \"dev\"\n")
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"none\"\n")
 	check(createSpec{}, "", 0) // no provider table
 	writeDevvmTOML(t, a, providersTOML)
 	check(createSpec{Yes: true}, "", 0)

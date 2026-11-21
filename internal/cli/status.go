@@ -534,7 +534,7 @@ func (a *App) providerRows(f *config.File, smols smolMachines, rows []statusRow)
 			if _, ok := smols.byName[s.Name]; ok {
 				continue
 			}
-			m := providerRecord(f, pn, s)
+			m := providerRecord(pn, s)
 			r := statusRow{name: s.Name, backend: pn, state: s.State, host: dash(s.Address), m: m,
 				managed: ownership(m.Managed()), exists: true, running: s.State == provider.StateRunning}
 			if r.state == "" {

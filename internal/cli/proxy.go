@@ -220,7 +220,6 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 	var extra []string
 	if inline {
 		var f tmplFlags
-		f.User, _ = fs.GetString(flagUser)
 		f.Hook, _ = fs.GetString(flagHook)
 		f.Memory, _ = fs.GetInt(flagMemory)
 		f.Disk, _ = fs.GetInt(flagDisk)

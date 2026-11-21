@@ -62,7 +62,7 @@ harden = true
 		t.Fatal(err)
 	}
 	if got.Name != "default" || got.Hook != "cmd:/default" || got.Memory != 4096 || got.Disk != 0 ||
-		!slices.Equal(got.Repos, []string{"o/default"}) || got.User != "dev" {
+		!slices.Equal(got.Repos, []string{"o/default"}) {
 		t.Errorf("default = %+v", got)
 	}
 	// --template web: its own fields win; the rest fall through to default.
@@ -78,11 +78,11 @@ harden = true
 	}
 	// Flags beat everything, a false bool included.
 	got, err = a.resolveTemplate("web", tmplFlags{Memory: 512, Hook: "none", Harden: false, HardenSet: true,
-		Repos: []string{"o/flag"}, User: "alice"})
+		Repos: []string{"o/flag"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Memory != 512 || got.Hook != "none" || got.Harden || !slices.Equal(got.Repos, []string{"o/flag"}) || got.User != "alice" {
+	if got.Memory != 512 || got.Hook != "none" || got.Harden || !slices.Equal(got.Repos, []string{"o/flag"}) {
 		t.Errorf("flags = %+v", got)
 	}
 	// Inline: the flags are the whole template, nothing on this host fills in.
@@ -90,11 +90,11 @@ harden = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Memory != 0 || got.Harden || len(got.Repos) != 0 || got.Hook != "cmd:/x" || got.User != "dev" {
+	if got.Memory != 0 || got.Harden || len(got.Repos) != 0 || got.Hook != "cmd:/x" {
 		t.Errorf("inline = %+v", got)
 	}
 	// Bad values are refused before anything runs.
-	for _, f := range []tmplFlags{{Hook: "bogus"}, {User: "root"}, {Memory: 1}} {
+	for _, f := range []tmplFlags{{Hook: "bogus"}, {Memory: 1}} {
 		if _, err := a.resolveTemplate("", f); err == nil {
 			t.Errorf("%+v accepted", f)
 		}
@@ -123,7 +123,7 @@ repos = ["o/r"]
 		!slices.Equal(s.Repos, []string{"o/r"}) {
 		t.Errorf("spec = %+v", s)
 	}
-	if tt := s.template(); tt.Name != "big" || tt.User != "dev" || tt.Memory != 8192 {
+	if tt := s.template(); tt.Name != "big" || tt.Memory != 8192 {
 		t.Errorf("template = %+v", tt)
 	}
 }
@@ -378,7 +378,6 @@ fail2ban = true
 	data, _ := os.ReadFile(log)
 	inOrder(t, string(data),
 		"BatchMode=yes", "dev@cloud.example 'true'", // reach
-		"'id' '-un'",                   // login user
 		"build-essential", "tmux mosh", // prereqs
 		"AGENT-INSTALL cloud",           // agent + shim + profile.d
 		"authorized_keys.devvm",         // keys
@@ -430,33 +429,29 @@ harden = true
 	}
 }
 
-// Root adoption: the login ([templates.default]'s user) is refused
-// (permission denied), root answers, so that user is created and setup
-// continues as it. Nothing is written: every later command logs in as the
-// same template user.
+// Root adoption: the login (dev, every devvm-made box's user) is refused
+// (permission denied), root answers, so dev is created and setup
+// continues as it. Nothing is written: every later command logs in as dev.
 func TestSetupRootAdoption(t *testing.T) {
 	a := newTestApp(t)
 	made := filepath.Join(t.TempDir(), "made")
 	log := fakeRemote(t, `case "$last" in *useradd*) touch `+made+`;; esac
 case "$dest" in
   root@*) ;;
-  alice@*) [ -e `+made+` ] || { echo "$dest: Permission denied (publickey)." >&2; exit 255; };;
+  dev@*) [ -e `+made+` ] || { echo "$dest: Permission denied (publickey)." >&2; exit 255; };;
   *) echo "$dest: Permission denied (publickey)." >&2; exit 255;;
 esac`)
-	fakeServer(t, a, "cloud", "203.0.113.5", "[templates.default]\nuser = \"alice\"\n")
+	fakeServer(t, a, "cloud", "203.0.113.5", "")
 	before, _ := os.ReadFile(a.Paths.FilePath())
 	if err := runTree(t, a, "setup", "cloud"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
 	data, _ := os.ReadFile(log)
 	inOrder(t, string(data),
-		" alice@203.0.113.5 'true'", " root@203.0.113.5 'true'", // denied, then root
-		"root@203.0.113.5 'bash' '-c'", "useradd", "'alice'", // EnsureUser("alice") as root
-		"alice@203.0.113.5", "build-essential", // prereqs as alice
+		" dev@203.0.113.5 'true'", " root@203.0.113.5 'true'", // denied, then root
+		"root@203.0.113.5 'bash' '-c'", "useradd", "'dev'", // EnsureUser("dev") as root
+		"dev@203.0.113.5", "build-essential", // prereqs as dev
 	)
-	if strings.Contains(string(data), "/home/dev") {
-		t.Error("EnsureUser hardcoded /home/dev")
-	}
 	if after, _ := os.ReadFile(a.Paths.FilePath()); !bytes.Equal(before, after) {
 		t.Errorf("setup wrote devvm.toml:\n%s", after)
 	}
@@ -568,21 +563,6 @@ esac`)
 	}
 }
 
-// setup --template T on a provider server, T's user other than the login
-// ([templates.default]'s): the login wins, with a warning that the
-// template user is ignored.
-func TestSetupOtherLoginWarns(t *testing.T) {
-	a := newTestApp(t)
-	fakeRemote(t, "")
-	fakeServer(t, a, "cloud", "cloud.example", "[templates.ops]\nuser = \"alice\"\n")
-	if err := runTree(t, a, "setup", "cloud", "--template", "ops"); err != nil {
-		t.Fatal(err)
-	}
-	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, `logs in as dev: template user "alice" is ignored, and hardening would pin AllowUsers to dev`) {
-		t.Errorf("warning = %q", w)
-	}
-}
-
 // A stopped smol VM is started (and waited for) the way `start` does it,
 // before setup's first exec, never booted implicitly by one.
 func TestSetupStartsStoppedSmol(t *testing.T) {
@@ -638,7 +618,7 @@ harden = true
 	if err := runTree(t, a, "setup", "h/web", "--template", "devvm", "--yes", "--fail2ban"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
-	want := []string{"setup", "web", "--inline-template", "--user=dev",
+	want := []string{"setup", "web", "--inline-template",
 		"--hook=url:https://x/b.sh --profile agent-vm --yes", "--memory=8192",
 		"--repo=smweber/devvm", "--repo=https://x.example/a,b.git",
 		"--harden=true", "--fail2ban=true", "--no-ports", "--yes"}

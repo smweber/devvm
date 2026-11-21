@@ -99,13 +99,6 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	if err != nil {
 		return err
 	}
-	// The record every later command builds logs in as [templates.default]'s
-	// user (devvm stores nothing per server, so it cannot remember another
-	// one): a template that would make a different user would lock them out.
-	if login := f.DefaultUser(); t.User != login {
-		return fmt.Errorf("template %s sets user = %s, but a %s server is always reached as [templates.default]'s user (%s): devvm keeps no per-server record; use a template with user = %q, or change [templates.default]",
-			t.Name, t.User, providerTitle(pn), login, login)
-	}
 	pubkey, err := providerKeyFile(pn, pl)
 	if err != nil {
 		return err
@@ -174,7 +167,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	// The address first, so the user can watch (or ssh in) while setup waits.
 	fmt.Fprintf(a.Stdout, "Created '%s' (server %d) at %s; setting it up.\n", srv.Name, srv.ID, srv.Address)
 
-	m := providerRecord(f, pn, *srv)
+	m := providerRecord(pn, *srv)
 	if !m.Managed() {
 		return fmt.Errorf("%s server '%s' came back without the %s=%s label, so devvm will not shape it; %s",
 			providerTitle(pn), srv.Name, provider.LabelManaged, provider.LabelManagedValue, next)
@@ -276,7 +269,6 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (confi
 	if err := resolveHook(tty, interactive, s, t); err != nil {
 		return config.Template{}, config.Placement{}, err
 	}
-	s.User = t.User
 	s.Repos = t.Repos
 	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
 	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban

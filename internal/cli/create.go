@@ -27,7 +27,7 @@ type createSpec struct {
 	Location   string
 	Image      string
 
-	// The template fields (hook, memory, disk, repos, user): flags here,
+	// The template fields (hook, memory, disk, repos): flags here,
 	// then settled by gatherCreateSpec from flag > template > built-in.
 	tmplFlags
 	KeysGithub []string
@@ -154,16 +154,12 @@ func (s createSpec) template() config.Template {
 	if name == "" {
 		name = config.DefaultTemplate
 	}
-	user := s.User
-	if user == "" {
-		user = config.DefaultTemplateUser
-	}
 	hook := s.Hook
 	if hook == "" {
 		hook = config.DefaultBootstrapHook
 	}
 	return config.Template{
-		Name: name, User: user, Hook: hook, Memory: s.Memory, Disk: s.Disk, Repos: s.Repos,
+		Name: name, Hook: hook, Memory: s.Memory, Disk: s.Disk, Repos: s.Repos,
 		AuthorizedKeysGithub: s.KeysGithub, AuthorizedKeys: s.KeyFiles,
 		Harden: s.Harden, Fail2ban: s.Fail2ban,
 	}

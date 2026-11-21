@@ -185,16 +185,16 @@ type ProviderServer struct {
 // NewProviderMachine builds the record for a provider server (providers.md
 // §4): reached over ssh on port 22 at the API row's address, read at
 // resolve time and never stored. A managed server (the devvm=true label,
-// settled by the caller from the row) logs in as user, the
-// [templates.default] user that `setup` creates there. An unmanaged one
+// settled by the caller from the row) logs in as DefaultUser, the user
+// `setup` creates there. An unmanaged one
 // gets no user@, as an entry with no `user` does, so ~/.ssh/config (or the
 // local login name) decides: devvm has no business guessing an account on
 // a server it did not make.
-func NewProviderMachine(name, providerName, user string, managed bool, s ProviderServer) *Machine {
+func NewProviderMachine(name, providerName string, managed bool, s ProviderServer) *Machine {
 	m := &Machine{Name: name, Backend: providerName, SSHPort: 22, managed: managed, Server: &s}
 	m.SSHHost = s.Address
-	if managed && user != "" && s.Address != "" {
-		m.SSHHost = user + "@" + s.Address
+	if managed && s.Address != "" {
+		m.SSHHost = DefaultUser + "@" + s.Address
 	}
 	return m
 }
@@ -208,12 +208,3 @@ func (f *File) HasProviders() bool { return len(f.Providers) > 0 }
 
 // ProviderNames is every configured provider, sorted.
 func (f *File) ProviderNames() []string { return sortedKeys(f.Providers) }
-
-// DefaultUser is the [templates.default] user (built-in dev): the login of
-// a managed provider server.
-func (f *File) DefaultUser() string {
-	if f.defUser == "" {
-		return DefaultTemplateUser
-	}
-	return f.defUser
-}

@@ -92,8 +92,8 @@ func (a *App) providerClient(name string) (provider.Provider, error) {
 // providerRecord turns an API row into the record every verb uses
 // (config.NewProviderMachine): Managed is the label, settled here by the
 // source that produced the row (config.md §9 item 3).
-func providerRecord(f *config.File, providerName string, s provider.Server) *config.Machine {
-	return config.NewProviderMachine(s.Name, providerName, f.DefaultUser(), provider.Managed(s), config.ProviderServer{
+func providerRecord(providerName string, s provider.Server) *config.Machine {
+	return config.NewProviderMachine(s.Name, providerName, provider.Managed(s), config.ProviderServer{
 		ID: s.ID, Status: s.Status, State: s.State, Address: s.Address, Type: s.Type, Location: s.Location,
 	})
 }
@@ -141,7 +141,7 @@ func (a *App) providerLookup(f *config.File, name string, mode providerMode) (*c
 		for _, pn := range f.ProviderNames() {
 			for _, s := range readProviderCache(a.Paths, pn).servers {
 				if s.Name == name {
-					return providerRecord(f, pn, s), "", nil
+					return providerRecord(pn, s), "", nil
 				}
 			}
 		}
@@ -171,7 +171,7 @@ func (a *App) providerLookup(f *config.File, name string, mode providerMode) (*c
 		}
 		_ = a.mergeProviderRow(pn, name, s) // derived data; a failed merge is not a failed lookup
 		if s != nil {
-			return providerRecord(f, pn, *s), "", nil
+			return providerRecord(pn, *s), "", nil
 		}
 	}
 	return nil, strings.Join(hints, "; "), nil

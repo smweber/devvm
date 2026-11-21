@@ -41,7 +41,6 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 	}
 	// The rest come from the template (flags already folded in); the form
 	// below offers repos for editing, pre-filled.
-	s.User = t.User
 	s.Repos = t.Repos
 	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
 	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban

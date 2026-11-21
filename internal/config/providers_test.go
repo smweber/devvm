@@ -14,7 +14,6 @@ ssh_key = "scott-laptop"
 ipv4 = false
 
 [templates.default]
-user = "ops"
 image = "debian-12"
 
 [templates.big]
@@ -27,8 +26,8 @@ memory = 8192
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !f.HasProviders() || strings.Join(f.ProviderNames(), ",") != "hetzner" || f.DefaultUser() != "ops" {
-		t.Fatalf("providers = %+v, user %q", f.Providers, f.DefaultUser())
+	if !f.HasProviders() || strings.Join(f.ProviderNames(), ",") != "hetzner" {
+		t.Fatalf("providers = %+v", f.Providers)
 	}
 	hz := f.Providers["hetzner"]
 	def := f.Templates[DefaultTemplate]
@@ -63,12 +62,12 @@ memory = 8192
 
 func TestNewProviderMachine(t *testing.T) {
 	s := ProviderServer{ID: 42, Status: "running", State: "running", Address: "1.2.3.4", Type: "cx23", Location: "nbg1"}
-	m := NewProviderMachine("web", BackendHetzner, "dev", true, s)
+	m := NewProviderMachine("web", BackendHetzner, true, s)
 	if !m.IsProvider() || !m.IsRemote() || !m.Probeable() || !m.Managed() || m.IsHub() ||
 		m.SSHHost != "dev@1.2.3.4" || m.SSHPort != 22 || m.User != "" || m.Server.ID != 42 {
 		t.Fatalf("managed = %+v", m)
 	}
-	u := NewProviderMachine("prod", BackendHetzner, "dev", false, s)
+	u := NewProviderMachine("prod", BackendHetzner, false, s)
 	if u.Managed() || u.SSHHost != "1.2.3.4" || !u.IsRemote() {
 		t.Fatalf("unmanaged = %+v", u)
 	}

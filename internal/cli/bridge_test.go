@@ -167,7 +167,7 @@ func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
 	}{
 		{consented, "devvm: browser bridge unavailable: its devvm agent did not come up: its forward daemon may have started before agent = true was added (restart it: 'devvm ports down box', and end any attach holding it), or the install failed (see the daemon log); URLs opened in the guest will be printed there\n"},
 		{config.NewRemote("adopted", "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (agent = true in [machines.adopted] lets devvm install one in ~/.local/bin once the forward daemon restarts: 'devvm ports down adopted', and end any attach holding it); URLs opened in the guest will be printed there\n"},
-		{config.NewProviderMachine("cloud", config.BackendHetzner, "dev", true, config.ProviderServer{Address: "cloud"}), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log); URLs opened in the guest will be printed there\n"},
+		{config.NewProviderMachine("cloud", config.BackendHetzner, true, config.ProviderServer{Address: "cloud"}), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log); URLs opened in the guest will be printed there\n"},
 	} {
 		pb := &pingBridge{info: session.PingInfo{State: session.StateUp}}
 		old := openBridgeSession

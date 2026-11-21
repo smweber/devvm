@@ -57,8 +57,8 @@ func TestResolveCompiledDefaultWhenUnset(t *testing.T) {
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	if s.Hook != "none" || s.User != "dev" {
-		t.Errorf("hook = %q, user = %q, want the built-ins none, dev", s.Hook, s.User)
+	if s.Hook != "none" {
+		t.Errorf("hook = %q, want the built-in none", s.Hook)
 	}
 }
 

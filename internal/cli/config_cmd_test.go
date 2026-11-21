@@ -30,7 +30,7 @@ func TestConfigAdd(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 0")
 	fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
-	head := "# my boxes\n[templates.default]\nuser = \"ops\" # me\n"
+	head := "# my boxes\n[templates.default]\nhook = \"none\" # me\n"
 	writeDevvmTOML(t, a, head)
 	if err := runTree(t, a, "config", "add", "cloud", "--backend", "remote", "--host", "2.29.47.196", "--transport", "mosh", "--connect-timeout", "20"); err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestConfigAdd(t *testing.T) {
 func TestConfigRmReapsLocalState(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 0")
-	writeDevvmTOML(t, a, "# keep me\n[templates.default]\nuser = \"ops\"\n\n[machines.box]\nbackend = \"remote\"\nhost = \"b\"\n\n# the next one\n[machines.other]\nbackend = \"remote\"\nhost = \"o\"\n")
+	writeDevvmTOML(t, a, "# keep me\n[templates.default]\nhook = \"none\"\n\n[machines.box]\nbackend = \"remote\"\nhost = \"b\"\n\n# the next one\n[machines.other]\nbackend = \"remote\"\nhost = \"o\"\n")
 	if err := config.SavePorts(a.Paths, "box", []string{"3000"}); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestConfigRmReapsLocalState(t *testing.T) {
 		t.Error("the daemon was not stopped")
 	}
 	data, _ := os.ReadFile(a.Paths.FilePath())
-	if string(data) != "# keep me\n[templates.default]\nuser = \"ops\"\n\n# the next one\n[machines.other]\nbackend = \"remote\"\nhost = \"o\"\n" {
+	if string(data) != "# keep me\n[templates.default]\nhook = \"none\"\n\n# the next one\n[machines.other]\nbackend = \"remote\"\nhost = \"o\"\n" {
 		t.Errorf("devvm.toml after rm =\n%s", data)
 	}
 	if _, err := os.Stat(a.Paths.PortsPath("box")); !os.IsNotExist(err) {
@@ -215,6 +215,7 @@ func TestConfigCheck(t *testing.T) {
 		"[machines.x]\nbackend = \"remote\"\nhost = \"x\"\nbogus = 1\n":              "unknown key \"bogus\"",
 		"[templates.t]\nhook = \"bogus\"\n":                                          "template t",
 		"[templates.default]\nports = [\"x\"]\n":                                     "ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'",
+		"[templates.default]\nuser = \"ops\"\n":                                      "[templates.default]: user is gone from templates (a box devvm makes always has the user dev); delete the line",
 		"[machines.x]\nbackend = \"remote\"\n\n[machines.y]\nbackend = \"remote\"\n": "[machines.y]",
 	} {
 		writeDevvmTOML(t, a, body)
@@ -240,7 +241,7 @@ func TestConfigShow(t *testing.T) {
 	out := a.Stdout.(*bytes.Buffer).String()
 	for _, want := range []string{
 		"[templates.default]\n",
-		`user = "dev"`, "# built-in",
+		"harden = false", "# built-in",
 		"[templates.big]  # unset fields fall back to [templates.default]",
 		"memory = 8192\n",
 		`hook = "cmd:/d"`, "# from default",
