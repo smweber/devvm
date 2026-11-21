@@ -20,7 +20,8 @@ import (
 // It is one axis; Managed is the other.
 //
 //	smol    a local microVM, discovered from `smolvm machine ls`; never an
-//	        entry in the file. Managed is settled by discovery (the marker).
+//	        entry in the file. Managed is settled by discovery (the devvm=true
+//	        label on the VM).
 //	remote  a `[machines.*]` entry reached over ssh. devvm never shapes
 //	        one (simplify.md step 12): it connects, and with `agent = true`
 //	        installs the agent in the login user's ~/.local/bin.
@@ -114,8 +115,8 @@ type Machine struct {
 	Agent bool
 
 	// managed is the record's Managed bit, as a discovery source settled it
-	// (a smol VM's managed marker against its created_at, config.md §2; a
-	// provider server's label). Never stored, never set on an entry.
+	// (the devvm=true label on a smol VM or a provider server, config.md
+	// §2). Never stored, never set on an entry.
 	// Unsettled means unmanaged, so a record nobody settled can never be
 	// taken for one devvm may install into.
 	managed bool

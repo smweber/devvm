@@ -76,10 +76,7 @@ func TestSinceHuman(t *testing.T) {
 // host.
 func TestSmolRowsUseSnapshot(t *testing.T) {
 	a := newTestApp(t)
-	log := fakeLocalSmolvm(t, `[{"name":"vm","state":"stopped","memory_mib":2048,"storage_gb":20,"cpus":4,"created_at":100},{"name":"other","state":"running","created_at":7}]`)
-	if err := config.WriteManagedMarker(a.Paths, "vm", "100"); err != nil {
-		t.Fatal(err)
-	}
+	log := fakeLocalSmolvm(t, `[{"name":"vm","state":"stopped","memory_mib":2048,"storage_gb":20,"cpus":4,"labels":{"devvm":"true"}},{"name":"other","state":"running","created_at":7}]`)
 	if err := config.SavePorts(a.Paths, "vm", []string{"80:80"}); err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
 	"github.com/spf13/cobra"
@@ -156,8 +155,8 @@ func (a *App) rootCmd() *cobra.Command {
 			"  hetzner a Hetzner Cloud server, discovered from the API ([providers.hetzner])\n\n" +
 			"~/.config/devvm/devvm.toml holds templates for create/setup ([templates.*])\n" +
 			"and the remote boxes and hubs ([machines.*]); see 'devvm config'.\n" +
-			"This host's state (daemon sockets, logs, caches, saved forwards, managed\n" +
-			"markers) is in ~/.local/state/devvm.",
+			"This host's state (daemon sockets, logs, caches, saved forwards) is in\n" +
+			"~/.local/state/devvm.",
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -252,10 +251,11 @@ func (a *App) rootCmd() *cobra.Command {
 
 // noteOldLayout runs the one-time upgrade seeds while the old per-machine
 // layout is still there, then, when there is no devvm.toml yet, prints the
-// one-line pointer at the hand migration (config.md §8). The seeds are
-// what nothing in devvm.toml can carry: saved forwards (MigratePorts, once
-// per host) and the managed markers of the smol VMs devvm made
-// (SeedLegacyMarkers), so those VMs stay managed. Nothing else reads the
+// one-line pointer at the hand migration (config.md §8). The seed is what
+// nothing in devvm.toml can carry: saved forwards (MigratePorts, once per
+// host). The smol VMs an old devvm made are labelled by hand (smolvm
+// machine update --label devvm=true): ownership is a label on the VM now,
+// and no marker is seeded. Nothing else reads the
 // old files: the command carries on with no entries. stderr, so a
 // `--plain` consumer's stdout is untouched. quiet (a hidden command:
 // __daemon, __session, __complete, …) runs the seeds but prints nothing,
@@ -263,7 +263,6 @@ func (a *App) rootCmd() *cobra.Command {
 func (a *App) noteOldLayout(quiet bool) {
 	if len(config.LegacySmolConfs(a.Paths)) > 0 || config.OldLayout(a.Paths) {
 		_ = config.MigratePorts(a.Paths) // a failure is the ports verbs' to report
-		backend.SeedLegacyMarkers(a.Paths)
 	}
 	if quiet || !config.OldLayout(a.Paths) || a.Stderr == nil {
 		return
@@ -272,7 +271,7 @@ func (a *App) noteOldLayout(quiet bool) {
 	if names, _ := os.ReadDir(config.LegacyMachinesDir(a.Paths)); len(names) == 0 {
 		old, what = config.LegacyDefaultsPath(a.Paths), "config.toml"
 	}
-	fmt.Fprintf(a.Stderr, "devvm: %s is the old layout (saved forwards and managed markers were seeded from it); write %s by hand (see docs/proposals/config.md §8) and remove %s\n",
+	fmt.Fprintf(a.Stderr, "devvm: %s is the old layout (saved forwards were seeded from it); write %s by hand (see docs/proposals/config.md §8) and remove %s\n",
 		tildePath(old), tildePath(a.Paths.FilePath()), what)
 }
 

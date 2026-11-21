@@ -687,11 +687,9 @@ func (a *App) runConfigRm(name string, force bool) error {
 	return nil
 }
 
-// forgetEntryState is forgetHostState for a config entry: saved forwards
-// and reach cache, but never a managed marker. An entry's name may shadow
-// a local smol VM, and that VM's marker is the VM's, not the entry's:
-// removing the entry must leave the VM as managed as it was. An entry has
-// no pinned host key (only a box devvm made is pinned: sshFlags).
+// forgetEntryState is forgetHostState for a config entry, carrying on past
+// a failure: saved forwards and reach cache. An entry has no pinned host
+// key (only a box devvm made is pinned: sshFlags).
 func (a *App) forgetEntryState(name string) error {
 	var errs []error
 	if unlock, err := config.LockPorts(a.Paths, name); err != nil {

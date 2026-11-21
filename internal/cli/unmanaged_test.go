@@ -12,6 +12,10 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
+// devvmLabel is a `machine ls --json` row's labels as smolvm 1.35.5 prints
+// devvm's: the VM is one devvm created.
+const devvmLabel = `"labels":{"devvm":"true"}`
+
 // fakeLocalSmolvm puts a smolvm on PATH answering `machine ls --json` with
 // rows (one JSON array) and logging every call, so a test resolves local
 // smol VMs exactly as the cli does: through discovery, one listing.
@@ -133,21 +137,17 @@ func TestBridgedRequiresManagedSmol(t *testing.T) {
 }
 
 // The --plain fifth column for every local row kind (config.md §7): a VM
-// devvm made, one it did not, an old smol conf (managed by the migration
-// rule, its marker written), remote entries managed and adopted, a remote
+// devvm made (its label), one it did not, a remote entry (`-`), a remote
 // entry shadowing a VM of the same name, a broken conf, and a hub, whose
 // own row is `-` (unless it too shadows a VM).
 func TestStatusPlainManagedColumn(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[
-		{"name":"made","state":"running","created_at":1},
+		{"name":"made","state":"running",`+devvmLabel+`},
 		{"name":"found","state":"stopped","created_at":2},
 		{"name":"cloud","state":"stopped","created_at":4},
 		{"name":"h","state":"stopped","created_at":5}
 	]`)
-	if err := config.WriteManagedMarker(a.Paths, "made", "1"); err != nil {
-		t.Fatal(err)
-	}
 	for _, m := range []*config.Machine{
 		config.NewRemote("cloud", "u@cloud"),
 		config.NewRemote("box", "u@box"),
@@ -222,10 +222,7 @@ func TestDeleteRefusesEntries(t *testing.T) {
 // the entry's record and backend, no smolvm call needed to say so.
 func TestEntryShadowsSmolVM(t *testing.T) {
 	a := newTestApp(t)
-	smolLog := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
-	if err := config.WriteManagedMarker(a.Paths, "web", "1"); err != nil {
-		t.Fatal(err)
-	}
+	smolLog := fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`}]`)
 	m, _, err := a.resolveAny("web")
 	if err != nil || m.IsRemote() || !m.Managed() {
 		t.Fatalf("no entry: %+v, %v; want the managed smol VM", m, err)
@@ -246,10 +243,10 @@ func TestEntryShadowsSmolVM(t *testing.T) {
 	}
 }
 
-// forgetHostState drops the marker and a provider server's pinned host key
-// (the only kind devvm pins), and nothing else in known_hosts. An entry has
-// no pin to drop: forgetHostKey leaves the file alone for one.
-func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
+// forgetHostState drops a provider server's pinned host key (the only kind
+// devvm pins), and nothing else in known_hosts. An entry has no pin to
+// drop: forgetHostKey leaves the file alone for one.
+func TestForgetHostStateDropsPin(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
 	}
@@ -266,9 +263,6 @@ func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 	sshWithConfig(t, "")
 	gone := config.NewProviderMachine("gone", config.BackendHetzner, config.ProviderServer{Address: "gone.example"})
 	entry := config.NewRemote("kept", "dev@kept.example")
-	if err := config.WriteManagedMarker(a.Paths, "gone", "1"); err != nil {
-		t.Fatal(err)
-	}
 	if err := a.forgetHostState("gone", gone); err != nil {
 		t.Fatal(err)
 	}
@@ -281,9 +275,6 @@ func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "kept.example") {
 		t.Errorf("a pin no deleted server had was dropped:\n%s", data)
-	}
-	if _, ok, _ := config.ReadManagedMarker(a.Paths, "gone"); ok {
-		t.Error("marker survived")
 	}
 	if _, err := os.Stat(a.Paths.KnownHostsPath() + ".old"); err == nil {
 		t.Error("ssh-keygen's backup left in the state dir")

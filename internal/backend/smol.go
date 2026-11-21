@@ -1,17 +1,18 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
+	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider"
 )
 
 // smol defaults, matching the globals at the top of bin/devvm.
@@ -61,61 +62,30 @@ func smolCmd(args ...string) error {
 // knows about a local smol VM, from smolvm's own record (config.md §2, §3).
 // Sizes are smolvm's, read for running and stopped VMs alike, so devvm
 // stores none. Pinned against a real smolvm 1.16.1 (running and stopped
-// rows, testdata/smolvm-machine-ls*.json): a stopped VM reports the same
-// sizes and created_at, and a null pid.
+// rows, testdata/smolvm-machine-ls*.json); labels as 1.35.5 prints them
+// (an object of strings, `{}` when none). A smolvm without labels in its
+// listing reads as every VM unlabelled.
 type SmolMachine struct {
-	Name      string        `json:"name"`
-	State     string        `json:"state"`
-	MemoryMiB int           `json:"memory_mib"`
-	StorageGB int           `json:"storage_gb"`
-	CPUs      int           `json:"cpus"`
-	CreatedAt SmolCreatedAt `json:"created_at"`
+	Name      string            `json:"name"`
+	State     string            `json:"state"`
+	MemoryMiB int               `json:"memory_mib"`
+	StorageGB int               `json:"storage_gb"`
+	CPUs      int               `json:"cpus"`
+	Labels    map[string]string `json:"labels"`
 }
 
 // Running reports whether smolvm says the VM is up.
 func (s SmolMachine) Running() bool { return s.State == "running" }
 
-// SmolCreatedAt is a VM's created_at, normalized (normalizeCreatedAt): what
-// the managed marker stores and compares. smolvm 1.16.1 reports an integer
-// of Unix seconds, unchanged across a stop; a string is accepted too, and
-// null or absent is "" (no created_at: never managed, see settleSmol), so a
-// format change makes VMs read unmanaged rather than fail the listing.
-type SmolCreatedAt string
+// smolLabel is devvm's ownership label on a smol VM, the same one a
+// provider server carries: `create` sets it, and a VM without it is one
+// devvm did not create.
+var smolLabel = provider.LabelManaged + "=" + provider.LabelManagedValue
 
-// normalizeCreatedAt renders a numeric created_at as a plain decimal
-// integer (1789490152, from 1789490152, "1789490152" or 1.789490152e9), so
-// the marker compares values, not spellings. Anything else (a timestamp
-// string, a fractional number) is kept as trimmed text.
-func normalizeCreatedAt(s string) string {
-	s = strings.TrimSpace(s)
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return strconv.FormatInt(n, 10)
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil && f == math.Trunc(f) && math.Abs(f) < 1<<53 {
-		return strconv.FormatInt(int64(f), 10)
-	}
-	return s
-}
-
-func (c *SmolCreatedAt) UnmarshalJSON(data []byte) error {
-	t := strings.TrimSpace(string(data))
-	switch {
-	case t == "null":
-		*c = ""
-	case strings.HasPrefix(t, `"`):
-		var s string
-		if err := json.Unmarshal(data, &s); err != nil {
-			return err
-		}
-		*c = SmolCreatedAt(normalizeCreatedAt(s))
-	default:
-		var n json.Number
-		if err := json.Unmarshal(data, &n); err != nil {
-			return err
-		}
-		*c = SmolCreatedAt(normalizeCreatedAt(n.String()))
-	}
-	return nil
+// Labelled reports whether the VM carries devvm's label (devvm=true): the
+// smol source's whole ownership rule (config.md §2).
+func (s SmolMachine) Labelled() bool {
+	return s.Labels[provider.LabelManaged] == provider.LabelManagedValue
 }
 
 // parseSmolList decodes `smolvm machine ls --json`.
@@ -161,7 +131,7 @@ func SmolList() ([]SmolMachine, error) {
 }
 
 // smolLookup is one `smolvm machine ls --json`, picked down to one name:
-// existence, state, sizes and created_at in one subprocess (it replaced a
+// existence, state, sizes and labels in one subprocess (it replaced a
 // `machine status --name` probe, so resolution costs no more than before).
 func smolLookup(name string) (SmolMachine, bool, error) {
 	ms, err := smolList()
@@ -176,15 +146,16 @@ func smolLookup(name string) (SmolMachine, bool, error) {
 	return SmolMachine{}, false, nil
 }
 
-// SmolExists reports whether smolvm knows a machine by this name (create's
-// refusal). Quiet: any failure reads as "no".
+// SmolExists reports whether smolvm knows a machine by this name, labelled
+// or not (create's refusal). Quiet: any failure reads as "no".
 func SmolExists(name string) bool {
 	_, ok, err := smolLookup(name)
 	return err == nil && ok
 }
 
-// SmolLookup is smolLookup for callers outside the package (create reads
-// the new VM's created_at to write its marker).
+// SmolLookup is smolLookup for callers outside the package that must tell
+// "not listed" from "smolvm did not answer" (ports' deleted-meanwhile
+// check).
 func SmolLookup(name string) (SmolMachine, bool, error) { return smolLookup(name) }
 
 // SmolRow is the `smolvm machine ls` row b was resolved from, if b is a
@@ -237,24 +208,24 @@ func (b *smolBackend) Status() (State, error) {
 	return st, nil
 }
 
-// Refresh re-asks the smol discovery source about this VM: whether it
-// runs (a VM deleted since reads as not running, with a nil record), and a
-// fresh copy of the record with Managed
-// settled again from the marker. The session daemon calls it at start and
-// before every reconnect dial (config.md §2): a VM deleted and recreated
-// under the same name while the daemon slept has a new created_at, so it
-// comes back unmanaged and the transport refuses to install into it. The
-// record itself is never mutated (other goroutines may hold it).
+// Refresh re-asks the smol discovery source about this VM: a fresh copy of
+// the record, and whether it runs. The session daemon calls it at start and
+// before every reconnect dial (config.md §2): a VM still listed with
+// devvm's label is the one it serves. One gone, or listed without the
+// label (deleted and recreated under the same name outside devvm while the
+// daemon slept), reads as not running with a nil record, so it is never
+// dialled and nothing is installed into it. The record itself is never
+// mutated (other goroutines may hold it).
 func (b *smolBackend) Refresh() (*config.Machine, bool, error) {
 	sm, ok, err := smolLookup(b.m.Name)
 	if err != nil {
 		return nil, false, err
 	}
-	if !ok {
-		return nil, false, nil // gone: as un-dialable as a stopped VM
+	if !ok || !sm.Labelled() {
+		return nil, false, nil // gone, or not devvm's: as un-dialable as a stopped VM
 	}
 	fresh := *b.m
-	fresh.SetManaged(settleSmol(b.paths, sm))
+	fresh.SetManaged(true)
 	return &fresh, sm.Running(), nil
 }
 
@@ -351,9 +322,17 @@ func (b *smolBackend) guestArgv(o ExecOpts, argv []string) []string {
 	return append(out, argv...)
 }
 
-// SmolCreate provisions a new microVM (net-enabled, SMOLVM_GUEST=1) and starts
-// it. Mirrors the `smolvm machine create` invocation in create_machine. A
-// diskGiB <= 0 falls back to SmolDefaultDiskGiB, so a pre-disk conf still boots.
+// ErrNoSmolLabel is create's refusal on a smolvm whose `machine create`
+// has no --label (1.16.1 has it): devvm owns only the VMs it labels.
+var ErrNoSmolLabel = errors.New("this smolvm's 'machine create' has no --label, which devvm needs to mark the VMs it makes; upgrade smolvm: curl -sSL https://smolmachines.com/install.sh | bash")
+
+// SmolCreate provisions a new microVM (net-enabled, SMOLVM_GUEST=1, devvm's
+// label) and starts it. Mirrors the `smolvm machine create` invocation in
+// create_machine. A diskGiB <= 0 falls back to SmolDefaultDiskGiB, so a
+// pre-disk conf still boots. A smolvm that does not know --label is told
+// from its own stderr, clap's unknown-argument line for that flag
+// (ErrNoSmolLabel), so no version is probed up front; any other failure,
+// a refused label value included, is smolvm's own.
 func SmolCreate(name string, memoryMiB, diskGiB int) error {
 	if err := needSmolvm(); err != nil {
 		return err
@@ -370,10 +349,28 @@ func SmolCreate(name string, memoryMiB, diskGiB int) error {
 		"--mem", fmt.Sprint(memoryMiB),
 		"--storage", fmt.Sprint(diskGiB),
 		"--env", "SMOLVM_GUEST=1",
+		"--label", smolLabel,
 	}
 	fmt.Printf("+ smolvm %v\n", args)
-	if err := smolCmd(args...); err != nil {
+	var stderr bytes.Buffer
+	cmd := exec.Command("smolvm", args...)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "unexpected argument '--label'") {
+			return ErrNoSmolLabel
+		}
 		return err
 	}
 	return smolCmd("machine", "start", "--name", name)
+}
+
+// SmolLabel puts devvm's label on a VM devvm did not create (`setup
+// --adopt`): `machine update --label`, which smolvm 1.35.5 has, on a
+// running VM too (1.16.1 has no update --label: it fails with smolvm's own
+// message).
+func SmolLabel(name string) error {
+	if err := needSmolvm(); err != nil {
+		return err
+	}
+	return smolCmd("machine", "update", "--name", name, "--label", smolLabel)
 }

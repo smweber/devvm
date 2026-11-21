@@ -73,7 +73,7 @@ func requireMachine(m *config.Machine) error {
 // which devvm may put there unasked. Entries are
 // never refused here: devvm only connects to one, with the consented
 // posture its line gives (agent = true). A machine on a hub is refused by
-// its hub, which holds the marker.
+// its hub, which reads its label.
 // A provider server is always one devvm made: the provider source sees
 // only the servers with the devvm=true label (providers.go).
 func requireManaged(m *config.Machine) error {

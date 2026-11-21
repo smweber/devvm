@@ -96,8 +96,8 @@ func (a *App) runCreate(s createSpec) error {
 		return fmt.Errorf("smol needs --memory >= 512 (MiB)")
 	}
 
-	// Allocate the VM and write its managed marker; setup then shapes it
-	// (a mid-flight failure is resumable with `devvm setup`).
+	// Allocate the VM, labelled as devvm's; setup then shapes it (a
+	// mid-flight failure is resumable with `devvm setup`).
 	if err := a.provisionResource(s.Name, s.Memory, s.Disk); err != nil {
 		return err
 	}
@@ -166,8 +166,8 @@ func (s createSpec) template() config.Template {
 }
 
 // provisionResource allocates the smol VM, leaving it running: create's
-// allocation step. SmolCreate (create + start), then the managed marker.
-// A provider box is allocated by runCreateProvider instead.
+// allocation step. SmolCreate (create with devvm's label, then start). A
+// provider box is allocated by runCreateProvider instead.
 func (a *App) provisionResource(name string, memory, disk int) error {
 	if !backend.SmolAvailable() {
 		return backend.ErrNoSmolvm
@@ -180,16 +180,11 @@ func (a *App) provisionResource(name string, memory, disk int) error {
 		return err
 	}
 	a.clearLeftoverPorts(name)
-	// A failure leaves the VM made but unmanaged, which the error says;
-	// nothing is installed into it.
-	if err := a.writeManagedMarker(name); err != nil {
-		return fmt.Errorf("%s but could not be marked managed: %w; %s", wasCreated(name), err, backend.AdoptHint(name))
-	}
 	return nil
 }
 
 // wasCreated leads every error of a smol create that comes after its VM
-// exists (the marker, setup, a clone). A laptop proxying `create HUB/NAME`
+// exists (setup, a clone). A laptop proxying `create HUB/NAME`
 // reads it in the hub's output: it means the VM was made, so the laptop
 // clears its own leftover HUB@NAME forwards even though the hub's create
 // failed. No refusal says it.
@@ -213,21 +208,6 @@ func (a *App) clearLeftoverPorts(name string) {
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: %s: could not clear saved forwards left by an earlier %s (%v); see 'devvm ports list %s'\n", name, name, err, name)
 	}
-}
-
-// writeManagedMarker records that devvm owns the smol VM NAME (config.md
-// §2): its created_at, read back from smolvm, so a VM later deleted and
-// recreated under the same name behind devvm's back is never mistaken for
-// this one. create and `setup --adopt` are its only callers.
-func (a *App) writeManagedMarker(name string) error {
-	sm, ok, err := backend.SmolLookup(name)
-	if err == nil && !ok {
-		err = fmt.Errorf("smolvm does not list it")
-	}
-	if err == nil {
-		err = config.WriteManagedMarker(a.Paths, name, string(sm.CreatedAt))
-	}
-	return err
 }
 
 func (a *App) printCreateNext(name, backendName string) {

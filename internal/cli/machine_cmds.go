@@ -267,19 +267,19 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 	return nil
 }
 
-// forgetHostState removes what this host remembers about a deleted smol VM
-// or hub machine besides its run files (reapRunFiles): its saved forwards
-// (<State>/ports/NAME), its managed marker (<State>/managed/NAME), its
-// reach cache (<State>/cache/reach/NAME) and its pinned host key in the isolated known_hosts. It is the one place `delete`
+// forgetHostState removes what this host remembers about a deleted smol VM,
+// provider server or hub machine besides its run files (reapRunFiles): its
+// saved forwards (<State>/ports/NAME), its reach cache
+// (<State>/cache/reach/NAME) and its pinned host key in the isolated
+// known_hosts. It is the one place `delete`
 // clears host state, so a later machine of the same name starts clean
 // (config.md §9 item 6: a server recreated under the same name and address
 // has a new host key). Run after the machine is gone, so a failed delete
 // keeps its state, and under the ports file's lock, so a `ports add` that
 // was waiting on it finds the machine gone and refuses (editPorts) instead
 // of writing the file back. A ports file left by a failure here is cleared
-// by the next `create` of the name; a marker is rewritten by it. A config
-// entry's state goes through forgetEntryState (`config rm`), which never
-// touches a marker.
+// by the next `create` of the name. A config entry's state goes through
+// forgetEntryState (`config rm`).
 //
 // m is the deleted record, for its pin; nil when there is none to drop (a
 // smol VM, a hub machine). See forgetHostKey.
@@ -291,11 +291,6 @@ func (a *App) forgetHostState(name string, m *config.Machine) error {
 	defer unlock()
 	if err := config.RemovePorts(a.Paths, name); err != nil {
 		return fmt.Errorf("%s: clear saved forwards: %w", name, err)
-	}
-	if _, _, onHub, _ := config.SplitHubName(name); !onHub {
-		if err := config.RemoveManagedMarker(a.Paths, name); err != nil {
-			return fmt.Errorf("%s: clear managed marker: %w", name, err)
-		}
 	}
 	if err := reach.Remove(a.Paths, name); err != nil {
 		return fmt.Errorf("%s: clear reach cache: %w", name, err)

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
@@ -51,10 +52,28 @@ func TestSmolInstallGate(t *testing.T) {
 	}
 }
 
-// The daemon re-settles Managed before it dials (config.md §2), asking the
-// backend rather than a marker: a VM devvm made, deleted and recreated
-// under the same name with raw smolvm while the daemon was down has a new
-// created_at, so the dial finds it unmanaged and stops before any exec:
+// runDaemonBounded is RunDaemon with a deadline: a daemon that dials (and
+// so serves) where it should refuse fails the test in seconds rather than
+// hanging the package until go test's own timeout.
+func runDaemonBounded(t *testing.T, paths config.Paths, d backend.Discovered) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- RunDaemon(ctx, paths, d.Machine, d.Backend, "test") }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunDaemon did not refuse within 10s: it dialled")
+		return nil
+	}
+}
+
+// The daemon asks again before it dials (config.md §2), the backend rather
+// than any host file: a VM devvm made, deleted and recreated under the same
+// name with raw smolvm while the daemon was down is listed without devvm's
+// label, so the dial refuses it as not listed and stops before any exec:
 // not even agentbin's read-only probes run in it.
 func TestDaemonRefusesInstallIntoRecreatedVM(t *testing.T) {
 	ls, log := fakeSmolvmGuest(t)
@@ -64,29 +83,26 @@ func TestDaemonRefusesInstallIntoRecreatedVM(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(state) })
 	paths := config.Paths{Config: t.TempDir(), State: state}
-	if err := config.WriteManagedMarker(paths, "web", "100"); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, ls, `[{"name":"web","state":"running","created_at":100}]`)
+	writeFile(t, ls, `[{"name":"web","state":"running","labels":{"devvm":"true"}}]`)
 	d, ok, err := backend.Discover(paths, "web")
 	if err != nil || !ok || !d.Machine.Managed() {
 		t.Fatalf("Discover = %+v, %v, %v; want a managed VM", d.Machine, ok, err)
 	}
-	// Recreated while no daemon ran: same name, new created_at.
-	writeFile(t, ls, `[{"name":"web","state":"running","created_at":200}]`)
-	err = RunDaemon(context.Background(), paths, d.Machine, d.Backend, "test")
-	if !errors.Is(err, backend.ErrUnmanaged) {
-		t.Fatalf("RunDaemon = %v, want the install refused as unmanaged", err)
+	// Recreated while no daemon ran: same name, no label.
+	writeFile(t, ls, `[{"name":"web","state":"running","labels":{}}]`)
+	err = runDaemonBounded(t, paths, d)
+	if !errors.Is(err, errVMNotListed) {
+		t.Fatalf("RunDaemon = %v, want it not dialled", err)
 	}
 	data, _ := os.ReadFile(log)
 	for _, call := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if call != "machine ls --json" {
-			t.Errorf("unmanaged VM got %q", call)
+			t.Errorf("unlabelled VM got %q", call)
 		}
 	}
 	// A stopped VM is still never dialed at all.
-	writeFile(t, ls, `[{"name":"web","state":"stopped","created_at":100}]`)
-	if err := RunDaemon(context.Background(), paths, d.Machine, d.Backend, "test"); !errors.Is(err, errVMNotRunning) {
+	writeFile(t, ls, `[{"name":"web","state":"stopped","labels":{"devvm":"true"}}]`)
+	if err := runDaemonBounded(t, paths, d); !errors.Is(err, errVMNotRunning) {
 		t.Errorf("stopped VM: RunDaemon = %v, want errVMNotRunning", err)
 	}
 }

@@ -128,14 +128,10 @@ repos = ["o/r"]
 	}
 }
 
-// fakeManagedSmol registers a local smol VM devvm made (marker = created_at).
+// fakeManagedSmol registers a local smol VM devvm made (its label).
 func fakeManagedSmol(t *testing.T, a *App, name string) (log string) {
 	t.Helper()
-	log = fakeLocalSmolvm(t, `[{"name":"`+name+`","state":"running","created_at":100}]`)
-	if err := config.WriteManagedMarker(a.Paths, name, "100"); err != nil {
-		t.Fatal(err)
-	}
-	return log
+	return fakeLocalSmolvm(t, `[{"name":"`+name+`","state":"running",`+devvmLabel+`}]`)
 }
 
 // stubBrowser stands in for the agent install, logging a marker line into
@@ -210,10 +206,7 @@ authorized_keys_github = ["x"]
 // Refusals, all before anything runs in the box.
 func TestSetupRefusals(t *testing.T) {
 	a := newTestApp(t)
-	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":100},{"name":"made","state":"running","created_at":5}]`)
-	if err := config.WriteManagedMarker(a.Paths, "made", "5"); err != nil {
-		t.Fatal(err)
-	}
+	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","labels":{}},{"name":"made","state":"running",`+devvmLabel+`}]`)
 	ssh := fakeSSH(t, "exit 0")
 	if err := writeEntry(a.Paths, config.NewRemote("box", "dev@x")); err != nil {
 		t.Fatal(err)
@@ -244,10 +237,7 @@ func TestSetupRefusals(t *testing.T) {
 		t.Errorf("refusals ran smolvm: %q", calls)
 	}
 	if _, err := os.Stat(ssh); err == nil {
-		t.Error("refusals dialed ssh")
-	}
-	if _, ok, _ := config.ReadManagedMarker(a.Paths, "web"); ok {
-		t.Error("a refused adoption wrote the marker")
+		t.Error("refusals dialed ssh") // and smolvmCalls saw no label written
 	}
 }
 
@@ -270,10 +260,24 @@ func typeIntoTTY(t *testing.T, typed string) *fakeTTY {
 }
 
 // --adopt prints the plan and needs the VM's name typed: a wrong answer
-// (y included) adopts nothing; the name writes the marker and shapes.
+// (y included) adopts nothing; the name labels the VM (smolvm machine
+// update --label devvm=true) and shapes it.
 func TestSetupAdoptTypedName(t *testing.T) {
 	a := newTestApp(t)
-	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":100}]`)
+	dir := t.TempDir()
+	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
+	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"running","labels":{}}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
+		"case \"$*\" in\n" +
+		"  'machine ls --json') cat " + ls + ";;\n" +
+		"  'machine update --name web --label devvm=true') echo '[{\"name\":\"web\",\"state\":\"running\"," + devvmLabel + "}]' > " + ls + ";;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubBrowser(t, log)
 	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/opt/h\"\nrepos = [\"o/r\"]\n")
 	if err := config.SavePorts(a.Paths, "web", []string{"9999"}); err != nil {
@@ -296,20 +300,17 @@ func TestSetupAdoptTypedName(t *testing.T) {
 			t.Errorf("plan lacks %q:\n%s", want, tty.out.String())
 		}
 	}
-	if _, ok, _ := config.ReadManagedMarker(a.Paths, "web"); ok || len(smolvmCalls(t, log)) > 0 {
-		t.Fatal("an aborted adoption marked or touched the VM")
+	if calls := smolvmCalls(t, log); len(calls) > 0 {
+		t.Fatalf("an aborted adoption labelled or touched the VM: %q", calls)
 	}
 
 	typeIntoTTY(t, "web\n")
 	if err := runTree(t, a, "setup", "--adopt", "web"); err != nil {
 		t.Fatalf("typed the name: %v\n%s", err, a.Stderr)
 	}
-	if v, ok, _ := config.ReadManagedMarker(a.Paths, "web"); !ok || v != "100" {
-		t.Errorf("marker = %q, %v", v, ok)
-	}
 	data, _ := os.ReadFile(log)
-	// Managed now: the execs go through the dev-user wrapper.
-	inOrder(t, string(data), "useradd", "build-essential", "AGENT-INSTALL web", "/opt/h", "gh repo clone")
+	// Labelled first; managed then: the execs go through the dev-user wrapper.
+	inOrder(t, string(data), "machine update --name web --label devvm=true", "useradd", "build-essential", "AGENT-INSTALL web", "/opt/h", "gh repo clone")
 	// setup never touches saved forwards (only create clears a leftover).
 	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"9999"}) {
 		t.Errorf("ports = %v after an adoption", got)
@@ -569,21 +570,18 @@ func TestSetupStartsStoppedSmol(t *testing.T) {
 	a := newTestApp(t)
 	dir := t.TempDir()
 	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
-	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"stopped","created_at":100}]`), 0o644); err != nil {
+	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"stopped",`+devvmLabel+`}]`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
 		"case \"$*\" in\n" +
 		"  'machine ls --json') cat " + ls + ";;\n" +
-		"  'machine start --name web') echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"  'machine start --name web') echo '[{\"name\":\"web\",\"state\":\"running\"," + devvmLabel + "}]' > " + ls + ";;\n" +
 		"esac\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
-		t.Fatal(err)
-	}
 	stubBrowser(t, log)
 	if err := runTree(t, a, "setup", "web"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
@@ -712,46 +710,44 @@ func TestProxiedSetupOldHub(t *testing.T) {
 }
 
 // fakeCreateSmolvm is smolvm for a local `create web`: ls answers from a
-// file that starts as initial, `machine create` makes web listed (unless
-// listed is false: its managed marker then fails), and extra is one more
-// case arm (a command to fail). setup's agent step is stubbed.
-func fakeCreateSmolvm(t *testing.T, initial, extra string, listed bool) {
+// file that starts as initial, `machine create` with devvm's label makes
+// web listed with it, and first is a case arm tried before every other
+// (a command to fail). setup's agent step is stubbed. It returns the log.
+func fakeCreateSmolvm(t *testing.T, initial, first string) string {
 	t.Helper()
 	dir := t.TempDir()
 	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
 	if err := os.WriteFile(ls, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	made := ":"
-	if listed {
-		made = "echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls
-	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
 		"case \"$*\" in\n" +
+		first +
 		"  'machine ls --json') cat " + ls + ";;\n" +
-		"  'machine create'*) " + made + ";;\n" +
-		extra +
+		"  'machine create'*'--label devvm=true'*) echo '[{\"name\":\"web\",\"state\":\"running\"," + devvmLabel + "}]' > " + ls + ";;\n" +
 		"esac\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	stubBrowser(t, log)
+	return log
 }
 
 // A local create of web that ends each way a hub's create can: made (and
-// then failing: setup, a clone, the marker) or refused before anything
-// exists. cleared is whether create clears a leftover ports file.
+// then failing: setup, a clone) or refused before anything exists (a
+// smolvm with no --label among them). cleared is whether create clears a
+// leftover ports file.
 var createOutcomes = []struct {
-	name, toml, initial, extra string
-	listed, cleared            bool
+	name, toml, initial, first string
+	cleared                    bool
 }{
-	{"ok", "", "[]", "", true, true},
-	{"setup failed", "[templates.default]\nhook = \"cmd:/opt/hook-fails\"\n", "[]", "  *hook-fails*) exit 1;;\n", true, true},
-	{"clone failed", "[templates.default]\nrepos = [\"o/bad\"]\n", "[]", "  *o/bad*) exit 1;;\n", true, true},
-	{"marker failed", "", "[]", "", false, true},
-	{"an entry has the name", "[machines.web]\nbackend = \"remote\"\nhost = \"w.example\"\n", "[]", "", true, false},
-	{"a smol VM has the name", "", `[{"name":"web","state":"running","created_at":5}]`, "", true, false},
+	{"ok", "", "[]", "", true},
+	{"setup failed", "[templates.default]\nhook = \"cmd:/opt/hook-fails\"\n", "[]", "  *hook-fails*) exit 1;;\n", true},
+	{"clone failed", "[templates.default]\nrepos = [\"o/bad\"]\n", "[]", "  *o/bad*) exit 1;;\n", true},
+	{"an entry has the name", "[machines.web]\nbackend = \"remote\"\nhost = \"w.example\"\n", "[]", "", false},
+	{"a smol VM has the name", "", `[{"name":"web","state":"running","labels":{}}]`, "", false},
+	{"smolvm has no --label", "", "[]", "  'machine create'*) echo \"error: unexpected argument '--label' found\" >&2; exit 2;;\n", false},
 }
 
 // runLocalCreate runs `create web` for one outcome with a leftover saved
@@ -760,7 +756,7 @@ func runLocalCreate(t *testing.T, tc int) (error, bool) {
 	t.Helper()
 	o := createOutcomes[tc]
 	a := newTestApp(t)
-	fakeCreateSmolvm(t, o.initial, o.extra, o.listed)
+	fakeCreateSmolvm(t, o.initial, o.first)
 	writeDevvmTOML(t, a, o.toml)
 	if err := config.SavePorts(a.Paths, "web", []string{"1"}); err != nil {
 		t.Fatal(err)
@@ -768,6 +764,31 @@ func runLocalCreate(t *testing.T, tc int) (error, bool) {
 	err := runTree(t, a, "create", "web", "--memory", "1024", "--yes", "--no-ports", "--port", "9")
 	got, _ := config.LoadPorts(a.Paths, "web")
 	return err, len(got) == 0
+}
+
+// create labels the VM as devvm's (smolvm machine create --label
+// devvm=true); a smolvm whose create has no --label is told apart from
+// its own error, in one line naming the upgrade.
+func TestCreateLabelsTheVM(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeCreateSmolvm(t, "[]", "")
+	if err := runTree(t, a, "create", "web", "--memory", "1024", "--yes"); err != nil {
+		t.Fatalf("create: %v\n%s", err, a.Stderr)
+	}
+	data, _ := os.ReadFile(log)
+	inOrder(t, string(data), "machine create --name web", "--label devvm=true", "machine start --name web", "machine exec")
+
+	i := len(createOutcomes) - 1 // smolvm has no --label
+	err, _ := runLocalCreate(t, i)
+	if !errors.Is(err, backend.ErrNoSmolLabel) || strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), "upgrade smolvm") {
+		t.Errorf("no --label: err = %v, want ErrNoSmolLabel", err)
+	}
+	// A refused label value is smolvm's own error, not a missing flag.
+	b := newTestApp(t)
+	fakeCreateSmolvm(t, "[]", "  'machine create'*) echo \"error: invalid value 'devvm=true' for '--label <KEY=VALUE>'\" >&2; exit 2;;\n")
+	if err := runTree(t, b, "create", "web", "--memory", "1024", "--yes"); err == nil || errors.Is(err, backend.ErrNoSmolLabel) {
+		t.Errorf("refused value: err = %v, want smolvm's own failure", err)
+	}
 }
 
 // create clears a leftover ports file once its VM exists, however it ends
@@ -855,7 +876,7 @@ func TestCreateSmolCloneFailure(t *testing.T) {
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
 		"case \"$*\" in\n" +
 		"  'machine ls --json') cat " + ls + " 2>/dev/null || echo '[]';;\n" +
-		"  'machine create'*) echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"  'machine create'*) echo '[{\"name\":\"web\",\"state\":\"running\"," + devvmLabel + "}]' > " + ls + ";;\n" +
 		"  *o/bad*) exit 1;;\n" +
 		"esac\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {

@@ -177,11 +177,9 @@ func legacyConfNames(p Paths) ([]string, error) {
 }
 
 // LegacySmolConfs names every old per-machine conf with `backend = "smol"`
-// (decoded leniently, like MigratePorts): the VMs a devvm from before the
-// managed markers made, which the marker seed (backend.SeedLegacyMarkers)
-// marks so they stay managed across the upgrade. A conf that does not
-// parse is skipped: this is a best-effort seed, not the all-or-nothing
-// forwards one.
+// (decoded leniently, like MigratePorts): while one is there, the upgrade
+// seed (MigratePorts) runs even beside a devvm.toml. A conf that does not
+// parse is skipped.
 func LegacySmolConfs(p Paths) []string {
 	names, _ := legacyConfNames(p)
 	var out []string

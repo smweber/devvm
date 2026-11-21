@@ -252,7 +252,7 @@ func (a *App) completeTemplates(*cobra.Command, []string, string) ([]string, cob
 
 // runSetup gates, resolves the template, and shapes the box.
 func (a *App) runSetup(name string, o setupOpts) error {
-	defer config.TouchChanged(a.Paths) // --adopt changes the managed column
+	defer config.TouchChanged(a.Paths) // --adopt changes the managed column (the label)
 	m, b, err := a.resolveUnmanaged(name)
 	if err != nil {
 		return err
@@ -286,10 +286,10 @@ func (a *App) runSetup(name string, o setupOpts) error {
 		if err := a.confirmAdopt(m, t); err != nil {
 			return err
 		}
-		if err := a.writeManagedMarker(name); err != nil {
-			return fmt.Errorf("could not mark '%s' managed: %w", name, err)
+		if err := backend.SmolLabel(name); err != nil {
+			return fmt.Errorf("could not label '%s' as devvm's (devvm=true): %w", name, err)
 		}
-		// Re-resolve: the smol source settles Managed from the marker, and
+		// Re-resolve: the smol source settles Managed from the label, and
 		// only a managed record execs as dev and may install.
 		if m, b, err = a.resolve(name); err != nil {
 			return err

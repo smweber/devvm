@@ -5,8 +5,9 @@
 # guest argv locally, `machine cp` copies locally, and machine state is a
 # file per name under $FAKESMOL_DIR. It answers exactly the invocations
 # internal/backend/smol.go makes (ls --json, status, create, start, stop,
-# delete, cp, exec, and exec -d — the detached form ensureTmux uses for the
-# tmux keeper) and nothing else. Everything devvm layers on top (the agent
+# delete, cp, exec, exec -d — the detached form ensureTmux uses for the
+# tmux keeper — and update --label/--remove-label, the by-hand labelling of
+# a VM as devvm's) and nothing else. Everything devvm layers on top (the agent
 # exec, yamux forwards, the browser shim, tmux) is real.
 set -eu
 
@@ -22,7 +23,7 @@ sub="${1:-}"; [ $# -gt 0 ] && shift
 state_of() { cat "$dir/$1.state" 2>/dev/null || echo "not created"; }
 
 # flag parsing shared by every subcommand that takes --name
-name=""; tty=0; envs=""; detached=0; cpus=4; mem=8192; storage=10; image=""
+name=""; tty=0; envs=""; detached=0; cpus=4; mem=8192; storage=10; image=""; labels=""; unlabels=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --name|-n) name="$2"; shift 2 ;;
@@ -35,14 +36,16 @@ while [ $# -gt 0 ]; do
         --mem) mem="$2"; shift 2 ;;
         --storage) storage="$2"; shift 2 ;;
         --image|-I) image="$2"; shift 2 ;;
-        --env|--label) shift 2 ;;
+        --env) shift 2 ;;
+        --label) labels="$labels $2"; shift 2 ;;
+        --remove-label) unlabels="$unlabels $2"; shift 2 ;;
         *) break ;;
     esac
 done
 
-# The real `ls --json` row carries created_at (Unix seconds), sizes and the
-# pid; devvm keys its managed marker on created_at, so it must never change
-# for a machine's lifetime. A machine made before this fake recorded one is
+# The real `ls --json` row carries created_at (Unix seconds), sizes, the
+# pid and labels; created_at must never change for a machine's lifetime
+# (devvm no longer reads it). A machine made before this fake recorded one is
 # dated once, from its state file's mtime, and that date is persisted: start,
 # stop and exec rewrite the state file, so the mtime itself would drift.
 created_of() {
@@ -52,6 +55,27 @@ created_of() {
     cat "$dir/$1.created"
 }
 meta_of() { cat "$dir/$1.meta" 2>/dev/null || echo "4 8192 10 ubuntu:24.04"; }
+
+# Labels are one KEY=VALUE per line in $dir/NAME.labels; ls prints them as
+# the real one does, an object of strings ({} when none). devvm owns only
+# the VMs labelled devvm=true (its create passes --label devvm=true).
+labels_of() {
+    printf '{'
+    sep=
+    while IFS='=' read -r k v; do
+        [ -n "$k" ] || continue
+        printf '%s"%s":"%s"' "$sep" "$k" "$v"
+        sep=,
+    done 2>/dev/null <"$dir/$1.labels" || true
+    printf '}'
+}
+set_labels() { # NAME, then KEY=VALUE words to set (replacing a key)
+    n=$1; shift
+    for kv in "$@"; do
+        { grep -v "^${kv%%=*}=" "$dir/$n.labels" 2>/dev/null || true; echo "$kv"; } >"$dir/$n.labels.new"
+        mv "$dir/$n.labels.new" "$dir/$n.labels"
+    done
+}
 
 case "$sub" in
     ls)
@@ -64,8 +88,8 @@ case "$sub" in
             first=0
             set -- $(meta_of "$n")
             st=$(cat "$f"); pid=null; [ "$st" = running ] && pid=$$
-            printf '{"name":"%s","state":"%s","created_at":%s,"cpus":%s,"memory_mib":%s,"storage_gb":%s,"image":"%s","pid":%s,"labels":{}}' \
-                "$n" "$st" "$(created_of "$n")" "$1" "$2" "$3" "$4" "$pid"
+            printf '{"name":"%s","state":"%s","created_at":%s,"cpus":%s,"memory_mib":%s,"storage_gb":%s,"image":"%s","pid":%s,"labels":%s}' \
+                "$n" "$st" "$(created_of "$n")" "$1" "$2" "$3" "$4" "$pid" "$(labels_of "$n")"
         done
         printf ']\n'
         ;;
@@ -77,6 +101,18 @@ case "$sub" in
         echo stopped >"$dir/$name.state"
         date +%s >"$dir/$name.created"
         echo "$cpus $mem $storage ${image:-ubuntu:24.04}" >"$dir/$name.meta"
+        : >"$dir/$name.labels"
+        set_labels "$name" $labels
+        ;;
+    update)
+        # Labels only (the one update devvm's by-hand step needs); they
+        # change on a running machine too, as on smolvm 1.35.5.
+        [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
+        set_labels "$name" $labels
+        for k in $unlabels; do
+            { grep -v "^$k=" "$dir/$name.labels" 2>/dev/null || true; } >"$dir/$name.labels.new"
+            mv "$dir/$name.labels.new" "$dir/$name.labels"
+        done
         ;;
     start)
         [ -e "$dir/$name.state" ] || { echo "fake smolvm: no machine $name" >&2; exit 1; }
@@ -87,7 +123,7 @@ case "$sub" in
         echo stopped >"$dir/$name.state"
         ;;
     delete|rm)
-        rm -f "$dir/$name.state" "$dir/$name.created" "$dir/$name.meta"
+        rm -f "$dir/$name.state" "$dir/$name.created" "$dir/$name.meta" "$dir/$name.labels"
         ;;
     cp)
         # smolvm machine cp SRC NAME:DST — root-owned like the real thing.

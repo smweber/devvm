@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -186,5 +187,26 @@ func TestEditPortsConcurrentAndDeleted(t *testing.T) {
 	}
 	if _, err := os.Stat(a.Paths.PortsPath("h/web")); !os.IsNotExist(err) {
 		t.Errorf("a refused edit wrote the file: %v", err)
+	}
+}
+
+// editPorts on a smol VM discovery just found lists smolvm once, under the
+// lock (the "deleted meanwhile" check), not again before it.
+func TestEditPortsSmolListsOnce(t *testing.T) {
+	a := newTestApp(t)
+	log := fakeLocalSmolvm(t, `[{"name":"web","state":"stopped",`+devvmLabel+`}]`)
+	d, ok, err := backend.Discover(a.Paths, "web")
+	if err != nil || !ok {
+		t.Fatalf("Discover = %v, %v", ok, err)
+	}
+	os.Remove(log)
+	if err := a.editPorts(d.Machine, func(p []string) []string { return append(p, "3000") }); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(log); strings.Count(string(data), "machine ls --json") != 1 {
+		t.Errorf("smolvm calls:\n%s\nwant one listing", data)
+	}
+	if got, _ := config.LoadPorts(a.Paths, "web"); len(got) != 1 {
+		t.Errorf("ports = %v", got)
 	}
 }

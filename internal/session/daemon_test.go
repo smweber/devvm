@@ -8,13 +8,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/smweber/devvm/internal/agentrpc"
-	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 )
 
@@ -636,26 +636,48 @@ func TestDaemonVMNotRunningWaitsWithoutFailing(t *testing.T) {
 	waitDone(t, done, "stop")
 }
 
-// An unmanaged answer on reconnect is final (config.md §2): the VM under
-// this name is no longer one devvm made, so the daemon exits after one
-// dial instead of redialing it with conf forwards held.
-func TestDaemonUnmanagedOnReconnectExits(t *testing.T) {
+// A VM no longer listed with devvm's label is waited for like a stopped
+// one (never dialled), and the log says which: one line per change of
+// reason, not one per attempt.
+func TestDaemonVMNotListedLogsWhy(t *testing.T) {
 	_, guest := echoServer(t)
 	d := newTestDaemon(t)
+	var mu sync.Mutex
+	var logs []string
+	d.logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
 	first := d.tr.(*fakeTransport)
 	if _, _, _, err := d.add(freePort(t), guest, false, confOwner); err != nil {
 		t.Fatal(err)
 	}
 	var dials atomic.Int32
+	second := newFakeTransport()
 	d.dial = func() (transport, error) {
-		dials.Add(1)
-		return nil, fmt.Errorf("web: %w", backend.ErrUnmanaged)
+		switch dials.Add(1) {
+		case 1, 2:
+			return nil, errVMNotListed
+		case 3:
+			return nil, errVMNotRunning
+		}
+		return second, nil
 	}
 	done := runLoop(d)
 	first.die()
-	waitDone(t, done, "exit on an unmanaged VM")
-	if n := dials.Load(); n != 1 {
-		t.Errorf("dialed %d times, want 1", n)
+	waitFor(t, "state back up after the fourth dial", func() bool {
+		s, _ := d.status()
+		return dials.Load() >= 4 && s == StateUp
+	})
+	d.triggerStop()
+	waitDone(t, done, "stop")
+	mu.Lock()
+	defer mu.Unlock()
+	all := strings.Join(logs, "\n")
+	if strings.Count(all, "no VM of this name is listed with the devvm=true label (deleted, or recreated outside devvm); waiting") != 1 ||
+		strings.Count(all, "VM is not running; waiting") != 1 {
+		t.Errorf("logs:\n%s", all)
 	}
 }
 

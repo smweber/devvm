@@ -100,11 +100,14 @@ var editPortsLockingHook func()
 // must both land, as two for machines on one hub did under the old hub-conf
 // flock. A machine that existed when the edit began but is gone once the
 // lock is held was deleted meanwhile (`config rm` removes the entry, and
-// `delete` a smol VM's marker, before clearing the file under this lock),
+// `delete` a smol VM itself, before clearing the file under this lock),
 // so the edit refuses rather than leave a stray file behind. An edit that
 // changes nothing writes nothing.
 func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
-	registered := a.stillThere(m)
+	// A smol VM discovery just found (Managed: listed with its label, by
+	// resolve) is registered as of now, so only the check under the lock
+	// lists smolvm; ports rm's host-side record (portsRecord) asks.
+	registered := (!m.IsRemote() && m.Managed()) || a.stillThere(m)
 	if editPortsLockingHook != nil {
 		editPortsLockingHook()
 	}
@@ -127,10 +130,11 @@ func (a *App) editPorts(m *config.Machine, edit func([]string) []string) error {
 	return config.SavePorts(a.Paths, m.Name, after)
 }
 
-// stillThere is editPorts' "was it deleted meanwhile" check, read from host
-// files only: the entry (the hub's, for HUB/NAME) for a box in devvm.toml,
-// the managed marker for a smol VM devvm made. A smol VM devvm did not make
-// has neither, so it never reads as deleted.
+// stillThere is editPorts' "was it deleted meanwhile" check: the entry
+// (the hub's, for HUB/NAME) for a box in devvm.toml, read from the file,
+// and smolvm's listing for a smol VM (one `machine ls`; a listing that
+// fails cannot say it is gone, so it counts as there). A provider server
+// has no entry, so it never reads as registered here.
 func (a *App) stillThere(m *config.Machine) bool {
 	switch {
 	case m.IsHubMachine():
@@ -138,8 +142,8 @@ func (a *App) stillThere(m *config.Machine) bool {
 	case m.IsRemote():
 		return config.Exists(a.Paths, m.Name)
 	default:
-		_, ok, _ := config.ReadManagedMarker(a.Paths, m.Name)
-		return ok
+		_, ok, err := backend.SmolLookup(m.Name)
+		return ok || err != nil
 	}
 }
 

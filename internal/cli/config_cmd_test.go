@@ -86,7 +86,7 @@ func TestConfigAdd(t *testing.T) {
 
 // `config rm` removes exactly one table and owns this host's state for it:
 // the daemon is stopped, saved forwards and the reach cache go, the run
-// files are reaped; a managed marker (the shadowed VM's) is never touched.
+// files are reaped.
 func TestConfigRmReapsLocalState(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 0")
@@ -95,9 +95,6 @@ func TestConfigRmReapsLocalState(t *testing.T) {
 		t.Fatal(err)
 	}
 	reach.Record(a.Paths, "box", "attach")
-	if err := config.WriteManagedMarker(a.Paths, "box", "7"); err != nil {
-		t.Fatal(err)
-	}
 	// A daemon holding live forwards: refused, nothing changed.
 	od := serveOwnerDaemon(t, a.Paths, "box", map[string]session.Response{
 		session.OpList: {OK: true, State: session.StateUp, Forwards: []session.Forward{{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf}}}},
@@ -132,9 +129,6 @@ func TestConfigRmReapsLocalState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a.Paths.RuntimeDir(), "box.sock")); !os.IsNotExist(err) {
 		t.Errorf("daemon socket left: %v", err)
-	}
-	if _, ok, _ := config.ReadManagedMarker(a.Paths, "box"); !ok {
-		t.Error("config rm removed a managed marker (a smol VM's, never the entry's)")
 	}
 	if err := runTree(t, a, "config", "rm", "box"); err == nil || !strings.Contains(err.Error(), "no such entry") {
 		t.Errorf("rm of a missing entry = %v", err)
@@ -357,10 +351,10 @@ func TestConfigEdit(t *testing.T) {
 }
 
 // With the old per-machine layout and no devvm.toml, every command seeds
-// what devvm.toml cannot carry (saved forwards, the managed markers of the
-// smol VMs devvm made), says so in one line on stderr, and carries on with
-// no entries. An empty machines/ (an older `status --watch` made one) is
-// not the old layout.
+// what devvm.toml cannot carry (saved forwards), says so in one line on
+// stderr, and carries on with no entries. An empty machines/ (an older
+// `status --watch` made one) is not the old layout. No marker is seeded:
+// ownership is the VM's label, which the user sets by hand.
 func TestOldLayoutPointer(t *testing.T) {
 	a := newTestApp(t)
 	md := config.LegacyMachinesDir(a.Paths)
@@ -393,19 +387,17 @@ func TestOldLayoutPointer(t *testing.T) {
 	if got, _ := config.LoadPorts(a.Paths, "cloud"); strings.Join(got, ",") != "8080" {
 		t.Errorf("hidden command did not seed forwards: %v", got)
 	}
-	if _, ok, _ := config.ReadManagedMarker(a.Paths, "web"); !ok {
-		t.Error("hidden command did not seed the managed marker")
-	}
 	if err := runTree(t, a, "status", "--plain", "--local"); err != nil {
 		t.Fatal(err)
 	}
 	w := a.Stderr.(*bytes.Buffer).String()
-	if strings.Count(w, "\n") != 1 || !strings.Contains(w, "machines/ is the old layout (saved forwards and managed markers were seeded from it); write ") ||
+	if strings.Count(w, "\n") != 1 || !strings.Contains(w, "machines/ is the old layout (saved forwards were seeded from it); write ") ||
 		!strings.Contains(w, "devvm.toml by hand (see docs/proposals/config.md §8) and remove machines/") {
 		t.Errorf("stderr = %q", w)
 	}
-	// The old conf is not an entry; the VM it named stays managed.
-	if out := a.Stdout.(*bytes.Buffer).String(); out != "web\tsmol\trunning\t-\tmanaged\t-\n" {
+	// The old conf is not an entry; the VM it named is devvm's only once
+	// labelled (smolvm machine update --label devvm=true).
+	if out := a.Stdout.(*bytes.Buffer).String(); out != "web\tsmol\trunning\t-\tunmanaged\t-\n" {
 		t.Errorf("status = %q", out)
 	}
 	if got, _ := config.LoadPorts(a.Paths, "cloud"); strings.Join(got, ",") != "8080" {

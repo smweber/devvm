@@ -288,9 +288,6 @@ func TestAttachStartsStoppedSmol(t *testing.T) {
 		t.Run(leaf, func(t *testing.T) {
 			a := newTestApp(t)
 			log := fakeBootingSmolvm(t, "stopped", "")
-			if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
-				t.Fatal(err)
-			}
 			var atOpen []string
 			old := openBridgeSession
 			openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) {
@@ -319,9 +316,6 @@ func TestAttachStartsStoppedSmol(t *testing.T) {
 	// session before any exec or bridge.
 	a := newTestApp(t)
 	log := fakeBootingSmolvm(t, "running", "")
-	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
-		t.Fatal(err)
-	}
 	stubBridge(t, &fakeBridge{}, nil)
 	if err := runTree(t, a, "shell", "web"); err != nil {
 		t.Fatal(err)
@@ -339,21 +333,26 @@ func TestAttachStartsStoppedSmol(t *testing.T) {
 	}
 }
 
-// fakeBootingSmolvm is fakeLocalSmolvm for one VM, web, in state: `machine
-// start` runs startBody (exit 0 if empty) and then lists it running; every
-// other call succeeds.
+// fakeBootingSmolvm is fakeLocalSmolvm for one VM, web (devvm's: labelled),
+// in state: `machine start` runs startBody (exit 0 if empty) and then lists
+// it running; every other call succeeds.
 func fakeBootingSmolvm(t *testing.T, state, startBody string) (log string) {
+	return fakeBootingSmolvmLabels(t, state, startBody, devvmLabel)
+}
+
+// fakeBootingSmolvmLabels is fakeBootingSmolvm with web's labels as given.
+func fakeBootingSmolvmLabels(t *testing.T, state, startBody, labels string) (log string) {
 	t.Helper()
 	dir := t.TempDir()
 	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
-	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"`+state+`","created_at":100}]`), 0o644); err != nil {
+	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"`+state+`",`+labels+`}]`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
 		"case \"$*\" in\n" +
 		"  'machine ls --json') cat " + ls + ";;\n" +
 		"  'machine start --name web') " + startBody + "\n" +
-		"    echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"    echo '[{\"name\":\"web\",\"state\":\"running\"," + labels + "}]' > " + ls + ";;\n" +
 		"esac\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -437,22 +436,19 @@ func TestStartWaitsForRunning(t *testing.T) {
 	a := newTestApp(t)
 	dir := t.TempDir()
 	ls := filepath.Join(dir, "ls.json")
-	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"stopped","created_at":100}]`), 0o644); err != nil {
+	if err := os.WriteFile(ls, []byte(`[{"name":"web","state":"stopped","labels":{"devvm":"true"}}]`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The start leaves it starting; the second listing after it says running.
 	n := filepath.Join(dir, "n")
 	script := "#!/bin/sh\ncase \"$*\" in\n" +
-		"  'machine ls --json') if [ -f " + n + " ]; then c=$(cat " + n + "); echo $((c+1)) > " + n + "; [ $c -ge 2 ] && echo '[{\"name\":\"web\",\"state\":\"running\",\"created_at\":100}]' && exit 0; fi; cat " + ls + ";;\n" +
-		"  'machine start --name web') echo 0 > " + n + "; echo '[{\"name\":\"web\",\"state\":\"starting\",\"created_at\":100}]' > " + ls + ";;\n" +
+		"  'machine ls --json') if [ -f " + n + " ]; then c=$(cat " + n + "); echo $((c+1)) > " + n + "; [ $c -ge 2 ] && echo '[{\"name\":\"web\",\"state\":\"running\",\"labels\":{\"devvm\":\"true\"}}]' && exit 0; fi; cat " + ls + ";;\n" +
+		"  'machine start --name web') echo 0 > " + n + "; echo '[{\"name\":\"web\",\"state\":\"starting\",\"labels\":{\"devvm\":\"true\"}}]' > " + ls + ";;\n" +
 		"esac\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
-		t.Fatal(err)
-	}
 	if err := runTree(t, a, "start", "web"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -467,7 +463,7 @@ func TestUnmanagedShellStartsStoppedVM(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	shrinkRunningPoll(t)
 	a := newTestApp(t)
-	log := fakeBootingSmolvm(t, "stopped", "")
+	log := fakeBootingSmolvmLabels(t, "stopped", "", `"labels":{}`)
 	if err := config.SavePorts(a.Paths, "web", []string{"3000"}); err != nil {
 		t.Fatal(err)
 	}
@@ -525,9 +521,6 @@ func TestAttachStoppedSmolPushesSavedForwards(t *testing.T) {
 	shrinkRunningPoll(t)
 	a := newTestApp(t)
 	log := fakeBootingSmolvm(t, "stopped", "")
-	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
-		t.Fatal(err)
-	}
 	if err := config.SavePorts(a.Paths, "web", []string{"3000", "8080:80"}); err != nil {
 		t.Fatal(err)
 	}

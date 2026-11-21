@@ -33,7 +33,7 @@ var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
 const (
-	ownManaged   = "managed"   // devvm made it (smol: the marker matches; a provider server: the label, which every row has)
+	ownManaged   = "managed"   // devvm made it: the devvm=true label (on a smol VM; every provider row has it)
 	ownUnmanaged = "unmanaged" // a smol VM devvm did not create
 	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
 	ownNone      = "-"         // entries (devvm never shapes one) and hubs; a hub machine whose hub did not say
@@ -464,7 +464,7 @@ type statusScope struct {
 // listing (rather than the backend's per-machine Status probe): a snapshot is
 // re-taken on every --watch event, and N+1 `smolvm machine ls` subprocesses
 // per change would be the polling this command exists to avoid. The same
-// listing settles each VM's ownership (the smol source's rule,
+// listing settles each VM's ownership (its label, the smol source's rule:
 // backend.SmolRecord) and carries its sizes.
 func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 	f, err := config.LoadFile(a.Paths)
@@ -498,7 +498,7 @@ func (a *App) gatherRows(sc statusScope) ([]statusRow, error) {
 		if _, ok := f.Entries[sm.Name]; ok {
 			continue
 		}
-		managed := backend.SmolRecord(a.Paths, sm).Managed()
+		managed := sm.Labelled()
 		r := smolRow(statusRow{name: sm.Name, backend: config.BackendSmol, managed: ownership(managed)}, sm)
 		r.fwds = a.forwardSummary(sm.Name)
 		if managed {
@@ -649,7 +649,7 @@ func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config
 		}
 		r.managed = ownNone
 		if hr, ok := byName[n]; ok {
-			// The hub's own word on ownership (its marker), passed through;
+			// The hub's own word on ownership (its label), passed through;
 			// a hub too old for the column said nothing, which is `-`.
 			r.backend, r.state, r.managed = hr.backend, hr.state, hr.managed
 			// A newer hub's sixth column, passed through as the hub said

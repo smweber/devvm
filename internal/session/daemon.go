@@ -41,9 +41,14 @@ const (
 )
 
 // errVMNotRunning is returned by a smol dial when the VM is stopped: the
-// daemon must not exec into it (smolvm's exec may boot a stopped machine, and
-// the user stopped it on purpose), so reconnect waits without dialing.
+// daemon must not exec into it (smolvm's exec may boot a stopped machine,
+// and the user stopped it on purpose), so reconnect waits without dialing.
 var errVMNotRunning = errors.New("VM is not running")
+
+// errVMNotListed is a smol dial's answer when no VM of the name carries
+// devvm's label any more (backend.Refresher): deleted, or recreated outside
+// devvm. Waited for like a stopped VM, and never dialled.
+var errVMNotListed = errors.New("no VM of this name is listed with the devvm=true label (deleted, or recreated outside devvm)")
 
 // errStopped is returned by an interrupted dial when the daemon was told to
 // stop mid-attempt.
@@ -363,13 +368,11 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 	// every dial, the first included. A stopped VM is never dialed: exec'ing
 	// into it could boot a machine the user deliberately stopped, and it
 	// can't hold forwards anyway (`devvm start` brings the forwards back via
-	// tunnelUp). And Managed is re-settled each time (config.md §2): the VM
-	// may have been deleted and recreated under the same name while this
-	// daemon slept, and the transport must then refuse to install into it.
-	// The fresh record goes to a fresh backend; m and b stay untouched. An
-	// unmanaged answer stops here, before any exec: the transport would
-	// otherwise run agentbin's probes in a VM devvm does not own before its
-	// install gate refused, and reconnect treats ErrUnmanaged as final.
+	// tunnelUp). And it must still be listed with devvm's label (config.md
+	// §2): the VM may have been deleted and recreated under the same name
+	// outside devvm while this daemon slept, and Refresh then reads it as
+	// not running, so nothing is exec'd or installed into it. The fresh
+	// record goes to a fresh backend; m and b stay untouched.
 	settle := func() (*config.Machine, backend.Backend, error) {
 		r, ok := b.(backend.Refresher)
 		if !ok {
@@ -379,11 +382,11 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 		if err != nil {
 			return nil, nil, err
 		}
+		if fresh == nil {
+			return nil, nil, errVMNotListed
+		}
 		if !running {
 			return nil, nil, errVMNotRunning
-		}
-		if !fresh.Managed() {
-			return nil, nil, fmt.Errorf("%s: %w (recreated outside devvm?); not dialing it", m.Name, backend.ErrUnmanaged)
 		}
 		fb, err := backend.For(fresh, paths)
 		if err != nil {
@@ -399,7 +402,7 @@ func RunDaemon(ctx context.Context, paths config.Paths, m *config.Machine, b bac
 		return newTransport(ctx, fm, fb)
 	}
 	tr, err := dialFresh()
-	if errors.Is(err, errVMNotRunning) {
+	if errors.Is(err, errVMNotRunning) { // errVMNotListed goes out as it is
 		return fmt.Errorf("%w; start it first", errVMNotRunning)
 	}
 	if err != nil {
@@ -688,7 +691,7 @@ func (d *daemon) reconnect() bool {
 	defer wait.Stop()
 	idle := time.NewTimer(d.idle)
 	defer idle.Stop()
-	loggedNotRunning := false
+	loggedWait := "" // the not-running reason last logged, once per change
 	for attempt := 1; ; attempt++ {
 		select {
 		case <-d.stop:
@@ -713,16 +716,10 @@ func (d *daemon) reconnect() bool {
 			switch {
 			case errors.Is(err, errStopped):
 				return false
-			case errors.Is(err, backend.ErrUnmanaged):
-				// Not transient: the VM under this name is no longer one devvm
-				// made, and no backoff makes it one. Exit rather than redial
-				// it every 30s for as long as conf forwards are held.
-				d.logf("%s: %v; exiting", d.name, err)
-				return false
-			case errors.Is(err, errVMNotRunning):
-				if !loggedNotRunning {
-					d.logf("%s: VM not running; waiting", d.name)
-					loggedNotRunning = true
+			case errors.Is(err, errVMNotRunning), errors.Is(err, errVMNotListed):
+				if err.Error() != loggedWait {
+					d.logf("%s: %v; waiting", d.name, err)
+					loggedWait = err.Error()
 				}
 				backoff = min(backoff*2, d.maxBackoff)
 				wait.Reset(backoff)
@@ -733,7 +730,7 @@ func (d *daemon) reconnect() bool {
 				wait.Reset(backoff)
 				continue
 			}
-			loggedNotRunning = false
+			loggedWait = ""
 			if !d.restore(tr) {
 				// The transport came up but couldn't carry the forwards (a
 				// degraded master, a flapping link): treat it as a failed
