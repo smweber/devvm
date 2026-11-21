@@ -196,10 +196,11 @@ func TestTTYLoginShellArgvTurnsSIGINTInto130(t *testing.T) {
 }
 
 // The pin file and the ControlMaster sockets are host state: they live in
-// the state dir, never beside the confs.
+// the state dir, never beside the confs. Only a box devvm made is pinned;
+// an entry uses the user's own known_hosts.
 func TestSSHStateFilesUnderStateDir(t *testing.T) {
 	p := config.Paths{Config: t.TempDir(), State: t.TempDir()}
-	b, err := For(config.NewRemote("cloud", true, "dev@cloud"), p)
+	b, err := For(managedServer("cloud", "cloud"), p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,5 +212,12 @@ func TestSSHStateFilesUnderStateDir(t *testing.T) {
 	}
 	if strings.Contains(ssh, p.Config) {
 		t.Errorf("ssh argv names the config dir: %q", ssh)
+	}
+	e, err := For(config.NewRemote("box", "dev@box"), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ssh := strings.Join(e.(*sshBackend).base(), " "); strings.Contains(ssh, "UserKnownHostsFile") || strings.Contains(ssh, "StrictHostKeyChecking") {
+		t.Errorf("an entry is pinned: %q", ssh)
 	}
 }

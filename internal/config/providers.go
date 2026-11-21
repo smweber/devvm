@@ -186,9 +186,8 @@ type ProviderServer struct {
 // §4): reached over ssh on port 22 at the API row's address, read at
 // resolve time and never stored. A managed server (the devvm=true label,
 // settled by the caller from the row) logs in as user, the
-// [templates.default] user that `setup` creates there: the rule of a
-// managed remote entry with no `user`. An unmanaged one gets no user@, as
-// an adopted remote entry with no `user` does, so ~/.ssh/config (or the
+// [templates.default] user that `setup` creates there. An unmanaged one
+// gets no user@, as an entry with no `user` does, so ~/.ssh/config (or the
 // local login name) decides: devvm has no business guessing an account on
 // a server it did not make.
 func NewProviderMachine(name, providerName, user string, managed bool, s ProviderServer) *Machine {
@@ -211,7 +210,7 @@ func (f *File) HasProviders() bool { return len(f.Providers) > 0 }
 func (f *File) ProviderNames() []string { return sortedKeys(f.Providers) }
 
 // DefaultUser is the [templates.default] user (built-in dev): the login of
-// a managed remote entry with no `user`, and of a managed provider server.
+// a managed provider server.
 func (f *File) DefaultUser() string {
 	if f.defUser == "" {
 		return DefaultTemplateUser

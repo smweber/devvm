@@ -21,9 +21,9 @@ import (
 //
 //	smol    a local microVM, discovered from `smolvm machine ls`; never an
 //	        entry in the file. Managed is settled by discovery (the marker).
-//	remote  a `[machines.*]` entry reached over ssh. `managed = true` means
-//	        devvm shapes it (setup, prereqs, hardening, pinned host key);
-//	        the default false is an adopted box devvm never modifies.
+//	remote  a `[machines.*]` entry reached over ssh. devvm never shapes
+//	        one (simplify.md step 12): it connects, and with `agent = true`
+//	        installs the agent in the login user's ~/.local/bin.
 //	hub     a `[machines.*]` entry for another host running devvm, whose
 //	        machines are HUB/NAME (docs/proposals/hub.md). Reached over ssh
 //	        like a remote box, but never shaped and never managed.
@@ -91,16 +91,14 @@ type Machine struct {
 	Server *ProviderServer
 
 	// SSHHost is the ssh destination, `[user@]host`: the entry's host
-	// without its port, prefixed with the entry's user, or on a managed
-	// remote entry with no user, the [templates.default] user (the account
-	// `setup` creates there, config.md §1, §3). With no user at all it is
-	// the bare host and ~/.ssh/config decides, as for an alias.
+	// without its port, prefixed with the entry's user. With no user it is
+	// the bare host and ~/.ssh/config decides, as for an alias. A provider
+	// server's is the user setup creates there, at its address.
 	SSHHost string
 	// SSHPort is the port given in `host = "h:P"`, 0 when none (ssh config
 	// or 22). Only a port other than 0 and 22 is passed to ssh.
 	SSHPort int
-	// User is the entry's own `user`, "" when the entry sets none. setup
-	// uses it to tell a pinned login from the template's.
+	// User is the entry's own `user`, "" when the entry sets none.
 	User string
 
 	Identity   string
@@ -115,19 +113,19 @@ type Machine struct {
 	// for the browser bridge. Without it the daemon only probes for one.
 	Agent bool
 
-	// managed is the record's Managed bit: a remote entry's `managed`, or a
-	// smol VM's as its discovery source settled it (the managed marker
-	// against the VM's created_at, config.md §2). Never stored. Unsettled
-	// means unmanaged, so a record nobody settled can never be taken for one
-	// devvm may install into.
+	// managed is the record's Managed bit, as a discovery source settled it
+	// (a smol VM's managed marker against its created_at, config.md §2; a
+	// provider server's label). Never stored, never set on an entry.
+	// Unsettled means unmanaged, so a record nobody settled can never be
+	// taken for one devvm may install into.
 	managed bool
 }
 
 // NewRemote returns a remote record for the given ssh destination
 // (`[user@]host`), the shape a `[machines.*]` entry loads to. For tests and
 // callers that build a record by hand; the loader builds its own.
-func NewRemote(name string, managed bool, sshHost string) *Machine {
-	m := &Machine{Name: name, Backend: BackendRemote, SSHHost: sshHost, managed: managed}
+func NewRemote(name string, sshHost string) *Machine {
+	m := &Machine{Name: name, Backend: BackendRemote, SSHHost: sshHost}
 	if u, _, ok := strings.Cut(sshHost, "@"); ok {
 		m.User = u
 	}
@@ -153,21 +151,22 @@ func (m *Machine) IsHub() bool {
 func (m *Machine) IsHubMachine() bool { return m.Hub != nil }
 
 // Managed reports whether devvm owns this box's OS: it installs prereqs, may
-// harden, and pins known_hosts. A remote entry is managed when it says
-// `managed = true` (writing that line was the consent); a smol VM only when
-// its discovery source said so (SetManaged): one devvm created or was handed
-// with `setup --adopt`, never one it merely found (config.md §2). A hub and
-// a machine on one are never managed here (the hub holds that machine's
-// marker). A plain field read: it never execs or reads a file.
+// harden, and pins known_hosts. Only a discovered machine can be: a smol VM
+// or a provider server whose discovery source said so (SetManaged), one
+// devvm created (or, for smol, was handed with `setup --adopt`), never one
+// it merely found (config.md §2). An entry (remote or hub) and a machine on
+// a hub are never managed here: devvm only connects to an entry, and the
+// hub holds its machines' ownership. A plain field read: it never execs or
+// reads a file.
 func (m *Machine) Managed() bool {
-	if m.Backend == BackendHub {
+	if m.Backend == BackendRemote || m.Backend == BackendHub {
 		return false
 	}
 	return m.managed
 }
 
 // SetManaged settles a record's Managed bit. Only a discovery source calls
-// it on a smol record (and tests); a remote entry's comes from the file.
+// it (and tests); an entry has none.
 func (m *Machine) SetManaged(managed bool) { m.managed = managed }
 
 // IsRemote reports whether the box is reached over the ssh transport (a

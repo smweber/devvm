@@ -54,12 +54,12 @@ func listener(t *testing.T) int {
 
 func saveBox(t *testing.T, a *App, name string) {
 	t.Helper()
-	if err := writeEntry(a.Paths, config.NewRemote(name, true, "u@"+name)); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote(name, "u@"+name)); err != nil {
 		t.Fatal(err)
 	}
 }
 
-var verifiedProbe = regexp.MustCompile(`^box\tremote\treachable\t-\tmanaged\tverified=\d+:probe\n$`)
+var verifiedProbe = regexp.MustCompile(`^box\tremote\treachable\t-\t-\tverified=\d+:probe\n$`)
 
 // One-shot `status --plain` probes every remote box before printing; a
 // --local one reads the cache and runs no ssh at all.
@@ -88,7 +88,7 @@ func TestStatusPlainProbesRemotes(t *testing.T) {
 	if err := runTree(t, a, "status", "--plain", "--local"); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.Stdout.(*bytes.Buffer).String(); got != "box\tremote\tunreachable\t-\tmanaged\tverified=123:probe\n" {
+	if got := a.Stdout.(*bytes.Buffer).String(); got != "box\tremote\tunreachable\t-\t-\tverified=123:probe\n" {
 		t.Errorf("--local plain = %q", got)
 	}
 	if lines := sshLines(t, log); len(lines) != 0 {
@@ -287,7 +287,7 @@ func TestWatchProbesOnStartAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.until(t, "the box unreachable", func(b string) bool {
-		return strings.HasPrefix(b, "box\tremote\tunreachable\t-\tmanaged\tverified=")
+		return strings.HasPrefix(b, "box\tremote\tunreachable\t-\t-\tverified=")
 	})
 	cancel()
 	<-done
@@ -305,7 +305,7 @@ func TestNoteContact(t *testing.T) {
 		}
 		return err
 	}
-	box := config.NewRemote("box", true, "u@box")
+	box := config.NewRemote("box", "u@box")
 	for _, tc := range []struct {
 		transport string
 		err       error
@@ -340,7 +340,7 @@ func TestCommandsRecordContact(t *testing.T) {
 		t.Run(argv[0], func(t *testing.T) {
 			a := newTestApp(t)
 			reachSSH(t, 1)
-			if err := writeEntry(a.Paths, config.NewRemote("box", false, "u@box")); err != nil {
+			if err := writeEntry(a.Paths, config.NewRemote("box", "u@box")); err != nil {
 				t.Fatal(err)
 			}
 			if err := runTree(t, a, argv...); err != nil {

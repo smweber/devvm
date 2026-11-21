@@ -34,8 +34,7 @@ user = "devvmtest"
 
 [machines.cloud]
 backend = "remote"
-managed = true
-host = "2.29.47.196:2222"        # user comes from the template
+host = "2.29.47.196:2222"        # no user: ssh config decides
 transport = "mosh"
 connect_timeout = 25
 
@@ -47,7 +46,6 @@ mosh_server = "/home/linuxbrew/.linuxbrew/bin/mosh-server"
 
 [machines."v6.box"]
 backend = "remote"
-managed = false
 host = "[2001:db8::1]:22"
 user = "root"
 `
@@ -68,9 +66,9 @@ func TestLoadFile(t *testing.T) {
 		port                   int
 		managed, remote, hub   bool
 	}{
-		// A managed entry with no user logs in as [templates.default]'s.
-		{"cloud", BackendRemote, "ops@2.29.47.196", 2222, true, true, false},
-		// An adopted entry with no user has no user@: ssh config decides.
+		// An entry with no user has no user@: ssh config decides. No
+		// entry is managed, and none takes the template's user.
+		{"cloud", BackendRemote, "2.29.47.196", 2222, false, true, false},
 		{"scottdev3", BackendRemote, "scottdev3", 0, false, true, false},
 		{"thinkpad", BackendHub, "devvmtest@192.168.1.196", 0, false, true, true},
 		{"v6.box", BackendRemote, "root@2001:db8::1", 22, false, true, false},
@@ -132,7 +130,9 @@ func TestLoadFileRejects(t *testing.T) {
 		"[machines.x]\nbackend = \"ssh\"\nhost = \"h\"\n":                            "old layout",
 		"[machines.x]\nbackend = \"hetzner\"\nhost = \"h\"\n":                        "discovered from the provider's API",
 		"[machines.x]\nbackend = \"aws\"\nhost = \"h\"\n":                            "unsupported backend",
-		"[machines.h]\nbackend = \"hub\"\nmanaged = false\nhost = \"h\"\n":           "managed applies only to remote",
+		"[machines.h]\nbackend = \"hub\"\nmanaged = false\nhost = \"h\"\n":           "managed is gone",
+		"[machines.r]\nbackend = \"remote\"\nmanaged = true\nhost = \"h\"\n":         "delete the line, and add agent = true",
+		"[machines.r]\nbackend = \"remote\"\nmanaged = false\nhost = \"h\"\n":        "managed is gone",
 		"[machines.h]\nbackend = \"hub\"\nagent = false\nhost = \"h\"\n":             "agent applies only to remote",
 		"[machines.x]\nbackend = \"remote\"\n":                                       "host is required",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"u@h\"\n":                       "put it in user",
@@ -191,14 +191,14 @@ func TestParseHost(t *testing.T) {
 	}
 }
 
-// The axes are methods on the record; a hub is never managed.
+// The axes are methods on the record; an entry (remote or hub) is never
+// managed, whatever it is told.
 func TestManagedAndRemote(t *testing.T) {
 	for _, tc := range []struct {
 		m                   *Machine
 		managed, remote, hb bool
 	}{
-		{NewRemote("a", true, "dev@a"), true, true, false},
-		{NewRemote("b", false, "b"), false, true, false},
+		{NewRemote("b", "b"), false, true, false},
 		{NewHub("h", "u@h"), false, true, true},
 		{&Machine{Name: "vm", Backend: BackendSmol}, false, false, false},
 	} {
@@ -215,6 +215,11 @@ func TestManagedAndRemote(t *testing.T) {
 	hub.SetManaged(true)
 	if hub.Managed() {
 		t.Error("a hub reads managed")
+	}
+	r := NewRemote("r", "u@r")
+	r.SetManaged(true)
+	if r.Managed() {
+		t.Error("a remote entry reads managed")
 	}
 }
 
@@ -255,7 +260,7 @@ func TestOldLayout(t *testing.T) {
 }
 
 // `config add` appends one table at the end: every other byte (comments,
-// layout) is untouched, backend and managed are always written, and the
+// layout) is untouched, backend is always written, and the
 // result loads to the record it was rendered from.
 func TestAppendEntry(t *testing.T) {
 	p := testPaths(t)
@@ -265,7 +270,7 @@ func TestAppendEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(p.FilePath())
-	want := orig + "\n\n[machines.new]\nbackend = \"remote\"\nmanaged = false\nhost = \"n.example:2200\"\nuser = \"me\"\ntransport = \"mosh\"\n"
+	want := orig + "\n\n[machines.new]\nbackend = \"remote\"\nhost = \"n.example:2200\"\nuser = \"me\"\ntransport = \"mosh\"\n"
 	if string(data) != want {
 		t.Fatalf("file =\n%s\nwant\n%s", data, want)
 	}
@@ -273,7 +278,7 @@ func TestAppendEntry(t *testing.T) {
 	if err != nil || m.SSHHost != "me@n.example" || m.SSHPort != 2200 || m.Managed() {
 		t.Errorf("new = %+v, %v", m, err)
 	}
-	// A dotted name is quoted, a hub has no managed line.
+	// A dotted name is quoted.
 	if err := AppendEntry(p, "a.b", Entry{Backend: BackendHub, Host: "hb"}); err != nil {
 		t.Fatal(err)
 	}
@@ -323,16 +328,16 @@ func TestAppendEntryCreatesFile(t *testing.T) {
 	}
 	// Round trip through EntryOf.
 	m, _ := Load(p, "h")
-	if e := EntryOf(m); e.Backend != BackendHub || e.Host != "h.example" || e.User != "u" || e.Managed != nil || e.Agent != nil {
+	if e := EntryOf(m); e.Backend != BackendHub || e.Host != "h.example" || e.User != "u" || e.Agent != nil {
 		t.Errorf("EntryOf = %+v", e)
 	}
-	// agent = true is written after managed and survives the round trip.
+	// agent = true is written after backend and survives the round trip.
 	yes := true
 	if err := AppendEntry(p, "box", Entry{Backend: BackendRemote, Agent: &yes, Host: "b"}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(p.FilePath())
-	if !strings.HasSuffix(string(data), "\n[machines.box]\nbackend = \"remote\"\nmanaged = false\nagent = true\nhost = \"b\"\n") {
+	if !strings.HasSuffix(string(data), "\n[machines.box]\nbackend = \"remote\"\nagent = true\nhost = \"b\"\n") {
 		t.Errorf("agent entry:\n%s", data)
 	}
 	box, _ := Load(p, "box")
@@ -355,7 +360,7 @@ user = "ops"
 [machines.cloud]
 backend = "remote"
 # a comment inside
-managed = true
+agent = true
 host = "c"
 # trailing, glued to it
 
@@ -522,7 +527,7 @@ func TestAppendEntryCRLF(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(p.FilePath())
-	want := "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n\r\n[machines.r]\r\nbackend = \"remote\"\r\nmanaged = false\r\nhost = \"r\"\r\n"
+	want := "# mine\r\n[templates.default]\r\nuser = \"ops\"\r\n\r\n[machines.r]\r\nbackend = \"remote\"\r\nhost = \"r\"\r\n"
 	if string(data) != want {
 		t.Errorf("file = %q", data)
 	}

@@ -532,18 +532,18 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 	if got := w.String(); !strings.Contains(got, "ignoring memory (not applicable to a Hetzner server)") {
 		t.Errorf("provider: %q", got)
 	}
-	// On a remote box: placement the chosen template sets is named, what
-	// it only inherits from default is not.
+	// On a smol VM: placement the chosen template sets is named, what it
+	// only inherits from default is not.
 	writeDevvmTOML(t, a, "[templates.default]\nlocation = \"fsn1\"\n\n[templates.big]\nserver_type = \"cx43\"\nipv4 = false\n")
 	v := false
 	for _, tc := range []struct{ tmpl, want string }{
-		{"big", "ignoring server_type, ipv4 (not applicable to a remote box)"},
+		{"big", "ignoring server_type, ipv4 (not applicable to a smol VM)"},
 		{config.DefaultTemplate, ""},
 	} {
 		w.Reset()
-		a.warnIgnored(config.NewRemote("r", true, "dev@h"), config.Template{Name: tc.tmpl, User: "dev", ServerType: "cx43", Location: "fsn1", IPv4: &v}, setupOpts{})
+		a.warnIgnored(&config.Machine{Name: "r", Backend: config.BackendSmol}, config.Template{Name: tc.tmpl, User: "dev", ServerType: "cx43", Location: "fsn1", IPv4: &v}, setupOpts{})
 		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
-			t.Errorf("remote, %s: %q", tc.tmpl, got)
+			t.Errorf("smol, %s: %q", tc.tmpl, got)
 		}
 	}
 }

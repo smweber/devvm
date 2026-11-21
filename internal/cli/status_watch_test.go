@@ -152,7 +152,7 @@ func TestWatchStatusBrokenFileRow(t *testing.T) {
 	snapshot := func() (string, error) { return a.plainSnapshot(statusScope{local: true}) }
 	done := make(chan error, 1)
 	go func() { done <- watchStatus(ctx, a.Paths, snapshot, a.Stderr, out, 50*time.Millisecond, nil, nil) }()
-	out.next(t, "b\tremote\t?\t-\tunmanaged\tverified=-\n")
+	out.next(t, "b\tremote\t?\t-\t-\tverified=-\n")
 
 	writeDevvmTOML(t, a, "[machines.b\n")
 	out.next(t, brokenConfRow)
@@ -199,7 +199,7 @@ func TestStatusBrokenFileAtStart(t *testing.T) {
 	go func() { done <- a.runStatusWatch(ctx, true, false) }()
 	out.next(t, brokenConfRow)
 	writeDevvmTOML(t, a, "[machines.b]\nbackend = \"remote\"\nhost = \"b\"\n")
-	out.next(t, "b\tremote\t?\t-\tunmanaged\tverified=-\n")
+	out.next(t, "b\tremote\t?\t-\t-\tverified=-\n")
 	cancel()
 	if err := <-done; err != nil {
 		t.Errorf("watch = %v", err)
@@ -313,7 +313,7 @@ func TestWatchFollowsSymlinkRetarget(t *testing.T) {
 	}
 	fileA, fileB := filepath.Join(dirA, "devvm.toml"), filepath.Join(dirB, "devvm.toml")
 	entry := func(n string) string { return "[machines." + n + "]\nbackend = \"remote\"\nhost = \"" + n + "\"\n" }
-	row := func(n string) string { return n + "\tremote\t?\t-\tunmanaged\tverified=-\n" }
+	row := func(n string) string { return n + "\tremote\t?\t-\t-\tverified=-\n" }
 	if err := os.WriteFile(fileA, []byte(entry("a")), 0o644); err != nil {
 		t.Fatal(err)
 	}

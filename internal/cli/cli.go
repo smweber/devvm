@@ -151,7 +151,7 @@ func (a *App) rootCmd() *cobra.Command {
 		Short: "One frontend for persistent dev boxes, whatever the transport",
 		Long: "devvm manages persistent dev boxes across backends:\n" +
 			"  smol    local, isolated smolvm microVMs, discovered from smolvm\n" +
-			"  remote  a box reached over ssh: managed (devvm shapes it) or adopted\n" +
+			"  remote  a box reached over ssh, named in devvm.toml (never shaped)\n" +
 			"  hub     another host running devvm; its machines are HUB/NAME\n" +
 			"  hetzner a Hetzner Cloud server, discovered from the API ([providers.hetzner])\n\n" +
 			"~/.config/devvm/devvm.toml holds templates for create/setup ([templates.*])\n" +

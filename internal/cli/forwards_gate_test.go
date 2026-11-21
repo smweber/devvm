@@ -54,7 +54,7 @@ func TestRequireRunningForForwardsPolls(t *testing.T) {
 		{name: "already running", b: &statusBackend{}, m: smol, minCall: 1},
 		{name: "never running", b: &statusBackend{runningAfter: -1}, m: smol, wantErr: "vm is not running; start it first", minCall: 2},
 		{name: "status error is not a block", b: &statusBackend{runningAfter: -1, statusErr: errors.New("smolvm missing")}, m: smol, minCall: 1},
-		{name: "remote backends skip the gate", b: &statusBackend{runningAfter: -1}, m: config.NewRemote("r", false, "r"), minCall: 0},
+		{name: "remote backends skip the gate", b: &statusBackend{runningAfter: -1}, m: config.NewRemote("r", "r"), minCall: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := requireRunningForForwards(tc.m, tc.b, runningPollTimeout)

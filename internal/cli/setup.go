@@ -25,7 +25,8 @@ import (
 )
 
 // `devvm setup` (config.md §3) is the single place devvm touches a box's
-// contents, and the single promotion path to managed. It replaced
+// contents, and only a box devvm made: a smol VM (and, through --adopt, one
+// handed over) or a provider server, never an entry. It replaced
 // `bootstrap`, whose name also meant the user's own hook script. Its order
 // is fixed: ensure user → prereqs → agent + shim (+ profile.d) → keys →
 // harden → hook → repos. The user comes first because everything after
@@ -199,7 +200,6 @@ type setupOpts struct {
 	Template string
 	Adopt    bool
 	Yes      bool
-	Host     string // remote: this run's address, never written
 	tmplFlags
 
 	// resolved is create's already-settled template (flags, prompts and
@@ -215,13 +215,13 @@ func (a *App) setupCmd() *cobra.Command {
 		Long: "Shape a box from a template ([templates.*] in devvm.toml; default without\n" +
 			"--template). The one place devvm changes a box's contents, in a fixed order:\n" +
 			"user, prereqs (incl. tmux, gh, mosh), agent + BROWSER shim, keys and\n" +
-			"hardening (remote), the template's hook, repos (cloned into ~/src). Safe to\n" +
-			"re-run. Forwards are saved with 'devvm ports add', not here.\n\n" +
-			"A managed smol VM or a remote entry with managed = true is shaped without\n" +
-			"asking. A smol VM devvm did not create needs --adopt, which asks you to type\n" +
-			"its name; a remote entry with managed = false is never shaped. A remote box\n" +
-			"is reached as the entry's user, else the template's (on a root-only box, the\n" +
-			"user is created). Precedence: flag > --template > [templates.default] > built-in.",
+			"hardening (a provider server), the template's hook, repos (cloned into\n" +
+			"~/src). Safe to re-run. Forwards are saved with 'devvm ports add', not here.\n\n" +
+			"A smol VM or a provider server devvm made is shaped without asking. A smol\n" +
+			"VM devvm did not create needs --adopt, which asks you to type its name. An\n" +
+			"entry in devvm.toml (a remote box, a hub) is never shaped. A server that\n" +
+			"answers only as root gets its user created first.\n" +
+			"Precedence: flag > --template > [templates.default] > built-in.",
 		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
 			o.noteSet(cmd.Flags())
 			if err := a.runSetup(args[0], o); err != nil {
@@ -236,7 +236,6 @@ func (a *App) setupCmd() *cobra.Command {
 	f.StringVarP(&o.Template, flagTemplate, "t", "", "template to shape with (default: default)")
 	f.BoolVar(&o.Adopt, "adopt", false, "hand a smol VM devvm did not create over to devvm (asks you to type its name)")
 	f.BoolVarP(&o.Yes, "yes", "y", false, "don't prompt (never applies to --adopt)")
-	f.StringVar(&o.Host, "host", "", "remote: reach the box at this address for this run only (nothing is written)")
 	addTemplateFlags(f, &o.tmplFlags)
 	_ = c.RegisterFlagCompletionFunc(flagTemplate, a.completeTemplates)
 	return c
@@ -266,21 +265,15 @@ func (a *App) runSetup(name string, o setupOpts) error {
 	if m.IsProvider() && !m.Managed() {
 		return providerNoPromoteErr(m) // --adopt or not: a provider server is never promoted
 	}
-	if m.IsRemote() {
-		if o.Adopt && m.IsProvider() {
+	if m.IsRemote() && !m.IsProvider() {
+		// An entry (simplify.md step 12): devvm only connects to it.
+		return fmt.Errorf("'%s' is an entry in devvm.toml: devvm never shapes one (it connects: attach, shell, exec, ports, cp, keys)", name)
+	}
+	if m.IsProvider() {
+		if o.Adopt {
 			return fmt.Errorf("--adopt applies only to a local smol VM devvm did not create; '%s' is a %s server, whose label is the consent", name, providerTitle(m.Backend))
 		}
-		if o.Adopt {
-			return fmt.Errorf("--adopt applies only to a local smol VM devvm did not create; '%s' is a %s entry, whose managed line is the consent", name, m.Backend)
-		}
-		if !m.Managed() {
-			return fmt.Errorf("'%s' is an adopted host (managed = false): devvm never shapes it; manage its keys with 'devvm keys', or set managed = true in its [machines.%s] entry ('devvm config edit') to hand it over",
-				name, name)
-		}
 	} else {
-		if o.Host != "" {
-			return fmt.Errorf("--host applies only to remote boxes; '%s' is a local smol VM", name)
-		}
 		switch {
 		case m.Managed() && o.Adopt:
 			return fmt.Errorf("'%s' is already managed by devvm; re-run 'devvm setup %s' without --adopt", name, name)
@@ -295,9 +288,6 @@ func (a *App) runSetup(name string, o setupOpts) error {
 	if o.resolved != nil {
 		t = *o.resolved
 	} else if t, err = a.resolveTemplate(o.Template, o.tmplFlags); err != nil {
-		return err
-	}
-	if err := checkTemplateUser(m, t); err != nil {
 		return err
 	}
 	if o.Adopt {
@@ -329,37 +319,25 @@ func loginUser(m *config.Machine) string {
 	return u
 }
 
-// checkTemplateUser refuses, before anything runs, a template whose user is
-// not the one a remote entry with no `user` logs in as
-// ([templates.default]'s): setup would create that user and pin sshd's
-// AllowUsers to it, and every later command, logging in as the other one,
-// would be locked out. Nothing is written for the user: the fix is the
-// entry's own `user` line. An entry that names its user is the login
-// whatever the template says (reachForSetup warns).
-func checkTemplateUser(m *config.Machine, t config.Template) error {
-	if !m.IsRemote() || m.User != "" {
-		return nil
-	}
-	if login := loginUser(m); login != "" && login != t.User {
-		return fmt.Errorf("template %s sets user = %s but %s logs in as %s; set user = %q in [machines.%s] first",
-			t.Name, t.User, m.Name, login, t.User, m.Name)
-	}
-	return nil
-}
-
 // browserStep is the agent + shim (+ profile.d) step, a var so a test can
 // stand in for agentbin's install.
 var browserStep = bootstrap.Browser
 
-// shape runs the fixed order on a box already cleared to be shaped.
+// shape runs the fixed order on a box already cleared to be shaped. Its
+// one backstop: a box devvm did not make (Managed) is refused before any
+// step, since every step below installs, hardens or runs code as root
+// there. runSetup and create refuse such a box first.
 func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t config.Template, o setupOpts) error {
+	if !m.Managed() {
+		return fmt.Errorf("'%s' is not a box devvm made: devvm never shapes it", m.Name)
+	}
 	a.warnIgnored(m, t, o)
-	// 1. The user. A remote box may answer only as root (a fresh cloud VM);
-	// reachForSetup waits for it and creates the user there. On smol the
-	// exec enters as root and the backend is wired to dev.
+	// 1. The user. A provider server may answer only as root (a fresh cloud
+	// VM); reachForSetup waits for it and creates the user there. On smol
+	// the exec enters as root and the backend is wired to dev.
 	if m.IsRemote() {
 		var err error
-		if m, b, err = a.reachForSetup(ctx, m, t.User, o.Host); err != nil {
+		if m, b, err = a.reachForSetup(ctx, m, t.User); err != nil {
 			return err
 		}
 	} else {
@@ -380,7 +358,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	if err := browserStep(ctx, b, m); err != nil {
 		return err
 	}
-	if m.IsRemote() {
+	if m.IsRemote() { // a provider server: an entry never gets here
 		// 4. Keys (a source that yields nothing warns and moves on).
 		if err := a.seedAuthorizedKeys(b, t.AuthorizedKeysGithub, t.AuthorizedKeys); err != nil {
 			return err
@@ -552,8 +530,6 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 		switch {
 		case m.IsProvider():
 			kind = "a " + providerTitle(m.Backend) + " server"
-		case m.IsRemote():
-			kind = "a remote box"
 		}
 		fmt.Fprintf(a.Stderr, "devvm: template %s: ignoring %s (not applicable to %s)\n",
 			t.Name, strings.Join(ignored, ", "), kind)
@@ -721,38 +697,19 @@ func (a *App) waitSSH(ctx context.Context, m *config.Machine) (reachResult, erro
 	}
 }
 
-// withHost puts addr in place of an ssh destination's host, keeping its
-// user (`setup --host`). An addr with its own user@ is taken as is.
-func withHost(sshHost, addr string) string {
-	if strings.Contains(addr, "@") {
-		return addr
-	}
-	if u, _, ok := strings.Cut(sshHost, "@"); ok {
-		return u + "@" + addr
-	}
-	return addr
-}
-
-// reachForSetup settles how setup reaches a managed remote box, and makes
-// sure the user exists. The login it tries first is the record's (the
-// entry's `user`, or with none [templates.default]'s; at --host's address
-// for this run, if given),
+// reachForSetup settles how setup reaches a provider server devvm made, and
+// makes sure the user exists. The login it tries first is the record's
+// ([templates.default]'s user, which every later command logs in as),
 // waiting a bounded time for a box that does not answer yet. If that login
 // is refused it tries root@; a box that answers only as root (a fresh cloud
 // VM) gets that user, with NOPASSWD sudo and root's keys (EnsureUser), and
-// setup continues as it. Only setup ever tries root, and only here (remote
-// + managed). Nothing is written: the entry names the box, and the user
-// every later command logs in as is the entry's, else [templates.default]'s
-// (config.md §1, §3).
-func (a *App) reachForSetup(ctx context.Context, m *config.Machine, tmplUser, host string) (*config.Machine, backend.Backend, error) {
+// setup continues as it. Only setup ever tries root, and only here. Nothing
+// is written: devvm stores nothing per server (config.md §1, §3).
+func (a *App) reachForSetup(ctx context.Context, m *config.Machine, tmplUser string) (*config.Machine, backend.Backend, error) {
 	cur := *m
-	// The login every later command uses (the entry's user, else
-	// [templates.default]'s); runSetup refused a template that would make
-	// another one, so this is also the user setup creates.
+	// The login every later command uses; create refused a template that
+	// would make another one, so this is also the user setup creates.
 	user := loginUser(m)
-	if host != "" {
-		cur.SSHHost = withHost(cur.SSHHost, host)
-	}
 	r, err := a.waitSSH(ctx, &cur)
 	if err != nil {
 		return nil, nil, err
@@ -770,8 +727,9 @@ func (a *App) reachForSetup(ctx context.Context, m *config.Machine, tmplUser, ho
 		}
 		if login != "root" {
 			if login != "" && login != tmplUser {
-				// The entry's login wins (user = "ubuntu"): setup runs as it,
-				// and Harden pins AllowUsers to it, not to the template's user.
+				// setup --template T with another user: the server's login
+				// wins, setup runs as it, and Harden pins AllowUsers to it,
+				// not to the template's user.
 				fmt.Fprintf(a.Stderr, "devvm: '%s' logs in as %s: template user %q is ignored, and hardening would pin AllowUsers to %s\n",
 					m.Name, login, tmplUser, login)
 			}
@@ -784,13 +742,10 @@ func (a *App) reachForSetup(ctx context.Context, m *config.Machine, tmplUser, ho
 		if r2, _, err := a.probeSSH(ctx, &rm); err != nil {
 			return nil, nil, err
 		} else if r2 != reachOK {
-			return nil, nil, fmt.Errorf("ssh to %s was refused (permission denied), and so was %s; add a key with 'devvm keys add %s' or check identity in its entry",
-				cur.SSHHost, rm.SSHHost, m.Name)
+			return nil, nil, fmt.Errorf("ssh to %s was refused (permission denied), and so was %s; check that the ssh key in [providers.%s] is this host's",
+				cur.SSHHost, rm.SSHHost, m.Backend)
 		}
 		root = &rm
-	}
-	if user == "root" {
-		return nil, nil, fmt.Errorf("'%s' logs in as root (user = \"root\"): setup creates an unprivileged user with sudo; remove the entry's user, or set another", m.Name)
 	}
 	rb, err := backend.For(root, a.Paths)
 	if err != nil {

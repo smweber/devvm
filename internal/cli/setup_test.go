@@ -15,6 +15,7 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
+	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/reach"
 )
 
@@ -214,11 +215,8 @@ func TestSetupRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	ssh := fakeSSH(t, "exit 0")
-	for _, b := range []string{"managed", "unmanaged"} {
-		m := config.NewRemote(b, b == "managed", "dev@x")
-		if err := writeEntry(a.Paths, m); err != nil {
-			t.Fatal(err)
-		}
+	if err := writeEntry(a.Paths, config.NewRemote("box", "dev@x")); err != nil {
+		t.Fatal(err)
 	}
 	pinTTYs(t, true, true)
 	for _, tc := range []struct {
@@ -227,11 +225,10 @@ func TestSetupRefusals(t *testing.T) {
 	}{
 		{[]string{"setup", "web"}, "devvm setup --adopt web"},
 		{[]string{"setup", "--adopt", "made"}, "already managed"},
-		{[]string{"setup", "--adopt", "managed"}, "--adopt applies only"},
-		{[]string{"setup", "--adopt", "unmanaged"}, "--adopt applies only"},
-		{[]string{"setup", "unmanaged"}, "never shapes"},
+		{[]string{"setup", "box"}, "'box' is an entry in devvm.toml: devvm never shapes one"},
+		{[]string{"setup", "--adopt", "box"}, "never shapes"},
 		{[]string{"setup", "--adopt", "--yes", "web"}, "--yes does not apply"},
-		{[]string{"setup", "--host", "1.2.3.4", "made"}, "--host applies only"},
+		{[]string{"setup", "--host", "1.2.3.4", "made"}, "unknown flag: --host"},
 	} {
 		err := runTree(t, a, tc.argv...)
 		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "\n") {
@@ -337,6 +334,17 @@ exit 0`)
 	return log
 }
 
+// fakeServer makes name a provider server devvm made (the devvm=true label)
+// at addr: the one kind of box reached over ssh that setup shapes (an
+// entry is never shaped). templates go into devvm.toml beside
+// [providers.hetzner].
+func fakeServer(t *testing.T, a *App, name, addr, templates string) {
+	t.Helper()
+	fakeLocalSmolvm(t, `[]`)
+	p := withFakeHetzner(t, a, templates, false)
+	addServer(t, p, name, addr, provider.StateRunning, true)
+}
+
 func shrinkReachWait(t *testing.T, budget, interval time.Duration) {
 	t.Helper()
 	ob, oi := setupReachBudget, setupReachInterval
@@ -344,9 +352,10 @@ func shrinkReachWait(t *testing.T, budget, interval time.Duration) {
 	t.Cleanup(func() { setupReachBudget, setupReachInterval = ob, oi })
 }
 
-// The remote order: reach, prereqs, agent + shim + profile.d (as smol:
-// its daemon runs the agent exec too), keys, harden, hook, repos. The
-// security steps sit before user code and the network.
+// The order over ssh (a provider server devvm made): reach, prereqs, agent
+// + shim + profile.d (as smol: its daemon runs the agent exec too), keys,
+// harden, hook, repos. The security steps sit before user code and the
+// network.
 func TestSetupRemoteOrder(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, "")
@@ -354,7 +363,7 @@ func TestSetupRemoteOrder(t *testing.T) {
 	if err := os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxM5xX4pQ9bJ8u5Yb6m8yRZ3qWZJ1hX0b0W9b3G7k5f me@laptop\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeDevvmTOML(t, a, `
+	fakeServer(t, a, "cloud", "cloud.example", `
 [templates.default]
 hook = "cmd:/opt/hook.sh"
 repos = ["o/r"]
@@ -363,10 +372,6 @@ authorized_keys = ["`+key+`"]
 harden = true
 fail2ban = true
 `)
-	m := config.NewRemote("cloud", true, "dev@cloud.example")
-	if err := writeEntry(a.Paths, m); err != nil {
-		t.Fatal(err)
-	}
 	if err := runTree(t, a, "setup", "cloud"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
@@ -386,7 +391,7 @@ fail2ban = true
 			t.Errorf("remote setup mentions %q", bad)
 		}
 	}
-	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring memory (not applicable to a remote box)") {
+	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring memory (not applicable to a Hetzner server)") {
 		t.Errorf("warning = %q", w)
 	}
 	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "devvm: 'cloud' is set up\n") {
@@ -408,16 +413,13 @@ func TestSetupHardensBeforeFailedHook(t *testing.T) {
 	if err := os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxM5xX4pQ9bJ8u5Yb6m8yRZ3qWZJ1hX0b0W9b3G7k5f me@laptop\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeDevvmTOML(t, a, `
+	fakeServer(t, a, "cloud", "cloud.example", `
 [templates.default]
 hook = "cmd:/opt/hook.sh"
 repos = ["o/r"]
 authorized_keys = ["`+key+`"]
 harden = true
 `)
-	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
-		t.Fatal(err)
-	}
 	if err := runTree(t, a, "setup", "cloud"); err == nil {
 		t.Fatal("setup succeeded past a failed hook")
 	}
@@ -428,10 +430,10 @@ harden = true
 	}
 }
 
-// Root adoption: the login (no user in the entry: [templates.default]'s)
-// is refused (permission denied), root answers, so that user is created and
-// setup continues as it. Nothing is written: every later command logs in
-// as the same template user.
+// Root adoption: the login ([templates.default]'s user) is refused
+// (permission denied), root answers, so that user is created and setup
+// continues as it. Nothing is written: every later command logs in as the
+// same template user.
 func TestSetupRootAdoption(t *testing.T) {
 	a := newTestApp(t)
 	made := filepath.Join(t.TempDir(), "made")
@@ -441,15 +443,8 @@ case "$dest" in
   alice@*) [ -e `+made+` ] || { echo "$dest: Permission denied (publickey)." >&2; exit 255; };;
   *) echo "$dest: Permission denied (publickey)." >&2; exit 255;;
 esac`)
-	writeDevvmTOML(t, a, "[templates.default]\nuser = \"alice\"\n")
-	m := config.NewRemote("cloud", true, "203.0.113.5")
-	if err := writeEntry(a.Paths, m); err != nil {
-		t.Fatal(err)
-	}
+	fakeServer(t, a, "cloud", "203.0.113.5", "[templates.default]\nuser = \"alice\"\n")
 	before, _ := os.ReadFile(a.Paths.FilePath())
-	if got, _ := config.Load(a.Paths, "cloud"); got.SSHHost != "alice@203.0.113.5" {
-		t.Fatalf("a managed entry with no user logs in as %q, want the default template's alice", got.SSHHost)
-	}
 	if err := runTree(t, a, "setup", "cloud"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
@@ -467,42 +462,13 @@ esac`)
 	}
 }
 
-// --template T with a user other than the one the entry logs in as (no
-// user in it: [templates.default]'s) is refused before anything runs:
-// setup would create T's user and pin AllowUsers to it, locking every later
-// command out.
-func TestSetupRefusesTemplateUserMismatch(t *testing.T) {
-	a := newTestApp(t)
-	log := fakeRemote(t, "")
-	writeDevvmTOML(t, a, "[templates.ops]\nuser = \"alice\"\nharden = true\n")
-	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "203.0.113.5")); err != nil {
-		t.Fatal(err)
-	}
-	err := runTree(t, a, "setup", "cloud", "--template", "ops")
-	if err == nil || err.Error() != `template ops sets user = alice but cloud logs in as dev; set user = "alice" in [machines.cloud] first` {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := os.Stat(log); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(log)
-		t.Errorf("setup ran something:\n%s", data)
-	}
-	// With the user in the entry, the same template shapes it.
-	writeDevvmTOML(t, a, "[templates.ops]\nuser = \"alice\"\n\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"203.0.113.5\"\nuser = \"alice\"\n")
-	if err := runTree(t, a, "setup", "cloud", "--template", "ops"); err != nil {
-		t.Fatalf("setup with user in the entry: %v\n%s", err, a.Stderr)
-	}
-}
-
 // Unreachable is not permission denied: it is waited for (bounded), and
 // root is never tried.
 func TestSetupUnreachable(t *testing.T) {
 	a := newTestApp(t)
 	shrinkReachWait(t, 300*time.Millisecond, 50*time.Millisecond)
 	log := fakeRemote(t, `echo "ssh: connect to host cloud.example port 22: Connection refused" >&2; exit 255`)
-	m := config.NewRemote("cloud", true, "dev@cloud.example")
-	if err := writeEntry(a.Paths, m); err != nil {
-		t.Fatal(err)
-	}
+	fakeServer(t, a, "cloud", "cloud.example", "")
 	start := time.Now()
 	err := runTree(t, a, "setup", "cloud")
 	if err == nil || !strings.Contains(err.Error(), "cannot reach dev@cloud.example") || !strings.Contains(err.Error(), "Connection refused") {
@@ -520,9 +486,8 @@ func TestSetupUnreachable(t *testing.T) {
 	}
 }
 
-// A box that comes up within the budget is shaped; --host reaches it at
-// another address for this run and writes nothing.
-func TestSetupWaitsAndHostOverride(t *testing.T) {
+// A box that comes up within the budget is shaped.
+func TestSetupWaits(t *testing.T) {
 	a := newTestApp(t)
 	shrinkReachWait(t, 5*time.Second, 20*time.Millisecond)
 	count := filepath.Join(t.TempDir(), "n")
@@ -530,24 +495,16 @@ func TestSetupWaitsAndHostOverride(t *testing.T) {
   n=$(cat `+count+` 2>/dev/null || echo 0); n=$((n+1)); echo $n > `+count+`
   [ $n -ge 3 ] || { echo "Connection timed out" >&2; exit 255; };;
 esac`)
-	m := config.NewRemote("cloud", true, "dev@cloud.tail")
-	if err := writeEntry(a.Paths, m); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := os.ReadFile(a.Paths.FilePath())
-	if err := runTree(t, a, "setup", "cloud", "--host", "198.51.100.7"); err != nil {
+	fakeServer(t, a, "cloud", "198.51.100.7", "")
+	if err := runTree(t, a, "setup", "cloud"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
 	data, _ := os.ReadFile(log)
-	if strings.Contains(string(data), "cloud.tail") || !strings.Contains(string(data), "dev@198.51.100.7 'sudo' 'bash'") {
-		t.Errorf("--host not used for every call:\n%s", data)
+	if !strings.Contains(string(data), "dev@198.51.100.7 'sudo' 'bash'") {
+		t.Errorf("prereqs did not run once it answered:\n%s", data)
 	}
 	if !strings.Contains(a.Stderr.(*bytes.Buffer).String(), "waiting up to") {
 		t.Error("no wait notice")
-	}
-	after, _ := os.ReadFile(a.Paths.FilePath())
-	if !bytes.Equal(before, after) {
-		t.Errorf("--host was written:\n%s", after)
 	}
 }
 
@@ -555,7 +512,7 @@ esac`)
 // exit status (255 for both).
 func TestProbeSSH(t *testing.T) {
 	a := newTestApp(t)
-	m := config.NewRemote("c", true, "dev@c")
+	m := config.NewRemote("c", "dev@c")
 	for body, want := range map[string]reachResult{
 		"exit 0": reachOK,
 		`echo "This account is currently not available." >&2; exit 1`:        reachOK, // nologin: answered
@@ -600,32 +557,28 @@ func TestSetupRootAdoptionUserRefuses(t *testing.T) {
   root@*) ;;
   *) echo "$dest: Permission denied (publickey)." >&2; exit 255;;
 esac`)
-	m := config.NewRemote("cloud", true, "203.0.113.5")
-	if err := writeEntry(a.Paths, m); err != nil {
-		t.Fatal(err)
-	}
+	fakeServer(t, a, "cloud", "203.0.113.5", "")
+	before, _ := os.ReadFile(a.Paths.FilePath())
 	err := runTree(t, a, "setup", "cloud")
 	if err == nil || !strings.Contains(err.Error(), "user dev exists on 'cloud' but your key is not in its authorized_keys") {
 		t.Fatalf("err = %v", err)
 	}
-	if got, _ := config.Load(a.Paths, "cloud"); got.SSHHost != "dev@203.0.113.5" || got.User != "" {
-		t.Errorf("entry changed: %+v", got)
+	if after, _ := os.ReadFile(a.Paths.FilePath()); !bytes.Equal(before, after) {
+		t.Errorf("setup wrote devvm.toml:\n%s", after)
 	}
 }
 
-// A configured login that is neither root nor the template's user wins,
-// with a warning that the template user is ignored.
+// setup --template T on a provider server, T's user other than the login
+// ([templates.default]'s): the login wins, with a warning that the
+// template user is ignored.
 func TestSetupOtherLoginWarns(t *testing.T) {
 	a := newTestApp(t)
 	fakeRemote(t, "")
-	m := config.NewRemote("cloud", true, "ubuntu@cloud.example")
-	if err := writeEntry(a.Paths, m); err != nil {
+	fakeServer(t, a, "cloud", "cloud.example", "[templates.ops]\nuser = \"alice\"\n")
+	if err := runTree(t, a, "setup", "cloud", "--template", "ops"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runTree(t, a, "setup", "cloud"); err != nil {
-		t.Fatal(err)
-	}
-	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, `logs in as ubuntu: template user "dev" is ignored, and hardening would pin AllowUsers to ubuntu`) {
+	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, `logs in as dev: template user "alice" is ignored, and hardening would pin AllowUsers to dev`) {
 		t.Errorf("warning = %q", w)
 	}
 }
@@ -736,9 +689,10 @@ harden = true
 	}
 }
 
-// A template's keys are resolved for a hub machine only when it may take
-// them: never for a smol one (no GitHub fetch, no warning every run).
-func TestProxiedKeysSkipSmol(t *testing.T) {
+// A template's keys are never resolved for a hub machine (no GitHub fetch,
+// no warning every run): HUB/NAME is a hub's smol VM, which takes no keys,
+// and a hub's own entries are never shaped.
+func TestProxiedKeysNeverSent(t *testing.T) {
 	a := newTestApp(t)
 	_, argvLog := fakeHub(t, a)
 	pinTTY(t, false)
@@ -748,20 +702,14 @@ func TestProxiedKeysSkipSmol(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeDevvmTOML(t, a, "[templates.k]\nauthorized_keys = [\""+key+"\"]\n")
-	if err := writeHubCache(a.Paths, "h", []hubRow{
-		{name: "web", backend: "smol", state: "running", forwards: "-", managed: "managed"},
-		{name: "box", backend: config.BackendRemote, state: "reachable", forwards: "-", managed: "managed"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for vm, want := range map[string]bool{"web": false, "new": false, "box": true} {
+	for _, vm := range []string{"web", "box"} {
 		os.Remove(argvLog)
 		if err := runTree(t, a, "setup", "h/"+vm, "-t", "k"); err != nil {
 			t.Fatal(err)
 		}
 		calls := devvmCalls(t, argvLog)
-		if got := len(calls) == 1 && slices.Contains(calls[0], "--key="+line); got != want {
-			t.Errorf("%s: key sent = %v, want %v (%q)", vm, got, want, calls)
+		if len(calls) != 1 || slices.ContainsFunc(calls[0], func(s string) bool { return strings.HasPrefix(s, "--key") }) {
+			t.Errorf("%s: argv = %q, want no --key", vm, calls)
 		}
 	}
 }
@@ -897,15 +845,12 @@ func TestSetupFinishesPastFailedClone(t *testing.T) {
 	if err := os.WriteFile(key, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBxM5xX4pQ9bJ8u5Yb6m8yRZ3qWZJ1hX0b0W9b3G7k5f me@laptop\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeDevvmTOML(t, a, `
+	fakeServer(t, a, "cloud", "cloud.example", `
 [templates.default]
 repos = ["o/bad", "o/good"]
 authorized_keys = ["`+key+`"]
 harden = true
 `)
-	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
-		t.Fatal(err)
-	}
 	err := runTree(t, a, "setup", "cloud")
 	var si *setupIncomplete
 	if !errors.As(err, &si) || err.Error() != "setup finished, but: failed to clone o/bad" {
@@ -1010,10 +955,7 @@ func TestProxiedCreateClearsWhenHubMadeVM(t *testing.T) {
 func TestSetupInterruptedWhileCloning(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, `case "$last" in *o/a*) kill -INT $PPID; exec sleep 10;; esac`)
-	writeDevvmTOML(t, a, "[templates.default]\nrepos = [\"o/a\", \"o/b\"]\n")
-	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
-		t.Fatal(err)
-	}
+	fakeServer(t, a, "cloud", "cloud.example", "[templates.default]\nrepos = [\"o/a\", \"o/b\"]\n")
 	err := runTree(t, a, "setup", "cloud")
 	var si *setupIncomplete
 	if err == nil || errors.As(err, &si) || failureStatus(err) == exitSetupIncomplete ||
@@ -1032,13 +974,10 @@ func TestSetupInterruptedWhileCloning(t *testing.T) {
 func TestSetupSkipsGHLoggedOut(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeRemote(t, `case "$last" in *o/r*|*o/s*) exit 86;; esac`)
-	writeDevvmTOML(t, a, `
+	fakeServer(t, a, "cloud", "cloud.example", `
 [templates.default]
 repos = ["o/r", "https://x.example/u.git", "o/s"]
 `)
-	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
-		t.Fatal(err)
-	}
 	if err := runTree(t, a, "setup", "cloud"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
@@ -1117,6 +1056,18 @@ func TestCloneScriptGHNoLogin(t *testing.T) {
 		}
 		if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "devvm: skipped o/r: ") || strings.Contains(w, "o/done") || strings.Contains(w, "gh repo") {
 			t.Errorf("smol=%v: stderr = %q", smol, w)
+		}
+	}
+}
+
+// shape's one backstop: a box devvm did not make is refused before any step
+// runs (the nil backend would panic on the first one).
+func TestShapeRefusesUnmanaged(t *testing.T) {
+	a := newTestApp(t)
+	for _, m := range []*config.Machine{{Name: "vm", Backend: config.BackendSmol}, config.NewRemote("box", "dev@box")} {
+		err := a.shape(context.Background(), m, nil, config.Template{Name: config.DefaultTemplate, Hook: "none"}, setupOpts{})
+		if err == nil || err.Error() != "'"+m.Name+"' is not a box devvm made: devvm never shapes it" {
+			t.Errorf("%s: err = %v", m.Name, err)
 		}
 	}
 }

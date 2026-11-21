@@ -38,9 +38,10 @@ import (
 // serving forwards. An agent known to be missing or stale reports no shim
 // and no events (hasEvents: the Bridge echo to a relay).
 //
-// Presence follows the entry. A managed box gets agentbin.Install, as smol
-// does (root /usr/local/bin, no prompt). An entry with `agent = true` gets
-// it too, user-scoped (~/.local/bin, no root): the line is the consent, and
+// Presence follows the record. A provider server devvm made gets
+// agentbin.Install, as smol does (root /usr/local/bin, no prompt). An entry
+// with `agent = true` gets it too, user-scoped (~/.local/bin, no root): the
+// line is the consent, and
 // the install also replaces another build's agent after `devvm update`.
 // Any other entry is only probed (agentbin.Probe: this build's agent in
 // ~/.local/bin, sha-matched, nothing written); without one the supervisor
@@ -65,7 +66,8 @@ type sshAgent struct {
 }
 
 // agentHooks are how the supervisor gets an agent: prepare makes sure one is
-// there (installing it only on a managed box) and says whether it is this
+// there (installing it only on a box devvm made, or an entry with agent =
+// true) and says whether it is this
 // build's; spawn starts `AGENT serve` on the daemon's master. Tests stand
 // in for both.
 type agentHooks struct {
@@ -103,7 +105,8 @@ func sshAgentHooks(m *config.Machine, ob backend.Backend) agentHooks {
 		prepare: func(ctx context.Context) (agentbin.Paths, agentbin.State, error) {
 			if m.Managed() || m.Agent {
 				// Where follows Managed() (agentbin.plan): root on a
-				// managed box, the login user's ~/.local/bin otherwise.
+				// provider server devvm made, the login user's
+				// ~/.local/bin on an entry (never managed).
 				p, err := agentbin.Install(ctx, ob, m, nil)
 				if err != nil {
 					return agentbin.Paths{}, agentbin.Missing, err

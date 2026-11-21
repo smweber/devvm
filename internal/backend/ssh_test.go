@@ -101,7 +101,7 @@ func TestControlPathTooLong(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\necho ran >> "+log+"\n"), 0o755)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	state := filepath.Join(dir, strings.Repeat("s", 80))
-	b := &sshBackend{m: config.NewRemote("x", true, "dev@x.example"), paths: config.LegacyPaths(state)}
+	b := &sshBackend{m: config.NewRemote("x", "dev@x.example"), paths: config.LegacyPaths(state)}
 	if err := b.Run(context.Background(), ExecOpts{}, "true"); err == nil || !strings.Contains(err.Error(), "too long") {
 		t.Fatalf("Run: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestOnMasterUsesDaemonControlPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := config.LegacyPaths(shortTempDir(t))
-	b, err := For(config.NewRemote("box", true, "dev@box.example"), paths)
+	b, err := For(config.NewRemote("box", "dev@box.example"), paths)
 	if err != nil {
 		t.Fatal(err)
 	}

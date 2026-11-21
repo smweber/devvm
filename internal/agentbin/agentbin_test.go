@@ -120,7 +120,7 @@ func TestInstallAgentAndShimIdempotent(t *testing.T) {
 // gets the shim alone; on an adopt host that write is gated like any other.
 func TestInstallShimOnlyGated(t *testing.T) {
 	g := newFakeGuest()
-	m := config.NewRemote("box", false, "")
+	m := config.NewRemote("box", "")
 	data, _, err := binFor("Linux x86_64")
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestInstallQuotesHostilePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := localGuest{home: home}
-	m := config.NewRemote("box", false, "")
+	m := config.NewRemote("box", "")
 	p, err := Install(context.Background(), g, m, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func managedSmol(name string) *config.Machine {
 // entry without agent = true runs only this.
 func TestProbeStatesWriteNothing(t *testing.T) {
 	g := newFakeGuest()
-	m := config.NewRemote("box", false, "")
+	m := config.NewRemote("box", "")
 	agent, shim := "/home/dev/.local/bin/devvm-agent", "/home/dev/.local/bin/devvm-open-url"
 	data, _, err := binFor("Linux x86_64")
 	if err != nil {

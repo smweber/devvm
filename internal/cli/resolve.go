@@ -70,13 +70,13 @@ func requireMachine(m *config.Machine) error {
 // requireManaged refuses a local VM devvm did not create (config.md §2):
 // attach, cp, ports, setup and the browser bridge all assume devvm's `dev`
 // user, tmux socket and agent, none of which such a VM has, and none of
-// which devvm may put there unasked. Remote boxes are
-// never refused here: an adopted remote host has its own, consented,
-// posture (agent = true in its entry). A machine on a hub is refused by its
-// hub, which holds the marker.
+// which devvm may put there unasked. Entries are
+// never refused here: devvm only connects to one, with the consented
+// posture its line gives (agent = true). A machine on a hub is refused by
+// its hub, which holds the marker.
 //
 // A provider server without the devvm=true label is refused here too, and
-// unlike an adopted remote entry it gets no consented posture: it is
+// unlike an entry it gets no consented posture: it is
 // someone's server in the project (providers.md §8), so keys, cp, ports
 // and attach all refuse, and no flag promotes it.
 func requireManaged(m *config.Machine) error {

@@ -18,23 +18,20 @@ const ProfilePath = "/etc/profile.d/devvm.sh"
 // installAgent is agentbin.Install, a var so a test can stand in for it.
 var installAgent = agentbin.Install
 
-// Browser installs the agent and its BROWSER shim on a managed box (smol
-// or remote) and writes ProfilePath pointing at the shim
+// Browser installs the agent and its BROWSER shim on a box devvm made (a
+// smol VM, a provider server) and writes ProfilePath pointing at the shim
 // (browser-bridge.md §5). The install happens here, at setup, and not only
 // lazily when the daemon's transport first spawns the agent exec, so
 // profile.d never names a file that does not exist yet. One-shot execs
 // only, in sequence: nothing here runs beside another exec.
 //
-// On a remote box profile.d is one of only two ways BROWSER arrives (the
-// other is attach's tmux session environment): a bare `shell` sends no
-// remote command, and sshd drops SetEnv. Everything else is left alone: an
-// adopt host never gets a profile.d write (its agent is the user's to
-// consent to, with agent = true in its entry), and a hub machine is set up
-// by its hub, which runs this itself.
+// On a box reached over ssh profile.d is one of only two ways BROWSER
+// arrives (the other is attach's tmux session environment): a bare `shell`
+// sends no remote command, and sshd drops SetEnv. Only setup calls it,
+// which shapes nothing but a box devvm made: an entry never gets a
+// profile.d write (its agent is the user's to consent to, with agent =
+// true, and lives in ~/.local/bin), and a hub machine is set up by its hub.
 func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
-	if !m.Managed() || m.IsHubMachine() {
-		return nil
-	}
 	p, err := installAgent(ctx, b, m, nil)
 	if err != nil {
 		return fmt.Errorf("install devvm-agent and browser shim: %w", err)

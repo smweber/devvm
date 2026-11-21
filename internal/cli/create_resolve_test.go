@@ -112,7 +112,7 @@ func TestCreateHubMachineRefusesBackendLocally(t *testing.T) {
 func TestDeleteCompletionSkipsEntries(t *testing.T) {
 	a := newTestApp(t)
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	if err := writeEntry(a.Paths, config.NewRemote("box", true, "box")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", "box")); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := a.completeDeletable(nil, nil, "")

@@ -81,7 +81,7 @@ type nudger interface {
 
 // eventCarrier is a transport whose events() channel exists for its whole
 // life but carries events only while something feeds it: ssh, whose agent
-// exec may be absent (an adopt host without the agent) and comes and goes
+// exec may be absent (an entry without a current agent) and comes and goes
 // under one channel. hasEvents is what the daemon reports as Bridge to a
 // relay (hub.md §8). Optional; smol always has events, hub reads its echo.
 type eventCarrier interface {

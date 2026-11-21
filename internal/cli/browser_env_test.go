@@ -9,22 +9,23 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// BROWSER on a remote box (browser-bridge.md §5). `setup` on a managed
-// box runs the agent step (agent + shim + /etc/profile.d/devvm.sh), as on
-// smol; an adopted host is never shaped. `attach` subscribes on the
-// box's daemon (whose agent exec carries the events) and copies BROWSER
-// into the dev tmux session, guarded in the guest on the shim being
-// executable: root's on a managed box, ~/.local/bin's on an adopt host,
-// where it exists only once its daemon installed it (agent = true). attach
-// itself installs nothing and writes no profile.d.
+// BROWSER on a box reached over ssh (browser-bridge.md §5). `setup` on a
+// provider server devvm made runs the agent step (agent + shim +
+// /etc/profile.d/devvm.sh), as on smol; an entry is never shaped. `attach`
+// subscribes on the box's daemon (whose agent exec carries the events) and
+// copies BROWSER into the dev tmux session, guarded in the guest on the
+// shim being executable: root's on a server devvm made, ~/.local/bin's on
+// an entry, where it exists only once its daemon installed it (agent =
+// true). attach itself installs nothing and writes no profile.d.
 func TestRemoteSetupAndAttachBrowser(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	for _, be := range []string{"managed", "unmanaged"} {
 		t.Run(be, func(t *testing.T) {
 			a := newTestApp(t)
 			log := fakeRemote(t, "")
-			m := config.NewRemote("cloud", be == "managed", "dev@cloud.example")
-			if err := writeEntry(a.Paths, m); err != nil {
+			if be == "managed" {
+				fakeServer(t, a, "cloud", "cloud.example", "")
+			} else if err := writeEntry(a.Paths, config.NewRemote("cloud", "dev@cloud.example")); err != nil {
 				t.Fatal(err)
 			}
 			err := runTree(t, a, "setup", "cloud")
@@ -33,7 +34,7 @@ func TestRemoteSetupAndAttachBrowser(t *testing.T) {
 			}
 			if be == "unmanaged" {
 				if err == nil || !strings.Contains(err.Error(), "never shapes") {
-					t.Fatalf("setup on an adopted host: err = %v, want a refusal", err)
+					t.Fatalf("setup on an entry: err = %v, want a refusal", err)
 				}
 				if _, statErr := os.Stat(log); statErr == nil {
 					t.Fatal("setup's refusal dialed the host")
@@ -81,7 +82,7 @@ func TestRemoteShellSendsNoCommand(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	a := newTestApp(t)
 	log := fakeRemote(t, "")
-	if err := writeEntry(a.Paths, config.NewRemote("cloud", true, "dev@cloud.example")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("cloud", "dev@cloud.example")); err != nil {
 		t.Fatal(err)
 	}
 	fb := &fakeBridge{}

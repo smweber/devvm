@@ -126,7 +126,7 @@ func TestParseSpecDefault(t *testing.T) {
 // the lists lock). A fresh cloud VM runs apt-daily from boot.
 func TestHardenFirewallAndAptLock(t *testing.T) {
 	fb := &fakeBackend{loginUser: "dev"}
-	m := config.NewRemote("cloud", true, "dev@cloud.example")
+	m := config.NewRemote("cloud", "dev@cloud.example")
 	m.SSHPort = 2222
 	if err := Harden(context.Background(), fb, m, false); err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestHardenFirewallAndAptLock(t *testing.T) {
 		}
 	}
 	for name, s := range map[string]string{"harden": script, "ensureUser": ensureUserScript,
-		"smolPrereqs": smolPrereqs, "managedRemotePrereqs": managedRemotePrereqs} {
+		"smolPrereqs": smolPrereqs, "remotePrereqs": remotePrereqs} {
 		if strings.Count(s, aptUpdateFn) != 1 || !strings.Contains(s, "apt_update;") && !strings.Contains(s, "\napt_update\n") {
 			t.Errorf("%s: apt_update not defined once and called", name)
 		}

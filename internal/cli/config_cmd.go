@@ -170,18 +170,13 @@ func (a *App) showConfig(f *config.File) {
 		}
 		fmt.Fprintln(w)
 		showLine(w, "backend", strconv.Quote(m.Backend), "")
-		if m.IsRemote() && !m.IsHub() { // the posture line: never on a hub
-			showLine(w, "managed", strconv.FormatBool(m.Managed()), map[bool]string{true: "", false: "default"}[e.Managed != nil])
+		if m.IsRemote() && !m.IsHub() { // the agent line: never on a hub
 			showLine(w, "agent", strconv.FormatBool(m.Agent), map[bool]string{true: "", false: "default"}[e.Agent != nil])
 		}
 		showLine(w, "host", strconv.Quote(e.Host), "")
-		switch {
-		case e.User != "":
+		if e.User != "" {
 			showLine(w, "user", strconv.Quote(e.User), "")
-		case m.Managed():
-			u, _, _ := strings.Cut(m.SSHHost, "@")
-			showLine(w, "user", strconv.Quote(u), "from [templates.default]: the user setup creates")
-		default:
+		} else {
 			fmt.Fprintln(w, "# user: unset, ~/.ssh/config decides")
 		}
 		showLine(w, "transport", strconv.Quote(m.TransportName()), map[bool]string{true: "", false: "default"}[e.Transport != ""])
@@ -415,7 +410,6 @@ func (a *App) runConfigEdit() error {
 // configAddOpts is `config add`'s input.
 type configAddOpts struct {
 	backend, host, user, transport, moshServer, identity string
-	managed                                              bool
 	connectTimeout                                       int
 }
 
@@ -425,19 +419,19 @@ func (a *App) configAddCmd() *cobra.Command {
 		Use:   "add NAME --backend remote|hub --host H[:P]",
 		Short: "Append a [machines.NAME] entry for a remote box or a hub (connects to nothing)",
 		Long: "Append one [machines.NAME] table at the end of devvm.toml, creating the file\n" +
-			"if needed; nothing else in the file changes. backend (and managed, for remote)\n" +
-			"is always written. Nothing is dialed: set a managed box up with\n" +
-			"'devvm setup NAME' next. On a terminal with no --host, a form asks.",
+			"if needed; nothing else in the file changes. backend is always written.\n" +
+			"Nothing is dialed, and devvm never shapes an entry: it connects (attach,\n" +
+			"shell, exec, ports, cp, keys). Add agent = true with 'devvm config edit' for\n" +
+			"the browser bridge. On a terminal with no --host, a form asks.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runConfigAdd(args[0], o, cmd.Flags().Changed("managed"))
+			return a.runConfigAdd(args[0], o)
 		},
 	}
 	f := c.Flags()
 	f.StringVarP(&o.backend, "backend", "b", "", "remote | hub")
 	f.StringVar(&o.host, "host", "", "host[:port], [ipv6]:port, or an ssh alias")
-	f.StringVar(&o.user, "user", "", "login user (default: none, ~/.ssh/config decides; a managed box uses the template's user)")
-	f.BoolVar(&o.managed, "managed", false, "remote: devvm shapes this box (setup, prereqs, hardening)")
+	f.StringVar(&o.user, "user", "", "login user (default: none, ~/.ssh/config decides)")
 	f.StringVar(&o.transport, "transport", "", "interactive transport: ssh | mosh (default ssh)")
 	f.StringVar(&o.moshServer, "mosh-server", "", "path to mosh-server on the box")
 	f.StringVar(&o.identity, "identity", "", "ssh identity file")
@@ -478,7 +472,7 @@ func errHubNameConfig(name string) error {
 	return nil
 }
 
-func (a *App) runConfigAdd(name string, o configAddOpts, managedSet bool) error {
+func (a *App) runConfigAdd(name string, o configAddOpts) error {
 	if err := errHubNameConfig(name); err != nil {
 		return err
 	}
@@ -490,7 +484,7 @@ func (a *App) runConfigAdd(name string, o configAddOpts, managedSet bool) error 
 		if tty == nil {
 			return errors.New("config add needs --backend and --host (no terminal to ask on)")
 		}
-		err := askConfigAdd(tty, &o, managedSet)
+		err := askConfigAdd(tty, &o)
 		tty.Close()
 		if err != nil {
 			return err
@@ -507,12 +501,6 @@ func (a *App) runConfigAdd(name string, o configAddOpts, managedSet bool) error 
 	}
 	e := config.Entry{Backend: o.backend, Host: o.host, User: o.user, Transport: o.transport,
 		MoshServer: o.moshServer, Identity: o.identity, ConnectTimeout: o.connectTimeout}
-	if o.backend == config.BackendRemote {
-		managed := o.managed
-		e.Managed = &managed
-	} else if managedSet {
-		return errors.New("--managed applies only to a remote entry: a hub is never shaped")
-	}
 	if err := config.AppendEntry(a.Paths, name, e); err != nil {
 		return err
 	}
@@ -525,20 +513,17 @@ func (a *App) runConfigAdd(name string, o configAddOpts, managedSet bool) error 
 			}
 		}
 	}
-	switch {
-	case o.backend == config.BackendHub:
+	if o.backend == config.BackendHub {
 		fmt.Fprintf(a.Stdout, "Its machines are %s/NAME; 'devvm status' lists them once the hub answers.\n", name)
-	case o.managed:
-		fmt.Fprintf(a.Stdout, "Next: 'devvm setup %s' shapes it from [templates.default] (or --template T).\n", name)
-	default:
-		fmt.Fprintf(a.Stdout, "devvm never modifies it (managed = false). Next: 'devvm attach %s'.\n", name)
+	} else {
+		fmt.Fprintf(a.Stdout, "devvm never modifies it. Next: 'devvm attach %s'.\n", name)
 	}
 	return nil
 }
 
 // askConfigAdd is the huh form for a remote box or hub (it was create's,
 // before remote create went).
-func askConfigAdd(tty *os.File, o *configAddOpts, managedSet bool) error {
+func askConfigAdd(tty *os.File, o *configAddOpts) error {
 	if o.backend == "" {
 		o.backend = config.BackendRemote
 		if err := form(tty, huh.NewSelect[string]().Title("Backend").
@@ -566,10 +551,6 @@ func askConfigAdd(tty *os.File, o *configAddOpts, managedSet bool) error {
 			Value(&o.transport),
 		huh.NewInput().Title("Connect timeout, seconds (optional)").Placeholder("10").Value(&timeout),
 	}
-	if o.backend == config.BackendRemote && !managedSet {
-		fields = append(fields, huh.NewConfirm().
-			Title("Should devvm manage it (setup installs prereqs, may harden)?").Value(&o.managed))
-	}
 	if err := form(tty, fields...); err != nil {
 		return err
 	}
@@ -594,9 +575,9 @@ func (a *App) configRmCmd() *cobra.Command {
 		Short: "Remove a [machines.NAME] entry and this host's state for it",
 		Long: "Remove the [machines.NAME] table from devvm.toml (nothing else in the file\n" +
 			"changes) and what this host keeps for it: its forward daemon(s), saved\n" +
-			"forwards and reach cache (for a hub, those of every NAME/… machine too) and\n" +
-			"a managed box's pinned host key. The box itself is not touched. Refuses\n" +
-			"while a daemon holds live forwards for it, unless --force.",
+			"forwards and reach cache (for a hub, those of every NAME/… machine too).\n" +
+			"The box itself is not touched. Refuses while a daemon holds live forwards\n" +
+			"for it, unless --force.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.runConfigRm(args[0], force) },
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -682,11 +663,7 @@ func (a *App) runConfigRm(name string, force bool) error {
 		}
 	}
 	for _, display := range forget {
-		pin := m
-		if display != name {
-			pin = nil
-		}
-		note(a.forgetEntryState(display, pin))
+		note(a.forgetEntryState(display))
 	}
 	for _, n := range runtime {
 		// Only once the name no longer resolves (see RemoveLock): an entry
@@ -711,11 +688,12 @@ func (a *App) runConfigRm(name string, force bool) error {
 	return nil
 }
 
-// forgetEntryState is forgetHostState for a config entry: saved forwards,
-// reach cache and pinned host key, but never a managed marker. An entry's
-// name may shadow a local smol VM, and that VM's marker is the VM's, not
-// the entry's: removing the entry must leave the VM as managed as it was.
-func (a *App) forgetEntryState(name string, m *config.Machine) error {
+// forgetEntryState is forgetHostState for a config entry: saved forwards
+// and reach cache, but never a managed marker. An entry's name may shadow
+// a local smol VM, and that VM's marker is the VM's, not the entry's:
+// removing the entry must leave the VM as managed as it was. An entry has
+// no pinned host key (only a box devvm made is pinned: sshFlags).
+func (a *App) forgetEntryState(name string) error {
 	var errs []error
 	if unlock, err := config.LockPorts(a.Paths, name); err != nil {
 		errs = append(errs, fmt.Errorf("%s: clear saved forwards: %w", name, err))
@@ -727,11 +705,6 @@ func (a *App) forgetEntryState(name string, m *config.Machine) error {
 	}
 	if err := reach.Remove(a.Paths, name); err != nil {
 		errs = append(errs, fmt.Errorf("%s: clear reach cache: %w", name, err))
-	}
-	if m != nil {
-		if err := a.forgetHostKey(m); err != nil {
-			errs = append(errs, fmt.Errorf("%s: clear pinned host key: %w", name, err))
-		}
 	}
 	return errors.Join(errs...)
 }

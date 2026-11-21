@@ -32,10 +32,10 @@ func TestConfigAdd(t *testing.T) {
 	fakeLocalSmolvm(t, `[{"name":"web","state":"running","created_at":1}]`)
 	head := "# my boxes\n[templates.default]\nuser = \"ops\" # me\n"
 	writeDevvmTOML(t, a, head)
-	if err := runTree(t, a, "config", "add", "cloud", "--backend", "remote", "--host", "2.29.47.196", "--managed", "--transport", "mosh", "--connect-timeout", "20"); err != nil {
+	if err := runTree(t, a, "config", "add", "cloud", "--backend", "remote", "--host", "2.29.47.196", "--transport", "mosh", "--connect-timeout", "20"); err != nil {
 		t.Fatal(err)
 	}
-	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "devvm setup cloud") {
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "devvm never modifies it. Next: 'devvm attach cloud'.") {
 		t.Errorf("next step = %q", out)
 	}
 	if err := runTree(t, a, "config", "add", "web", "--backend", "remote", "--host", "web.example", "--user", "me", "--mosh-server", "/opt/mosh-server", "--identity", "~/.ssh/k"); err != nil {
@@ -48,14 +48,14 @@ func TestConfigAdd(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(a.Paths.FilePath())
-	want := head + "\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"2.29.47.196\"\ntransport = \"mosh\"\nconnect_timeout = 20\n" +
-		"\n[machines.web]\nbackend = \"remote\"\nmanaged = false\nhost = \"web.example\"\nuser = \"me\"\nmosh_server = \"/opt/mosh-server\"\nidentity = \"~/.ssh/k\"\n" +
+	want := head + "\n[machines.cloud]\nbackend = \"remote\"\nhost = \"2.29.47.196\"\ntransport = \"mosh\"\nconnect_timeout = 20\n" +
+		"\n[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\nuser = \"me\"\nmosh_server = \"/opt/mosh-server\"\nidentity = \"~/.ssh/k\"\n" +
 		"\n[machines.h]\nbackend = \"hub\"\nhost = \"[::1]:2222\"\n"
 	if string(data) != want {
 		t.Fatalf("devvm.toml =\n%s\nwant\n%s", data, want)
 	}
 	cloud, err := config.Load(a.Paths, "cloud")
-	if err != nil || cloud.SSHHost != "ops@2.29.47.196" || !cloud.Managed() || cloud.ConnectTimeout != 20 {
+	if err != nil || cloud.SSHHost != "2.29.47.196" || cloud.Managed() || cloud.ConnectTimeout != 20 {
 		t.Errorf("cloud = %+v, %v", cloud, err)
 	}
 
@@ -65,8 +65,7 @@ func TestConfigAdd(t *testing.T) {
 	}{
 		{[]string{"config", "add", "cloud", "--backend", "remote", "--host", "x"}, "already has [machines.cloud]"},
 		{[]string{"config", "add", "x", "--backend", "smol", "--host", "x"}, "discovered from smolvm"},
-		{[]string{"config", "add", "x", "--backend", "hub", "--host", "x", "--managed"}, "--managed applies only to a remote entry"},
-		{[]string{"config", "add", "x", "--backend", "hub", "--host", "x", "--managed=false"}, "--managed applies only to a remote entry"},
+		{[]string{"config", "add", "x", "--backend", "remote", "--host", "x", "--managed"}, "unknown flag: --managed"},
 		{[]string{"config", "add", "x", "--host", "x"}, "needs --backend"},
 		{[]string{"config", "add", "x", "--backend", "remote", "--host", "u@x"}, "put it in user"},
 		{[]string{"config", "add", "x", "--backend", "remote", "--host", "x", "--transport", "telnet"}, "invalid transport"},
@@ -209,7 +208,8 @@ func TestConfigCheck(t *testing.T) {
 	}
 	for body, want := range map[string]string{
 		"[machines.vm]\nbackend = \"smol\"\n":                                        "discovered",
-		"[machines.h]\nbackend = \"hub\"\nmanaged = true\nhost = \"h\"\n":            "managed applies only to remote",
+		"[machines.h]\nbackend = \"hub\"\nmanaged = true\nhost = \"h\"\n":            "managed is gone",
+		"[machines.r]\nbackend = \"remote\"\nmanaged = true\nhost = \"h\"\n":         "[machines.r]: managed is gone (devvm never shapes an entry); delete the line, and add agent = true for the browser bridge",
 		"[machines.h]\nbackend = \"hub\"\nagent = true\nhost = \"h\"\n":              "agent applies only to remote",
 		"[providers.x]\na = 1\n":                                                     "unknown provider",
 		"[machines.x]\nbackend = \"remote\"\nhost = \"x\"\nbogus = 1\n":              "unknown key \"bogus\"",
@@ -232,7 +232,7 @@ func TestConfigShow(t *testing.T) {
 	a := newTestApp(t)
 	fakeHostname(t, "mac.local")
 	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/d\"\nmemory = 4096\n\n[templates.big]\nmemory = 8192\n\n"+
-		"[machines.mac]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nmanaged = true\nhost = \"c:2222\"\n"+
+		"[machines.mac]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nhost = \"c:2222\"\n"+
 		"\n[machines.box]\nbackend = \"remote\"\nagent = true\nhost = \"b\"\n")
 	if err := runTree(t, a, "config", "show"); err != nil {
 		t.Fatal(err)
@@ -245,10 +245,10 @@ func TestConfigShow(t *testing.T) {
 		"memory = 8192\n",
 		`hook = "cmd:/d"`, "# from default",
 		"[machines.mac]  # (this host)",
-		"[machines.cloud]\n", "managed = true\n", `host = "c:2222"`,
-		"from [templates.default]: the user setup creates",
+		"[machines.cloud]\nbackend = \"remote\"\nagent = false                            # default\n", `host = "c:2222"`,
+		"# user: unset, ~/.ssh/config decides",
 		"connect_timeout = 10", "# default",
-		"[machines.box]\nbackend = \"remote\"\nmanaged = false                          # default\nagent = true\n",
+		"[machines.box]\nbackend = \"remote\"\nagent = true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("show lacks %q:\n%s", want, out)
@@ -436,7 +436,7 @@ func TestStatusWatchSeesConfigAdd(t *testing.T) {
 	if err := config.AppendEntry(a.Paths, "box", config.Entry{Backend: config.BackendRemote, Host: "b"}); err != nil {
 		t.Fatal(err)
 	}
-	out.next(t, "box\tremote\t?\t-\tunmanaged\tverified=-\n")
+	out.next(t, "box\tremote\t?\t-\t-\tverified=-\n")
 	if err := config.RemoveEntry(a.Paths, "box"); err != nil {
 		t.Fatal(err)
 	}

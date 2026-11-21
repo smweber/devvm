@@ -21,7 +21,7 @@ import (
 // Host-side authorized_keys management. The heavy logic (dedup/revoke/fingerprint)
 // lives in internal/keys and runs on the host; the guest is touched only to read
 // and atomically rewrite the file — so no guest agent is needed for keys, and an
-// adopted host gets nothing installed. authorized_keys holds public keys only,
+// entry gets nothing installed. authorized_keys holds public keys only,
 // so nothing secret crosses the wire.
 
 // guestAuthKeys reads the connecting user's ~/.ssh/authorized_keys (empty if
@@ -74,7 +74,7 @@ func (a *App) addGuestKeys(b backend.Backend, incoming []string) error {
 }
 
 // requireRemote gates commands that act on a guest's authorized_keys — allowed
-// on both remote backends (managed and adopted), since key management is an
+// on every box reached over ssh (entries and provider servers), since key management is an
 // explicit, user-scoped, non-root action, not OS shaping. smol has no ssh
 // authorized_keys surface (it's reached via smolvm exec).
 func requireRemote(m *config.Machine, cmd string) error {

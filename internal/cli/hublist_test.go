@@ -118,7 +118,7 @@ func TestWatchHubPipeOverflowRespawns(t *testing.T) {
 func TestStatusLocalSkipsHubs(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
-	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", "box")); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
@@ -130,7 +130,7 @@ func TestStatusLocalSkipsHubs(t *testing.T) {
 	if err := a.runStatusPlain(true); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); got != "box\tremote\t?\t-\tunmanaged\tverified=-\n" {
+	if got := out.String(); got != "box\tremote\t?\t-\t-\tverified=-\n" {
 		t.Errorf("--local plain =\n%s", got)
 	}
 	if _, err := os.Stat(log); !os.IsNotExist(err) {
@@ -473,7 +473,7 @@ func TestDeleteHubMachineDropsCacheRow(t *testing.T) {
 func TestCompleteHubPrefix(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 1")
-	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", "box")); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"api": {"80"}})
@@ -574,11 +574,11 @@ func TestWatchHubPipes(t *testing.T) {
 		return strings.Contains(b, "h2\thub\treachable\t-\t-\t-\nh2/web\tsmol\trunning\t-\t-\t-\n") && strings.Contains(b, "h/web\tsmol\trunning\tdown\t-\t-\n")
 	})
 	// A local change still re-emits, with the hubs' latest blocks merged.
-	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", "box")); err != nil {
 		t.Fatal(err)
 	}
 	out.until(t, "with the local machine", func(b string) bool {
-		return strings.HasPrefix(b, "box\tremote\t?\t-\tunmanaged\tverified=-\nh\thub\treachable")
+		return strings.HasPrefix(b, "box\tremote\t?\t-\t-\tverified=-\nh\thub\treachable")
 	})
 
 	// A removed hub entry closes its pipe and drops its rows.

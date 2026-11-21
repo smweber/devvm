@@ -29,15 +29,10 @@ var ErrBrokenFile = errors.New("devvm.toml does not parse; fix it with 'devvm co
 
 // AppendEntry adds `[machines.NAME]` at the end of devvm.toml, creating the
 // file if it is missing. It refuses a name the file already has. backend is
-// always written, and managed too on a remote entry, so the file states the
-// posture rather than leaving it to a default.
+// always written.
 func AppendEntry(p Paths, name string, e Entry) error {
 	if err := ValidName(name); err != nil {
 		return err
-	}
-	if e.Backend == BackendRemote && e.Managed == nil {
-		f := false
-		e.Managed = &f
 	}
 	path, data, err := readForEdit(p)
 	if err != nil {
@@ -214,9 +209,6 @@ func renderEntry(name string, e Entry) string {
 	var b strings.Builder
 	b.WriteString(MachineTable(name) + "\n")
 	fmt.Fprintf(&b, "backend = %s\n", tomlString(e.Backend))
-	if e.Managed != nil {
-		fmt.Fprintf(&b, "managed = %t\n", *e.Managed)
-	}
 	if e.Agent != nil {
 		fmt.Fprintf(&b, "agent = %t\n", *e.Agent)
 	}

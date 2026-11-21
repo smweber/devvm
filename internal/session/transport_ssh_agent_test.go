@@ -336,13 +336,13 @@ func (g *guestRec) writes() []string {
 	return w
 }
 
-// The production hooks follow the entry: a managed remote box gets the
-// root /usr/local/bin install, as smol does; an entry with agent = true
+// The production hooks follow the record: a provider server devvm made gets
+// the root /usr/local/bin install, as smol does; an entry with agent = true
 // gets the user-scoped ~/.local/bin one, never as root; any other entry is
 // only probed, and with no agent there nothing at all is written.
 func TestSSHAgentHooksInstallOnlyWithConsent(t *testing.T) {
 	g := &guestRec{}
-	_, st, err := sshAgentHooks(config.NewRemote("adopted", false, "me@adopted"), g).prepare(context.Background())
+	_, st, err := sshAgentHooks(config.NewRemote("adopted", "me@adopted"), g).prepare(context.Background())
 	if err != nil || st != agentbin.Missing {
 		t.Fatalf("adopt host: %v, %v", st, err)
 	}
@@ -351,7 +351,8 @@ func TestSSHAgentHooksInstallOnlyWithConsent(t *testing.T) {
 	}
 
 	g = &guestRec{}
-	p, st, err := sshAgentHooks(config.NewRemote("cloud", true, "dev@cloud"), g).prepare(context.Background())
+	server := config.NewProviderMachine("cloud", config.BackendHetzner, "dev", true, config.ProviderServer{Address: "cloud"})
+	p, st, err := sshAgentHooks(server, g).prepare(context.Background())
 	if err != nil || st != agentbin.Current || p.Shim != backend.ManagedShimPath {
 		t.Fatalf("managed: %+v, %v, %v", p, st, err)
 	}
@@ -362,7 +363,7 @@ func TestSSHAgentHooksInstallOnlyWithConsent(t *testing.T) {
 	}
 
 	g = &guestRec{}
-	m := config.NewRemote("box", false, "me@box")
+	m := config.NewRemote("box", "me@box")
 	m.Agent = true
 	p, st, err = sshAgentHooks(m, g).prepare(context.Background())
 	if err != nil || st != agentbin.Current || p.Agent != "/home/me/.local/bin/devvm-agent" || p.Shim != "/home/me/.local/bin/devvm-open-url" {

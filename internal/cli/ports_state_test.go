@@ -20,7 +20,7 @@ import (
 // `config rm` removes the file with the entry. --ephemeral is gone.
 func TestPortsVerbsUseStateFile(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t))}
-	m := config.NewRemote("box", true, "dev@example")
+	m := config.NewRemote("box", "dev@example")
 	if err := writeEntry(a.Paths, m); err != nil {
 		t.Fatal(err)
 	}

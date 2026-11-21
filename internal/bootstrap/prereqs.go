@@ -15,7 +15,7 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// devvmPackages are what devvm itself needs in a box it manages, beyond
+// devvmPackages are what devvm itself needs in a box it made, beyond
 // the base image: build tools, curl/git, plus tmux (attach's dev session),
 // gh (repos' owner/repo clones) and mosh-server (the mosh transport). Those
 // last three used to come from the hook, which is why attach preflights
@@ -146,41 +146,20 @@ func SwitchUser(sshHost, user string) string {
 	return user + "@" + host
 }
 
-// managedRemotePrereqs is the install path for managed remote boxes (the
+// remotePrereqs is the install path for a provider server devvm made (the
 // user + sudo exist: pre-existing, or created by EnsureUser on a root-only
 // box). Ports ssh_prepare_guest.
-const managedRemotePrereqs = `
+const remotePrereqs = `
 set -e
 ` + aptUpdateFn + `
 apt_update
 DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y ` + devvmPackages + `
 ` + installGH
 
-// checkPrereqs verifies (never installs) that an adopted (unmanaged) remote host
-// has what devvm needs. Read-only and non-root: we don't shape a host we don't
-// own. Missing tools only warn — everything but `attach` works without tmux, and
-// the user may have equivalents installed elsewhere.
-const checkPrereqs = `
-missing=
-for c in bash git rsync tmux; do
-    command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
-done
-if [ -n "$missing" ]; then
-    printf 'devvm: %s: recommended tools not found:%s (install them if you hit trouble)\n' \
-        "$1" "$missing" >&2
-fi
-`
-
-// Prereqs prepares the guest: managed boxes (smol, managed remote) install the
-// minimal packages as root; adopted remote hosts are only checked.
+// Prereqs installs the minimal packages as root, on a box devvm made (a smol
+// VM, a provider server): setup's one caller has refused anything else.
 func Prereqs(ctx context.Context, b backend.Backend, m *config.Machine) error {
-	if !m.Managed() {
-		// `bash -lc` (a login shell) so brew-installed tools on PATH count as
-		// present; the argv is the shell itself, so no ExecOpts.Login wrap.
-		return b.Run(ctx, backend.ExecOpts{Stream: true},
-			"bash", "-lc", checkPrereqs, "_", m.Name)
-	}
-	script := managedRemotePrereqs
+	script := remotePrereqs
 	if !m.IsRemote() {
 		script = smolPrereqs
 	}

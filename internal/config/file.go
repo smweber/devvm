@@ -19,20 +19,18 @@ import (
 // nothing else: an unknown top-level table is an error, not a silent no-op,
 // so a later family is a loader addition that an older devvm refuses
 // loudly rather than half-reads. Unknown keys inside
-// a known table are errors too: a typo would otherwise drop a setting, and
-// for `managed` that would quietly be the safe reading the user did not
-// mean. A missing file is valid: no entries, built-in templates.
+// a known table are errors too: a typo would otherwise drop a setting. A
+// retired key is one of those, with a message naming the fix. A missing
+// file is valid: no entries, built-in templates.
 
 // FilePath is the user's shared config file, devvm.toml.
 func (p Paths) FilePath() string { return filepath.Join(p.Config, "devvm.toml") }
 
-// Entry is one `[machines.NAME]` table as written. Managed and Agent are
-// pointers so a key written explicitly as false (as `config add` always
-// writes `managed`) is told apart from no key, which matters only for
-// refusing it under a hub.
+// Entry is one `[machines.NAME]` table as written. Agent is a pointer so a
+// key written explicitly as false is told apart from no key, which matters
+// only for refusing it under a hub.
 type Entry struct {
 	Backend        string `toml:"backend"`
-	Managed        *bool  `toml:"managed"`
 	Agent          *bool  `toml:"agent"` // remote: the daemon installs the agent in ~/.local/bin
 	Host           string `toml:"host"`  // host[:port], [v6]:port, or an ssh alias
 	User           string `toml:"user"`  // unset: no user@, ssh config decides
@@ -118,6 +116,10 @@ func undecodedError(k toml.Key) error {
 		// Retired (simplify.md step 9): a forward is saved on the host that
 		// uses it, never by a template.
 		return fmt.Errorf("[templates.%s]: ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'", k[1])
+	case k[0] == "machines" && len(k) == 3 && k[2] == "managed":
+		// Retired (simplify.md step 12): devvm shapes only the boxes it
+		// creates, so an entry is never managed, whatever the line says.
+		return fmt.Errorf("[machines.%s]: managed is gone (devvm never shapes an entry); delete the line, and add agent = true for the browser bridge", k[1])
 	case k[0] == "templates" && len(k) > 2:
 		return fmt.Errorf("[templates.%s]: unknown key %q", k[1], strings.Join(k[2:], "."))
 	case k[0] == "machines" && len(k) > 2:
@@ -160,7 +162,7 @@ func (f *File) validate() []error {
 	f.defUser = defUser
 	f.machines = map[string]*Machine{}
 	for _, name := range sortedKeys(f.Entries) {
-		m, err := f.Entries[name].machine(name, defUser)
+		m, err := f.Entries[name].machine(name)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("[machines.%s]: %w", name, err))
 			continue
@@ -170,14 +172,12 @@ func (f *File) validate() []error {
 	return errs
 }
 
-// entryUserRe is a login name for an entry's `user`. Looser than a
-// template's (ValidUser): an adopted box may well be reached as root.
+// entryUserRe is a login name for an entry's `user`. Looser than
+// ValidUser: an entry may well be reached as root.
 var entryUserRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]*$`)
 
-// machine validates one entry and builds its record. defUser is the
-// [templates.default] user, which a managed remote entry with no `user` logs
-// in as: it is the account `setup` creates there.
-func (e Entry) machine(name, defUser string) (*Machine, error) {
+// machine validates one entry and builds its record.
+func (e Entry) machine(name string) (*Machine, error) {
 	if err := ValidName(name); err != nil {
 		return nil, err
 	}
@@ -190,12 +190,9 @@ func (e Entry) machine(name, defUser string) (*Machine, error) {
 	case BackendHetzner:
 		return nil, fmt.Errorf("%s servers are discovered from the provider's API, not configured: remove this table (a server made in the console is a backend = \"remote\" entry)", e.Backend)
 	case "remote-managed", "remote-unmanaged", "ssh":
-		return nil, fmt.Errorf(`backend %q is the old layout: write backend = "remote" and managed = true or false`, e.Backend)
+		return nil, fmt.Errorf(`backend %q is the old layout: write backend = "remote"`, e.Backend)
 	default:
 		return nil, fmt.Errorf(`unsupported backend %q (want "remote" or "hub")`, e.Backend)
-	}
-	if e.Backend == BackendHub && e.Managed != nil {
-		return nil, errors.New("managed applies only to remote entries: a hub is never shaped")
 	}
 	if e.Backend == BackendHub && e.Agent != nil {
 		return nil, errors.New("agent applies only to remote entries: a hub's machines get theirs from the hub")
@@ -220,15 +217,10 @@ func (e Entry) machine(name, defUser string) (*Machine, error) {
 		Identity: e.Identity, Transport: e.Transport, MoshServer: e.MoshServer,
 		ConnectTimeout: e.ConnectTimeout,
 		Agent:          e.Agent != nil && *e.Agent,
-		managed:        e.Backend == BackendRemote && e.Managed != nil && *e.Managed,
-	}
-	user := e.User
-	if user == "" && m.managed {
-		user = defUser
 	}
 	m.SSHHost = host
-	if user != "" {
-		m.SSHHost = user + "@" + host
+	if e.User != "" {
+		m.SSHHost = e.User + "@" + host
 	}
 	return m, nil
 }
@@ -289,7 +281,7 @@ func ParseHost(s string) (host string, port int, err error) {
 }
 
 // Entry returns the record for a `[machines.NAME]` entry: a fresh copy, so
-// a caller may change it (setup's --host does) without touching the file's.
+// a caller may change it without touching the file's.
 func (f *File) Entry(name string) (*Machine, bool) {
 	m, ok := f.machines[name]
 	if !ok {
@@ -339,10 +331,6 @@ func EntryOf(m *Machine) Entry {
 	}
 	e := Entry{Backend: m.Backend, Host: host, User: m.User, Transport: m.Transport,
 		MoshServer: m.MoshServer, Identity: m.Identity, ConnectTimeout: m.ConnectTimeout}
-	if m.Backend == BackendRemote {
-		managed := m.Managed()
-		e.Managed = &managed
-	}
 	if m.Agent {
 		agent := true
 		e.Agent = &agent

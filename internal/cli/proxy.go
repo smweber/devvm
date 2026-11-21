@@ -207,10 +207,10 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 // With --template T (other than default, which is the same as no flag),
 // the template is resolved here, from this host's devvm.toml, and sent as
 // the explicit template flags plus --inline-template, so the hub's own file
-// never matters. Key sources are read here too (a key file and the GitHub
-// lookup are this host's) and cross as lines, except for a machine this
-// host knows is smol, which takes no keys. Without a template the leaf goes
-// across as typed and the hub resolves its own default.
+// never matters. A template's key sources are not read: HUB/NAME is a hub's
+// smol VM, which takes no keys, and a hub's own entries are never shaped.
+// Without a template the leaf goes across as typed and the hub resolves its
+// own default.
 func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine, create bool) ([]string, error) {
 	fs := cmd.Flags()
 	name, _ := fs.GetString(flagTemplate)
@@ -235,14 +235,10 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		if err != nil {
 			return nil, err
 		}
-		keyLines := f.Keys
-		if !a.hubMachineIsSmol(m, fs, create) {
-			keyLines = append(a.templateKeyLines(t.AuthorizedKeysGithub, t.AuthorizedKeys), keyLines...)
-		}
 		// Everything the user typed except the template flags, which go
 		// across resolved instead.
 		skip = append(append(skip, flagTemplate), templateFlagNames...)
-		extra = templateArgv(t, keyLines)
+		extra = templateArgv(t, f.Keys)
 	}
 	// A create with no --backend says smol explicitly: the hub's own
 	// devvm.toml may configure a provider, and its create would then ask
@@ -260,25 +256,6 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 	// where cobra parses them like any other flag.
 	head := len(strings.Fields(cmd.CommandPath())) // leaf path + machine
 	return append(append(slices.Clone(argv[:head]), extra...), argv[head:]...), nil
-}
-
-// hubMachineIsSmol reports whether a hub machine is known to be smol, so a
-// template's keys (ignored on smol) need no resolving: no GitHub fetch and
-// no "ignoring keys" line on every run. A create is smol unless --backend
-// says otherwise; a setup asks this host's cached listing of the hub, and a
-// machine missing from it is taken as smol (what hub machines are), so only
-// a cached remote row gets keys.
-func (a *App) hubMachineIsSmol(m *config.Machine, fs *pflag.FlagSet, create bool) bool {
-	if create {
-		b, _ := fs.GetString("backend")
-		return b == "" || b == config.BackendSmol
-	}
-	for _, row := range readHubCache(a.Paths, m.Hub.Name) {
-		if row.name == m.HubMachineName() {
-			return row.backend == config.BackendSmol
-		}
-	}
-	return true
 }
 
 // runProxiedShaping is runProxied for create/setup, mapping a hub too old

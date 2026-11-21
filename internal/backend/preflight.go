@@ -10,8 +10,8 @@ import (
 
 // RequireGuestTmux verifies tmux exists in the guest before a command that
 // depends on it (shell/ssh/mosh all attach a tmux session named "dev"). `setup`
-// installs tmux on a managed box now, but a box set up by an older devvm (whose
-// hook was meant to install it) or an adopted host may still lack it, and would
+// installs tmux on a box devvm made, but one set up by an older devvm (whose
+// hook was meant to install it) or an entry may still lack it, and would
 // otherwise fail deep in the keeper / `new-session` path with a confusing
 // symptom. Fail early, naming the likely cause and a concrete fix.
 func RequireGuestTmux(b Backend, m *config.Machine) error {

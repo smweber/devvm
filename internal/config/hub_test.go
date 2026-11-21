@@ -129,8 +129,8 @@ func TestProbeable(t *testing.T) {
 		m    *Machine
 		want bool
 	}{
-		{NewRemote("a", true, "u@a"), true},
-		{NewRemote("b", false, "u@b"), true},
+		{NewRemote("a", "u@a"), true},
+		{NewRemote("b", "u@b"), true},
 		{hub, false},
 		{&Machine{Name: "h/web", Backend: BackendHub, Hub: hub}, false},
 		{&Machine{Name: "vm", Backend: BackendSmol}, false},

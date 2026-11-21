@@ -42,7 +42,7 @@ func probeSSH(t *testing.T, check int, g string) (log string) {
 func probeBackend(t *testing.T) (*sshBackend, config.Paths) {
 	d := t.TempDir()
 	p := config.Paths{Config: filepath.Join(d, "c"), State: filepath.Join(d, "s")}
-	return &sshBackend{m: config.NewRemote("box", false, "u@box"), paths: p}, p
+	return &sshBackend{m: config.NewRemote("box", "u@box"), paths: p}, p
 }
 
 func noDial(t *testing.T) {
@@ -201,7 +201,7 @@ func TestProbeDialTimeoutFromEntry(t *testing.T) {
 		secs int
 		want time.Duration
 	}{{0, ProbeDialTimeout}, {3, 3 * time.Second}, {30, ProbeBudget}} {
-		m := config.NewRemote("box", false, "u@box")
+		m := config.NewRemote("box", "u@box")
 		m.ConnectTimeout = tc.secs
 		if got := probeDialTimeout(m); got != tc.want {
 			t.Errorf("connect_timeout %d: dial bound %s, want %s", tc.secs, got, tc.want)

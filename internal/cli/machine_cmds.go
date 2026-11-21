@@ -316,13 +316,11 @@ func (a *App) forgetHostState(name string, m *config.Machine) error {
 }
 
 // forgetHostKey drops the host key devvm pinned for m in its isolated
-// known_hosts (only managed ssh boxes are pinned, sshFlags). The entry is
-// keyed by the host ssh actually connects to, so it is asked (`ssh -G`
-// resolves an alias in the user's ssh config, and a non-22 port), and
+// known_hosts (only a provider server devvm made is pinned, sshFlags). The
+// line is keyed by the host ssh actually connects to, so it is asked (`ssh
+// -G` resolves an alias in the user's ssh config, and a non-22 port), and
 // `ssh-keygen -R` removes it, hashed or not, rewriting the file through a
-// temp file. It is kept while another entry still reaches the same host
-// and port: known_hosts is per host, not per machine name, and that
-// machine's pin is the same line.
+// temp file.
 //
 // A provider box is reached at its bare address on port 22, so ssh pinned
 // it under the address (v4 or v6, unbracketed); that line is dropped too
@@ -338,9 +336,6 @@ func (a *App) forgetHostKey(m *config.Machine) error {
 		return nil
 	}
 	key := knownHostsKey(m)
-	if a.pinSharedBy(m, key) != "" {
-		return nil
-	}
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		return nil // nothing could have pinned it without ssh either
 	}
@@ -355,22 +350,6 @@ func (a *App) forgetHostKey(m *config.Machine) error {
 	}
 	_ = os.Remove(kh + ".old") // ssh-keygen's backup; the state dir keeps no history
 	return nil
-}
-
-// pinSharedBy names a managed `[machines.*]` entry other than m whose pin
-// is the same known_hosts line (key), "" when none. A file that does not
-// parse cannot say, so it answers as if one did ("?"): keep the pin.
-func (a *App) pinSharedBy(m *config.Machine, key string) string {
-	f, err := config.LoadFile(a.Paths)
-	if err != nil {
-		return "?"
-	}
-	for _, o := range f.Machines() {
-		if o.Name != m.Name && o.IsRemote() && o.Managed() && knownHostsKey(o) == key {
-			return o.Name
-		}
-	}
-	return ""
 }
 
 // knownHostsKey is the known_hosts name ssh records for m. It asks `ssh -G`

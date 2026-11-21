@@ -166,7 +166,7 @@ func (a *App) hostOpener() session.SessionOptions {
 // bridged reports whether attach/shell hold a subscription for m: a
 // local smol machine devvm manages (its daemon's agent exec carries
 // events), a remote box (its daemon runs the agent exec on its own ssh
-// master: browser-bridge.md §1, "Remote"; on an adopt host only once the
+// master: browser-bridge.md §1, "Remote"; on an entry only once the
 // agent is there, which bridgeSession checks), or a machine on a hub,
 // through this host's daemon for HUB@NAME, whose relay subscribes on the
 // hub daemon (hub.md §8; the hub refuses a VM it does not manage). A smol

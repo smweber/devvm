@@ -54,8 +54,9 @@ func xdgDir(env, fallback string) string {
 	return filepath.Join(home, fallback, "devvm")
 }
 
-// KnownHostsPath is the isolated, TOFU-pinned known_hosts file for managed ssh
-// machines (the old KNOWN_HOSTS). Host state: a pin is this host's trust
+// KnownHostsPath is the isolated, TOFU-pinned known_hosts file for the ssh
+// boxes devvm made (provider servers; the old KNOWN_HOSTS). An entry is
+// never pinned here: ~/.ssh/known_hosts is the user's. Host state: a pin is this host's trust
 // decision.
 func (p Paths) KnownHostsPath() string {
 	return filepath.Join(p.State, "known_hosts")

@@ -11,7 +11,8 @@ import Foundation
 /// a hub machine is this Mac's own.
 ///
 /// The fifth column says who owns the machine: managed | unmanaged |
-/// shadowed | - (hubs, and a hub machine whose hub is too old to say). It is
+/// shadowed | - (entries in devvm.toml, which devvm never shapes: remote
+/// boxes and hubs; and a hub machine whose hub is too old to say). It is
 /// optional: a CLI from before it emits four fields, which read as `-`.
 ///
 /// A sixth column (`verified=<unix>:<how>` for a remote box, else `-` or
@@ -26,8 +27,9 @@ struct Machine {
 
     /// A smol VM devvm did not create: devvm will start, stop and open a
     /// shell in it, but copies, ports and the drop shelf refuse until it is
-    /// handed over (`devvm setup --adopt NAME`). Smol only: an adopted
-    /// remote host is `unmanaged` too and does all of those.
+    /// handed over (`devvm setup --adopt NAME`). Smol only: a remote box
+    /// on a hub one release older may read `unmanaged` too, and does all
+    /// of those (a current CLI says `-` for every entry).
     var needsAdopt: Bool { backend == "smol" && managed == "unmanaged" }
 
     /// A cloud provider's server (backend `hetzner`), discovered from its

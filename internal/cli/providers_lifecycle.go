@@ -25,7 +25,7 @@ import (
 // The lifecycle verbs on a provider box (providers.md §3, §8): create,
 // delete, start and stop. Each is the provider's API call plus exactly the
 // existing machinery around it: create ends in setup's own shape (reached
-// over ssh like a managed remote entry, root adoption included), delete in
+// over ssh, root adoption included), delete in
 // the host-side cleanup smol's delete uses, start/stop in smol's forward
 // handling. Every API call here is a human's command; nothing in the
 // daemon, __session, completion or a status snapshot reaches this file.
@@ -101,8 +101,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	}
 	// The record every later command builds logs in as [templates.default]'s
 	// user (devvm stores nothing per server, so it cannot remember another
-	// one): a template that would make a different user would lock them out,
-	// as checkTemplateUser refuses for a remote entry.
+	// one): a template that would make a different user would lock them out.
 	if login := f.DefaultUser(); t.User != login {
 		return fmt.Errorf("template %s sets user = %s, but a %s server is always reached as [templates.default]'s user (%s): devvm keeps no per-server record; use a template with user = %q, or change [templates.default]",
 			t.Name, t.User, providerTitle(pn), login, login)
@@ -187,11 +186,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	}
 	// Hetzner reuses addresses: a pin left for this one (a server deleted
 	// in the console, or on another host) is stale by construction, and
-	// would fail setup's first ssh with a changed host key. One a
-	// `[machines.*]` entry at the same address still uses is kept
-	// (forgetHostKey), so a mismatch then names that entry.
-	pinKey := knownHostsKey(m)
-	holder := a.pinSharedBy(m, pinKey)
+	// would fail setup's first ssh with a changed host key.
 	if err := a.forgetHostKey(m); err != nil {
 		fmt.Fprintf(a.Stderr, "devvm: %s: %v\n", s.Name, err)
 	}
@@ -212,10 +207,6 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 			a.printCreateNext(s.Name, pn)
 			return fmt.Errorf("'%s' was created (server %d at %s; it bills); %w", s.Name, srv.ID, srv.Address, err)
 		}
-		if holder != "" && holder != "?" && hostKeyMismatch(err) {
-			next = fmt.Sprintf("the pinned host key for %s is kept for the entry [machines.%s], which reaches the same address; if that pin is stale, clear it with 'ssh-keygen -R %s -f %s', then %s",
-				pinKey, holder, pinKey, a.Paths.KnownHostsPath(), next)
-		}
 		return fmt.Errorf("'%s' was created (server %d at %s; it bills) but setup failed: %w; %s",
 			s.Name, srv.ID, srv.Address, err, next)
 	}
@@ -235,13 +226,6 @@ func createNoServerErr(pn, name string, err error) error {
 	}
 	return fmt.Errorf("%s: creating '%s': %w; '%s' may have been created and would bill: run 'devvm status' to list the project, then 'devvm delete %s' if it exists",
 		pn, name, err, name, name)
-}
-
-// hostKeyMismatch reports whether setup failed on a pinned host key that
-// no longer matches (probeSSH's fatal marks).
-func hostKeyMismatch(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "REMOTE HOST IDENTIFICATION HAS CHANGED") || strings.Contains(msg, "Host key verification failed")
 }
 
 // providerBackendFor is backend.For for the record create just built, a

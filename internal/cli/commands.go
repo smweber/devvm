@@ -28,8 +28,8 @@ func (a *App) createCmd() *cobra.Command {
 			"[templates.default] > built-in; a server's placement also falls back to\n" +
 			"[providers.hetzner] in devvm.toml, which names its ssh key.\n\n" +
 			"Remote boxes and hubs are not created: add one to devvm.toml with\n" +
-			"'devvm config add NAME --backend remote|hub --host H', then 'devvm setup NAME'\n" +
-			"for a managed box.",
+			"'devvm config add NAME --backend remote|hub --host H'; devvm connects to it\n" +
+			"and never shapes it.",
 		Args: cobra.MaximumNArgs(1),
 		// `create HUB/NAME` is the one proxied leaf whose name exists nowhere
 		// yet: the hub makes the VM, and with no --yes its huh form runs
@@ -262,9 +262,9 @@ func (a *App) statusCmd() *cobra.Command {
 			"headers or grouping) for scripts: backend is smol, remote or hub; state is\n" +
 			"one of running, stopped, reachable, unreachable or ?; forwards is up:N,\n" +
 			"reconnecting:N, down (ports configured, no daemon) or - (none configured);\n" +
-			"managed is managed, unmanaged (a smol VM devvm did not create, or an\n" +
-			"adopted remote host), shadowed (a devvm.toml entry hiding a local smol VM of\n" +
-			"the same name) or - (hubs, and machines on a hub too old to say); verified\n" +
+			"managed is managed, unmanaged (a smol VM devvm did not create),\n" +
+			"shadowed (a devvm.toml entry hiding a local smol VM of the same name) or -\n" +
+			"(entries, hubs, and machines on a hub too old to say); verified\n" +
 			"is verified=<unix>:<how> or verified=- for a remote box, - otherwise.\n" +
 			"Consumers should treat any other token as unknown. A devvm.toml that does\n" +
 			"not parse fails status (non-zero); under --watch it pauses the stream until\n" +

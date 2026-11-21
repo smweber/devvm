@@ -81,8 +81,8 @@ func TestBridgeSessionSkipped(t *testing.T) {
 	}{
 		{"DEVVM_NO_SUBSCRIBE=1", "1", managedSmol("web"), &statusBackend{}, 0},
 		{"DEVVM_NO_SUBSCRIBE=0 subscribes", "0", managedSmol("web"), &statusBackend{}, 1},
-		{"remote subscribes", "", config.NewRemote("box", true, "box"), &statusBackend{}, 1},
-		{"adopt host subscribes", "", config.NewRemote("box", false, "box"), &statusBackend{}, 1},
+		{"remote subscribes", "", config.NewRemote("box", "box"), &statusBackend{}, 1},
+		{"adopt host subscribes", "", config.NewRemote("box", "box"), &statusBackend{}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(backend.NoSubscribeEnv, tc.env)
@@ -159,15 +159,15 @@ func (p *pingBridge) Ping() (session.PingInfo, error) { return p.info, nil }
 // reports a shim keeps the session for the shell's life.
 func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
-	consented := config.NewRemote("box", false, "me@box")
+	consented := config.NewRemote("box", "me@box")
 	consented.Agent = true
 	for _, tc := range []struct {
 		m    *config.Machine
 		want string
 	}{
 		{consented, "devvm: browser bridge unavailable: its devvm agent did not come up: its forward daemon may have started before agent = true was added (restart it: 'devvm ports down box', and end any attach holding it), or the install failed (see the daemon log); URLs opened in the guest will be printed there\n"},
-		{config.NewRemote("adopted", false, "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (agent = true in [machines.adopted] lets devvm install one in ~/.local/bin once the forward daemon restarts: 'devvm ports down adopted', and end any attach holding it); URLs opened in the guest will be printed there\n"},
-		{config.NewRemote("cloud", true, "dev@cloud"), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log); URLs opened in the guest will be printed there\n"},
+		{config.NewRemote("adopted", "me@adopted"), "devvm: browser bridge unavailable: no current devvm agent there (agent = true in [machines.adopted] lets devvm install one in ~/.local/bin once the forward daemon restarts: 'devvm ports down adopted', and end any attach holding it); URLs opened in the guest will be printed there\n"},
+		{config.NewProviderMachine("cloud", config.BackendHetzner, "dev", true, config.ProviderServer{Address: "cloud"}), "devvm: browser bridge unavailable: its devvm agent did not come up (see the daemon log); URLs opened in the guest will be printed there\n"},
 	} {
 		pb := &pingBridge{info: session.PingInfo{State: session.StateUp}}
 		old := openBridgeSession
@@ -185,7 +185,7 @@ func TestBridgeSessionRemoteWithoutAgent(t *testing.T) {
 	openBridgeSession = func(config.Paths, string, session.SessionOptions) (bridgeSub, error) { return pb, nil }
 	t.Cleanup(func() { openBridgeSession = old })
 	a, errBuf := bridgeApp(t)
-	release := a.bridgeSession(config.NewRemote("adopted", false, "me@adopted"), &statusBackend{})
+	release := a.bridgeSession(config.NewRemote("adopted", "me@adopted"), &statusBackend{})
 	if errBuf.Len() != 0 || pb.closed != 0 {
 		t.Fatalf("with an agent: notice %q, closed %d", errBuf.String(), pb.closed)
 	}
@@ -217,7 +217,7 @@ func TestRemoteBridgeBoundedWait(t *testing.T) {
 		}
 		a, errBuf := bridgeApp(t)
 		start := time.Now()
-		release := a.bridgeSession(config.NewRemote("cloud", true, "dev@cloud"), &statusBackend{})
+		release := a.bridgeSession(config.NewRemote("cloud", "dev@cloud"), &statusBackend{})
 		if d := time.Since(start); d > 2*time.Second {
 			t.Fatalf("bridgeSession waited %s for a daemon that never came up", d)
 		}
@@ -558,7 +558,7 @@ func TestBridgePushIsQuietAndBestEffort(t *testing.T) {
 	pushed := observePushes(t)
 	stubBridge(t, &fakeBridge{}, nil)
 	a, errBuf := bridgeApp(t)
-	m := config.NewRemote("box", false, "dev@example")
+	m := config.NewRemote("box", "dev@example")
 	a.bridgeSession(m, nil)()
 	select {
 	case name := <-pushed:

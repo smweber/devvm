@@ -33,10 +33,10 @@ var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
 const (
-	ownManaged   = "managed"   // devvm made it (smol: the marker matches) or shapes it (remote, managed = true)
-	ownUnmanaged = "unmanaged" // a smol VM devvm did not create, or an adopted remote host
+	ownManaged   = "managed"   // devvm made it (smol: the marker matches; a provider server: the label)
+	ownUnmanaged = "unmanaged" // a smol VM or provider server devvm did not create
 	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
-	ownNone      = "-"         // hubs; a hub machine whose hub did not say; a row nothing settled
+	ownNone      = "-"         // entries (devvm never shapes one) and hubs; a hub machine whose hub did not say
 )
 
 func ownership(managed bool) string {
@@ -178,11 +178,13 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 // The fifth column was appended (config.md §7), so a consumer reading four
 // fields still works. `unmanaged` is a smol VM devvm did not create (it
 // supports status/start/stop/shell/exec only; `setup --adopt` hands it
-// over) or an adopted remote host; `shadowed` is a entry hiding a
-// local smol VM of the same name (the entry wins for every command); `-` is
-// a hub, or a machine on a hub too old to emit the column: never
-// `unmanaged`, which would be a claim nobody made. `dormant` is gone (a
-// smol VM exists or it doesn't), though an older hub may still send it.
+// over); `shadowed` is a entry hiding a local smol VM of the same name (the
+// entry wins for every command); `-` is an entry (remote or hub: devvm
+// never shapes one), or a machine on a hub too old to emit the column:
+// never `unmanaged`, which would be a claim nobody made. An older hub may
+// still send `managed`/`unmanaged` for its own remote entries. `dormant` is
+// gone (a smol VM exists or it doesn't), though an older hub may still send
+// it.
 //
 // N is the number of configured (`conf`-owned) forwards the daemon holds; a
 // forward only a session or a ttl holds is not counted (browser-bridge.md
@@ -191,7 +193,7 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 // answered. `down` means ports are configured but none is up (the normal
 // state of a stopped VM, so a UI should only flag it on a running machine);
 // `-` means nothing is configured.
-// A remote box (backend `remote`, managed or not) is `reachable` when a
+// A remote box (backend `remote`) is `reachable` when a
 // live ControlMaster answered or its last probe connected, `unreachable`
 // when its last probe failed, `?` when it was never probed or cannot be (an
 // alias behind ProxyJump/ProxyCommand): its reach cache, which this
@@ -359,8 +361,8 @@ func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
 }
 
 // rowNote is the human table's trailing remark: a VM devvm did not create
-// (with what hands it over), an adopted remote box, an entry shadowing a
-// VM, the hub entry naming this host.
+// (with what hands it over), an entry shadowing a VM, the hub entry naming
+// this host.
 func rowNote(r statusRow) string {
 	switch {
 	case r.note != "":
@@ -369,8 +371,6 @@ func rowNote(r statusRow) string {
 		return "  (unmanaged: " + backend.AdoptHint(r.name) + ")"
 	case r.hub == "" && r.managed == ownUnmanaged && r.m != nil && r.m.IsProvider():
 		return "  (unmanaged: no devvm=true label; status, shell and exec only)"
-	case r.hub == "" && r.managed == ownUnmanaged:
-		return "  (adopted: devvm never modifies it)"
 	case r.managed == ownShadowed:
 		what := strings.Join(r.shadows, " and ")
 		if what == "" {
@@ -708,8 +708,8 @@ func (a *App) hasSavedPorts(name string) bool {
 }
 
 func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
-	r := statusRow{name: m.Name, backend: m.Backend, m: m, host: m.SSHHost, saved: a.hasSavedPorts(m.Name)}
-	r.managed = ownership(m.Managed())
+	// An entry is never managed: devvm only connects to it (`-`).
+	r := statusRow{name: m.Name, backend: m.Backend, m: m, host: m.SSHHost, saved: a.hasSavedPorts(m.Name), managed: ownNone}
 	smols.shadow(&r)
 	if _, err := backend.For(m, a.Paths); err != nil {
 		r.state = "?"
@@ -797,10 +797,8 @@ func (a *App) runStatus(name string) error {
 			fmt.Fprintln(a.Stdout, "  managed: yes (the devvm=true label: devvm shapes it)")
 		case m.IsProvider():
 			fmt.Fprintf(a.Stdout, "  managed: no (no devvm=true label: status, shell and exec only; devvm never promotes a provider server)\n")
-		case m.Managed():
-			fmt.Fprintln(a.Stdout, "  managed: yes (devvm shapes it: setup, prereqs, hardening)")
 		default:
-			fmt.Fprintln(a.Stdout, "  managed: no (adopted: devvm never modifies it)")
+			fmt.Fprintln(a.Stdout, "  managed: no (an entry: devvm only connects to it)")
 		}
 	}
 	a.forwardReport(name)

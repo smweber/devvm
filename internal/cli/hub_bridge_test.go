@@ -128,8 +128,8 @@ func TestBridgedMachines(t *testing.T) {
 	}{
 		{managedSmol("web"), true},
 		{&config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}, true},
-		{config.NewRemote("box", true, "box"), true},
-		{config.NewRemote("box", false, "box"), true},
+		{config.NewRemote("box", "box"), true},
+		{config.NewRemote("box", "box"), true},
 		{hub, false},
 	} {
 		if got := bridged(tc.m); got != tc.want {

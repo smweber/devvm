@@ -1493,8 +1493,8 @@ func (d *daemon) shimPath() string {
 
 // carriesEvents reports whether the current transport brings the guest's
 // browser events to this daemon: smol's agent exec does, ssh's does while
-// it has a current agent (eventCarrier: installed on a managed box, found
-// on an adopt host), and a hub machine's relay does only when its hub
+// it has a current agent (eventCarrier: installed on a box devvm made or
+// an entry with agent = true, found on any other entry), and a hub machine's relay does only when its hub
 // daemon echoed Bridge (a hub machine's events come from the hub, or from
 // nowhere). false between transports. Under d.mu, like shimPath.
 func (d *daemon) carriesEvents() bool {

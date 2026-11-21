@@ -560,29 +560,6 @@ func TestProviderCreateBackendErr(t *testing.T) {
 	}
 }
 
-// A pin a [machines.*] entry at the same address still uses is kept, and a
-// host-key mismatch at setup then says which entry and how to clear it.
-func TestProviderCreatePinHeldByEntry(t *testing.T) {
-	a := newTestApp(t)
-	fakeLocalSmolvm(t, `[]`)
-	shrinkReachWait(t, time.Second, 10*time.Millisecond)
-	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\n\n[machines.old]\nbackend = \"remote\"\nmanaged = true\nhost = \"192.0.2.250\"\n", false)
-	p.AddKey("scott", testPubKey)
-	spy := useSpy(a, p)
-	spy.onCreate = func(s *provider.Server) { s.Address = "192.0.2.250" }
-	os.MkdirAll(a.Paths.State, 0o700)
-	os.WriteFile(a.Paths.KnownHostsPath(), []byte("192.0.2.250 "+testPubKey+"\n"), 0o600)
-	fakeRemote(t, `case "$last" in "'true'") echo "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@" >&2; exit 255;; esac`)
-	err := runTree(t, a, "create", "web", "--backend", "hetzner", "--yes")
-	if err == nil || !strings.Contains(err.Error(), "kept for the entry [machines.old]") ||
-		!strings.Contains(err.Error(), "ssh-keygen -R 192.0.2.250 -f "+a.Paths.KnownHostsPath()) {
-		t.Fatalf("err = %v", err)
-	}
-	if kh, _ := os.ReadFile(a.Paths.KnownHostsPath()); !strings.Contains(string(kh), "192.0.2.250") {
-		t.Error("the entry's pin was dropped")
-	}
-}
-
 // A cleanup failure after a successful Delete still reports the delete and
 // drops the cache row, then returns the cleanup error.
 func TestProviderDeleteCleanupFails(t *testing.T) {
@@ -790,7 +767,7 @@ func TestRootFlagsBeforeRawLeaves(t *testing.T) {
 	cfg, state := filepath.Join(shortTempDir(t), "c"), filepath.Join(shortTempDir(t), "s")
 	b := newTestApp(t)
 	b.Paths = config.Paths{Config: cfg, State: state}
-	writeEntry(b.Paths, config.NewRemote("web", false, "u@web.example"))
+	writeEntry(b.Paths, config.NewRemote("web", "u@web.example"))
 	log := fakeSSH(t, "exit 0")
 	if err := runTree(t, a, "--config-dir", cfg, "--state-dir="+state, "exec", "web", "--", "echo", "--config-dir", "z"); err != nil {
 		t.Fatalf("exec: %v", err)

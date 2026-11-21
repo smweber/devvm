@@ -123,7 +123,8 @@ func (b *sshBackend) sshFlagsTimeout(connectSecs int) []string {
 	if b.m.Identity != "" {
 		f = append(f, "-i", config.ExpandHome(b.m.Identity))
 	}
-	// Managed hosts get an isolated, TOFU-pinned known_hosts.
+	// A box devvm made (a provider server) gets an isolated, TOFU-pinned
+	// known_hosts; an entry uses the user's own (~/.ssh/known_hosts).
 	// ssh records a new pin only if the file's directory exists, and the
 	// state dir, unlike the config dir the pins used to share, may not yet.
 	if b.m.Managed() {
@@ -262,9 +263,9 @@ func (b *sshBackend) checkControlPaths() error {
 
 // rootWrap prefixes sudo when the caller wants root: an ssh host's login user is
 // the unprivileged dev user (with NOPASSWD sudo), unlike smol where exec already
-// runs as root. Other users run as the login user. On a managed box that only
-// had root (a fresh cloud VM), `devvm setup` (bootstrap.EnsureUser) establishes this
-// invariant before anything runs with User: "root".
+// runs as root. Other users run as the login user. On a provider server that
+// only had root (a fresh cloud VM), `devvm setup` (bootstrap.EnsureUser)
+// establishes this invariant before anything runs with User: "root".
 func rootWrap(o ExecOpts, argv []string) []string {
 	if o.User == "root" {
 		return append([]string{"sudo"}, argv...)
@@ -367,8 +368,8 @@ func (b *sshBackend) Attach(transport string) error {
 // window and pane (a shell already running keeps its own, documented).
 //
 // The shim is the one agentbin.Install puts beside the agent: root-owned on
-// a managed box, ~/.local/bin on an adopt host, where it exists only once
-// the user consented to the agent (agent = true): nothing is written here,
+// a provider server devvm made, ~/.local/bin on an entry, where it exists
+// only once the user consented to the agent (agent = true): nothing is written here,
 // and a shim that is not executable leaves BROWSER alone, since a BROWSER
 // naming no file makes gh fail outright instead of printing the URL.
 func remoteAttachArgv(managed bool) []string {

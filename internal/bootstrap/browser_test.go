@@ -108,10 +108,10 @@ func (r *recBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string
 	return r.fakeBackend.Run(ctx, o, argv...)
 }
 
-// Browser installs agent and shim and writes profile.d as root on a
-// managed box, smol or remote (both daemons run the agent exec), and does
-// nothing at all (no install, no exec) on an unmanaged one of either kind.
-func TestBrowserManagedOnly(t *testing.T) {
+// Browser installs agent and shim and writes profile.d as root on a box
+// devvm made, a smol VM or a provider server (both daemons run the agent
+// exec). It shapes nothing else: setup's shape refuses any other box first.
+func TestBrowserInstallsAndWritesProfile(t *testing.T) {
 	var installs []string
 	old := installAgent
 	installAgent = func(_ context.Context, _ backend.Backend, m *config.Machine, approve func() error) (agentbin.Paths, error) {
@@ -123,7 +123,7 @@ func TestBrowserManagedOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { installAgent = old })
 
-	for _, m := range []*config.Machine{managedSmol("web"), config.NewRemote("cloud", true, "dev@cloud")} {
+	for _, m := range []*config.Machine{managedSmol("web"), managedServer("cloud", "cloud.example")} {
 		installs = nil
 		rb := &recBackend{}
 		if err := Browser(context.Background(), rb, m); err != nil {
@@ -137,20 +137,12 @@ func TestBrowserManagedOnly(t *testing.T) {
 			t.Fatalf("%s: runs = %q as %q, want the profile.d write as root", m.Name, rb.runs, rb.users)
 		}
 	}
+}
 
-	// A smol VM devvm did not create gets nothing (config.md §2), nor does
-	// an adopt host (its agent waits for agent = true in its entry, and it
-	// never gets a profile.d write).
-	for _, m := range []*config.Machine{{Name: "found", Backend: config.BackendSmol}, config.NewRemote("adopted", false, "me@adopted")} {
-		installs = nil
-		rb := &recBackend{}
-		if err := Browser(context.Background(), rb, m); err != nil {
-			t.Fatal(err)
-		}
-		if len(installs) != 0 || len(rb.runs) != 0 {
-			t.Errorf("%s: installs %v, runs %q; want none", m.Name, installs, rb.runs)
-		}
-	}
+// managedServer is a provider server's record with devvm's label: the one
+// kind of box reached over ssh that devvm shapes.
+func managedServer(name, addr string) *config.Machine {
+	return config.NewProviderMachine(name, config.BackendHetzner, "dev", true, config.ProviderServer{Address: addr})
 }
 
 // managedSmol is a smol record its discovery source settled as managed

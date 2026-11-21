@@ -149,9 +149,8 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range []*config.Machine{
-		config.NewRemote("cloud", false, "u@cloud"),
-		config.NewRemote("box", true, "u@box"),
-		config.NewRemote("adopted", false, "u@adopted"),
+		config.NewRemote("cloud", "u@cloud"),
+		config.NewRemote("box", "u@box"),
 	} {
 		if err := writeEntry(a.Paths, m); err != nil {
 			t.Fatal(err)
@@ -165,8 +164,7 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 		"made\tsmol\trunning\t-\tmanaged\t-\n",
 		"found\tsmol\tstopped\t-\tunmanaged\t-\n",
 		"cloud\tremote\t?\t-\tshadowed\tverified=-\n",
-		"box\tremote\t?\t-\tmanaged\tverified=-\n",
-		"adopted\tremote\t?\t-\tunmanaged\tverified=-\n",
+		"box\tremote\t?\t-\t-\tverified=-\n", // an entry: devvm never shapes one
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plain lacks %q:\n%s", want, got)
@@ -201,7 +199,7 @@ func TestDeleteRefusesEntries(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
 	log := fakeSSH(t, "exit 0")
-	writeDevvmTOML(t, a, "[machines.box]\nbackend = \"remote\"\nmanaged = true\nhost = \"b\"\n\n[machines.h]\nbackend = \"hub\"\nhost = \"h\"\n")
+	writeDevvmTOML(t, a, "[machines.box]\nbackend = \"remote\"\nhost = \"b\"\n\n[machines.h]\nbackend = \"hub\"\nhost = \"h\"\n")
 	before, _ := os.ReadFile(a.Paths.FilePath())
 	for _, n := range []string{"box", "h"} {
 		err := runTree(t, a, "delete", n)
@@ -248,9 +246,9 @@ func TestEntryShadowsSmolVM(t *testing.T) {
 	}
 }
 
-// forgetHostState drops the marker and the machine's pinned host key, but
-// keeps a pin another entry still uses (known_hosts is per host, not per
-// name).
+// forgetHostState drops the marker and a provider server's pinned host key
+// (the only kind devvm pins), and nothing else in known_hosts. An entry has
+// no pin to drop: forgetHostKey leaves the file alone for one.
 func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
@@ -261,34 +259,28 @@ func TestForgetHostStateDropsMarkerAndPin(t *testing.T) {
 	}
 	const key = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 	kh := "gone.example ssh-ed25519 " + key + "\n" +
-		"[kept.example]:2222 ssh-ed25519 " + key + "\n"
+		"kept.example ssh-ed25519 " + key + "\n"
 	if err := os.WriteFile(a.Paths.KnownHostsPath(), []byte(kh), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sshWithConfig(t, "")
-	gone := config.NewRemote("gone", true, "dev@gone.example")
-	kept := config.NewRemote("kept", true, "dev@kept.example")
-	kept.SSHPort = 2222
-	other := config.NewRemote("other", true, "root@kept.example")
-	other.SSHPort = 2222
-	if err := writeEntry(a.Paths, other); err != nil {
-		t.Fatal(err)
-	}
+	gone := config.NewProviderMachine("gone", config.BackendHetzner, "dev", true, config.ProviderServer{Address: "gone.example"})
+	entry := config.NewRemote("kept", "dev@kept.example")
 	if err := config.WriteManagedMarker(a.Paths, "gone", "1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.forgetHostState("gone", gone); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.forgetHostState("kept", kept); err != nil {
+	if err := a.forgetHostState("kept", entry); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(a.Paths.KnownHostsPath())
 	if strings.Contains(string(data), "gone.example") {
 		t.Errorf("deleted machine's pin survived:\n%s", data)
 	}
-	if !strings.Contains(string(data), "[kept.example]:2222") {
-		t.Errorf("a pin another machine uses was dropped:\n%s", data)
+	if !strings.Contains(string(data), "kept.example") {
+		t.Errorf("a pin no deleted server had was dropped:\n%s", data)
 	}
 	if _, ok, _ := config.ReadManagedMarker(a.Paths, "gone"); ok {
 		t.Error("marker survived")
@@ -338,7 +330,7 @@ func TestKnownHostsKeyFollowsSSHConfig(t *testing.T) {
 		{"dev@plain.example", 2022, "[plain.example]:2022"},
 		{"dev@pinned", 22, "pin-alias"},
 	} {
-		m := config.NewRemote("x", true, tc.dest)
+		m := config.NewRemote("x", tc.dest)
 		m.SSHPort = tc.port
 		if got := knownHostsKey(m); got != tc.want {
 			t.Errorf("knownHostsKey(%s, port %d) = %q, want %q", tc.dest, tc.port, got, tc.want)

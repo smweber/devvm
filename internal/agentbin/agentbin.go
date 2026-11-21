@@ -35,7 +35,7 @@ const managedPath = "/usr/local/bin/devvm-agent"
 
 // binFor returns the embedded agent bytes for a guest's `uname -s -m` (e.g.
 // "Linux x86_64"). Only linux binaries are embedded, so a non-Linux remote
-// (say a macOS adopt host) fails here with a clear message instead of after
+// (say a macOS entry) fails here with a clear message instead of after
 // installing a binary that can't exec.
 func binFor(unameSM string) ([]byte, string, error) {
 	fields := strings.Fields(unameSM)
@@ -126,8 +126,8 @@ var ErrHubMachine = errors.New("a hub machine's agent and shim are installed by 
 // BROWSER shim (devvm-open-url) beside it, as one idempotent operation
 // (browser-bridge.md §5): each half is skipped when the guest already has
 // that exact content (sha256 match), so a box whose daemon is up has both.
-// Managed boxes (smol, managed remote) get a root-owned /usr/local/bin
-// install; any other remote box (an entry with agent = true, whose daemon
+// Managed boxes (smol, a provider server devvm made) get a root-owned
+// /usr/local/bin install; any other remote box (an entry with agent = true, whose daemon
 // is the only caller there) gets a user-scoped ~/.local/bin install (no
 // root, nothing system-level touched). approve, if non-nil, is called
 // once, only when something is actually written; returning an error aborts
@@ -279,7 +279,7 @@ func installAgent(ctx context.Context, b backend.Backend, m *config.Machine, dat
 		return b.Run(ctx, backend.ExecOpts{User: "root"},
 			"sh", "-c", fmt.Sprintf("install -m 0755 %s %s && rm -f %s", shq(staging), shq(guestPath), shq(staging)))
 	}
-	// Unmanaged: user-scoped, no root. Ensure the dir exists before staging into it.
+	// An entry (agent = true): user-scoped, no root. Ensure the dir exists before staging into it.
 	if err := b.Run(ctx, backend.ExecOpts{}, "sh", "-c", "mkdir -p "+shq(path.Dir(guestPath))); err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func installAgent(ctx context.Context, b backend.Backend, m *config.Machine, dat
 
 // installShim writes the BROWSER shim beside the agent, following its
 // ownership: root-owned beside a managed /usr/local/bin agent, user-owned in
-// ~/.local/bin on an adopt host. Staged and renamed, so a login tool never
+// ~/.local/bin on an entry. Staged and renamed, so a login tool never
 // runs a half-written shim. printf with the lines as arguments, never as
 // its format (a `%` in a path would be a conversion), and not stdin: a
 // one-shot smol exec has none. The bytes written equal shimScript, so the
@@ -309,7 +309,7 @@ func installShim(ctx context.Context, b backend.Backend, m *config.Machine, p Pa
 }
 
 // guestHome resolves the connecting user's home directory in the guest, so the
-// agent path isn't hardcoded to a "dev" user (adopt hosts have arbitrary users).
+// agent path isn't hardcoded to a "dev" user (an entry's login is any user).
 func guestHome(ctx context.Context, b backend.Backend) (string, error) {
 	var buf bytes.Buffer
 	if err := b.Run(ctx, backend.ExecOpts{Stdout: &buf}, "sh", "-c", "echo $HOME"); err != nil {

@@ -120,7 +120,7 @@ func TestShapingVerbsRefuseHub(t *testing.T) {
 
 func TestListMachinesUnion(t *testing.T) {
 	a := newTestApp(t)
-	if err := writeEntry(a.Paths, config.NewRemote("box", false, "box")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", "box")); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}, "api": {"80"}})
@@ -232,7 +232,7 @@ func TestDeleteHubMachineDropsSavedForwards(t *testing.T) {
 // offers no devvm.toml entry (it refuses those: `config rm`).
 func TestCompletionOmitsHubsForShapingVerbs(t *testing.T) {
 	a := newTestApp(t)
-	if err := writeEntry(a.Paths, config.NewRemote("box", true, "box")); err != nil {
+	if err := writeEntry(a.Paths, config.NewRemote("box", "box")); err != nil {
 		t.Fatal(err)
 	}
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})

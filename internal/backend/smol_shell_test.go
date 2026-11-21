@@ -188,9 +188,9 @@ func TestRemoteAttachAndShellBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	for _, be := range []string{"managed", "unmanaged"} {
+	for be, m := range map[string]*config.Machine{"server": managedServer("cloud", "cloud"), "entry": config.NewRemote("cloud", "dev@cloud")} {
 		os.Remove(log)
-		b := &sshBackend{m: config.NewRemote("cloud", be == "managed", "dev@cloud"), paths: config.LegacyPaths(shortTempDir(t))}
+		b := &sshBackend{m: m, paths: config.LegacyPaths(shortTempDir(t))}
 		if err := b.Attach(config.TransportSSH); err != nil {
 			t.Fatalf("%s: Attach: %v", be, err)
 		}
@@ -207,10 +207,16 @@ func TestRemoteAttachAndShellBrowser(t *testing.T) {
 		if strings.Contains(calls[1], "BROWSER=") || strings.Contains(calls[1], "'env'") {
 			t.Errorf("%s: attach %q passes BROWSER as exec env", be, calls[1])
 		}
-		if !strings.HasSuffix(calls[2], "-t dev@cloud") {
+		if !strings.HasSuffix(calls[2], " -t dev@cloud") {
 			t.Errorf("%s: shell %q sends a remote command", be, calls[2])
 		}
 	}
+}
+
+// managedServer is a provider server's record with devvm's label: the one
+// kind of box reached over ssh that devvm shapes (and pins).
+func managedServer(name, addr string) *config.Machine {
+	return config.NewProviderMachine(name, config.BackendHetzner, "dev", true, config.ProviderServer{Address: addr})
 }
 
 // managedSmol is a smol record its discovery source settled as managed
