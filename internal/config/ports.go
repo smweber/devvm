@@ -19,7 +19,8 @@ import (
 // a directory. Blank lines and `#` comments are skipped on read, so the file
 // stays hand-editable.
 //
-// Only the CLI reads these files (`start`/`ports up` push one Add per line);
+// Only the CLI reads these files (`start`, `ports up` and a connecting
+// `attach`/`shell` push one Add per line);
 // the session daemon never does. It keeps its forwards in memory and gets
 // them from its clients.
 

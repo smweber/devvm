@@ -2,11 +2,9 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -96,29 +94,28 @@ func (l *lateBridge) release() {
 // the first that opens, until release or a refusal no retry cures (a hub
 // too old for browser opens, a machine without events there). Failures
 // are not reported: the attach owns the terminal by then, and the guest's
-// shim prints the URL all the same. It reports whether one was adopted.
-func (l *lateBridge) retry(open func() (bridgeSub, error)) bool {
+// shim prints the URL all the same.
+func (l *lateBridge) retry(open func() (bridgeSub, error)) {
 	for _, w := range bridgeRetryWaits {
 		select {
 		case <-l.stop:
-			return false
+			return
 		case <-bridgeRetryAfter(w):
 		}
 		select {
 		case <-l.stop:
-			return false
+			return
 		default:
 		}
 		s, err := open()
 		if err == nil {
 			l.adopt(s)
-			return true
+			return
 		}
 		if noBridgeRetry(err) {
-			return false
+			return
 		}
 	}
-	return false
 }
 
 // noBridgeRetry: a bridge failure no background retry should follow, a
@@ -197,7 +194,8 @@ type shimPinger interface {
 // daemon that reports no shim has no agent exec to hear the guest (an entry
 // without agent = true, or an install that failed), so the session is
 // let go with one line naming the way to get one, and the daemon idles out
-// as if never asked. A ping that fails says nothing either way: the
+// as if never asked, unless the open brought saved forwards up on it
+// (pushSaved). A ping that fails says nothing either way: the
 // subscription is kept. say false: the same check, silently (a late
 // bridge, behind a session that owns the terminal).
 func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool {
@@ -252,6 +250,11 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool 
 // On a remote box the session spawns the daemon (and its ssh master) if no
 // forward holds one, for the life of the session: it idles out once the
 // session ends with no forwards.
+//
+// The session's open also brings this host's saved forwards up behind it
+// (pushSaved), whichever backend, so connecting restores them as `start`
+// does; a machine that gets no bridge here (DEVVM_NO_SUBSCRIBE on a hub,
+// a smol VM devvm did not create) gets no push either.
 func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func()) {
 	release = func() {}
 	if noSubscribe() || !bridged(m) {
@@ -347,9 +350,10 @@ func (a *App) remoteBridge(m *config.Machine) (release func()) {
 // after boot (a hub whose start returned before "running"), it is retried
 // in the background. Without boot it is one line and no bridge.
 //
-// A bridge adopted late after a not-running refusal that nothing here
-// booted (the hub-side attach did) brings this host's saved forwards for
-// the machine up too, as the boot would have (lateHubForwards).
+// Whenever an open reaches this host's daemon for the machine (in time,
+// after a boot, late or on a retry), this host's saved forwards for it
+// come up behind it (pushSaved; a retry's push again is harmless: the
+// daemon reuses a forward it holds).
 func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), err error) {
 	release = func() {}
 	if noSubscribe() {
@@ -360,22 +364,8 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 		s   bridgeSub
 		err error
 	}
-	var stopped atomic.Bool // an open was refused for a VM not running
-	open := func() (bridgeSub, error) {
-		s, err := a.openSubscribed(m)
-		if vmNotRunning(err) {
-			stopped.Store(true)
-		}
-		return s, err
-	}
+	open := func() (bridgeSub, error) { return a.openSubscribed(m) }
 	booted := false
-	// adopted runs once a late bridge is held: the forwards a boot here
-	// would have brought up, unless one did.
-	adopted := func() {
-		if stopped.Load() && !booted {
-			a.lateHubForwards(m)
-		}
-	}
 	for {
 		done := make(chan opened, 1)
 		go func() {
@@ -408,9 +398,7 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 			late := newLateBridge()
 			go func() {
 				defer bridgeRetryEnded()
-				if late.retry(open) {
-					adopted()
-				}
+				late.retry(open)
 			}()
 			return late.release, nil
 		case <-t.C:
@@ -424,11 +412,8 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 				switch r := <-done; {
 				case r.err == nil:
 					late.adopt(r.s)
-					adopted()
 				case !noBridgeRetry(r.err):
-					if late.retry(open) {
-						adopted()
-					}
+					late.retry(open)
 				}
 			}()
 			fmt.Fprintf(a.Stderr, "devvm: browser bridge to hub %s not up yet; URLs opened before it is will print in the guest\n", m.Hub.Name)
@@ -437,27 +422,54 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 	}
 }
 
-// lateHubForwards brings this host's saved forwards for a hub machine up
-// behind a running attach: nothing on stdout (the session owns the
-// terminal), a failure one warning line.
-func (a *App) lateHubForwards(m *config.Machine) {
-	q := *a
-	q.Stdout = io.Discard
-	if err := q.hubForwardsAfterStart(m.Name); err != nil {
-		fmt.Fprintf(a.Stderr, "devvm: saved forwards for %s not brought up (%v); 'devvm ports up %s' retries\r\n", m.Name, err, m.Name)
-	}
-}
-
 // openSubscribed opens a session on m's daemon and subscribes it (acked),
-// closing it again when the subscribe fails.
+// closing it again when the subscribe fails. The saved forwards are
+// pushed once the session is open, the subscribe aside: the daemon is up,
+// whether or not its transport carries browser events.
 func (a *App) openSubscribed(m *config.Machine) (bridgeSub, error) {
 	s, err := openBridgeSession(a.Paths, m.Name, a.hostOpener())
 	if err != nil {
 		return nil, err
 	}
+	a.pushSaved(m)
 	if err := s.Subscribe(); err != nil {
 		s.Close()
 		return nil, err
 	}
 	return s, nil
 }
+
+// pushSaved brings this host's saved forwards for m up behind an
+// attach/shell whose session just opened m's daemon (simplify.md step 11),
+// as `start` and `ports up` do: one Add per line, conf-owned, so they
+// outlive the session as theirs do, and `ports down` holds only until the
+// next connect. The daemon still never reads the file. Best-effort and
+// quiet: the file is read here, the Adds run in the background, on a
+// one-shot client of the daemon the open just brought up (Existing: it
+// never spawns one; a daemon reconnecting records an Add as pending), and
+// nothing waits on a VM's come-up as tunnelUpWait does, prints (the
+// session owns the terminal) or fails the session. No saved forwards, no
+// goroutine.
+func (a *App) pushSaved(m *config.Machine) {
+	saved, err := a.savedPorts(m.Name)
+	if err != nil || len(saved) == 0 {
+		return
+	}
+	paths, name := a.Paths, m.Name // copied: the goroutine reads nothing of a, which a later command may reuse
+	go func() {
+		defer savedPushed(name)
+		cl, err := session.Existing(paths, name)
+		if err != nil {
+			return
+		}
+		for _, mapping := range saved {
+			if pref, guest, err := parseMapping(mapping); err == nil {
+				_, _, _, _ = cl.Add(pref, guest)
+			}
+		}
+	}()
+}
+
+// savedPushed runs when a pushSaved's background Adds are over, whatever
+// became of them; a hook for tests.
+var savedPushed = func(name string) {}

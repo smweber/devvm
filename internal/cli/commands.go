@@ -183,7 +183,7 @@ func (a *App) portsCmd() *cobra.Command {
 	a.machineArg(up)
 	down := &cobra.Command{
 		Use:   "down NAME",
-		Short: "Tear down live forwards",
+		Short: "Take the saved forwards down (back on the next attach, shell, start or ports up)",
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.tunnelDown(args[0]) },
 	}
 	a.machineArg(down)

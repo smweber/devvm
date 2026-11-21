@@ -333,9 +333,10 @@ func (a *App) proxyInteractive(cmd *cobra.Command, args []string, transport stri
 // hubBootForSession is bootForSession for a hub machine, run when the
 // hub's `__session` refused the bridge for a VM that is not running: the
 // proxied `start` (the hub waits for "running" and brings its own forwards
-// up), then this host's saved forwards for it, as `start HUB/NAME` does.
-// Proxied rather than left to the hub-side attach, so a hub of any version
-// boots it and the bridge is subscribed before the session runs.
+// up). This host's saved forwards for it come up with the bridge that
+// hubBridge then opens (pushSaved). Proxied rather than left to the
+// hub-side attach, so a hub of any version boots it and the bridge is
+// subscribed before the session runs.
 func (a *App) hubBootForSession(m *config.Machine, p backend.Proxier) error {
 	fmt.Fprintf(a.Stderr, "devvm: starting %s…\n", m.Name)
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
@@ -344,13 +345,7 @@ func (a *App) hubBootForSession(m *config.Machine, p backend.Proxier) error {
 	// costs nothing: the ControlMaster the __session just used is up.
 	o := proxyExecOpts(false)
 	o.Stdout, o.Stderr = a.Stdout, a.Stderr
-	if err := a.exitStatus(m, p.Proxy(context.Background(), o, "start", m.HubMachineName())); err != nil {
-		return err
-	}
-	if err := a.hubForwardsAfterStart(m.Name); err != nil {
-		fmt.Fprintf(a.Stderr, "devvm: saved forwards for %s not brought up (%v); 'devvm ports up %s' retries\n", m.Name, err, m.Name)
-	}
-	return nil
+	return a.exitStatus(m, p.Proxy(context.Background(), o, "start", m.HubMachineName()))
 }
 
 // resolveProxy loads the hub-machine record and its proxy surface. Like

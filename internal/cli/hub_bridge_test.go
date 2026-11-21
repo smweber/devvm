@@ -520,55 +520,69 @@ func TestHubBridgeBootThenStillStoppedRetried(t *testing.T) {
 	}
 }
 
-// A late not-running refusal (the hub-side attach started the VM) that
-// ends in an adopted bridge brings this host's saved forwards up, as the
-// laptop's own boot would have; a failure there is one warning line.
-func TestHubLateAdoptBringsForwardsUp(t *testing.T) {
+// A hub machine's saved forwards here come up on this host's daemon for
+// it as soon as an open reaches that daemon, even one whose subscribe then
+// fails; the retry adopted after it pushes again, which only re-adds the
+// same forward.
+func TestHubBridgeRetryBringsSavedForwardsUp(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
-	shrinkRunningPoll(t)
 	tick, ended := controlRetries(t)
-	old := hubBridgeWait
-	hubBridgeWait = 20 * time.Millisecond
-	t.Cleanup(func() { hubBridgeWait = old })
 	a := newTestApp(t)
 	var errBuf bytes.Buffer
 	a.Stdout, a.Stderr = new(bytes.Buffer), &errBuf
 	writeHub(t, a, "h", map[string][]string{"web": {"3000"}})
-	gate := make(chan struct{})
+	od := serveOwnerDaemon(t, a.Paths, "h/web", nil, false)
+	pushed := observePushes(t)
 	s := newSignalBridge()
-	scriptedOpens(t, gate, errors.New("h/web: hub: devvm: web is not running; start it first"), s)
+	opens := scriptedOpens(t, nil, &fakeBridge{subErr: errors.New("subscribe timed out")}, s)
 	release := a.bridgeSession(hubMachine(), nil)
-	close(gate)
+	waitPushed(t, pushed, "h/web") // the first open's, before any retry
+	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 {
+		t.Fatalf("adds = %+v, want 3000 up behind the first open", adds)
+	}
 	tick <- time.Time{}
 	<-ended
 	<-s.subscribed
 	release()
-	if !strings.Contains(errBuf.String(), "devvm: saved forwards for h/web not brought up (") {
-		t.Errorf("stderr = %q", errBuf.String())
+	waitPushed(t, pushed, "h/web")
+	if opens.Load() != 2 {
+		t.Errorf("opens = %d, want the failed one and its retry", opens.Load())
 	}
-	if a.Stdout.(*bytes.Buffer).Len() != 0 {
-		t.Errorf("stdout written behind the session: %q", a.Stdout)
+	for _, add := range od.requests(session.OpAdd) {
+		if add.Guest != 3000 || add.Host != 3000 {
+			t.Errorf("add %+v, want 3000 alone", add)
+		}
+	}
+	if a.Stdout.(*bytes.Buffer).Len() != 0 || strings.Contains(errBuf.String(), "forward") {
+		t.Errorf("the push printed: stdout %q, stderr %q", a.Stdout, errBuf.String())
 	}
 }
 
-// A proxied attach that starts the VM, with a saved forward here that
-// cannot come up: one warning line, and the session still runs.
-func TestHubAttachStartsStoppedVMForwardsFail(t *testing.T) {
+// A proxied attach that starts the VM brings this host's saved forwards
+// up behind the bridge it then opens (no separate push after the boot),
+// quietly, and the session runs.
+func TestHubAttachStartsStoppedVMPushesForwards(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	shrinkRunningPoll(t)
 	noRetries(t)
 	a := newTestApp(t)
 	sshLog, _ := fakeHub(t, a) // saves h/web's 3000 here
 	pinTTY(t, true)
+	od := serveOwnerDaemon(t, a.Paths, "h/web", nil, false)
+	pushed := observePushes(t)
 	stopped := errors.New("h/web: the hub's __session ended before it started: devvm: web is not running; start it first")
 	scriptedOpens(t, nil, stopped, newSignalBridge())
 	if err := runTree(t, a, "attach", "h/web"); err != nil {
 		t.Fatalf("attach: %v\n%s", err, a.Stderr)
 	}
+	waitPushed(t, pushed, "h/web")
+	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 {
+		t.Errorf("adds = %+v, want 3000 once", adds)
+	}
 	if lines := sshLines(t, sshLog); len(lines) < 2 || lines[len(lines)-1] != wantSSH(a, true, "attach", "web") {
 		t.Errorf("ssh lines = %q, want the attach last", lines)
 	}
-	if msg := a.Stderr.(interface{ String() string }).String(); !strings.Contains(msg, "devvm: saved forwards for h/web not brought up (") {
+	if msg := a.Stderr.(interface{ String() string }).String(); strings.Contains(msg, "saved forwards") {
 		t.Errorf("stderr = %q", msg)
 	}
 }

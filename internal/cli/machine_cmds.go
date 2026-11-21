@@ -109,34 +109,23 @@ func (a *App) interactive(name, transport string, allowUnmanaged bool) (*config.
 }
 
 // bootForSession is attach/shell on a stopped smol VM: `start` first (wait
-// for "running", then the saved forwards), and only then the bridge and
-// the session's own execs. smolvm 1.16.1's `machine exec` refuses a
-// stopped VM rather than booting it, so the session would fail outright
-// (attach as "tmux not found"); started here, the VM is running when the
-// bridge opens, so the session is bridged like any other, and no daemon
-// exec ever starts against a VM still booting. Remote boxes are never
-// booted (a hub machine's start is proxied: hubBootForSession).
+// for "running"), and only then the bridge, which brings the saved
+// forwards up behind it as on any connect (pushSaved), and the session's
+// own execs. smolvm 1.16.1's `machine exec` refuses a stopped VM rather
+// than booting it, so the session would fail outright (attach as "tmux not
+// found"); started here, the VM is running when the bridge opens, so the
+// session is bridged like any other, and no daemon exec ever starts
+// against a VM still booting. Remote boxes are never booted (a hub
+// machine's start is proxied: hubBootForSession).
 func (a *App) bootForSession(m *config.Machine, b backend.Backend) error {
 	if m.IsRemote() {
 		return nil
 	}
 	booted, err := a.startStopped(m, b)
-	if err != nil || !booted {
-		return err
+	if booted {
+		config.TouchChanged(a.Paths) // wake `status --watch`
 	}
-	defer config.TouchChanged(a.Paths) // wake `status --watch`
-	if requireManaged(m) != nil {
-		return nil // no forwards on a VM devvm did not create (as `start`)
-	}
-	saved, err := a.savedPorts(m.Name)
-	if err == nil && len(saved) > 0 {
-		err = a.tunnelUpWait(m.Name, runningPollTimeout)
-	}
-	if err != nil {
-		// The VM is up; a forward that did not come is not worth the session.
-		fmt.Fprintf(a.Stderr, "devvm: saved forwards for %s not brought up (%v); 'devvm ports up %s' retries\n", m.Name, err, m.Name)
-	}
-	return nil
+	return err
 }
 
 // resolveTransport picks the interactive transport: an explicit --transport flag

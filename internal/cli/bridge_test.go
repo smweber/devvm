@@ -490,9 +490,37 @@ func TestUnmanagedShellStartsStoppedVM(t *testing.T) {
 	}
 }
 
-// A saved forward that cannot be brought up after the boot is one warning
-// line; the session still runs.
-func TestAttachStartsStoppedSmolForwardsFail(t *testing.T) {
+// observePushes reports each pushSaved whose background Adds are over,
+// by machine name.
+func observePushes(t *testing.T) <-chan string {
+	t.Helper()
+	old := savedPushed
+	ch := make(chan string, 8)
+	savedPushed = func(name string) { ch <- name }
+	t.Cleanup(func() { savedPushed = old })
+	return ch
+}
+
+// waitPushed waits a few seconds at most for the next push to end and
+// checks it was name's: a push that never comes fails the test, not
+// go test's timeout.
+func waitPushed(t *testing.T, pushed <-chan string, name string) {
+	t.Helper()
+	select {
+	case got := <-pushed:
+		if got != name {
+			t.Fatalf("pushed %q, want %q", got, name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no push for %s", name)
+	}
+}
+
+// attach/shell bring the saved forwards up when they connect (simplify.md
+// step 11), a stopped VM's after its boot: one Add per line on the daemon
+// the bridge opened, one-shot (so conf-owned, as `ports up`'s), and
+// nothing printed: the session owns the terminal.
+func TestAttachStoppedSmolPushesSavedForwards(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")
 	shrinkRunningPoll(t)
 	a := newTestApp(t)
@@ -500,18 +528,53 @@ func TestAttachStartsStoppedSmolForwardsFail(t *testing.T) {
 	if err := config.WriteManagedMarker(a.Paths, "web", "100"); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.SavePorts(a.Paths, "web", []string{"3000"}); err != nil {
+	if err := config.SavePorts(a.Paths, "web", []string{"3000", "8080:80"}); err != nil {
 		t.Fatal(err)
 	}
+	od := serveOwnerDaemon(t, a.Paths, "web", nil, false)
+	pushed := observePushes(t)
 	stubBridge(t, &fakeBridge{}, nil)
 	if err := runTree(t, a, "shell", "web"); err != nil {
 		t.Fatalf("shell: %v\n%s", err, a.Stderr)
 	}
-	if !strings.Contains(a.Stderr.(*bytes.Buffer).String(), "devvm: saved forwards for web not brought up (") {
-		t.Errorf("stderr = %q", a.Stderr)
+	waitPushed(t, pushed, "web")
+	adds := od.requests(session.OpAdd)
+	if len(adds) != 2 || adds[0].Host != 3000 || adds[0].Guest != 3000 || adds[1].Host != 8080 || adds[1].Guest != 80 || adds[0].Exact {
+		t.Errorf("adds = %+v, want 3000 then 8080:80", adds)
 	}
-	if c := smolvmCalls(t, log); len(c) < 2 || !strings.HasPrefix(c[len(c)-1], "machine exec") {
-		t.Errorf("smolvm calls = %q, want the shell's exec last", c)
+	if out := a.Stdout.(*bytes.Buffer).String() + a.Stderr.(*bytes.Buffer).String(); strings.Contains(out, "forward") {
+		t.Errorf("the push printed: %q", out)
+	}
+	if c := smolvmCalls(t, log); len(c) < 2 || c[0] != "machine start --name web" || !strings.HasPrefix(c[len(c)-1], "machine exec") {
+		t.Errorf("smolvm calls = %q, want the start first and the shell's exec last", c)
+	}
+}
+
+// The push never spawns a daemon, prints nothing and fails nothing: with
+// no daemon to take the Adds (the bridge's open is faked here) it is
+// over at once. With no saved forwards there is no push at all.
+func TestBridgePushIsQuietAndBestEffort(t *testing.T) {
+	t.Setenv(backend.NoSubscribeEnv, "")
+	pushed := observePushes(t)
+	stubBridge(t, &fakeBridge{}, nil)
+	a, errBuf := bridgeApp(t)
+	m := config.NewRemote("box", false, "dev@example")
+	a.bridgeSession(m, nil)()
+	select {
+	case name := <-pushed:
+		t.Fatalf("pushed %q with no saved forwards", name)
+	default:
+	}
+	if err := config.SavePorts(a.Paths, "box", []string{"3000"}); err != nil {
+		t.Fatal(err)
+	}
+	a.bridgeSession(m, nil)()
+	waitPushed(t, pushed, "box")
+	if errBuf.Len() != 0 {
+		t.Errorf("stderr = %q", errBuf.String())
+	}
+	if _, err := os.Stat(filepath.Join(a.Paths.RuntimeDir(), "box.sock")); err == nil {
+		t.Error("the push spawned a daemon")
 	}
 }
 

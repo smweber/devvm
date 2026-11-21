@@ -83,8 +83,9 @@ func (a *App) resolveForwards(name string) (*config.Machine, backend.Backend, er
 }
 
 // savedPorts is a machine's saved forwards on this host (config.LoadPorts),
-// the list `start` and `ports up` bring up. It is the only place the CLI
-// reads them: the daemon never does, it gets each forward from a client.
+// the list `start`, `ports up` and a connecting attach/shell (pushSaved)
+// bring up. It is the only place the CLI reads them: the daemon never
+// does, it gets each forward from a client.
 func (a *App) savedPorts(name string) ([]string, error) {
 	return config.LoadPorts(a.Paths, name)
 }
@@ -165,18 +166,10 @@ func (a *App) startHubMachine(cmd *cobra.Command, args []string) error {
 	if err := a.proxy(cmd, args); err != nil {
 		return err
 	}
-	return a.hubForwardsAfterStart(args[0])
-}
-
-// hubForwardsAfterStart brings this host's saved forwards for a hub
-// machine up once its hub has started it (`start HUB/NAME`, and a proxied
-// attach/shell that started it: hubBootForSession).
-func (a *App) hubForwardsAfterStart(name string) error {
-	if _, err := config.LoadHubMachine(a.Paths, name); err != nil {
+	// proxy resolved the hub's entry already; tunnelUpWait waits out a hub
+	// whose smolvm still says "starting" (dialForwards).
+	if saved, err := a.savedPorts(args[0]); err != nil || len(saved) == 0 {
 		return err
 	}
-	if saved, err := a.savedPorts(name); err != nil || len(saved) == 0 {
-		return err
-	}
-	return a.tunnelUpWait(name, runningPollTimeout)
+	return a.tunnelUpWait(args[0], runningPollTimeout)
 }
