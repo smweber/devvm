@@ -33,8 +33,8 @@ var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
 const (
-	ownManaged   = "managed"   // devvm made it (smol: the marker matches; a provider server: the label)
-	ownUnmanaged = "unmanaged" // a smol VM or provider server devvm did not create
+	ownManaged   = "managed"   // devvm made it (smol: the marker matches; a provider server: the label, which every row has)
+	ownUnmanaged = "unmanaged" // a smol VM devvm did not create
 	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
 	ownNone      = "-"         // entries (devvm never shapes one) and hubs; a hub machine whose hub did not say
 )
@@ -101,12 +101,19 @@ func (a *App) runStatusAll(verbose, local bool) error {
 		a.noteNoToken()
 	}
 	sources := a.providerSourceLines(local)
+	var unlabelled []string
+	if !local {
+		unlabelled = a.unlabelledLines()
+	}
 	if len(rows) == 0 {
 		fmt.Fprintln(a.Stdout, "No machines. Create one with 'devvm create'.")
 		if verbose {
 			for _, l := range sources {
 				fmt.Fprintln(a.Stdout, l)
 			}
+		}
+		for _, l := range unlabelled {
+			fmt.Fprintln(a.Stdout, l)
 		}
 		return nil
 	}
@@ -140,6 +147,12 @@ func (a *App) runStatusAll(verbose, local bool) error {
 			a.renderSmolGroup(group, verbose)
 		} else {
 			a.renderRemoteGroup(group, verbose)
+		}
+	}
+	if len(unlabelled) > 0 {
+		fmt.Fprintln(a.Stdout)
+		for _, l := range unlabelled {
+			fmt.Fprintln(a.Stdout, l)
 		}
 	}
 	return nil
@@ -224,8 +237,9 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 // A provider server (backend `hetzner`) is a row from the provider's last
 // listing (cache/provider-NAME.list, refreshed by the live round first):
 // state running | stopped | starting | stopping | ? mapped from the
-// provider's own status, the fifth column managed (the devvm=true label) or
-// unmanaged, the sixth its last contact as for a remote box. A provider
+// provider's own status, the fifth column managed (only a server with the
+// devvm=true label is listed at all), the sixth its last contact as for a
+// remote box. A provider
 // that cannot be listed (no token, an API error) keeps its cached rows with
 // their last state; it never reads `unreachable`, which would say the box
 // is down. A server whose name an entry or a local smol VM holds has no row
@@ -369,8 +383,6 @@ func rowNote(r statusRow) string {
 		return "  (" + r.note + ")"
 	case r.hub == "" && r.managed == ownUnmanaged && r.backend == config.BackendSmol:
 		return "  (unmanaged: " + backend.AdoptHint(r.name) + ")"
-	case r.hub == "" && r.managed == ownUnmanaged && r.m != nil && r.m.IsProvider():
-		return "  (unmanaged: no devvm=true label; status, shell and exec only)"
 	case r.managed == ownShadowed:
 		what := strings.Join(r.shadows, " and ")
 		if what == "" {
@@ -536,16 +548,14 @@ func (a *App) providerRows(f *config.File, smols smolMachines, rows []statusRow)
 			}
 			m := providerRecord(pn, s)
 			r := statusRow{name: s.Name, backend: pn, state: s.State, host: dash(s.Address), m: m,
-				managed: ownership(m.Managed()), exists: true, running: s.State == provider.StateRunning}
+				managed: ownManaged, exists: true, running: s.State == provider.StateRunning}
 			if r.state == "" {
 				r.state = provider.StateUnknown
 			}
 			e := reach.Read(a.Paths, s.Name)
 			r.reach = &e
 			r.fwds = a.forwardSummary(s.Name)
-			if m.Managed() {
-				r.saved = a.hasSavedPorts(s.Name)
-			}
+			r.saved = a.hasSavedPorts(s.Name)
 			rows = append(rows, r)
 		}
 	}
@@ -793,10 +803,8 @@ func (a *App) runStatus(name string) error {
 		}
 		switch {
 		case m.IsHub():
-		case m.IsProvider() && m.Managed():
-			fmt.Fprintln(a.Stdout, "  managed: yes (the devvm=true label: devvm shapes it)")
 		case m.IsProvider():
-			fmt.Fprintf(a.Stdout, "  managed: no (no devvm=true label: status, shell and exec only; devvm never promotes a provider server)\n")
+			fmt.Fprintln(a.Stdout, "  managed: yes (the devvm=true label: devvm shapes it)")
 		default:
 			fmt.Fprintln(a.Stdout, "  managed: no (an entry: devvm only connects to it)")
 		}

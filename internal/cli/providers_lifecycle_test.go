@@ -404,15 +404,14 @@ func TestProviderDelete(t *testing.T) {
 
 // start/stop: the state resolve just fetched decides; the asked state is a
 // no-op that says so (no action), otherwise Power the right way, the cache
-// row updated. stop warns about billing every time. An unmanaged server
-// confirms first; --yes skips it.
+// row updated. stop warns about billing every time. Nothing asks: every
+// server devvm sees is one it made.
 func TestProviderStartStop(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
 	fakeSSH(t, "exit 0")
 	p := withFakeHetzner(t, a, "", false)
 	addServer(t, p, "box", "192.0.2.70", provider.StateRunning, true)
-	addServer(t, p, "prod", "192.0.2.71", provider.StateRunning, false)
 	const warn = "devvm: box is stopped but still billed; devvm delete box frees it\n"
 	asked := answerConfirm(t, false)
 
@@ -446,21 +445,11 @@ func TestProviderStartStop(t *testing.T) {
 	step([]string{"start", "box"}, 2, provider.StateRunning, "'box' is running")
 	step([]string{"start", "box"}, 2, provider.StateRunning, "'box' is already running")
 	if len(*asked) != 0 {
-		t.Fatalf("a managed box asked: %q", *asked)
+		t.Fatalf("start/stop asked: %q", *asked)
 	}
-
-	// Unmanaged: declined, nothing happens; --yes, no question.
-	if err := runTree(t, a, "stop", "prod"); err == nil || !strings.Contains(err.Error(), "aborted") {
-		t.Fatalf("declined: %v", err)
-	}
-	if len(*asked) != 1 || !strings.Contains((*asked)[0], "devvm did not make") || p.CallCount("Power") != 2 {
-		t.Fatalf("asked %q, Power %d", *asked, p.CallCount("Power"))
-	}
-	step([]string{"stop", "prod", "--yes"}, 3, provider.StateStopped, "'prod' is stopped")
-	answerConfirm(t, true)
-	step([]string{"start", "prod"}, 4, provider.StateRunning, "'prod' is running")
-	if s, _ := p.Get(context.Background(), "prod"); s.State != provider.StateRunning || provider.Managed(*s) {
-		t.Fatalf("prod = %+v (power never relabels)", s)
+	// --yes is gone with the confirm it skipped.
+	if err := runTree(t, a, "stop", "box", "--yes"); err == nil || !strings.Contains(err.Error(), "unknown flag: --yes") {
+		t.Fatalf("stop --yes: %v", err)
 	}
 }
 
@@ -711,27 +700,19 @@ esac`)
 	}
 }
 
-// stop forgets the last contact (an off box answers nothing), and an
-// unmanaged server's billing line points at the console, not at delete.
+// stop forgets the last contact (an off box answers nothing).
 func TestProviderStopClearsReach(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
 	fakeSSH(t, "exit 0")
 	p := withFakeHetzner(t, a, "", false)
 	addServer(t, p, "box", "192.0.2.91", provider.StateRunning, true)
-	addServer(t, p, "prod", "192.0.2.92", provider.StateRunning, false)
 	reach.Record(a.Paths, "box", "exec")
 	if err := runTree(t, a, "stop", "box"); err != nil {
 		t.Fatal(err)
 	}
 	if e := reach.Read(a.Paths, "box"); e.State == reach.Reachable {
 		t.Errorf("a stopped box still reads %+v", e)
-	}
-	if err := runTree(t, a, "stop", "prod", "--yes"); err != nil {
-		t.Fatal(err)
-	}
-	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "prod is stopped but still billed; delete it in the Hetzner console to stop billing") || strings.Contains(w, "devvm delete prod") {
-		t.Errorf("unmanaged billing line = %q", w)
 	}
 }
 

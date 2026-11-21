@@ -216,7 +216,7 @@ func TestRemoteAttachAndShellBrowser(t *testing.T) {
 // managedServer is a provider server's record with devvm's label: the one
 // kind of box reached over ssh that devvm shapes (and pins).
 func managedServer(name, addr string) *config.Machine {
-	return config.NewProviderMachine(name, config.BackendHetzner, true, config.ProviderServer{Address: addr})
+	return config.NewProviderMachine(name, config.BackendHetzner, config.ProviderServer{Address: addr})
 }
 
 // managedSmol is a smol record its discovery source settled as managed

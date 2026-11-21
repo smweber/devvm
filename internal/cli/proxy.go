@@ -172,15 +172,6 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 			}
 			runs = append(runs, argv)
 		}
-	case key == "start" || key == "stop":
-		// --yes is this host's (it skips the confirm a provider server
-		// devvm did not make gets, and a hub machine is never one); a hub
-		// older than step 3 would refuse the unknown flag.
-		argv, err := hubArgvSkip(cmd, args, []string{"yes"})
-		if err != nil {
-			return err
-		}
-		runs = append(runs, argv)
 	default:
 		argv, err := hubArgv(cmd, args)
 		if err != nil {

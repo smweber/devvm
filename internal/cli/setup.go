@@ -257,9 +257,6 @@ func (a *App) runSetup(name string, o setupOpts) error {
 	if err != nil {
 		return err
 	}
-	if m.IsProvider() && !m.Managed() {
-		return providerNoPromoteErr(m) // --adopt or not: a provider server is never promoted
-	}
 	if m.IsRemote() && !m.IsProvider() {
 		// An entry (simplify.md step 12): devvm only connects to it.
 		return fmt.Errorf("'%s' is an entry in devvm.toml: devvm never shapes one (it connects: attach, shell, exec, ports, cp, keys)", name)

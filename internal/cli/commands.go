@@ -193,7 +193,6 @@ func (a *App) portsCmd() *cobra.Command {
 }
 
 func (a *App) startCmd() *cobra.Command {
-	var yes bool
 	c := &cobra.Command{
 		Use:   "start NAME",
 		Short: "Start the machine (backend-aware)",
@@ -206,22 +205,19 @@ func (a *App) startCmd() *cobra.Command {
 			} else if ok {
 				return a.startHubMachine(cmd, args)
 			}
-			return a.runStart(args[0], yes)
+			return a.runStart(args[0])
 		},
 	}
-	c.Flags().BoolVarP(&yes, "yes", "y", false, "don't confirm (a provider server devvm did not make)")
 	a.machineArg(c)
 	return c
 }
 
 func (a *App) stopCmd() *cobra.Command {
-	var yes bool
 	c := &cobra.Command{
 		Use:   "stop NAME",
 		Short: "Stop the machine (backend-aware; a stopped Hetzner server still bills)",
-		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0], yes) }),
+		RunE:  a.hubOrStopForwards(func(cmd *cobra.Command, args []string) error { return a.runStop(args[0]) }),
 	}
-	c.Flags().BoolVarP(&yes, "yes", "y", false, "don't confirm (a provider server devvm did not make)")
 	a.machineArg(c)
 	return c
 }

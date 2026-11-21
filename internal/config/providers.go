@@ -182,18 +182,15 @@ type ProviderServer struct {
 	Location string
 }
 
-// NewProviderMachine builds the record for a provider server (providers.md
-// §4): reached over ssh on port 22 at the API row's address, read at
-// resolve time and never stored. A managed server (the devvm=true label,
-// settled by the caller from the row) logs in as DefaultUser, the user
-// `setup` creates there. An unmanaged one
-// gets no user@, as an entry with no `user` does, so ~/.ssh/config (or the
-// local login name) decides: devvm has no business guessing an account on
-// a server it did not make.
-func NewProviderMachine(name, providerName string, managed bool, s ProviderServer) *Machine {
-	m := &Machine{Name: name, Backend: providerName, SSHPort: 22, managed: managed, Server: &s}
+// NewProviderMachine builds the record for a provider server devvm made
+// (providers.md §4; the caller keeps only rows with the devvm=true label):
+// managed, reached over ssh on port 22 at the API row's address as
+// DefaultUser, the user `setup` creates there. Read at resolve time and
+// never stored.
+func NewProviderMachine(name, providerName string, s ProviderServer) *Machine {
+	m := &Machine{Name: name, Backend: providerName, SSHPort: 22, managed: true, Server: &s}
 	m.SSHHost = s.Address
-	if managed && s.Address != "" {
+	if s.Address != "" {
 		m.SSHHost = DefaultUser + "@" + s.Address
 	}
 	return m

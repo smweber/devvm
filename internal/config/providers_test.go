@@ -62,14 +62,13 @@ memory = 8192
 
 func TestNewProviderMachine(t *testing.T) {
 	s := ProviderServer{ID: 42, Status: "running", State: "running", Address: "1.2.3.4", Type: "cx23", Location: "nbg1"}
-	m := NewProviderMachine("web", BackendHetzner, true, s)
+	m := NewProviderMachine("web", BackendHetzner, s)
 	if !m.IsProvider() || !m.IsRemote() || !m.Probeable() || !m.Managed() || m.IsHub() ||
 		m.SSHHost != "dev@1.2.3.4" || m.SSHPort != 22 || m.User != "" || m.Server.ID != 42 {
 		t.Fatalf("managed = %+v", m)
 	}
-	u := NewProviderMachine("prod", BackendHetzner, false, s)
-	if u.Managed() || u.SSHHost != "1.2.3.4" || !u.IsRemote() {
-		t.Fatalf("unmanaged = %+v", u)
+	if dark := NewProviderMachine("dark", BackendHetzner, ProviderServer{ID: 7}); dark.SSHHost != "" {
+		t.Fatalf("no address = %+v", dark)
 	}
 	if (&Machine{Name: "x", Backend: BackendRemote}).IsProvider() {
 		t.Fatal("a remote entry is not a provider record")

@@ -351,7 +351,7 @@ func TestSSHAgentHooksInstallOnlyWithConsent(t *testing.T) {
 	}
 
 	g = &guestRec{}
-	server := config.NewProviderMachine("cloud", config.BackendHetzner, true, config.ProviderServer{Address: "cloud"})
+	server := config.NewProviderMachine("cloud", config.BackendHetzner, config.ProviderServer{Address: "cloud"})
 	p, st, err := sshAgentHooks(server, g).prepare(context.Background())
 	if err != nil || st != agentbin.Current || p.Shim != backend.ManagedShimPath {
 		t.Fatalf("managed: %+v, %v, %v", p, st, err)

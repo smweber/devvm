@@ -11,7 +11,6 @@ import (
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
-	"github.com/smweber/devvm/internal/provider"
 	"github.com/smweber/devvm/internal/reach"
 	"github.com/smweber/devvm/internal/session"
 )
@@ -145,9 +144,8 @@ func resolveTransport(m *config.Machine, flag string) (string, error) {
 	}
 }
 
-// runStart powers a machine on and brings its saved forwards up. yes skips
-// the confirm a provider server devvm did not make gets (§8).
-func (a *App) runStart(name string, yes bool) error {
+// runStart powers a machine on and brings its saved forwards up.
+func (a *App) runStart(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	a.providerAsk = true
 	m, b, err := a.resolveUnmanaged(name)
@@ -155,7 +153,7 @@ func (a *App) runStart(name string, yes bool) error {
 		return err
 	}
 	if m.IsProvider() {
-		return a.powerProviderBox(m, true, yes)
+		return a.powerProviderBox(m, true)
 	}
 	if err := a.powerStartWait(m, b); err != nil {
 		return err
@@ -197,7 +195,7 @@ func (a *App) powerStartWait(m *config.Machine, b backend.Backend) error {
 	return waitRunning(m, b)
 }
 
-func (a *App) runStop(name string, yes bool) error {
+func (a *App) runStop(name string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	a.providerAsk = true
 	m, b, err := a.resolveUnmanaged(name)
@@ -205,7 +203,7 @@ func (a *App) runStop(name string, yes bool) error {
 		return err
 	}
 	if m.IsProvider() {
-		return a.powerProviderBox(m, false, yes) // it reaps the daemon itself, after any confirm
+		return a.powerProviderBox(m, false) // it reaps the daemon itself
 	}
 	// Reap this machine's forwards (stop its daemon) before powering off, so no
 	// dead forward squats a host port.
@@ -231,14 +229,9 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 	if m.IsHubMachine() {
 		return a.deleteHubMachine(m, b)
 	}
-	// A provider server: devvm deletes only servers it made (the label).
-	// Another is refused before anything is touched (no daemon reaped, no
-	// host state forgotten), with no flag that overrides (§8).
+	// A provider server: devvm sees only the servers it made (the label),
+	// so every one it resolves is its to delete.
 	if m.IsProvider() {
-		if !m.Managed() {
-			return fmt.Errorf("'%s' is a %s server devvm did not make (no %s=%s label): devvm never deletes one; delete it in the %s console",
-				name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
-		}
 		return a.deleteProviderBox(m, yes)
 	}
 	if m.IsRemote() {

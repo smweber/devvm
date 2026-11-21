@@ -63,8 +63,8 @@ func (p *Provider) CallCount(method string) int {
 	return p.calls[method]
 }
 
-// Add seeds a server as if made elsewhere (e.g. an unmanaged one from the
-// console), assigning an id if it has none and a Status matching its State.
+// Add seeds a server as if made elsewhere (e.g. one without devvm's label,
+// from the console), assigning an id if it has none and a Status matching its State.
 // A name already in the project is ErrConflict, as on the real API.
 func (p *Provider) Add(s provider.Server) (provider.Server, error) {
 	p.mu.Lock()

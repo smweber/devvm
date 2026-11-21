@@ -2,7 +2,8 @@
 // destroys VMs (docs/proposals/providers.md). A provider VM has no
 // [machines.*] entry: it is discovered from the API, the way smol VMs are
 // discovered from `smolvm machine ls`, and the label devvm=true is its
-// managed marker. The interface is written from Hetzner alone (§7); a second
+// managed marker: a server without it is invisible to devvm. The interface
+// is written from Hetzner alone (§7); a second
 // provider is allowed to change it when one is actually used.
 package provider
 
@@ -60,8 +61,10 @@ type SSHKey struct {
 // managed by the user labelling it in another tool. Every mutating call waits
 // for the provider's action to finish, so a returned nil means done.
 type Provider interface {
-	// List returns every server in the project, managed or not: status is
-	// the forgotten-VM guard, so unmanaged servers are listed too.
+	// List returns every server in the project, labelled or not: the
+	// caller keeps only the ones with devvm's label (devvm sees nothing
+	// else) and counts the rest, so a billing server that lost its label
+	// is still noticed.
 	List(ctx context.Context) ([]Server, error)
 	// Get returns the server with this exact name, or nil, nil when absent.
 	Get(ctx context.Context, name string) (*Server, error)

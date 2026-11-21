@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -90,8 +91,13 @@ func TestProviderResolveOrder(t *testing.T) {
 	if n := p.CallCount("Get"); n != 1 {
 		t.Fatalf("Get = %d, want 1", n)
 	}
-	if m, _, err := a.resolveAny("prod"); err != nil || m.Managed() || m.SSHHost != "4.4.4.4" {
-		t.Fatalf("prod = %+v, %v (unmanaged: no user@)", m, err)
+	// A server without the devvm=true label is invisible: asked once,
+	// ignored, and never cached.
+	if m, _, err := a.resolveAny("prod"); err == nil || !strings.Contains(err.Error(), `unknown machine "prod"`) {
+		t.Fatalf("prod = %+v, %v, want an unknown machine", m, err)
+	}
+	if slices.Contains(a.providerCachedNames(mustFile(t, a))["hetzner"], "prod") {
+		t.Fatal("an unlabelled server was cached")
 	}
 	if _, _, err := a.resolveAny("nothere"); err == nil || !strings.Contains(err.Error(), "unknown machine") {
 		t.Fatalf("nothere: %v", err)
@@ -243,61 +249,47 @@ func TestProviderShadowsHubRow(t *testing.T) {
 	}
 }
 
-// shell and exec reach an unmanaged server through the tree (as its own
-// login: no user@), and a server with no public address is refused.
-func TestProviderUnmanagedShellExec(t *testing.T) {
+// A server with no public address is refused, before any ssh.
+func TestProviderNoAddress(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeSSH(t, "exit 0")
 	p := withFakeHetzner(t, a, "", false)
-	addServer(t, p, "prod", "4.4.4.4", provider.StateRunning, false)
 	addServer(t, p, "dark", "", provider.StateRunning, true)
-	if err := runTree(t, a, "exec", "prod", "true"); err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	if err := runTree(t, a, "shell", "prod"); err != nil {
-		t.Fatalf("shell: %v", err)
-	}
-	data, _ := os.ReadFile(log)
-	if strings.Count(string(data), " 4.4.4.4 ") < 1 || strings.Contains(string(data), "@4.4.4.4") {
-		t.Errorf("ssh calls:\n%s", data)
-	}
 	if err := runTree(t, a, "exec", "dark", "true"); err == nil || !strings.Contains(err.Error(), "no public address") {
 		t.Errorf("dark: %v", err)
 	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("dialled a server with no address")
+	}
 }
 
-// An unmanaged provider server: status, shell and exec only; the rest
-// refuse with the never-promote line, and delete points at the console.
-// Nothing on this host is touched by the refusals.
-func TestProviderRefusals(t *testing.T) {
+// A provider server without the devvm=true label is invisible to devvm
+// (simplify.md step 13): every verb says the name is unknown, delete never
+// reaches the API, and nothing on this host is touched.
+func TestProviderUnlabelledInvisible(t *testing.T) {
 	a := newTestApp(t)
-	fakeSSH(t, "exit 255")
+	log := fakeSSH(t, "exit 0")
+	fakeLocalSmolvm(t, `[]`)
 	p := withFakeHetzner(t, a, "", false)
 	addServer(t, p, "prod", "4.4.4.4", provider.StateRunning, false)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
 	if err := config.SavePorts(a.Paths, "box", []string{"3000"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := a.resolveUnmanaged("prod"); err != nil {
-		t.Fatalf("status/shell/exec path refused: %v", err)
-	}
 	for _, argv := range [][]string{
-		{"attach", "prod"}, {"setup", "prod"}, {"setup", "--adopt", "prod"}, {"keys", "list", "prod"},
-		{"ports", "up", "prod"}, {"cp-in", "prod", "providers_test.go"},
+		{"exec", "prod", "true"}, {"shell", "prod"}, {"attach", "prod"}, {"setup", "prod"}, {"keys", "list", "prod"},
+		{"ports", "up", "prod"}, {"cp-in", "prod", "providers_test.go"}, {"start", "prod"}, {"stop", "prod"},
+		{"delete", "prod", "--yes"},
 	} {
-		want := "devvm does not manage (no devvm=true label): only status, start, stop, shell and exec work"
-		if argv[0] == "setup" {
-			want = "never promotes a provider server" // setup alone is the promotion path
-		}
-		if err := runTree(t, a, argv...); err == nil || !strings.Contains(err.Error(), want) {
+		if err := runTree(t, a, argv...); err == nil || !strings.Contains(err.Error(), `unknown machine "prod"`) {
 			t.Errorf("%v: %v", argv, err)
 		}
 	}
-	if err := runTree(t, a, "delete", "prod"); err == nil || !strings.Contains(err.Error(), "Hetzner console") {
-		t.Errorf("delete prod: %v", err)
+	if p.CallCount("Delete") != 0 || p.CallCount("Power") != 0 {
+		t.Error("a verb on an unlabelled server reached the API's lifecycle")
 	}
-	if p.CallCount("Delete") != 0 {
-		t.Error("delete prod reached the API")
+	if _, err := os.Stat(log); err == nil {
+		t.Error("dialled an unlabelled server")
 	}
 	if saved, _ := config.LoadPorts(a.Paths, "box"); len(saved) != 1 {
 		t.Fatalf("a refusal touched box's saved forwards: %v", saved)
@@ -312,6 +304,7 @@ func TestProviderStatusRows(t *testing.T) {
 	fakeLocalSmolvm(t, `[{"name":"vm","state":"running","created_at":1}]`)
 	p := withFakeHetzner(t, a, "\n[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n", false)
 	addServer(t, p, "box", "3.3.3.3", provider.StateRunning, true)
+	addServer(t, p, "off", "5.5.5.5", provider.StateStopped, true)
 	addServer(t, p, "prod", "4.4.4.4", provider.StateStopped, false)
 	addServer(t, p, "web", "1.1.1.1", provider.StateRunning, true)
 	addServer(t, p, "vm", "2.2.2.2", provider.StateRunning, true)
@@ -322,7 +315,7 @@ func TestProviderStatusRows(t *testing.T) {
 	out := a.Stdout.(*bytes.Buffer).String()
 	for _, want := range []string{
 		"box\thetzner\trunning\t-\tmanaged\tverified=-\n",
-		"prod\thetzner\tstopped\t-\tunmanaged\tverified=-\n",
+		"off\thetzner\tstopped\t-\tmanaged\tverified=-\n",
 		"web\tremote\t?\t-\tshadowed\t",
 		"vm\tsmol\trunning\t-\tshadowed\t-\n",
 	} {
@@ -333,12 +326,28 @@ func TestProviderStatusRows(t *testing.T) {
 	if strings.Contains(out, "web\thetzner") || strings.Contains(out, "vm\thetzner") {
 		t.Errorf("a shadowed server has a row:\n%s", out)
 	}
+	// An unlabelled server has no row, and --plain does not count it.
+	if strings.Contains(out, "prod") || strings.Contains(out, "without the") {
+		t.Errorf("--plain shows the unlabelled server:\n%s", out)
+	}
 	if p.CallCount("List") != 1 {
 		t.Fatalf("List = %d, want 1", p.CallCount("List"))
 	}
 	data, err := os.ReadFile(filepath.Join(a.Paths.CacheDir(), "provider-hetzner.list"))
-	if err != nil || !strings.Contains(string(data), "fetched=") || !strings.Contains(string(data), "box\t") {
+	if err != nil || !strings.Contains(string(data), "fetched=") || !strings.Contains(string(data), "box\t") ||
+		!strings.Contains(string(data), "unlabelled=1\n") || strings.Contains(string(data), "prod") {
 		t.Fatalf("cache = %q, %v", data, err)
+	}
+
+	// The human listing ends in one line counting it, from the same List.
+	if err := runTree(t, a, "status"); err != nil {
+		t.Fatal(err)
+	}
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.HasSuffix(out, "\nhetzner: 1 server in the project without the devvm=true label (devvm does not see them; they may still bill)\n") || strings.Contains(out, "prod") {
+		t.Errorf("status lacks the unlabelled line:\n%s", out)
+	}
+	if p.CallCount("List") != 2 {
+		t.Fatalf("List = %d, want 2 (one per one-shot status)", p.CallCount("List"))
 	}
 	if strings.Contains(string(data), "test-token") {
 		t.Fatal("the token leaked into the cache")
@@ -349,7 +358,7 @@ func TestProviderStatusRows(t *testing.T) {
 	if err != nil || !strings.Contains(snap, "box\thetzner\trunning") {
 		t.Fatalf("snapshot = %q, %v", snap, err)
 	}
-	if p.CallCount("List") != 1 || p.CallCount("Get") != 0 {
+	if p.CallCount("List") != 2 || p.CallCount("Get") != 0 {
 		t.Fatal("a snapshot dialled the API")
 	}
 
@@ -360,7 +369,7 @@ func TestProviderStatusRows(t *testing.T) {
 	if out := a.Stdout.(*bytes.Buffer).String(); strings.Contains(out, "hetzner") {
 		t.Errorf("--local listed a provider:\n%s", out)
 	}
-	if p.CallCount("List") != 1 {
+	if p.CallCount("List") != 2 {
 		t.Fatal("--local listed the provider")
 	}
 
@@ -378,6 +387,9 @@ func TestProviderStatusRows(t *testing.T) {
 	}
 	if strings.Contains(out, "unreachable") {
 		t.Errorf("a failed listing read as unreachable:\n%s", out)
+	}
+	if strings.Contains(out, "without the") {
+		t.Errorf("a failed listing still counted unlabelled servers:\n%s", out)
 	}
 
 	// No token: the hint on stderr, the cache still shown.
@@ -401,11 +413,11 @@ func TestProviderStatusRows(t *testing.T) {
 
 	// status NAME on a provider box.
 	writeTokenFile(provider.TokenPath(a.Paths, "hetzner"), "t")
-	if err := runTree(t, a, "status", "prod"); err != nil {
+	if err := runTree(t, a, "status", "off"); err != nil {
 		t.Fatal(err)
 	}
-	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "prod (hetzner)") || !strings.Contains(out, "managed: no") || !strings.Contains(out, "still billed") {
-		t.Errorf("status prod:\n%s", out)
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "off (hetzner)") || !strings.Contains(out, "managed: yes") || !strings.Contains(out, "still billed") {
+		t.Errorf("status off:\n%s", out)
 	}
 }
 
@@ -527,7 +539,7 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 	a := newTestApp(t)
 	var w bytes.Buffer
 	a.Stderr = &w
-	pm := config.NewProviderMachine("box", config.BackendHetzner, true, config.ProviderServer{Address: "1.2.3.4"})
+	pm := config.NewProviderMachine("box", config.BackendHetzner, config.ProviderServer{Address: "1.2.3.4"})
 	a.warnIgnored(pm, config.Template{Name: "big", Memory: 8192, ServerType: "cx43"}, setupOpts{})
 	if got := w.String(); !strings.Contains(got, "ignoring memory (not applicable to a Hetzner server)") {
 		t.Errorf("provider: %q", got)
@@ -546,4 +558,13 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 			t.Errorf("smol, %s: %q", tc.tmpl, got)
 		}
 	}
+}
+
+func mustFile(t *testing.T, a *App) *config.File {
+	t.Helper()
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }

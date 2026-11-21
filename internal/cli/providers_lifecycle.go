@@ -167,11 +167,11 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	// The address first, so the user can watch (or ssh in) while setup waits.
 	fmt.Fprintf(a.Stdout, "Created '%s' (server %d) at %s; setting it up.\n", srv.Name, srv.ID, srv.Address)
 
-	m := providerRecord(pn, *srv)
-	if !m.Managed() {
+	if !provider.Managed(*srv) {
 		return fmt.Errorf("%s server '%s' came back without the %s=%s label, so devvm will not shape it; %s",
 			providerTitle(pn), srv.Name, provider.LabelManaged, provider.LabelManagedValue, next)
 	}
+	m := providerRecord(pn, *srv)
 	b, err := providerBackendFor(m, a.Paths)
 	if err != nil {
 		return fmt.Errorf("%s server '%s' was created (server %d, %s) and bills, but %v; %s",
@@ -477,12 +477,11 @@ func (a *App) deleteProviderBox(m *config.Machine, yes bool) error {
 // powerProviderBox is `start`/`stop` on a provider server (§3, §8). The
 // state is the API row resolve just fetched (its Get is the "Get first"):
 // a server already in the asked state is a no-op that says so, rather than
-// Hetzner's action error. An unmanaged server is someone's in the project,
-// so the power change confirms first (--yes skips). stop mirrors smol's:
+// Hetzner's action error. stop mirrors smol's:
 // the forward daemon is stopped before the power goes, and start brings
 // the saved forwards back up. stop warns every time, on stderr: a stopped
 // server still bills.
-func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
+func (a *App) powerProviderBox(m *config.Machine, on bool) error {
 	srv, pn := m.Server, m.Backend
 	verb, want := "stop", provider.StateStopped
 	if on {
@@ -495,12 +494,7 @@ func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
 		// An off box answers nothing: the last contact would read as a
 		// live "reachable, verified 22s ago" until the next probe.
 		_ = reach.Remove(a.Paths, m.Name)
-		if m.Managed() {
-			fmt.Fprintf(a.Stderr, "devvm: %s is stopped but still billed; devvm delete %s frees it\n", m.Name, m.Name)
-		} else {
-			// delete refuses a server devvm did not make: the console is the way.
-			fmt.Fprintf(a.Stderr, "devvm: %s is stopped but still billed; delete it in the %s console to stop billing\n", m.Name, providerTitle(pn))
-		}
+		fmt.Fprintf(a.Stderr, "devvm: %s is stopped but still billed; devvm delete %s frees it\n", m.Name, m.Name)
 	}
 	if srv.State == want {
 		fmt.Fprintf(a.Stdout, "devvm: '%s' is already %s\n", m.Name, want)
@@ -509,16 +503,6 @@ func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
 			return a.resumeProviderForwards(m)
 		}
 		return nil
-	}
-	if !m.Managed() && !yes {
-		ok, err := confirmYes(fmt.Sprintf("'%s' is a %s server devvm did not make (no %s=%s label; %s, %s): really %s it?",
-			m.Name, providerTitle(pn), provider.LabelManaged, provider.LabelManagedValue, srv.State, orDash(srv.Address), verb))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("aborted")
-		}
 	}
 	cl, err := a.lifecycleClient(pn)
 	if err != nil {
@@ -550,14 +534,11 @@ func (a *App) powerProviderBox(m *config.Machine, on, yes bool) error {
 // for smol. The API says running as soon as the server boots, well before
 // sshd listens, and a daemon spawned then exits on its first dial; so it
 // first waits for ssh as setup does (waitSSH: bounded, one "waiting" line,
-// only "unreachable" retried, no root adoption: a managed box has its
-// user), which costs one probe when sshd is up already. Then the saved
+// only "unreachable" retried, no root adoption: a server devvm made has
+// its user), which costs one probe when sshd is up already. Then the saved
 // forwards, from the cache: resolve's Get, merged, is the newest answer
 // there is, and the daemon reads only the cache too.
 func (a *App) resumeProviderForwards(m *config.Machine) error {
-	if !m.Managed() {
-		return nil // no forwards on a server devvm did not make, and no known user
-	}
 	ctx, stop := interruptContext()
 	defer stop()
 	switch r, err := a.waitSSH(ctx, m); {

@@ -19,7 +19,10 @@ import (
 )
 
 // The provider source (docs/proposals/providers.md §2, §5). A provider
-// server has no entry: it is discovered from the provider's API, the last
+// server has no entry: it is discovered from the provider's API, and only
+// one devvm made (the devvm=true label) is seen at all (simplify.md step
+// 13): a lookup ignores any other, and a listing caches only the labelled
+// ones, counting the rest for one line of `status`. It is the last
 // of resolve's ordered sources (HUB/NAME → entry → local smol → each
 // configured provider), and listed by `status` from a per-provider cache
 // that only a live round writes. It lives here rather than among
@@ -90,10 +93,11 @@ func (a *App) providerClient(name string) (provider.Provider, error) {
 }
 
 // providerRecord turns an API row into the record every verb uses
-// (config.NewProviderMachine): Managed is the label, settled here by the
-// source that produced the row (config.md §9 item 3).
+// (config.NewProviderMachine). Only a row with devvm's label gets one: the
+// source keeps no other (config.md §9 item 3), and create checks the
+// server it made.
 func providerRecord(providerName string, s provider.Server) *config.Machine {
-	return config.NewProviderMachine(s.Name, providerName, provider.Managed(s), config.ProviderServer{
+	return config.NewProviderMachine(s.Name, providerName, config.ProviderServer{
 		ID: s.ID, Status: s.Status, State: s.State, Address: s.Address, Type: s.Type, Location: s.Location,
 	})
 }
@@ -125,13 +129,15 @@ func (a *App) cachedProviders() func() {
 // name order, first match wins. It runs only after the entry and smol
 // sources missed, so a name either of them knows never dials the API.
 //
-// Live (the default), it is one Get per provider with a token. A provider
-// with no token is skipped and named in the returned hint for the caller's
-// "unknown machine" error (so the hint shows only when nothing matched). An
-// API error stops the search: a provider that cannot answer must not let
-// the name read as unknown. Each answer is merged into the cache (a found
-// row replaced, a vanished one dropped), so the daemon spawned right after
-// finds what this command found.
+// Live (the default), it is one Get per provider with a token. A server
+// without the devvm=true label is ignored, as if absent: devvm sees only
+// what it made. A provider with no token is skipped and named in the
+// returned hint for the caller's "unknown machine" error (so the hint
+// shows only when nothing matched). An API error stops the search: a
+// provider that cannot answer must not let the name read as unknown. Each
+// answer is merged into the cache (a found row replaced, a vanished or
+// unlabelled one dropped), so the daemon spawned right after finds what
+// this command found.
 //
 // Cached, it reads the last listing and nothing else; a miss with a
 // provider configured is an error naming the refresh, since the server may
@@ -169,6 +175,9 @@ func (a *App) providerLookup(f *config.File, name string, mode providerMode) (*c
 		if err != nil {
 			return nil, "", fmt.Errorf("%s: looking up %q: %w", pn, name, err)
 		}
+		if s != nil && !provider.Managed(*s) {
+			s = nil // not devvm's: invisible to it
+		}
 		_ = a.mergeProviderRow(pn, name, s) // derived data; a failed merge is not a failed lookup
 		if s != nil {
 			return providerRecord(pn, *s), "", nil
@@ -178,9 +187,14 @@ func (a *App) providerLookup(f *config.File, name string, mode providerMode) (*c
 }
 
 // mergeProviderRow puts one Get's answer into the cache: s replaces the
-// row named name (appended if new), nil drops it. fetched, attempted and
-// error are the last listing's and are left alone: one row is not a listing.
+// row named name (appended if new), nil drops it, and so does a server
+// without the label (the cache holds devvm's servers only). fetched,
+// attempted and error are the last listing's and are left alone: one row
+// is not a listing.
 func (a *App) mergeProviderRow(providerName, name string, s *provider.Server) error {
+	if s != nil && !provider.Managed(*s) {
+		s = nil
+	}
 	unlock, err := lockProviderCache(a.Paths, providerName)
 	if err != nil {
 		return err
@@ -225,24 +239,6 @@ func lockProviderCache(p config.Paths, name string) (func(), error) {
 	return func() { f.Close() }, nil // closing drops the lock
 }
 
-// providerUnmanagedErr is the refusal for a provider server without the
-// devvm=true label (providers.md §2, §8): no verb but status, start, stop,
-// shell and exec touches one. The handover is the label, set in the
-// provider's console.
-func providerUnmanagedErr(m *config.Machine) error {
-	return fmt.Errorf("'%s' is a %s server devvm does not manage (no %s=%s label): only status, start, stop, shell and exec work; set the label in the %s console to hand it over",
-		m.Name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
-}
-
-// providerNoPromoteErr is setup's (and setup --adopt's) refusal of the
-// same server: setup is how a smol VM is promoted, and a provider server
-// never is (§2), whatever the flags.
-func providerNoPromoteErr(m *config.Machine) error {
-	return fmt.Errorf("'%s' is a %s server without the %s=%s label: devvm never promotes a provider server; set the %s=%s label in the %s console",
-		m.Name, providerTitle(m.Backend), provider.LabelManaged, provider.LabelManagedValue,
-		provider.LabelManaged, provider.LabelManagedValue, providerTitle(m.Backend))
-}
-
 // localOwner names the earlier source that holds name on this host, ""
 // when none does: a `[machines.NAME]` entry or a local smol VM, which
 // shadow a provider server of the same name for every command
@@ -270,21 +266,26 @@ func localOwner(f *config.File, smols smolMachines, name string) string {
 //	# devvm: the last hetzner listing (derived data; safe to delete)
 //	fetched=1760710000
 //	attempted=1760710300
+//	unlabelled=2
 //	error=listing failed: hetzner: GET /servers: 503 ...
 //	# name	id	state	status	address	type	location	labels
 //	web	4711	running	running	1.2.3.4	cx23	nbg1	devvm=true,devvm-template=default
 //
 // fetched is when the rows were listed (Unix seconds; absent: never),
-// attempted when the last round tried, error why that one failed (absent
-// when it succeeded). A failed round keeps the rows and their fetched time,
-// so the snapshot shows the last known state and how old it is.
+// attempted when the last round tried, unlabelled how many servers that
+// listing had without the devvm=true label (absent: none; they have no
+// row), error why the last round failed (absent when it succeeded). A
+// failed round keeps the rows, the count and their fetched time, so the
+// snapshot shows the last known state and how old it is. Only labelled
+// rows are read back (an older devvm cached every server).
 
 // providerCache is one provider's cache file.
 type providerCache struct {
-	servers   []provider.Server
-	fetched   time.Time
-	attempted time.Time
-	err       string
+	servers    []provider.Server // the labelled ones only
+	unlabelled int               // servers the last listing had without the label
+	fetched    time.Time
+	attempted  time.Time
+	err        string
 }
 
 // The error kinds a round records: no token, or the listing failing.
@@ -335,7 +336,9 @@ func parseProviderCache(text string) providerCache {
 					}
 				}
 			}
-			c.servers = append(c.servers, s)
+			if provider.Managed(s) {
+				c.servers = append(c.servers, s)
+			}
 			continue
 		}
 		k, v, ok := strings.Cut(line, "=")
@@ -347,6 +350,8 @@ func parseProviderCache(text string) providerCache {
 			c.fetched = unix(v)
 		case "attempted":
 			c.attempted = unix(v)
+		case "unlabelled":
+			c.unlabelled, _ = strconv.Atoi(v)
 		case "error":
 			c.err = v
 		}
@@ -371,6 +376,9 @@ func (c providerCache) text(name string) string {
 	}
 	if !c.attempted.IsZero() {
 		fmt.Fprintf(&b, "attempted=%d\n", c.attempted.Unix())
+	}
+	if c.unlabelled > 0 {
+		fmt.Fprintf(&b, "unlabelled=%d\n", c.unlabelled)
 	}
 	if c.err != "" {
 		fmt.Fprintf(&b, "error=%s\n", strings.Join(strings.Fields(c.err), " "))
@@ -419,9 +427,12 @@ func writeProviderCache(p config.Paths, name string, c providerCache) error {
 }
 
 // listProvider is one provider's part of a live round: List under the
-// round's deadline, then the cache. A failure (no token, the API down, the
-// deadline) keeps the cached rows and records why, so the snapshot shows
-// the last known state with its age and `status -v` can say what went wrong.
+// round's deadline, then the cache. The one List is unfiltered: the
+// labelled servers become the rows, and the rest are only counted, so a
+// billing server that lost its label is still noticed (unlabelledLines).
+// A failure (no token, the API down, the deadline) keeps the cached rows
+// and records why, so the snapshot shows the last known state with its
+// age and `status -v` can say what went wrong.
 func (a *App) listProvider(ctx context.Context, name string) {
 	cl, err := a.providerClient(name)
 	var servers []provider.Server
@@ -439,7 +450,14 @@ func (a *App) listProvider(ctx context.Context, name string) {
 	c := readProviderCache(a.Paths, name)
 	switch {
 	case err == nil:
-		c = providerCache{servers: servers, fetched: now, attempted: now}
+		c = providerCache{fetched: now, attempted: now}
+		for _, s := range servers {
+			if provider.Managed(s) {
+				c.servers = append(c.servers, s)
+			} else {
+				c.unlabelled++
+			}
+		}
 	case errNoToken(err):
 		c.attempted, c.err = now, providerErrNoToken
 	default:
@@ -525,6 +543,27 @@ func sinceAt(t, now time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// unlabelledLines is the one line per provider a one-shot human `status`
+// prints after its table when the provider's last listing had servers
+// without the devvm=true label: devvm does not see them (no row, no
+// command reaches one), but they may bill. From the cache the live round
+// just wrote, and only when that round succeeded; never in --plain, whose
+// format must not change, and never from a path that does not list.
+func (a *App) unlabelledLines() []string {
+	f, err := config.LoadFile(a.Paths)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, pn := range f.ProviderNames() {
+		if c := readProviderCache(a.Paths, pn); c.err == "" && c.unlabelled > 0 {
+			out = append(out, fmt.Sprintf("%s: %s in the project without the %s=%s label (devvm does not see them; they may still bill)",
+				pn, countServers(c.unlabelled), provider.LabelManaged, provider.LabelManagedValue))
+		}
+	}
+	return out
 }
 
 // noteNoToken is the one line a one-shot `status` prints for a configured
