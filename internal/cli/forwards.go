@@ -65,48 +65,39 @@ func sinceHuman(t time.Time) string {
 	}
 }
 
-func (a *App) runPort(name, mapping string, ephemeral bool) error {
+func (a *App) runPort(name, mapping string) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`: the ports file or a live forward changed
 	m, b, err := a.resolveForwards(name)
 	if err != nil {
 		return err
 	}
-	return a.addPort(m, b, mapping, ephemeral)
+	return a.addPort(m, b, mapping)
 }
 
 // addPort saves a mapping to this host's ports file and, if the VM is
 // running, brings the forward up. Saving comes first: adding a port must
 // work on a stopped box too; only the live bind needs the VM running.
-// ephemeral skips the save, so the forward lasts only as long as the
-// daemon; it still needs a running VM, having nowhere to wait.
-func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string, ephemeral bool) error {
+// `ports add` is the one way to save a forward.
+func (a *App) addPort(m *config.Machine, b backend.Backend, mapping string) error {
 	pref, guest, err := parseMapping(mapping)
 	if err != nil {
 		return err
 	}
-	if !ephemeral {
-		if err := a.editPorts(m, func(ports []string) []string {
-			if _, ok := findMappingIn(ports, pref, guest); ok {
-				return ports
-			}
-			return append(ports, mapping)
-		}); err != nil {
-			return err
+	if err := a.editPorts(m, func(ports []string) []string {
+		if _, ok := findMappingIn(ports, pref, guest); ok {
+			return ports
 		}
+		return append(ports, mapping)
+	}); err != nil {
+		return err
 	}
-	// An --ephemeral forward is still a conf-owned Add (`owner=conf` in
-	// `ports list`): the owner kinds are a compatibility surface the menubar
-	// parses, and a conf owner is what `ports down`/`ports rm` already drop.
 	if err := requireRunningForForwards(m, b, 0); err != nil {
-		if ephemeral {
-			return err
-		}
 		fmt.Fprintf(a.Stdout, "devvm: recorded %s; forwards come up on 'devvm start %s'\n", mapping, m.Name)
 		return nil
 	}
 	cl, err := session.Dial(a.Paths, m.Name)
 	if err != nil {
-		if m.IsHubMachine() && !ephemeral {
+		if m.IsHubMachine() {
 			// Recorded either way; the hub said why it could not forward now
 			// (a stopped VM, an unreachable hub), and `start`/`ports up`
 			// brings it up later.
@@ -195,8 +186,8 @@ func (a *App) unportUnconfigured(name string, saved []string, mapping string, gu
 		}
 		// A ttl owner (a bridge callback) is what `ports rm` exists to drop
 		// here. A conf owner the ports file no longer names (a hand edit, an
-		// --ephemeral add, or a pre-owner daemon, which removes outright) is
-		// stale and goes too.
+		// add from an older devvm's --ephemeral, or a pre-owner daemon,
+		// which removes outright) is stale and goes too.
 		// A connection owner is never ours to drop.
 		var drop string
 		switch {

@@ -366,7 +366,7 @@ func (a *App) restartDaemon(res *restartResult, name string, cl *session.Client)
 // anyConfiguredForward reports whether at least one of the daemon's
 // forwards is conf-owned and maps a guest port in the machine's saved
 // forwards, i.e. whether `ports up` after a stop recreates what was up, and
-// nothing the user took down (or added --ephemeral).
+// nothing the user took down.
 func anyConfiguredForward(paths config.Paths, name string, fwds []session.Forward) bool {
 	saved, err := config.LoadPorts(paths, name)
 	if err != nil {

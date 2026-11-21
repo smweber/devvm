@@ -155,7 +155,7 @@ func TestHubPortsConcurrentAddsBothLand(t *testing.T) {
 		go func(m string) {
 			defer wg.Done()
 			for i := 0; i < n; i++ {
-				if err := a.runPort(m, fmt.Sprint(20000+i), false); err != nil {
+				if err := a.runPort(m, fmt.Sprint(20000+i)); err != nil {
 					errs <- fmt.Errorf("%s: %w", m, err)
 				}
 			}

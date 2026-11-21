@@ -82,7 +82,7 @@ func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Paths: testPaths(t.TempDir()), Stdout: &out, Stderr: &out}
 	m := managedSmol("vm")
-	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080:8080", false); err != nil {
+	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080:8080"); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := config.LoadPorts(a.Paths, "vm")
@@ -93,26 +93,18 @@ func TestAddPortRecordsWithoutRunningVM(t *testing.T) {
 		t.Errorf("ports add wrote devvm.toml: %v", err)
 	}
 	// "8080" is the same forward: nothing new is saved.
-	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080", false); err != nil {
+	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "8080"); err != nil {
 		t.Fatal(err)
 	}
 	if saved, _ := config.LoadPorts(a.Paths, "vm"); len(saved) != 1 {
 		t.Errorf("an equivalent mapping was saved twice: %v", saved)
-	}
-	// --ephemeral saves nothing, and with nowhere to wait it refuses a
-	// stopped VM rather than claiming a recording.
-	if err := a.addPort(m, &statusBackend{runningAfter: -1}, "9000", true); err == nil || !strings.Contains(err.Error(), "not running") {
-		t.Errorf("ephemeral add on a stopped VM = %v, want the not-running refusal", err)
-	}
-	if saved, _ := config.LoadPorts(a.Paths, "vm"); len(saved) != 1 {
-		t.Errorf("--ephemeral saved: %v", saved)
 	}
 	if !strings.Contains(out.String(), "recorded 8080:8080; forwards come up on 'devvm start vm'") {
 		t.Fatalf("output = %q", out.String())
 	}
 	// A conf edit on a stopped VM must not stall on the start-time poll.
 	if b := (&statusBackend{runningAfter: -1}); true {
-		_ = a.addPort(m, b, "8081:8081", false)
+		_ = a.addPort(m, b, "8081:8081")
 		if b.calls > 2 {
 			t.Fatalf("Status polled %d times on `ports add`; want at most 2", b.calls)
 		}

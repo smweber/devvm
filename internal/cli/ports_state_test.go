@@ -16,8 +16,8 @@ import (
 )
 
 // Saved forwards are host state (config.md §5): `ports add` saves to
-// <State>/ports/NAME (not the conf), --ephemeral forwards without saving,
-// `ports rm` drops the line, and `config rm` removes the file with the entry.
+// <State>/ports/NAME (not the conf), `ports rm` drops the line, and
+// `config rm` removes the file with the entry. --ephemeral is gone.
 func TestPortsVerbsUseStateFile(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t))}
 	m := config.NewRemote("box", true, "dev@example")
@@ -34,14 +34,14 @@ func TestPortsVerbsUseStateFile(t *testing.T) {
 	if err := runTree(t, a, "ports", "add", "box", "3000"); err != nil {
 		t.Fatalf("ports add: %v\n%s", err, a.Stderr)
 	}
-	if err := runTree(t, a, "ports", "add", "box", "4000", "--ephemeral"); err != nil {
-		t.Fatalf("ports add --ephemeral: %v\n%s", err, a.Stderr)
+	if err := runTree(t, a, "ports", "add", "box", "4000", "--ephemeral"); err == nil || !strings.Contains(err.Error(), "unknown flag: --ephemeral") {
+		t.Errorf("ports add --ephemeral = %v, want the unknown flag", err)
 	}
-	if adds := od.requests(session.OpAdd); len(adds) != 2 || adds[0].Guest != 3000 || adds[1].Guest != 4000 {
-		t.Errorf("adds = %+v, want 3000 then the ephemeral 4000", adds)
+	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 {
+		t.Errorf("adds = %+v, want 3000 alone", adds)
 	}
 	if saved, _ := config.LoadPorts(a.Paths, "box"); !slices.Equal(saved, []string{"3000"}) {
-		t.Errorf("saved = %v, want only 3000 (--ephemeral saves nothing)", saved)
+		t.Errorf("saved = %v, want only 3000", saved)
 	}
 	if data, _ := os.ReadFile(a.Paths.PortsPath("box")); !strings.Contains(string(data), "\n3000\n") {
 		t.Errorf("ports file =\n%s", data)

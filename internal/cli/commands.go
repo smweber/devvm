@@ -151,14 +151,12 @@ func (a *App) execCmd() *cobra.Command {
 func (a *App) portsCmd() *cobra.Command {
 	c := &cobra.Command{Use: "ports", Short: "Manage a machine's port forwards"}
 
-	var ephemeral bool
 	add := &cobra.Command{
 		Use:   "add NAME HOST:GUEST",
-		Short: "Forward host port HOST -> guest GUEST (auto-bumps on conflict)",
+		Short: "Save a forward host HOST -> guest GUEST and bring it up (auto-bumps on conflict)",
 		Args:  cobra.ExactArgs(2),
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPort(args[0], args[1], ephemeral) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runPort(args[0], args[1]) },
 	}
-	add.Flags().BoolVar(&ephemeral, "ephemeral", false, "forward now without saving it (lasts as long as the forward daemon)")
 	rm := &cobra.Command{
 		Use:   "rm NAME HOST:GUEST",
 		Short: "Remove a configured forward + tear it down",
