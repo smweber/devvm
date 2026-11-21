@@ -33,10 +33,9 @@ var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
 const (
-	ownManaged   = "managed"   // devvm made it: the devvm=true label, which every smol and provider row has
-	ownUnmanaged = "unmanaged" // only from a hub one release older (an unlabelled VM there), or its old remote-unmanaged
-	ownShadowed  = "shadowed"  // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
-	ownNone      = "-"         // entries (devvm never shapes one) and hubs; a hub machine whose hub did not say
+	ownManaged  = "managed"  // devvm made it: the devvm=true label, which every smol and provider row has
+	ownShadowed = "shadowed" // a registry entry hiding a local smol VM, or an entry or smol VM hiding a provider server, of the same name
+	ownNone     = "-"        // entries (devvm never shapes one) and hubs; a hub machine whose hub did not say
 )
 
 // statusRow is one machine's resolved status for rendering.
@@ -53,7 +52,7 @@ type statusRow struct {
 	host        string
 	fwds        fwdSummary
 	saved       bool         // this host has saved forwards for it (<State>/ports/NAME): --plain's `down`
-	managed     string       // the --plain fifth column: managed | unmanaged | shadowed | -
+	managed     string       // the --plain fifth column: managed | shadowed | -
 	note        string       // a remark for the human table, e.g. "this host"
 	reach       *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
 	hubVerified string       // a hub machine's sixth column as its hub sent it (`verified=…`); "" when it sent none
@@ -178,19 +177,15 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 //
 //	state:    running | stopped | reachable | unreachable | ?
 //	forwards: up:N | reconnecting:N | down | -
-//	managed:  managed | shadowed | - (an older hub may send unmanaged)
+//	managed:  managed | shadowed | -
 //	verified: verified=<unix>:<how> | verified=- | -
 //
 // The fifth column was appended (config.md §7), so a consumer reading four
 // fields still works. `managed` is a smol VM or provider server devvm made
 // (its devvm=true label; one without it has no row at all); `shadowed` is
-// a entry hiding a local smol VM of the same name (the entry wins for
-// every command); `-` is an entry (remote or hub: devvm never shapes one),
-// or a machine on a hub too old to emit the column. This host never says
-// `unmanaged`; a hub one release older may (an unlabelled VM it still
-// lists, or `managed`/`unmanaged` for its own remote entries), passed
-// through. `dormant` is gone (a smol VM exists or it doesn't), though an
-// older hub may still send it.
+// an entry hiding a local smol VM of the same name (the entry wins for
+// every command); `-` is an entry (remote or hub: devvm never shapes one).
+// A hub machine's column is what its hub sent, passed through.
 //
 // N is the number of configured (`conf`-owned) forwards the daemon holds; a
 // forward only a session or a ttl holds is not counted (browser-bridge.md
@@ -221,8 +216,7 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 //
 // Hubs add no column: a hub's own row is `HUB<TAB>hub<TAB>reachable|unreachable`,
 // and a machine on it is `HUB/NAME` with the backend and state the hub
-// reported (an older hub's `remote-managed`/`remote-unmanaged` read as
-// `remote` plus the managed column; a hub's remote box that is also an
+// reported (a hub's remote box that is also an
 // entry here is not repeated, since the direct path is the right one) (`unreachable` for every row of a hub that did not answer, from
 // the cache) and this host's own forwards column. A consumer that wants to
 // group by hub splits column 1 on `/`. --local lists this host only.
@@ -635,16 +629,14 @@ func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config
 		}
 		r.managed = ownNone
 		if hr, ok := byName[n]; ok {
-			// The hub's own word on ownership (its label), passed through;
-			// a hub too old for the column said nothing, which is `-`.
+			// The hub's own word on ownership (its label), passed through.
 			r.backend, r.state, r.managed = hr.backend, hr.state, hr.managed
 			// A newer hub's sixth column, passed through as the hub said
 			// it (its remote boxes' last contact, from the hub's cache).
 			if v, _, _ := strings.Cut(hr.rest, "\t"); strings.HasPrefix(v, "verified=") {
 				r.hubVerified = v
 			}
-			// "dormant" only from a hub older than the dormant state's removal.
-			r.exists, r.running = hr.state != "dormant", hr.state == "running"
+			r.exists, r.running = true, hr.state == "running"
 		} else {
 			r.backend, r.state = config.BackendHub, "?"
 		}

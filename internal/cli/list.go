@@ -19,8 +19,7 @@ import (
 //     §2), except one an entry of the same name shadows;
 //   - HUB/NAME for every saved-forwards file ports/HUB@NAME (savedHubPorts);
 //   - HUB/NAME for every name in the hub's cached listing (cachedHubMachines);
-//   - HUB/NAME for every live run/HUB@NAME.sock, in this layout's run/ and
-//     the pre-split one's (a v0.1.15 daemon keeps serving from there);
+//   - HUB/NAME for every live run/HUB@NAME.sock;
 //   - every server in a configured provider's cached listing.
 //
 // It lives here and not in config, which stays a file reader that never dials
@@ -119,16 +118,9 @@ func savedHubPorts(paths config.Paths) []string {
 // liveHubSockets lists HUB/NAME for every run/HUB@NAME.sock. A stale socket
 // (daemon crashed) is listed too; status pings it and shows no daemon, which
 // is the truthful answer. Local sockets carry no '@' and are skipped: their
-// machines come from the file and discovery. The pre-split layout's run/
-// (config.LegacyPaths) is globbed too: a hub-machine daemon v0.1.15 started
-// keeps serving there, and update must find it to cycle it even when no
-// cache or ports file names it.
+// machines come from the file and discovery.
 func liveHubSockets(paths config.Paths) []string {
 	matches, _ := filepath.Glob(filepath.Join(paths.RuntimeDir(), "*@*.sock"))
-	if old := config.LegacyPaths(paths.Config); old.RuntimeDir() != paths.RuntimeDir() {
-		legacy, _ := filepath.Glob(filepath.Join(old.RuntimeDir(), "*@*.sock"))
-		matches = append(matches, legacy...)
-	}
 	var names []string
 	for _, p := range matches {
 		rt := strings.TrimSuffix(filepath.Base(p), ".sock")

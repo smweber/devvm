@@ -157,18 +157,15 @@ func TestStatusPlainManagedColumn(t *testing.T) {
 	if strings.Contains(got, "found") || strings.Contains(got, "unmanaged") {
 		t.Errorf("a VM devvm did not create has a row:\n%s", got)
 	}
-	if strings.Contains(got, "dormant") {
-		t.Errorf("dormant is gone:\n%s", got)
-	}
 
 	// The hub's own row: `-`, or shadowed when a VM shares its name.
 	hub := config.NewHub("h", "u@hub")
 	r := a.hubRows(hub, hubListing{fresh: true, rows: []hubRow{
-		{name: "new", backend: "smol", state: "running", forwards: "-", managed: "unmanaged"},
+		{name: "new", backend: "smol", state: "running", forwards: "-", managed: "managed"},
 		{name: "old", backend: "smol", state: "running", forwards: "-", managed: "-"},
 	}}, nil)
-	if got := []string{plainManaged(r[0]), plainManaged(r[1]), plainManaged(r[2])}; strings.Join(got, ",") != "-,unmanaged,-" {
-		t.Errorf("hub rows' column = %v, want -, the hub's unmanaged passed through, - for an old hub", got)
+	if got := []string{plainManaged(r[0]), plainManaged(r[1]), plainManaged(r[2])}; strings.Join(got, ",") != "-,managed,-" {
+		t.Errorf("hub rows' column = %v, want -, then what the hub sent, passed through", got)
 	}
 	smols := smolSnapshot()
 	smols.shadow(&r[0])

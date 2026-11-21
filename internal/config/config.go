@@ -11,7 +11,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -233,28 +232,6 @@ func List(p Paths) ([]string, error) {
 	}
 	return f.Names(), nil
 }
-
-// OldLayout reports whether the config dir still holds the per-machine
-// layout (machines/ or config.toml) with no devvm.toml beside it. Nothing
-// reads the old files any more: the cli prints one line pointing at the
-// hand migration (config.md §8) and carries on with no entries.
-//
-// An empty machines/ is not the old layout: an older `status --watch`
-// created it on every start, conf or not.
-func OldLayout(p Paths) bool {
-	if exists(p.FilePath()) {
-		return false
-	}
-	names, _ := legacyConfNames(p)
-	return len(names) > 0 || exists(LegacyDefaultsPath(p))
-}
-
-// LegacyMachinesDir is the old per-machine conf directory, named only by
-// OldLayout and the one-time seeds (MigratePorts, LegacySmolConfs).
-func LegacyMachinesDir(p Paths) string { return filepath.Join(p.Config, "machines") }
-
-// LegacyDefaultsPath is the old config.toml, named only by OldLayout.
-func LegacyDefaultsPath(p Paths) string { return filepath.Join(p.Config, "config.toml") }
 
 // SplitPort parses a "HOST:GUEST" or bare "PORT" mapping into its host
 // preference and guest port, mirroring split_port in bin/devvm.

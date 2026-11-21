@@ -94,8 +94,7 @@ func hubListOpts(stdin io.Reader, stdout io.Writer) backend.ExecOpts {
 // hubRow is one row of a hub's --plain listing: a bare hub-side name and the
 // tokens as the hub emitted them, passed through and never interpreted, so a
 // newer hub's new token reaches this host's consumer intact. managed is the
-// fifth column (config.md §7), `-` from a hub too old to send it: never
-// `unmanaged`, which that hub did not say. rest is anything a newer hub
+// fifth column (config.md §7), `-` when the hub sent none. rest is anything a newer hub
 // sends past the fifth column, raw (tab-joined), kept so the cache round
 // trips it rather than truncating rows to what this build knows.
 type hubRow struct{ name, backend, state, forwards, managed, rest string }
@@ -118,17 +117,6 @@ func parseHubRows(text string) []hubRow {
 		if len(f) > 4 && f[4] != "" {
 			r.managed = f[4]
 		}
-		// A hub older than devvm.toml names its remote boxes by the old
-		// one-axis backend. Map it onto the two axes this listing speaks
-		// (backend `remote` + the managed column), keeping what a hub that
-		// had the fifth column said there.
-		switch r.backend {
-		case oldBackendRemoteManaged, oldBackendRemoteUnmanaged:
-			if r.managed == "-" {
-				r.managed = map[bool]string{true: ownManaged, false: ownUnmanaged}[r.backend == oldBackendRemoteManaged]
-			}
-			r.backend = config.BackendRemote
-		}
 		if len(f) > 5 {
 			r.rest = strings.Join(f[5:], "\t")
 		}
@@ -136,13 +124,6 @@ func parseHubRows(text string) []hubRow {
 	}
 	return rows
 }
-
-// The backend tokens a hub older than devvm.toml sends for its remote boxes
-// (parseHubRows maps them). Nothing else in devvm speaks them.
-const (
-	oldBackendRemoteManaged   = "remote-managed"
-	oldBackendRemoteUnmanaged = "remote-unmanaged"
-)
 
 // hubListing is what one hub contributes to the merged listing: its rows,
 // and whether the hub said so itself (fresh) or the cache is standing in for

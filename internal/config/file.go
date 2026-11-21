@@ -187,8 +187,6 @@ func (e Entry) machine(name string) (*Machine, error) {
 		return nil, errors.New("smol VMs are discovered from smolvm, not configured: remove this table")
 	case BackendHetzner:
 		return nil, fmt.Errorf("%s servers are discovered from the provider's API, not configured: remove this table (a server made in the console is a backend = \"remote\" entry)", e.Backend)
-	case "remote-managed", "remote-unmanaged", "ssh":
-		return nil, fmt.Errorf(`backend %q is the old layout: write backend = "remote"`, e.Backend)
 	default:
 		return nil, fmt.Errorf(`unsupported backend %q (want "remote" or "hub")`, e.Backend)
 	}

@@ -16,14 +16,13 @@ import (
 
 // listMachines carries every local smol VM smolvm lists (discovery), in
 // one `ls`; one an entry of the same name shadows is listed once, as the
-// entry. A hub-machine daemon still serving from the pre-split run/ (a
-// v0.1.15 one) is listed with no cache or ports file naming it.
-func TestListMachinesSmolAndLegacyHubSocket(t *testing.T) {
+// entry. A hub-machine daemon is listed with no cache or ports file naming
+// it.
+func TestListMachinesSmolAndHubSocket(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: io.Discard, Stderr: io.Discard}
 	log := fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`},{"name":"box","state":"stopped",`+devvmLabel+`}]`)
 	saveRemote(t, a.Paths, "box")
-	legacy := config.LegacyPaths(a.Paths.Config)
-	serveOwnerDaemon(t, legacy, "h/leg", nil, true)
+	serveOwnerDaemon(t, a.Paths, "h/leg", nil, true)
 	want := []string{"box", "h/leg", "web"}
 	if got := a.listMachines(); !slices.Equal(got, want) {
 		t.Errorf("listMachines = %v, want %v", got, want)
@@ -57,9 +56,8 @@ func smolvmLsCalls(t *testing.T, log string) int {
 	return n
 }
 
-// update's restartDaemons cycles a smol VM's daemon in the state dir's
-// run/ and in the pre-split layout's, and a legacy hub-machine daemon.
-func TestRestartDaemonsCyclesSmolBothLayouts(t *testing.T) {
+// update's restartDaemons cycles smol VMs' daemons and a hub machine's.
+func TestRestartDaemonsCyclesSmolAndHub(t *testing.T) {
 	old := daemonGoneTimeout
 	daemonGoneTimeout = 2 * time.Second
 	t.Cleanup(func() { daemonGoneTimeout = old })
@@ -67,10 +65,9 @@ func TestRestartDaemonsCyclesSmolBothLayouts(t *testing.T) {
 	a := &App{Paths: testPaths(shortTempDir(t)), Stdout: &out, Stderr: io.Discard}
 	fakeLocalSmolvm(t, `[{"name":"web","state":"running",`+devvmLabel+`},{"name":"api","state":"running",`+devvmLabel+`}]`)
 	up := map[string]session.Response{session.OpList: {OK: true, State: session.StateUp, Version: "v0.1.15"}}
-	legacy := config.LegacyPaths(a.Paths.Config)
 	web := serveOwnerDaemon(t, a.Paths, "web", up, true)
-	api := serveOwnerDaemon(t, legacy, "api", up, true)
-	hub := serveOwnerDaemon(t, legacy, "h/leg", up, true)
+	api := serveOwnerDaemon(t, a.Paths, "api", up, true)
+	hub := serveOwnerDaemon(t, a.Paths, "h/leg", up, true)
 	res := a.restartDaemons()
 	for name, d := range map[string]*ownerDaemon{"web": web, "api": api, "h/leg": hub} {
 		if len(d.requests(session.OpStop)) != 1 {

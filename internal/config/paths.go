@@ -24,10 +24,10 @@ func DefaultPaths() Paths {
 	return Paths{Config: DefaultConfigDir(), State: DefaultStateDir()}
 }
 
-// LegacyPaths is the layout before the split, when every state file lived in
-// the config dir: still what a non-default --config-dir without --state-dir
-// means (one self-contained instance, as before), and where MigrateState
-// looks for state to move.
+// LegacyPaths is the layout from before the config/state split, every state
+// file in the config dir: what a non-default --config-dir without
+// --state-dir means, one self-contained instance (a test, a second
+// registry).
 func LegacyPaths(configDir string) Paths {
 	return Paths{Config: configDir, State: configDir}
 }

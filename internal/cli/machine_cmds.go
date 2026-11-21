@@ -394,8 +394,7 @@ func (a *App) reapRunFiles(name string) {
 // delete prompts through the forwarded terminal before destroying a real VM
 // (and refuses with no terminal), so a second prompt here would only ask the
 // same question twice. --yes given here goes to the hub's delete, and only
-// then: without a terminal (no -t) the hub cannot ask. A hub older than
-// v0.1.17 has no delete --yes and refuses the flag (cobra's own line).
+// then: without a terminal (no -t) the hub cannot ask.
 func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend, yes bool) error {
 	hub, machine := m.Hub, m.HubMachineName()
 	p, ok := b.(backend.Proxier)

@@ -73,7 +73,7 @@ func TestResolveRequiredMemoryErrorsWithoutDefault(t *testing.T) {
 // Remote create is gone (config.md §4): `create --backend remote|hub`
 // points at `config add`, before any prompt or dial.
 func TestCreateRefusesRemoteBackends(t *testing.T) {
-	for _, be := range []string{"remote", "hub", "remote-managed", "remote-unmanaged"} {
+	for _, be := range []string{"remote", "hub"} {
 		a := newTestApp(t)
 		err := a.runCreate(createSpec{Name: "box", Backend: be, Yes: true})
 		if err == nil || !strings.Contains(err.Error(), "config add") {

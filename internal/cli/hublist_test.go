@@ -354,15 +354,13 @@ func TestStatusHubUnreachableWithinDeadline(t *testing.T) {
 	})
 }
 
-// A hub older than devvm.toml sends its remote boxes' backend as
-// remote-managed/remote-unmanaged: the laptop reads them as `remote` and
-// the managed column, keeping a fifth column the hub did send.
-func TestParseHubRowsMapsOldBackends(t *testing.T) {
-	got := parseHubRows("a\tremote-managed\treachable\t-\nb\tremote-unmanaged\t?\t-\t-\nc\tremote-unmanaged\t?\t-\tshadowed\nd\tsmol\trunning\t-\n")
+// A hub's tokens are passed through as it sent them, a backend this build
+// does not know included; a missing fifth column reads `-`.
+func TestParseHubRowsPassesTokensThrough(t *testing.T) {
+	got := parseHubRows("a\tremote\treachable\t-\t-\nb\tnewkind\t?\t-\tshadowed\nd\tsmol\trunning\t-\n")
 	want := []hubRow{
-		{"a", "remote", "reachable", "-", "managed", ""},
-		{"b", "remote", "?", "-", "unmanaged", ""},
-		{"c", "remote", "?", "-", "shadowed", ""},
+		{"a", "remote", "reachable", "-", "-", ""},
+		{"b", "newkind", "?", "-", "shadowed", ""},
 		{"d", "smol", "running", "-", "-", ""},
 	}
 	if !slices.Equal(got, want) {

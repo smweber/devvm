@@ -315,9 +315,9 @@ func TestCompletionOmitsHubsForShapingVerbs(t *testing.T) {
 }
 
 // The floor is pinned so a change is deliberate: bump this and hubMinVersion
-// together (last: config step 4, `setup` and the proxied template flags).
+// together (last: simplify.md phase 5, the release that carries the plan).
 func TestHubMinVersionPinned(t *testing.T) {
-	if hubMinVersion != "v0.1.16" {
-		t.Fatalf("hubMinVersion = %q; it must be the first tag that ships setup and the template flags (see hub.go)", hubMinVersion)
+	if hubMinVersion != "v0.2.0" {
+		t.Fatalf("hubMinVersion = %q; it must be the release that carries simplify.md (see hub.go)", hubMinVersion)
 	}
 }

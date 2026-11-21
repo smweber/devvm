@@ -97,12 +97,12 @@ var hubHeartbeat = 20
 // (the same one a dead master or `__session` starts) is the recovery.
 const hubPingMisses = 2
 
-// HubForwardsMinVersion is the first devvm release whose hub side serves
-// hub forwards (`__session`, relay sessions). It is checked per feature,
-// when a relay is opened, not by the hub floor (the cli's hubMinVersion),
-// because listing, cp and proxying work against older hubs. It must be the
-// first tag that ships roadmap step 6.
-const HubForwardsMinVersion = "v0.1.14"
+// HubForwardsMinVersion is the oldest devvm whose hub side this host's
+// relay is meant for (`__session`, relay sessions), named when a hub has no
+// `__session` or its daemon no relays. It is the hub floor (the cli's
+// hubMinVersion): first shipped in v0.1.14, raised with the floor to the
+// release that carries simplify.md.
+const HubForwardsMinVersion = "v0.2.0"
 
 // errHubRefused marks a hub's explicit refusal of a relayed add (its error
 // reply). The hub is up and answering; this one forward cannot be had there
@@ -377,12 +377,13 @@ func (t *hubTransport) events() <-chan bridgeRequest { return t.evCh }
 // open; "" from a hub too old for browser opens.
 func (t *hubTransport) shimPath() string { return t.shim }
 
-// HubBridgeMinVersion is the first devvm release whose hub daemon carries
-// browser events across a relay (roadmap step 8): it echoes Bridge on the
-// relay open. Forwards need only HubForwardsMinVersion; a hub between the
-// two keeps them and refuses nothing, but its browser opens never reach
-// this host. It must be the first tag that ships step 8.
-const HubBridgeMinVersion = "v0.1.15"
+// HubBridgeMinVersion is the oldest devvm whose hub daemon this host
+// expects to carry browser events across a relay: it echoes Bridge (or
+// NoEvents) on the relay open, and one that echoes neither is named too old
+// for browser opens while its forwards still work. First shipped in
+// v0.1.15 (roadmap step 8), raised with the hub floor to the release that
+// carries simplify.md.
+const HubBridgeMinVersion = "v0.2.0"
 
 // errHubTooOld is the upstream subscribe's answer on a relay to a hub
 // daemon without the Bridge echo. A v0.1.14 hub daemon would ack a

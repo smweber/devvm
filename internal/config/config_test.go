@@ -125,8 +125,7 @@ func TestLoadFileRejects(t *testing.T) {
 	for body, want := range map[string]string{
 		"[machines.vm]\nbackend = \"smol\"\n":                                        "discovered",
 		"[machines.x]\nhost = \"h\"\n":                                               "backend is required",
-		"[machines.x]\nbackend = \"remote-managed\"\nhost = \"h\"\n":                 "old layout",
-		"[machines.x]\nbackend = \"ssh\"\nhost = \"h\"\n":                            "old layout",
+		"[machines.x]\nbackend = \"remote-managed\"\nhost = \"h\"\n":                 "unsupported backend",
 		"[machines.x]\nbackend = \"hetzner\"\nhost = \"h\"\n":                        "discovered from the provider's API",
 		"[machines.x]\nbackend = \"aws\"\nhost = \"h\"\n":                            "unsupported backend",
 		"[machines.h]\nbackend = \"hub\"\nmanaged = false\nhost = \"h\"\n":           "managed is gone",
@@ -227,34 +226,6 @@ func TestSplitPort(t *testing.T) {
 		if h, g := SplitPort(in); h != want[0] || g != want[1] {
 			t.Errorf("SplitPort(%q) = %q,%q", in, h, g)
 		}
-	}
-}
-
-// The old layout with no devvm.toml is what the cli points at; once
-// devvm.toml exists it is not.
-func TestOldLayout(t *testing.T) {
-	p := testPaths(t)
-	if OldLayout(p) {
-		t.Error("empty config dir reads as the old layout")
-	}
-	writeConf(t, p.Config, "box", "backend = \"smol\"\n")
-	if !OldLayout(p) {
-		t.Error("machines/ without devvm.toml is the old layout")
-	}
-	// The old files are never read as entries.
-	if names, err := List(p); err != nil || len(names) != 0 {
-		t.Errorf("List = %v, %v", names, err)
-	}
-	writeFile(t, p, "")
-	if OldLayout(p) {
-		t.Error("devvm.toml beside machines/ still reads as the old layout")
-	}
-	q := testPaths(t)
-	if err := os.WriteFile(LegacyDefaultsPath(q), []byte("memory = 1024\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !OldLayout(q) {
-		t.Error("config.toml alone is the old layout")
 	}
 }
 

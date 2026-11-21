@@ -141,7 +141,7 @@ func checkCreateBackend(b string) error {
 	switch b {
 	case "", config.BackendSmol, config.BackendHetzner:
 		return nil
-	case config.BackendRemote, config.BackendHub, "remote-managed", "remote-unmanaged":
+	case config.BackendRemote, config.BackendHub:
 		return fmt.Errorf("create allocates local smol VMs only; add a remote box or hub with 'devvm config add NAME --backend remote|hub --host H'")
 	default:
 		return fmt.Errorf("invalid backend %q (create makes smol VMs and %s servers)", b, strings.Join(config.KnownProviders(), ", "))

@@ -18,8 +18,7 @@ import (
 // then removes the run files nothing else ever removes: NAME.log, and a
 // NAME.sock or NAME.master nobody answers any more (a daemon or master that
 // was killed rather than stopped). NAME.lock is not among them: see
-// RemoveLock, which runs only once the entry is gone. Both the
-// state dir's run/ and a pre-split one in the config dir are reaped. A
+// RemoveLock, which runs only once the entry is gone. A
 // socket something still answers on is never removed: a live master belongs to a daemon still shutting down, and a
 // live control socket to a daemon started since.
 //
@@ -28,33 +27,13 @@ import (
 // so a control socket that does not answer is stale, not about to be
 // served. A daemon starting right now is left to it, and so are its files.
 func Reap(p config.Paths, name string, timeout time.Duration) error {
-	// Up to two daemons: one under the state dir and one an older build
-	// left in the pre-split layout (Existing finds the new one first).
-	for range 2 {
-		cl, err := Existing(p, name)
-		if err != nil {
-			break
-		}
+	if cl, err := Existing(p, name); err == nil {
 		_ = cl.Stop()
-		if !WaitGone(cl.Paths(), name, timeout) {
+		if !WaitGone(p, name, timeout) {
 			return fmt.Errorf("its forward daemon did not exit within %s; run files left in place", timeout)
 		}
 	}
-	for _, at := range runLayouts(p) {
-		if err := reapFiles(at, name); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// runLayouts is p plus, when it differs, the pre-split layout, whose run/
-// may still hold an older build's files.
-func runLayouts(p config.Paths) []config.Paths {
-	if old := config.LegacyPaths(p.Config); old != p {
-		return []config.Paths{p, old}
-	}
-	return []config.Paths{p}
+	return reapFiles(p, name)
 }
 
 func reapFiles(p config.Paths, name string) error {
@@ -92,9 +71,7 @@ func reapFiles(p config.Paths, name string) error {
 // HUB/NAME keeps its lock after `delete HUB/NAME`, since the hub entry still
 // resolves it; an empty file is harmless.
 func RemoveLock(p config.Paths, name string) {
-	for _, at := range runLayouts(p) {
-		_ = os.Remove(lockPath(at, name))
-	}
+	_ = os.Remove(lockPath(p, name))
 }
 
 // answers reports whether something accepts connections on a unix socket.
@@ -112,11 +89,7 @@ func answers(path string) bool {
 // whether or not a daemon is running or saved forwards exist.
 func HubRuntimeNames(p config.Paths, hub string) []string {
 	prefix := config.RuntimeName(config.JoinHubName(hub, ""))
-	var matches []string
-	for _, at := range runLayouts(p) { // an older build's run/ too
-		m, _ := filepath.Glob(filepath.Join(at.RuntimeDir(), prefix+"*"))
-		matches = append(matches, m...)
-	}
+	matches, _ := filepath.Glob(filepath.Join(p.RuntimeDir(), prefix+"*"))
 	var names []string
 	for _, p := range matches {
 		base := filepath.Base(p)

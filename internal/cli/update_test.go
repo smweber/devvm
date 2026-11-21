@@ -232,23 +232,6 @@ func TestRunUpdateInstallsVerifiesAndReexecs(t *testing.T) {
 	}
 }
 
-// --state-dir is passed only when the successor would not derive it from
-// --config-dir alone, so a pre-split target (no such flag) still starts.
-func TestRunUpdateOmitsDerivableStateDir(t *testing.T) {
-	f := newUpdateFixture(t, "v0.2.0", false)
-	f.app.Paths = config.LegacyPaths(f.app.Paths.Config) // what --config-dir alone derives
-	if err := f.app.runUpdate(context.Background(), f.u, updateOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(f.exec) != 1 {
-		t.Fatalf("reexec calls = %v", f.exec)
-	}
-	want := []string{"--config-dir", f.app.Paths.Config, "update", "--finish-from", "v0.1.0"}
-	if got := strings.Join(f.exec[0][2:], " "); got != strings.Join(want, " ") {
-		t.Errorf("reexec args = %q, want %q", got, strings.Join(want, " "))
-	}
-}
-
 func TestRunUpdateRefusesOnChecksumMismatch(t *testing.T) {
 	f := newUpdateFixture(t, "v0.2.0", true)
 	err := f.app.runUpdate(context.Background(), f.u, updateOpts{})

@@ -617,12 +617,12 @@ func TestProxiedSetupOldHub(t *testing.T) {
 	pinTTY(t, false)
 	for _, argv := range [][]string{{"setup", "h/web"}, {"create", "h/api", "--yes"}} {
 		err := runTree(t, a, argv...)
-		if err == nil || !strings.Contains(err.Error(), "hub h runs devvm older than v0.1.16 (needs setup)") {
+		if err == nil || !strings.Contains(err.Error(), "hub h runs devvm older than v0.2.0 (needs setup)") {
 			t.Errorf("%v: %v", argv, err)
 		}
 	}
 	fakeHubWith(t, a, t.TempDir(), `echo 'Error: unknown flag: --no-ports' >&2; exit 1`+"\n")
-	if err := runTree(t, a, "create", "h/api", "--yes"); err == nil || !strings.Contains(err.Error(), "older than v0.1.16") {
+	if err := runTree(t, a, "create", "h/api", "--yes"); err == nil || !strings.Contains(err.Error(), "older than v0.2.0") {
 		t.Errorf("unknown flag: %v", err)
 	}
 }

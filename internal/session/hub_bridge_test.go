@@ -359,8 +359,8 @@ func TestHubPriorityIsPerHost(t *testing.T) {
 // is answered "hub devvm too old for browser opens" and nothing is sent
 // upstream: such a hub would ack and then never deliver.
 func TestHubTooOldForBrowserOpens(t *testing.T) {
-	if HubBridgeMinVersion != "v0.1.15" {
-		t.Fatalf("HubBridgeMinVersion = %s; it must be the first tag that ships roadmap step 8", HubBridgeMinVersion)
+	if HubBridgeMinVersion != "v0.2.0" {
+		t.Fatalf("HubBridgeMinVersion = %s; it must be the hub floor, the release that carries simplify.md", HubBridgeMinVersion)
 	}
 	var mu sync.Mutex
 	var ops []string

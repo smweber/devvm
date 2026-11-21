@@ -948,8 +948,8 @@ func TestComeUpWaitHubMachine(t *testing.T) {
 	if got, want := comeUpWait(config.Paths{Config: t.TempDir()}, "h/web")-comeUpWait(config.Paths{Config: t.TempDir()}, "web"), hubOpenTimeout+10*time.Second; got != want {
 		t.Errorf("hub extra = %s, want %s", got, want)
 	}
-	if HubForwardsMinVersion != "v0.1.14" {
-		t.Errorf("HubForwardsMinVersion = %s: it must be the first tag shipping hub forwards; change this test with it", HubForwardsMinVersion)
+	if HubForwardsMinVersion != "v0.2.0" {
+		t.Errorf("HubForwardsMinVersion = %s: it must be the hub floor, the release that carries simplify.md; change this test with it", HubForwardsMinVersion)
 	}
 }
 

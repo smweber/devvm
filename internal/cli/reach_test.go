@@ -388,7 +388,7 @@ func TestReachRoundDeadlineKeepsCache(t *testing.T) {
 // column passed through.
 func TestHubRowVerifiedPassesThrough(t *testing.T) {
 	a := newTestApp(t)
-	log := fakeSSH(t, "printf 'box\\tremote-managed\\treachable\\t-\\tmanaged\\tverified=123:probe\\nweb\\tsmol\\trunning\\t-\\tmanaged\\t-\\nold\\tsmol\\tstopped\\t-\\n'")
+	log := fakeSSH(t, "printf 'box\\tremote\\treachable\\t-\\t-\\tverified=123:probe\\nweb\\tsmol\\trunning\\t-\\tmanaged\\t-\\nold\\tsmol\\tstopped\\t-\\n'")
 	writeHub(t, a, "h", nil)
 	var out bytes.Buffer
 	a.Stdout = &out
@@ -396,7 +396,7 @@ func TestHubRowVerifiedPassesThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "h\thub\treachable\t-\t-\t-\n" +
-		"h/box\tremote\treachable\t-\tmanaged\tverified=123:probe\n" +
+		"h/box\tremote\treachable\t-\t-\tverified=123:probe\n" +
 		"h/old\tsmol\tstopped\t-\t-\t-\n" +
 		"h/web\tsmol\trunning\t-\tmanaged\t-\n"
 	if out.String() != want {

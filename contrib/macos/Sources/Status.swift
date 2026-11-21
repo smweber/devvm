@@ -12,11 +12,10 @@ import Foundation
 ///
 /// The fifth column says who owns the machine: managed | shadowed | -
 /// (entries in devvm.toml, which devvm never shapes: remote boxes and hubs;
-/// and a hub machine whose hub is too old to say). It is optional: a CLI
+/// and a hub machine whose hub sent no fifth column). It is optional: a CLI
 /// from before it emits four fields. The app does not read it (nor keep
 /// it): devvm lists no machine it did not create (no `unmanaged` row since
-/// simplify.md step 15; a hub one release older may still send one, and
-/// refuses what the app offers for it with its own message).
+/// simplify.md step 15).
 ///
 /// A sixth column (`verified=<unix>:<how>` for a remote box, else `-` or
 /// `verified=-`) says when a remote box's state was last established; it
@@ -57,10 +56,9 @@ struct Machine {
     /// alias behind ProxyJump), so it stays selectable as it was before
     /// devvm probed anything. "Remote" is any backend reached over ssh: not
     /// `smol` and not `hub` (a `HUB/NAME` row its hub did not list carries
-    /// backend `hub` and state `?`, and is not live); that covers `remote`,
-    /// an older hub's `remote-managed`/`remote-unmanaged`, and a later
-    /// provider backend; `unreachable` is the one remote state that is
-    /// not. A hub itself is neither: nothing is copied to or started on it.
+    /// backend `hub` and state `?`, and is not live); that covers `remote`
+    /// and the provider backends; `unreachable` is the one remote state
+    /// that is not. A hub itself is neither: nothing is copied to or started on it.
     /// Every action — start, stop, ports, copy in/out, the drop target —
     /// takes a hub machine by name (`h/web` is a machine name to every devvm
     /// command; its forwards are this Mac's own since devvm's hub forwards),
@@ -78,9 +76,6 @@ struct Machine {
     var stateWords: String {
         switch state {
         case "running", "stopped", "reachable", "unreachable", "starting", "stopping": return state
-        // Only from a hub older than the dormant state's removal: a VM it
-        // has a conf for but no disk, off like a stopped one.
-        case "dormant": return "stopped (no VM)"
         case "broken conf": return "broken conf"
         default: return "unknown"
         }
@@ -101,7 +96,7 @@ struct Machine {
     var glyph: String {
         if state == "?" || state == "starting" || state == "stopping" { return "◌" } // a provider server between power states
         if isLive { return "●" }
-        if state == "stopped" || state == "dormant" { return "○" } // dormant: an old hub's word
+        if state == "stopped" { return "○" }
         return "◌"
     }
 

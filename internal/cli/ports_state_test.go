@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -80,36 +79,9 @@ func TestPortsVerbsUseStateFile(t *testing.T) {
 	}
 }
 
-// An old conf's `ports` seed the file on first read, and the conf is left
-// as it was: the one-time seed outlives the old loader (it reads only
-// `ports`), so the hand migration need not copy forwards.
-func TestPortsMigrateFromConf(t *testing.T) {
-	a := &App{Paths: testPaths(shortTempDir(t))}
-	if err := os.MkdirAll(config.LegacyMachinesDir(a.Paths), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	conf := filepath.Join(config.LegacyMachinesDir(a.Paths), "box.toml")
-	raw := "backend = \"remote-managed\"\nssh_host = \"dev@example\"\nports = [\"8080\", \"9000:90\"]\n"
-	if err := os.WriteFile(conf, []byte(raw), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := runTree(t, a, "ports", "list", "box"); err != nil {
-		t.Fatal(err)
-	}
-	if out := a.Stdout.(*bytes.Buffer).String(); !strings.HasPrefix(out, "configured:\n  8080\n  9000:90\n") {
-		t.Errorf("ports list =\n%s", out)
-	}
-	if saved, _ := config.LoadPorts(a.Paths, "box"); !slices.Equal(saved, []string{"8080", "9000:90"}) {
-		t.Errorf("seeded = %v", saved)
-	}
-	if data, _ := os.ReadFile(conf); string(data) != raw {
-		t.Errorf("migration wrote the conf:\n%s", data)
-	}
-}
-
 // Adding a hub keeps the saved forwards already there for its machines:
-// they are most likely what MigratePorts just seeded from the old hub conf
-// (a hub removed with `config rm` leaves none). Nothing is dialed.
+// they are this host's state (a hub removed with `config rm` leaves none).
+// Nothing is dialed.
 func TestConfigAddHubKeepsMachinePorts(t *testing.T) {
 	a := newTestApp(t)
 	a.Stdout, a.Stderr = new(bytes.Buffer), new(bytes.Buffer)

@@ -43,9 +43,6 @@ func dialCancel(p config.Paths, name string, cancel <-chan struct{}) (*Client, e
 	if c.alive() {
 		return c, nil
 	}
-	if old := legacyDaemon(p, name); old != nil {
-		return old, nil
-	}
 	logOff := logSize(logPath(p, name))
 	exited, err := c.spawnDaemon()
 	if err != nil {
@@ -122,44 +119,8 @@ func Existing(p config.Paths, name string) (*Client, error) {
 	if c.alive() {
 		return c, nil
 	}
-	if old := legacyDaemon(p, name); old != nil {
-		return old, nil
-	}
 	return nil, ErrNoDaemon
 }
-
-// ExistingIn is Existing at exactly p, without the pre-split fallback: for
-// a caller that walks both layouts itself (update cycles each daemon).
-func ExistingIn(p config.Paths, name string) (*Client, error) {
-	c := &Client{paths: p, name: name}
-	if !c.alive() {
-		return nil, ErrNoDaemon
-	}
-	return c, nil
-}
-
-// legacyDaemon is a client for a daemon an older build started under the
-// pre-split layout (run/ in the config dir) that is still serving, else
-// nil. It is the machine's one daemon until it exits: spawning a sibling
-// under the state dir would take a different lock and, on smol, open a
-// second agent exec (the one-exec rule). Clients therefore use it where it
-// is; `update` cycles it (config.MigrateState leaves its files alone).
-func legacyDaemon(p config.Paths, name string) *Client {
-	old := config.LegacyPaths(p.Config)
-	if old == p {
-		return nil
-	}
-	c := &Client{paths: old, name: name}
-	if !c.alive() {
-		return nil
-	}
-	return c
-}
-
-// Paths is where this client's daemon lives: the paths it was asked for,
-// or the pre-split layout when Dial or Existing found an older daemon
-// there. WaitGone and anything addressing the daemon's files use these.
-func (c *Client) Paths() config.Paths { return c.paths }
 
 func (c *Client) alive() bool {
 	resp, err := c.request(Request{Op: OpPing})
@@ -196,7 +157,7 @@ func (c *Client) spawnDaemon() (<-chan daemonExit, error) {
 	}
 	defer logf.Close()
 	// Both dirs, always: the daemon must use exactly this client's paths
-	// (an explicit --config-dir alone would mean the legacy layout).
+	// (an explicit --config-dir alone would put its state in that dir).
 	cmd := exec.Command(self, "__daemon", c.name, "--config-dir", c.paths.Config, "--state-dir", c.paths.State)
 	cmd.Stdout = logf
 	cmd.Stderr = logf

@@ -1,8 +1,8 @@
 // Package provider is the seam between devvm and a cloud API that creates and
 // destroys VMs (docs/proposals/providers.md). A provider VM has no
 // [machines.*] entry: it is discovered from the API, the way smol VMs are
-// discovered from `smolvm machine ls`, and the label devvm=true is its
-// managed marker: a server without it is invisible to devvm. The interface
+// discovered from `smolvm machine ls`, and the label devvm=true says devvm
+// made it: a server without it is invisible to devvm. The interface
 // is written from Hetzner alone (§7); a second
 // provider is allowed to change it when one is actually used.
 package provider

@@ -111,7 +111,7 @@ func (a *App) hubOrStopForwards(local func(cmd *cobra.Command, args []string) er
 		if cl, err := session.Existing(a.Paths, args[0]); err == nil && cl.Stop() == nil {
 			// Waited out, so a `start HUB/NAME` right after spawns its
 			// daemon against a released master, not the old one's.
-			_ = session.WaitGone(cl.Paths(), args[0], daemonGoneTimeout)
+			_ = session.WaitGone(a.Paths, args[0], daemonGoneTimeout)
 		}
 		return nil
 	}

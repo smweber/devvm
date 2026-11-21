@@ -2,24 +2,9 @@ package config
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// writeConf writes an old per-machine conf (machines/NAME.toml), which only
-// the one-time saved-forwards seed still reads.
-func writeConf(t *testing.T, dir, name, raw string) {
-	t.Helper()
-	md := LegacyMachinesDir(Paths{Config: dir})
-	if err := os.MkdirAll(md, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(md, name+".toml"), []byte(raw), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestHubNames(t *testing.T) {
 	for _, tt := range []struct {

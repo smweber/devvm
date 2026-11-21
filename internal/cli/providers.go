@@ -277,7 +277,10 @@ func localOwner(f *config.File, smols smolMachines, name string) string {
 // row), error why the last round failed (absent when it succeeded). A
 // failed round keeps the rows, the count and their fetched time, so the
 // snapshot shows the last known state and how old it is. Only labelled
-// rows are read back (an older devvm cached every server).
+// rows are read back: the cache-only readers (the daemon, __session,
+// completion, status --local) must see exactly the servers devvm made, so
+// the label is checked on read as well as on write, whatever wrote the
+// file.
 
 // providerCache is one provider's cache file.
 type providerCache struct {

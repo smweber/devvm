@@ -62,7 +62,7 @@ func newApp() *App {
 // one when dir is the default config dir (compared through symlinks, since
 // a dotfiles-managed ~/.config/devvm is often one, and landing state in
 // dotfiles by a spelling difference would be the one wrong answer), else
-// dir itself, the pre-split layout that keeps an isolated instance whole.
+// dir itself, which keeps an isolated instance whole.
 func stateDirFor(dir string) string {
 	if sameDir(dir, config.DefaultConfigDir()) {
 		return config.DefaultStateDir()
@@ -178,19 +178,16 @@ func (a *App) rootCmd() *cobra.Command {
 			}
 			// --config-dir alone, naming another dir, keeps an isolated
 			// instance (a test, a second registry) self-contained, its
-			// state still inside it as before the split, rather than
-			// sharing this host's run/ with the real one. Naming the
-			// default dir is not isolation: a pre-split `update` re-execs
-			// its successor with exactly that, and the successor must
-			// cycle daemons into the real state dir. (The root's set, not
-			// the leaf's: the same flags, and the only one a leaf that
-			// skips parsing has.)
+			// state inside it, rather than sharing this host's run/ with
+			// the real one. Naming the default dir is not isolation: its
+			// state stays in the default state dir, never in a config dir
+			// that may be a dotfiles checkout. (The root's set, not the
+			// leaf's: the same flags, and the only one a leaf that skips
+			// parsing has.)
 			fl := cmd.Root().PersistentFlags()
 			if fl.Changed("config-dir") && !fl.Changed("state-dir") {
 				a.Paths.State = stateDirFor(a.Paths.Config)
 			}
-			config.MigrateState(a.Paths)
-			a.noteOldLayout(hiddenCmd(cmd))
 			return nil
 		},
 	}
@@ -249,34 +246,6 @@ func (a *App) rootCmd() *cobra.Command {
 	return root
 }
 
-// noteOldLayout runs the one-time upgrade seeds while the old per-machine
-// layout is still there, then, when there is no devvm.toml yet, prints the
-// one-line pointer at the hand migration (config.md §8). The seed is what
-// nothing in devvm.toml can carry: saved forwards (MigratePorts, once per
-// host). The smol VMs an old devvm made are labelled by hand (smolvm
-// machine update --label devvm=true): ownership is a label on the VM now,
-// and no marker is seeded. Nothing else reads the
-// old files: the command carries on with no entries. stderr, so a
-// `--plain` consumer's stdout is untouched. quiet (a hidden command:
-// __daemon, __session, __complete, …) runs the seeds but prints nothing,
-// so a daemon's log and a completion script are not spammed with it.
-func (a *App) noteOldLayout(quiet bool) {
-	if len(config.LegacySmolConfs(a.Paths)) > 0 || config.OldLayout(a.Paths) {
-		_ = config.MigratePorts(a.Paths) // a failure is the ports verbs' to report
-	}
-	if quiet || !config.OldLayout(a.Paths) || a.Stderr == nil {
-		return
-	}
-	old, what := config.LegacyMachinesDir(a.Paths)+"/", "machines/"
-	if names, _ := os.ReadDir(config.LegacyMachinesDir(a.Paths)); len(names) == 0 {
-		old, what = config.LegacyDefaultsPath(a.Paths), "config.toml"
-	}
-	fmt.Fprintf(a.Stderr, "devvm: %s is the old layout (saved forwards were seeded from it); write %s by hand (see docs/proposals/config.md §8) and remove %s\n",
-		tildePath(old), tildePath(a.Paths.FilePath()), what)
-}
-
-// hiddenCmd reports whether cmd, or a parent, is hidden (cobra's own
-// __complete is too): the machinery, not a command a person typed.
 // rootFlags are the root's persistent flags, each taking a value.
 var rootFlags = []string{"config-dir", "state-dir"}
 
@@ -318,15 +287,6 @@ func wantsHelp(args []string) bool {
 func leafArgs(args []string) []string {
 	_, rest, _ := splitRootFlags(args)
 	return rest
-}
-
-func hiddenCmd(cmd *cobra.Command) bool {
-	for c := cmd; c != nil; c = c.Parent() {
-		if c.Hidden {
-			return true
-		}
-	}
-	return false
 }
 
 // tildePath shortens a path under $HOME to ~/….
