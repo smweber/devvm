@@ -66,7 +66,6 @@ func (a *App) createCmd() *cobra.Command {
 				if len(args) > 0 {
 					s.Name = args[0]
 				}
-				s.noteSet(cmd.Flags())
 				return a.runCreate(s)
 			})(cmd, args)
 		},

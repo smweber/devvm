@@ -75,13 +75,12 @@ harden = true
 	if got, err := a.resolveTemplate("default", tmplFlags{}); err != nil || got.Hook != "cmd:/default" || got.Name != "default" {
 		t.Errorf("--template default = %+v, %v", got, err)
 	}
-	// Flags beat everything, a false bool included.
-	got, err = a.resolveTemplate("web", tmplFlags{Memory: 512, Hook: "none", Harden: false, HardenSet: true,
-		Repos: []string{"o/flag"}})
+	// Flags beat everything; harden has no flag, so the template's stays.
+	got, err = a.resolveTemplate("web", tmplFlags{Memory: 512, Hook: "none", Repos: []string{"o/flag"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Memory != 512 || got.Hook != "none" || got.Harden || !slices.Equal(got.Repos, []string{"o/flag"}) {
+	if got.Memory != 512 || got.Hook != "none" || !got.Harden || !slices.Equal(got.Repos, []string{"o/flag"}) {
 		t.Errorf("flags = %+v", got)
 	}
 	// Inline: the flags are the whole template, nothing on this host fills in.
@@ -531,13 +530,14 @@ harden = true
 	if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runTree(t, a, "setup", "h/web", "--template", "devvm", "--fail2ban"); err != nil {
+	if err := runTree(t, a, "setup", "h/web", "--template", "devvm"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
+	// hook, memory, disk and repos only: the template's harden is a
+	// provider server's and never crosses.
 	want := []string{"setup", "web", "--inline-template",
 		"--hook=url:https://x/b.sh --profile agent-vm --yes", "--memory=8192",
-		"--repo=smweber/devvm", "--repo=https://x.example/a,b.git",
-		"--harden=true", "--fail2ban=true", "--no-ports"}
+		"--repo=smweber/devvm", "--repo=https://x.example/a,b.git"}
 	calls := devvmCalls(t, argvLog)
 	if len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Errorf("hub got %q\nwant %q", calls, want)
@@ -557,7 +557,7 @@ harden = true
 	calls = devvmCalls(t, argvLog)
 	if len(calls) != 1 || calls[0][0] != "create" || calls[0][1] != "api" ||
 		!slices.Contains(calls[0], "--disk=9") || !slices.Contains(calls[0], "--inline-template") ||
-		slices.ContainsFunc(calls[0], func(s string) bool { return strings.HasPrefix(s, "--template") || strings.HasPrefix(s, "--port") }) {
+		slices.ContainsFunc(calls[0], func(s string) bool { return strings.HasPrefix(s, "--template") }) {
 		t.Errorf("create argv = %q", calls)
 	}
 	if got, _ := config.LoadPorts(a.Paths, "h/api"); len(got) != 0 {
@@ -565,15 +565,14 @@ harden = true
 	}
 
 	// Without --template (or with --template default, the same thing) the
-	// leaf goes across as typed, except the ignored --port, which is
-	// stripped.
-	for _, argv := range [][]string{{"setup", "h/web", "--port", "8080"}, {"setup", "h/web", "-t", "default", "--port", "8080"}} {
+	// leaf goes across as typed.
+	for _, argv := range [][]string{{"setup", "h/web"}, {"setup", "h/web", "-t", "default"}} {
 		os.Remove(argvLog)
 		if err := runTree(t, a, argv...); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"setup", "web", "--no-ports"}
-		if argv[2] == "-t" {
+		want := []string{"setup", "web"}
+		if len(argv) > 2 {
 			want = append(want, "--template=default")
 		}
 		if calls = devvmCalls(t, argvLog); len(calls) != 1 || !slices.Equal(calls[0], want) {
@@ -581,7 +580,7 @@ harden = true
 		}
 	}
 	if got, _ := config.LoadPorts(a.Paths, "h/web"); !slices.Equal(got, []string{"3000"}) {
-		t.Errorf("laptop forwards for h/web after --port = %v", got)
+		t.Errorf("laptop forwards for h/web after setup = %v", got)
 	}
 }
 
@@ -617,12 +616,13 @@ func TestProxiedSetupOldHub(t *testing.T) {
 	pinTTY(t, false)
 	for _, argv := range [][]string{{"setup", "h/web"}, {"create", "h/api", "--yes"}} {
 		err := runTree(t, a, argv...)
-		if err == nil || !strings.Contains(err.Error(), "hub h runs devvm older than v0.2.0 (needs setup)") {
+		if err == nil || !strings.Contains(err.Error(), "hub h runs devvm older than v0.2.0;") {
 			t.Errorf("%v: %v", argv, err)
 		}
 	}
-	fakeHubWith(t, a, t.TempDir(), `echo 'Error: unknown flag: --no-ports' >&2; exit 1`+"\n")
-	if err := runTree(t, a, "create", "h/api", "--yes"); err == nil || !strings.Contains(err.Error(), "older than v0.2.0") {
+	fakeHubWith(t, a, t.TempDir(), `echo 'Error: unknown flag: --inline-template' >&2; exit 1`+"\n")
+	writeDevvmTOML(t, a, "[templates.t]\nmemory = 512\n")
+	if err := runTree(t, a, "create", "h/api", "-t", "t", "--yes"); err == nil || !strings.Contains(err.Error(), "older than v0.2.0") {
 		t.Errorf("unknown flag: %v", err)
 	}
 }
@@ -679,7 +679,7 @@ func runLocalCreate(t *testing.T, tc int) (error, bool) {
 	if err := config.SavePorts(a.Paths, "web", []string{"1"}); err != nil {
 		t.Fatal(err)
 	}
-	err := runTree(t, a, "create", "web", "--memory", "1024", "--yes", "--no-ports", "--port", "9")
+	err := runTree(t, a, "create", "web", "--memory", "1024", "--yes")
 	got, _ := config.LoadPorts(a.Paths, "web")
 	return err, len(got) == 0
 }
@@ -710,9 +710,8 @@ func TestCreateLabelsTheVM(t *testing.T) {
 }
 
 // create clears a leftover ports file once its VM exists, however it ends
-// after that, and keeps the file of a name it refuses; --port and
-// --no-ports are hidden and ignored (a laptop one release older still
-// sends --no-ports). Every error after the VM exists carries wasCreated,
+// after that, and keeps the file of a name it refuses. Every error after
+// the VM exists carries wasCreated,
 // which a laptop reads in its hub's output; no refusal does.
 func TestCreateClearsLeftoverPorts(t *testing.T) {
 	for i, o := range createOutcomes {
@@ -731,6 +730,37 @@ func TestCreateClearsLeftoverPorts(t *testing.T) {
 	}
 }
 
+// The template flags create and setup take (simplify.md step 17): hook,
+// memory and disk visible on create, repo and inline-template hidden, and
+// nothing for users, keys, hardening or ports.
+func TestTemplateFlagSurface(t *testing.T) {
+	a := newTestApp(t)
+	root := a.rootCmd()
+	for _, leaf := range []string{"create", "setup"} {
+		c, _, err := root.Find([]string{leaf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fs := c.Flags()
+		for _, n := range []string{"user", "key", "harden", "fail2ban", "port", "no-ports"} {
+			if fs.Lookup(n) != nil {
+				t.Errorf("%s --%s is still a flag", leaf, n)
+			}
+		}
+		for _, n := range []string{flagHook, flagMemory, flagDisk, flagRepo, flagInline} {
+			f := fs.Lookup(n)
+			if f == nil {
+				t.Errorf("%s lacks --%s", leaf, n)
+				continue
+			}
+			visible := leaf == "create" && (n == flagHook || n == flagMemory || n == flagDisk)
+			if f.Hidden == visible {
+				t.Errorf("%s --%s hidden = %v", leaf, n, f.Hidden)
+			}
+		}
+	}
+}
+
 // The hub side of the proxied form: --inline-template makes the flags the
 // whole template, ignoring this host's own file.
 func TestInlineTemplateIgnoresHostFile(t *testing.T) {
@@ -738,7 +768,7 @@ func TestInlineTemplateIgnoresHostFile(t *testing.T) {
 	log := fakeManagedSmol(t, a, "web")
 	stubBrowser(t, log)
 	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/hub-own\"\n")
-	if err := runTree(t, a, "setup", "web", "--inline-template", "--hook=cmd:/laptop", "--repo=o/r", "--user=dev", "--harden=false"); err != nil {
+	if err := runTree(t, a, "setup", "web", "--inline-template", "--hook=cmd:/laptop", "--repo=o/r"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
 	data, _ := os.ReadFile(log)

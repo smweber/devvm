@@ -43,17 +43,6 @@ type tmplFlags struct {
 	Memory int
 	Disk   int
 	Repos  []string
-	// Keys are authorized_keys lines, already resolved: the laptop turns a
-	// template's authorized_keys_github/authorized_keys into lines (as
-	// `keys add` inlines key lines), since the files and the network
-	// lookup are the laptop's.
-	Keys     []string
-	Harden   bool
-	Fail2ban bool
-	// HardenSet/Fail2banSet: the flag was given, either value, so
-	// --harden=false overrides a template's harden = true.
-	HardenSet   bool
-	Fail2banSet bool
 	// Inline: these flags are the whole template. The hub's own
 	// [templates.*] are not consulted; unset fields take the built-ins.
 	Inline bool
@@ -62,44 +51,24 @@ type tmplFlags struct {
 // Template flag names, defined once: addTemplateFlags registers them and
 // the proxy strips them before sending its own.
 const (
-	flagUser     = "user"
 	flagHook     = "hook"
 	flagMemory   = "memory"
 	flagDisk     = "disk"
 	flagRepo     = "repo"
-	flagPort     = "port"
-	flagKey      = "key"
-	flagHarden   = "harden"
-	flagFail2ban = "fail2ban"
 	flagInline   = "inline-template"
-	flagNoPorts  = "no-ports"
 	flagTemplate = "template"
 )
 
-var templateFlagNames = []string{flagUser, flagHook, flagMemory, flagDisk, flagRepo,
-	flagPort, flagKey, flagHarden, flagFail2ban, flagInline, flagNoPorts}
+var templateFlagNames = []string{flagHook, flagMemory, flagDisk, flagRepo, flagInline}
 
 // addTemplateFlags registers the template flags on fs, hidden except the
 // names in visible (create shows --memory/--disk/--hook). memory and disk
 // keep create's -m/-d shorthands.
 func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
-	// --user is gone with the template's user (every box devvm makes has
-	// the user dev) but stays accepted, and ignored, until hubs and laptops
-	// are all past this release: a laptop one release older still sends it.
-	fs.String(flagUser, "", "ignored (a laptop one release older sends it to its hub)")
 	fs.StringVar(&v.Hook, flagHook, "", "hook: url:<URL> [args] | cmd:<path> [args] | none (template hook)")
 	fs.IntVarP(&v.Memory, flagMemory, "m", 0, "smol: VM memory in MiB (template memory)")
 	fs.IntVarP(&v.Disk, flagDisk, "d", 0, "smol: VM disk in GiB (template disk; default 50)")
 	fs.StringArrayVar(&v.Repos, flagRepo, nil, "repo to clone into ~/src (repeatable; template repos)")
-	// --port and --no-ports are gone ('ports add' saves a forward) but stay
-	// accepted, and ignored, until hubs and laptops are all past this
-	// release: a laptop still sends --no-ports to its hub, and a hub one
-	// release older still needs it (so it saves and asks for no forwards).
-	fs.StringArray(flagPort, nil, "ignored: save a forward with 'devvm ports add'")
-	fs.Bool(flagNoPorts, false, "ignored (a laptop sends it to its hub)")
-	fs.StringArrayVar(&v.Keys, flagKey, nil, "remote: authorized_keys line to add (repeatable)")
-	fs.BoolVar(&v.Harden, flagHarden, false, "remote: harden sshd + firewall (template harden)")
-	fs.BoolVar(&v.Fail2ban, flagFail2ban, false, "remote: install fail2ban with harden (template fail2ban)")
 	fs.BoolVar(&v.Inline, flagInline, false, "the template flags are the whole template (sent by a laptop to its hub)")
 	for _, n := range templateFlagNames {
 		if !slices.Contains(visible, n) {
@@ -108,14 +77,8 @@ func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
 	}
 }
 
-// noteSet records which bool flags were given, from the parsed flag set.
-func (v *tmplFlags) noteSet(fs *pflag.FlagSet) {
-	v.HardenSet = fs.Changed(flagHarden)
-	v.Fail2banSet = fs.Changed(flagFail2ban)
-}
-
-// layer is the flags as a template layer: a set flag (non-zero, or a given
-// bool) wins over every template.
+// layer is the flags as a template layer: a set flag (non-zero) wins over
+// every template.
 func (v tmplFlags) layer() config.TemplateSpec {
 	var s config.TemplateSpec
 	if v.Hook != "" {
@@ -133,14 +96,6 @@ func (v tmplFlags) layer() config.TemplateSpec {
 	if v.Repos != nil {
 		r := slices.Clone(v.Repos)
 		s.Repos = &r
-	}
-	if v.Harden || v.HardenSet {
-		h := v.Harden
-		s.Harden = &h
-	}
-	if v.Fail2ban || v.Fail2banSet {
-		f := v.Fail2ban
-		s.Fail2ban = &f
 	}
 	return s
 }
@@ -214,7 +169,6 @@ func (a *App) setupCmd() *cobra.Command {
 			"root gets its user created first.\n" +
 			"Precedence: flag > --template > [templates.default] > built-in.",
 		RunE: a.hubOr(func(cmd *cobra.Command, args []string) error {
-			o.noteSet(cmd.Flags())
 			if err := a.runSetup(args[0], o); err != nil {
 				return err
 			}
@@ -318,9 +272,6 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	if m.IsRemote() { // a provider server: an entry never gets here
 		// 4. Keys (a source that yields nothing warns and moves on).
 		if err := a.seedAuthorizedKeys(b, t.AuthorizedKeysGithub, t.AuthorizedKeys); err != nil {
-			return err
-		}
-		if err := a.addGuestKeys(b, o.Keys); err != nil {
 			return err
 		}
 		// 5. Hardening, after the keys it insists on and before anything
@@ -459,7 +410,7 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 			ignored = append(ignored, "disk")
 		}
 	} else {
-		if len(t.AuthorizedKeysGithub) > 0 || len(t.AuthorizedKeys) > 0 || len(o.Keys) > 0 {
+		if len(t.AuthorizedKeysGithub) > 0 || len(t.AuthorizedKeys) > 0 {
 			ignored = append(ignored, "keys")
 		}
 		if t.Harden {
@@ -662,14 +613,6 @@ func (a *App) reachForSetup(ctx context.Context, m *config.Machine) (*config.Mac
 // yields no keys (e.g. a keyless github user) warns and moves on rather
 // than aborting the whole setup.
 func (a *App) seedAuthorizedKeys(b backend.Backend, githubUsers, files []string) error {
-	lines := a.templateKeyLines(githubUsers, files)
-	return a.addGuestKeys(b, lines)
-}
-
-// templateKeyLines resolves a template's authorized_keys_github users and
-// authorized_keys files into key lines, on this host. Shared by setup and
-// the hub proxy, which sends the lines as --key.
-func (a *App) templateKeyLines(githubUsers, files []string) []string {
 	var lines []string
 	for _, u := range githubUsers {
 		keys, err := githubKeys(u)
@@ -687,13 +630,15 @@ func (a *App) templateKeyLines(githubUsers, files []string) []string {
 		}
 		lines = append(lines, keys...)
 	}
-	return lines
+	return a.addGuestKeys(b, lines)
 }
 
 // templateArgv renders a resolved template as the explicit flag set the
 // laptop sends with a proxied create/setup --template (config.md §7):
-// every field, so nothing on the hub fills a gap.
-func templateArgv(t config.Template, keyLines []string) []string {
+// every field a hub's smol VM takes (hook, memory, disk, repos), so nothing
+// on the hub fills a gap. Keys, harden and fail2ban are a provider
+// server's, and a hub machine is never one.
+func templateArgv(t config.Template) []string {
 	out := []string{"--" + flagInline, "--" + flagHook + "=" + t.Hook}
 	if t.Memory != 0 {
 		out = append(out, "--"+flagMemory+"="+strconv.Itoa(t.Memory))
@@ -704,12 +649,6 @@ func templateArgv(t config.Template, keyLines []string) []string {
 	for _, r := range t.Repos {
 		out = append(out, "--"+flagRepo+"="+r)
 	}
-	for _, k := range keyLines {
-		out = append(out, "--"+flagKey+"="+k)
-	}
-	out = append(out,
-		"--"+flagHarden+"="+strconv.FormatBool(t.Harden),
-		"--"+flagFail2ban+"="+strconv.FormatBool(t.Fail2ban))
 	return out
 }
 

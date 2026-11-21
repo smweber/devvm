@@ -30,8 +30,11 @@ type createSpec struct {
 	// The template fields (hook, memory, disk, repos): flags here,
 	// then settled by gatherCreateSpec from flag > template > built-in.
 	tmplFlags
+	// The provider-server fields, from the template only (no flags).
 	KeysGithub []string
 	KeyFiles   []string
+	Harden     bool
+	Fail2ban   bool
 
 	Yes bool // skip prompts; resolve every unset field from flag > template > built-in
 }
@@ -104,7 +107,7 @@ func (a *App) runCreate(s createSpec) error {
 	// setup gets the template create settled (flags, prompts and all), so
 	// it resolves nothing again.
 	t := s.template()
-	err = a.runSetup(s.Name, setupOpts{resolved: &t, tmplFlags: tmplFlags{Keys: s.Keys}})
+	err = a.runSetup(s.Name, setupOpts{resolved: &t})
 	var si *setupIncomplete
 	if err != nil && !errors.As(err, &si) {
 		return fmt.Errorf("%s but setup failed: %w; re-run 'devvm setup %s'", wasCreated(s.Name), err, s.Name)

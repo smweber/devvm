@@ -176,13 +176,13 @@ func TestProxyRebuildsArgv(t *testing.T) {
 		{[]string{"--config-dir", a.Paths.Config, "stop", "h/web"}, []string{"stop", "web"}},
 		{[]string{"--state-dir", a.Paths.State, "stop", "h/web"}, []string{"stop", "web"}},
 		{[]string{"create", "h/api", "--backend", "smol", "--yes", "-m", "512", "-d", "1"},
-			[]string{"create", "api", "--no-ports", "--backend=smol", "--disk=1", "--memory=512", "--yes"}},
+			[]string{"create", "api", "--backend=smol", "--disk=1", "--memory=512", "--yes"}},
 		{[]string{"keys", "rm", "h/web", "--", "-odd/name"}, []string{"keys", "rm", "web", "--", "-odd/name"}},
 		{[]string{"keys", "rm", "h/web", "SHA256:abc"}, []string{"keys", "rm", "web", "SHA256:abc"}},
-		{[]string{"setup", "h/web"}, []string{"setup", "web", "--no-ports"}},
+		{[]string{"setup", "h/web"}, []string{"setup", "web"}},
 		// No --backend: smol said explicitly, so a hub with [providers.*]
 		// never asks (or bills).
-		{[]string{"create", "h/api", "--yes"}, []string{"create", "api", "--backend=smol", "--no-ports", "--yes"}},
+		{[]string{"create", "h/api", "--yes"}, []string{"create", "api", "--backend=smol", "--yes"}},
 		{[]string{"stop", "h/web"}, []string{"stop", "web"}},
 	}
 	for _, tc := range cases {

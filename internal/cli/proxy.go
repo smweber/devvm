@@ -191,24 +191,22 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 //
 // Saved forwards for HUB/NAME are this host's state (HUB@NAME, config.md
 // §5), never the hub's, and neither create nor setup saves any (proxy
-// clears this host's leftover file after a create). --port, ignored
-// everywhere now, is stripped and --no-ports still sent, so a hub one
-// release older saves and asks for none either.
+// clears this host's leftover file after a create), so nothing about
+// forwards crosses.
 //
 // With --template T (other than default, which is the same as no flag),
 // the template is resolved here, from this host's devvm.toml, and sent as
-// the explicit template flags plus --inline-template, so the hub's own file
-// never matters. A template's key sources are not read: HUB/NAME is a hub's
-// smol VM, which takes no keys, and a hub's own entries are never shaped.
-// Without a template the leaf goes across as typed and the hub resolves its
-// own default.
+// --inline-template plus hook, memory, disk and repos (templateArgv), so
+// the hub's own file never matters. HUB/NAME is only ever a hub's smol VM:
+// a template's keys, harden and fail2ban are a provider server's and never
+// cross. Without a template the leaf goes across as typed and the hub
+// resolves its own default.
 func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine, create bool) ([]string, error) {
 	fs := cmd.Flags()
 	name, _ := fs.GetString(flagTemplate)
 	inline := fs.Changed(flagTemplate) && name != config.DefaultTemplate
 
-	skip := []string{flagPort, flagNoPorts}
-	var extra []string
+	var skip, extra []string
 	if inline {
 		var f tmplFlags
 		f.Hook, _ = fs.GetString(flagHook)
@@ -217,18 +215,14 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		if fs.Changed(flagRepo) {
 			f.Repos, _ = fs.GetStringArray(flagRepo)
 		}
-		f.Keys, _ = fs.GetStringArray(flagKey)
-		f.Harden, _ = fs.GetBool(flagHarden)
-		f.Fail2ban, _ = fs.GetBool(flagFail2ban)
-		f.noteSet(fs)
 		t, err := a.resolveTemplate(name, f)
 		if err != nil {
 			return nil, err
 		}
 		// Everything the user typed except the template flags, which go
 		// across resolved instead.
-		skip = append(append(skip, flagTemplate), templateFlagNames...)
-		extra = templateArgv(t, f.Keys)
+		skip = append([]string{flagTemplate}, templateFlagNames...)
+		extra = templateArgv(t)
 	}
 	// A create with no --backend says smol explicitly: the hub's own
 	// devvm.toml may configure a provider, and its create would then ask
@@ -237,7 +231,6 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 	if create && !fs.Changed("backend") {
 		extra = append(extra, "--backend="+config.BackendSmol)
 	}
-	extra = append(extra, "--"+flagNoPorts)
 	argv, err := hubArgvSkip(cmd, args, skip)
 	if err != nil {
 		return nil, err
@@ -248,10 +241,10 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 	return append(append(slices.Clone(argv[:head]), extra...), argv[head:]...), nil
 }
 
-// runProxiedShaping is runProxied for create/setup, mapping a hub too old
-// for them to one line: `setup` and the flags the laptop adds
-// (--inline-template, --no-ports) are v0.1.16, and an older hub answers
-// with cobra's "unknown command"/"unknown flag", or a login shell's 127.
+// runProxiedShaping is runProxied for create/setup, mapping a hub that has
+// no `setup` or --inline-template (older than v0.1.16, so below
+// hubMinVersion) to one line: it answers with cobra's "unknown
+// command"/"unknown flag", or a login shell's 127.
 // The hub's output is passed through as it comes (a pty run merges both
 // streams, so both are watched), and returned for the caller to read too.
 func (a *App) runProxiedShaping(m *config.Machine, p backend.Proxier, argv []string) (string, error) {
@@ -263,8 +256,8 @@ func (a *App) runProxiedShaping(m *config.Machine, p backend.Proxier, argv []str
 	var ee *exec.ExitError
 	if err != nil && errors.As(err, &ee) {
 		if ee.ExitCode() == 127 || strings.Contains(out, `unknown command "setup"`) ||
-			strings.Contains(out, "unknown flag: --"+flagInline) || strings.Contains(out, "unknown flag: --"+flagNoPorts) {
-			return out, fmt.Errorf("hub %s runs devvm older than %s (needs setup); run 'devvm update' there", m.Hub.Name, hubMinVersion)
+			strings.Contains(out, "unknown flag: --"+flagInline) {
+			return out, fmt.Errorf("hub %s runs devvm older than %s; run 'devvm update' there", m.Hub.Name, hubMinVersion)
 		}
 	}
 	return out, a.exitStatus(m, err)
@@ -466,8 +459,8 @@ func setFlags(cmd *cobra.Command, skip ...string) []string {
 		case pflag.SliceValue:
 			// One --name=item per element. A stringSlice (CSV) flag whose
 			// item itself contains a comma would be re-split on the hub; the
-			// template flags (--repo, --key) are stringArrays for
-			// that reason, so a key line's options survive.
+			// template's --repo is a stringArray for that reason, so a URL
+			// with a comma survives.
 			for _, item := range v.GetSlice() {
 				out = append(out, "--"+f.Name+"="+item)
 			}
