@@ -4,6 +4,9 @@ Status: **implemented**, v3.1 design as revised by two independent reviews
 and a design discussion with the user (see "Review log"); shipped as
 v0.1.16 (see `ROADMAP.md`, "Config redesign", for what landed per step and
 where the code deviates). It followed v0.1.15 (roadmap steps 1–9).
+`simplify.md` (v0.2.0) later removed the "managed" axis, the marker, adopt,
+the template `user` and `ports`, and every upgrade path of §8: see the "As
+shipped (simplify.md)" notes in §2, §3, §5, §7 and §8.
 
 ## Problem
 
@@ -237,6 +240,19 @@ unmanaged (adopted remote boxes, `auth --install-agent`) means consented
 forwards file (§5). `create` and `setup` truncate a stale ports file for
 the name before seeding, so a recreated VM never inherits old forwards.
 
+**As shipped (simplify.md, v0.2.0).** The managed marker is gone: a smol
+VM is devvm's iff it carries the `devvm=true` label (`create` passes
+`smolvm machine create --label devvm=true`), as a provider server is, and
+devvm reads no `created_at`. An unlabelled VM is invisible (no row, no
+completion, no shadowing); a command naming one says devvm did not create
+it and how to label it. There are no unmanaged smol VMs, no limited mode,
+no `setup --adopt`, no install gate, and no managed entries: `managed` in
+an entry is a load error, an entry is never shaped, and its agent comes
+only from `agent = true` (user-scoped). `Managed()` stays as the predicate:
+true for every discovered record, false for entries and hubs. `delete`
+removes the VM and its saved forwards file; `create` clears a leftover
+ports file for the name once its VM exists.
+
 ### 3. Templates and `setup`; "bootstrap" goes away
 
 The word `bootstrap` named two different things: devvm's own needs (agent,
@@ -332,6 +348,21 @@ add` when `--host` isn't given.
   replaces `smolLiveResources`' guest exec, which ran only when no daemon
   owned the exec.
 
+**As shipped (simplify.md, v0.2.0).** setup's order is ensure user →
+prereqs → agent + shim + profile.d → keys → harden (a provider server) →
+hook → repos: the security steps before user code and the network. A failed
+clone no longer ends setup: every repo is tried and setup exits 3, "setup
+finished, but: failed to clone …" (create reports created-with-a-problem; a
+hub passes the 3 back). An `owner/repo` spec while the guest's `gh` has no
+working login is skipped with a hint (the clone script's exit 86), setup
+exiting 0. Templates have no `user` (every box devvm makes has `dev`) and no
+`ports`; both are load errors naming the fix. `setup` applies to smol VMs
+and provider servers only (`setup --host` is gone). The template flags are
+`--hook`, `--memory`, `--disk` and a hidden `--repo`; a proxied `create`/
+`setup HUB/NAME --template T` sends those plus `--inline-template` and
+nothing else (no `--user`, `--key`, `--harden`, `--fail2ban`, `--port`,
+`--no-ports`).
+
 ### 4. Config editing is its own noun
 
 Every VM command reads `devvm.toml`; none writes it. Every `config` command
@@ -421,6 +452,14 @@ Alternatives considered:
   smol that forwards exact-only and never saves.
 - **No saved forwards.** Forwards would be lost at every daemon idle-out.
 
+**As shipped (simplify.md, v0.2.0).** Saved forwards come only from
+`ports add` (no template `ports`, no `--port`, no `ports add
+--ephemeral`), and `attach`/`shell` push them as they connect, as
+`start` and `ports up` do (best-effort, in the background; the daemon still
+never reads the file). `ports down` holds until the next
+`attach`/`shell`/`start`/`ports up`. The once-per-host seed (MigratePorts)
+is gone; the ports dir is made on demand.
+
 ### 6. What goes away
 
 | Removed | Replaced by |
@@ -471,6 +510,12 @@ Alternatives considered:
   `ProxyJump` on the `host` alias, not `HUB/NAME`.
 - **The ports-list line format is unchanged.**
 
+**As shipped (simplify.md, v0.2.0).** The fifth column is `managed`
+(smol and hetzner rows: the label), `shadowed` or `-` (entries, hubs);
+nothing on this host says `unmanaged`. The laptop no longer maps an older
+hub's `remote-managed`/`remote-unmanaged` or reads its `dormant`: hub tokens
+are passed through as sent. The hub floor (`hubMinVersion`) is v0.2.0.
+
 ### 8. Migration, mostly automatic
 
 No command. The release that ships the new loader deletes the old one.
@@ -499,6 +544,13 @@ What remains by hand, once per host:
 - `devvm config check`, then remove `machines/` and `config.toml`.
 
 Done on the three test hosts on 2026-10-17 (ROADMAP.md, step 6).
+
+**As shipped (simplify.md, v0.2.0).** All of the automatic part above is
+deleted: `MigrateState`, `MigratePorts`, `SeedLegacyMarkers` (already with
+the marker), the pointer line, and the clients' use of a daemon left in the
+config dir's `run/`. A host still on the old layout goes through v0.1.21
+first. What stays is the isolation it rode on: a non-default `--config-dir`
+alone keeps its state inside it.
 
 ## CLI surface after
 

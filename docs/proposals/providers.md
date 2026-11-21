@@ -1,6 +1,7 @@
 # Proposal: provider backends (devvm creates and destroys cloud VMs)
 
-Status: implemented (v1.5, steps 0–4 landed 2026-10-17), 2026-10-17, from a design discussion with the user
+Status: implemented (v1.5, steps 0–4 landed 2026-10-17; narrowed by
+`simplify.md` in v0.2.0: see "As shipped (simplify.md)" in §2 and §3), 2026-10-17, from a design discussion with the user
 (v1.1: token stored by the CLI, cache-first watch; v1.2: refresh on demand,
 remote boxes probed; v1.3: menu refresh via its one-shot status; see the
 review log). Not
@@ -140,6 +141,17 @@ machine ls`:
 - The name is the server name. Hetzner requires a unique RFC 1123 host name
   per project, which is stricter than smol; `create` validates before calling.
 
+**As shipped (simplify.md, v0.2.0).** Labelled servers only: resolve's
+`Get` ignores a server without `devvm=true` as if absent, and the cache
+keeps labelled rows only, so every provider record is managed. Adding the
+label by hand is the only promotion. The live round's one `List` stays
+unfiltered: the labelled servers become the rows and the rest are counted
+into the cache (`unlabelled=N`), and a one-shot human `status` ends with
+one line naming that count, so a billing server that lost its label is
+still noticed. One unfiltered call partitioned here, rather than a selector
+listing plus an unfiltered one. `create` still refuses a name any server in
+the project holds.
+
 ### 3. Lifecycle
 
 ```
@@ -185,6 +197,10 @@ stderr, not a confirm: `stop` does what was asked.
 There is no `provision`/`deprovision`, no dormant state and no resize, as
 decided in the redesign.
 
+**As shipped (simplify.md, v0.2.0).** With no unlabelled rows there is no
+unmanaged lifecycle: `start`/`stop` no longer confirm, `delete` no longer
+refuses, and `providerNoPromoteErr` is gone.
+
 ### 4. Reach and setup
 
 Once it exists, a provider VM is a `remote` + `managed` box in every way
@@ -208,6 +224,10 @@ that matters, and shares `backend/ssh.go`:
   made with `config add`; the provider VM is then `shadowed` by it, which is
   exactly right. Optional later: a `host_template = "{name}.tail.ts.net"`
   provider key. Not in v1.
+
+**As shipped (simplify.md, v0.2.0).** setup on a server runs keys and
+harden before the hook and repos, and harden opens mosh's `60000:61000/udp`
+beside ssh. The login is always `dev` (templates have no `user`).
 
 ### 5. Status: cached, refreshed on demand, and true for remotes too
 

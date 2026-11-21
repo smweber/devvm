@@ -14,17 +14,20 @@ and carry "as shipped" notes where the code departed from them.
 | Known issues (the real ones) | this file | v0.1.18 |
 | ssh agent exec for remote boxes | `browser-bridge.md` §1, §5, §6 | v0.1.19 |
 | Menu bar relaunch fix | Lessons below | v0.1.20 |
+| Simplify (phases 0–5, steps 1–18) | `simplify.md` v1.3 (implemented, "As shipped") | v0.2.0 |
 
 The long form (per-step live-test lists, "what shipped differently" notes)
 is in git history before the commit "docs/proposals: ROADMAP trimmed to a
 record and the live lists" (2026-10-19).
 
-## Simplify (agreed 2026-11-20, not started)
+## Simplify (done, v0.2.0)
 
-Design: `simplify.md` v1.3, then `share-auth.md`. One `jj commit` per
-numbered step, tests green at each; a live test and a release per phase,
-because laptop and hubs must update together from phase 3 on. Update this
-table as phases land.
+Design: `simplify.md` v1.3 (now implemented; its "As shipped" section lists
+what departed from the text), then `share-auth.md`. One `jj commit` per
+numbered step, tests green at each; a live test per phase, because laptop
+and hubs must update together from phase 3 on. The release that carries it
+is v0.2.0, which is also the hub floor (`hubMinVersion`,
+`session.HubForwardsMinVersion`, `HubBridgeMinVersion`).
 
 | # | Phase | Steps | Live test | State |
 |---|-------|-------|-----------|-------|
@@ -33,7 +36,7 @@ table as phases land.
 | 2 | Remove `auth`, `repos`, `lockdown`; `agent = true` | 4–8 | an entry with `agent = true` (not `scottdev3`: the user adds that line) | done 2026-11-20 (live: ThinkPad host as an `agent = true` entry) |
 | 3 | Ports out of templates/create/setup; no `--ephemeral`; restore on attach | 9–11 | ThinkPad hub + local | done 2026-11-21 (ThinkPad on the same build) |
 | 4 | No "managed": labels, no adopt, no managed entries; Swift | 12–15 | ThinkPad (labels), Hetzner (unlabelled count) | done 2026-11-21 (Swift uncompiled until CI) |
-| 5 | Delete upgrade paths, shrink hub flags, docs | 16–18 | ThinkPad hub at the new minimum | open |
+| 5 | Delete upgrade paths, shrink hub flags, docs | 16–18 | ThinkPad hub at the new minimum | done 2026-11-21 (ThinkPad hub and laptop both v0.2.0) |
 | 6 | `share-auth.md` | its 0–5 | ThinkPad smol VM + Hetzner | open |
 
 ## Config redesign (done, v0.1.16)
@@ -102,7 +105,7 @@ built-in `cx23`); a live test from a second host.
 
 Pinned by tests: `hubMinVersion` (v0.1.13, v0.1.16 since config step 4),
 `session.HubForwardsMinVersion = v0.1.14`, `session.HubBridgeMinVersion =
-v0.1.15`.
+v0.1.15`; all three v0.2.0 since simplify step 16.
 
 ## Shared decisions
 
@@ -119,22 +122,27 @@ v0.1.15`.
    wins; the hub proxy runs commands with `DEVVM_NO_SUBSCRIBE=1`. Clients
    always name guest ports.
 4. **One exec per smol VM, always.** Nothing on any host spawns a second
-   `devvm-agent serve` into a VM. A remote box gets one too, on its
-   daemon's own ssh master; `auth` never spawns its own anywhere.
+   `devvm-agent serve` into a VM. A box reached over ssh gets one too, on
+   its daemon's own ssh master. (smolvm 1.35.5 showed no parallel-exec
+   wall; the rule stays for the one guest socket and the clock sync.)
 5. **`--plain` changes ship with their Swift change** in the same commit.
 6. ~~Hub-machine state lives in the hub's conf.~~ **Superseded by config.md
    §5:** a client's saved forwards for any machine are host state,
    `<State>/ports/NAME`, and `<State>/ports/HUB@NAME` for a hub machine,
    whose record is derived from the hub's entry.
 7. **VM commands never write config; `config` commands never touch a box**
-   (config §4). devvm modifies only boxes it manages: made by `create` or
-   handed over with `setup --adopt` (config §2–3).
+   (config §4). devvm shapes only what it creates (simplify.md): a smol VM
+   or provider server made by `create`, carrying the `devvm=true` label.
+   An entry is never shaped; the one thing devvm may write there beyond
+   `~/.ssh` is its agent, and only under `agent = true`.
 8. **Two axes, not one enum** (config §1): `backend` says who owns the
-   registry and lifecycle, `managed` whether devvm owns the OS; code decides
-   on the predicates, never the backend string.
-9. **Smol VMs are discovered, never configured** (config §2): an entry
-   shadows a smol VM of the same name, and the managed marker
-   (`created_at`) settles whether devvm made it.
+   registry and lifecycle, `Managed()` whether devvm made the box (true for
+   every discovered record, false for entries and hubs: not a setting);
+   code decides on the predicates, never the backend string.
+9. **Smol VMs and provider servers are discovered, never configured**
+   (config §2, simplify.md steps 13–15): ownership is the `devvm=true`
+   label on the machine, an unlabelled one is invisible, and an entry
+   shadows a discovered machine of the same name.
 10. **No dormant state** (config §2): a machine exists or it doesn't;
     rebuilding is `delete` then `create`.
 
@@ -157,8 +165,6 @@ Cosmetic or accepted:
 - The ssh transport notices a dead ControlMaster only on its 30s
   `checkInterval`, so a forward reads `up` for up to 30s after `ssh -O exit`.
 - A hub `stop`→`start` waits out the laptop's reconnect backoff (≤30s).
-- A locally stamped build with a suffix (`…-dirty-step6`) sorts as a
-  prerelease and refuses a hub as older than `hubMinVersion`.
 - The redirect TTL's 10-minute expiry was never live-tested. The host
   browser is opened by the subscribing `attach`/`shell` process, so its
   PATH decides the opener.
@@ -176,32 +182,53 @@ Cosmetic or accepted:
   to choose, so it is left as "the most recent wins".
 - A relay opened while a hub's remote machine had no current agent there
   keeps `NoEvents` (no bridge) until the laptop's daemon cycles, even after
-  `auth` on the hub installs one: the echo is read once, at the open.
-- On an adopt host whose key is not yet in `~/.ssh/known_hosts` (adopt
-  entries are not pinned), the first `attach`/`shell` gets the "bridge
+  an agent appears there: the echo is read once, at the open.
+- On an entry whose key is not yet in `~/.ssh/known_hosts` (entries are
+  never pinned by devvm), the first `attach`/`shell` gets the "bridge
   unavailable (… exit status 255)" line: the daemon's BatchMode master
   refuses the unknown key before the session's own ssh asks about it.
   The next attach is bridged.
-- On a managed remote box whose agent install fails (sudo refused before
-  `setup`), each of the daemon's retries copies the agent again (~3 MiB),
-  backing off to one try per five minutes.
+- On a provider server whose root agent install fails (sudo refused before
+  `setup` ran), each of the daemon's retries copies the agent again
+  (~3 MiB), backing off to one try per five minutes.
+- A daemon started before `agent = true` was added to an entry keeps the
+  record it captured until it restarts (`ports down`, end the attach): the
+  key counts from the next start.
+- A smolvm whose `machine create` has no `--label` is detected only at
+  `create` (its own stderr, `ErrNoSmolLabel`), not by a version probe.
+- `<State>/managed/` (the markers before phase 4) is left on disk, unread.
+- `~/.devvm/agent.sock` outlives the agent on a remote box (the exec dies,
+  the socket file stays until the next agent rebinds it).
+- The Swift changes of phase 4 (and step 16's `dormant` removal) are
+  uncompiled until CI runs on macOS.
 
 ## Lessons (don't relearn)
 
-- **smolvm 1.16.1's `machine exec` never boots a stopped VM** (2026-10-18,
-  ThinkPad): it fails at once (`machine 'raw' is not running`), so
-  attach/shell on a stopped VM used to fail (attach as a misleading "tmux
-  not found"). Execs overlapping a boot are only slow: 50 parallel probes
-  during `devvm start` all succeeded once the VM ran (~1s, the early ones
-  waiting up to 1s), and `start` + `exec` + the daemon's serve exec
-  overlapped twice with no wedge. attach/shell now start the VM first.
-- **A smol VM whose start is in flight lists as `stopped`** (1.16.1 never
-  says `starting`), and a second `smolvm machine start` kills the first
-  one's boot ("Killing orphaned _boot-vm process"; the first start fails
-  with SIGTERM, the second boots it). Seen with `devvm start raw &` and
-  `devvm shell raw` 0.2s later. This host's starts of one VM are serialized
-  (`lockStart`, `run/.start-NAME.lock`); `machine start` on a running VM is
-  a harmless "already running".
+- **smolvm's `machine exec` never boots a stopped VM** (1.16.1, 2026-10-18;
+  unchanged on 1.35.5, 2026-11-20): it fails at once (`machine 'raw' is not
+  running`), so attach/shell on a stopped VM used to fail (attach as a
+  misleading "tmux not found"). Execs overlapping a boot are only slow.
+  attach/shell now start the VM first.
+- **smolvm 1.35.5 facts** (simplify.md, ThinkPad answers, 2026-11-20): a
+  booting VM lists `unreachable` for ~0.3s, then `running`; a VM made but
+  never started lists `created`; a second `machine start` during a boot
+  answers "already running" and no longer kills the first (on 1.16.1 a
+  booting VM listed `stopped` and the second start killed it, which is why
+  this host's starts are serialized by `lockStart`: now redundant, kept as
+  harmless). `/tmp` is not tmpfs-shadowed under `machine cp` (staging in
+  `/var/tmp` still works). Parallel execs are fine (30 short, 25
+  concurrent 8 MiB `-i` streams). A plain exec's stdout is still capped at
+  11534336 bytes, now with an explicit error; `-i` and `--stream` execs are
+  not capped. stdin on a one-shot `exec -i` arrives whole and EOF reaches
+  the guest when the host closes the pipe. `machine update --label` works
+  on a running VM (not in 1.16.1). Stop every VM before upgrading smolvm.
+- **A login bash at SHLVL=1 with `set -e` turns any `exit N` into 1**
+  (2026-11-20): Ubuntu's stock `~/.bash_logout` runs `clear_console`, which
+  fails without a console. A script whose exit code matters (the clone
+  script's 86) runs as `bash -c` under `ExecOpts.Login`.
+- **`DPkg::Lock::Timeout` does not cover `apt-get update`'s lists lock**
+  (2026-11-20): devvm's installs wait for the dpkg lock, and its `apt-get
+  update` retries.
 - **macOS kqueue coalesces a relink into nothing** (2026-10-17): a symlink
   renamed over `devvm.toml` under load merges into one dir event, the old
   target's fd stays watched, and no Create/Remove fires. `status --watch`
@@ -228,11 +255,14 @@ Cosmetic or accepted:
   relay's `*os.File` was finalized while in use. Keep those fixes; in
   late-dial tests wait on signals, never sleep.
 - **Live testing**: refresh a hub's binary by `scp` to a temp path then `mv`
-  (ETXTBSY otherwise). `script -qec "devvm …" /dev/null <<< y` drives
+  (ETXTBSY otherwise). This guest's linuxbrew `mosh` wrapper stalls in its
+  fake-proxy ssh step: test mosh from the ThinkPad. A scripted proxied
+  attach under `script` detaches only with ^B and d sent separately, and
+  late. `script -qec "devvm …" /dev/null <<< y` drives
   `[y/N]` prompts; the huh form is unreadable under `script`. The
   **ThinkPad is the default live hub**; `cloud` (fake smolvm) only where
-  `calls.log` must show the exact smolvm calls or a managed remote ssh
-  target is needed.
+  `calls.log` must show the exact smolvm calls or a plain ssh target is
+  needed.
 - **Reusable test scaffolding**: `fakeSSH`/`fakeHub`/`fakeHubWith` in
   `internal/cli` run the real remote string through `sh` and assert exact
   ssh argv; the cp round trip re-execs the test binary as the hub's `devvm`
@@ -241,9 +271,9 @@ Cosmetic or accepted:
 - **Unix sockets and inodes**: tmpfs hands out inodes monotonically, ext4
   and APFS reuse them; `ownsSocket` needs the dial, not just the inode.
 - **This dev guest is itself a devvm smol box** (2026-10-18): it has
-  `/usr/local/bin/devvm-open-url`, so a test expecting the managed shim to
-  be missing fails here. Test the absence with a temp `$HOME` (the adopt
-  path) and assert only the managed path's text.
+  `/usr/local/bin/devvm-open-url`, so a test expecting the root shim to
+  be missing fails here. Test the absence with a temp `$HOME` (an entry's
+  `~/.local/bin` path) and assert only the root path's text.
 - **`ControlMaster=no` with a missing ControlPath is a fresh connection,
   not an error**: ssh connects on its own. Anything run on the daemon's
   master (`OnMaster`) checks the master is alive before a respawn and
@@ -264,13 +294,13 @@ Cosmetic or accepted:
   KVM, smolvm 1.35.5 since 2026-11-20), **intermittently offline**. Dedicated user
   `devvmtest`; nothing outside that home is touched. The only place
   smolvm-specific behaviour (exec concurrency, boot, `machine cp` staging,
-  the 11 MiB cap) can be seen. VMs: `web` (managed; ubuntu:24.04, 1 GiB,
+  the 11 MiB cap) can be seen. VMs: `web` (ubuntu:24.04, 1 GiB,
   10 GB, with `python3`, `tmux`, `gh` and a persistent `dev` tmux session)
-  and `raw` (alpine, unmanaged: the `setup --adopt` and unmanaged-path test
-  subject). Guest fixture: `nohup devvm exec web -- python3 -m http.server
+  and `raw` (ubuntu), both labelled `devvm=true`; there are no unmanaged
+  smol VMs to test any more. Guest fixture: `nohup devvm exec web -- python3 -m http.server
   3000 --bind 127.0.0.1 >/dev/null 2>&1 &` on the hub.
-- **`cloud`** (Hetzner CX23, `dev@2.29.47.196`; a managed `remote` entry
-  `cloud` and a hub entry `h` here): no `/dev/kvm`, so its `smolvm` is
+- **`cloud`** (Hetzner CX23, `dev@2.29.47.196`; a `remote` entry `cloud`,
+  never shaped since phase 4, and a hub entry `h` here): no `/dev/kvm`, so its `smolvm` is
   `contrib/fakesmol/smolvm` (the "guest" is the box; every call appended to
   `~/.local/share/fakesmol/calls.log`; guest port P bumps to P+1 on the
   hub). It also holds the user's machine `scottdev3`: never touch it.

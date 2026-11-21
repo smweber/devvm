@@ -82,7 +82,7 @@ func TestBridgeSessionSkipped(t *testing.T) {
 		{"DEVVM_NO_SUBSCRIBE=1", "1", managedSmol("web"), &statusBackend{}, 0},
 		{"DEVVM_NO_SUBSCRIBE=0 subscribes", "0", managedSmol("web"), &statusBackend{}, 1},
 		{"remote subscribes", "", config.NewRemote("box", "box"), &statusBackend{}, 1},
-		{"adopt host subscribes", "", config.NewRemote("box", "box"), &statusBackend{}, 1},
+		{"entry without agent = true subscribes", "", config.NewRemote("box", "box"), &statusBackend{}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(backend.NoSubscribeEnv, tc.env)

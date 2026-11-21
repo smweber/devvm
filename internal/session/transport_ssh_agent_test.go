@@ -185,9 +185,9 @@ func TestSSHAgentRespawnsWithMasterAlive(t *testing.T) {
 	}
 }
 
-// On an adopt host without a current agent the transport has an events
-// channel nothing feeds, reports no shim and no events (so a relay is told
-// NoEvents), and spawns nothing; a nudge (a kick, a new subscriber, after
+// On an entry without agent = true and no current agent there, the
+// transport has an events channel nothing feeds, reports no shim and no
+// events (so a relay is told NoEvents), and spawns nothing; a nudge (a kick, a new subscriber, after
 // an agent was installed by hand) makes it look again and bring the exec
 // up.
 func TestSSHAgentAdoptHostWaitsForNudge(t *testing.T) {
@@ -344,10 +344,10 @@ func TestSSHAgentHooksInstallOnlyWithConsent(t *testing.T) {
 	g := &guestRec{}
 	_, st, err := sshAgentHooks(config.NewRemote("adopted", "me@adopted"), g).prepare(context.Background())
 	if err != nil || st != agentbin.Missing {
-		t.Fatalf("adopt host: %v, %v", st, err)
+		t.Fatalf("entry without agent = true: %v, %v", st, err)
 	}
 	if w := g.writes(); len(w) != 0 {
-		t.Fatalf("adopt host: the daemon wrote %q", w)
+		t.Fatalf("entry without agent = true: the daemon wrote %q", w)
 	}
 
 	g = &guestRec{}

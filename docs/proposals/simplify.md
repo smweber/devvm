@@ -1,8 +1,9 @@
 # Proposal: simplify (fewer commands, no "managed", one ownership rule)
 
-Status: **agreed** with the user, 2026-11-20 (v1.3: a code review's
-findings folded in and its questions settled). Nothing built; progress is
-tracked in `ROADMAP.md`. The goal is that devvm only gets simpler and more robust:
+Status: **implemented**, 2026-11-21, for v0.2.0 (agreed with the user
+2026-11-20 as v1.3: a code review's findings folded in and its questions
+settled). Phases 0–5 landed one `jj` commit per step; `ROADMAP.md` records
+the milestone, and "As shipped" below what departed from the text. The goal is that devvm only gets simpler and more robust:
 every phase removes more than it adds. `share-auth.md` is built **after**
 this plan and is written against the model below.
 
@@ -92,6 +93,10 @@ server unhardened.
 Harden's apt and unattended-upgrades now run before the hook, so a hook's
 own apt may meet the dpkg lock: devvm's apt calls pass
 `-o DPkg::Lock::Timeout`.
+(As shipped: that covers devvm's own installs only, and the timeout does
+not cover `apt-get update`'s lists lock, so devvm's `apt-get update`
+retries. A hook's own apt is the hook's business; there is no apt.conf.d
+drop-in.)
 
 Tests: harden runs after a failed clone and after a failed hook.
 
@@ -281,6 +286,51 @@ before the hook. It needs nothing from the agent or the daemon.
 - A forward the bridge made for a dev server is gone on detach and does not
   return on reattach; `ports add` once is the answer for a port worth
   keeping.
+
+## As shipped
+
+What landed differs from the text above in these points (each recorded in
+its commit message too):
+
+- **Exit codes.** `setup` that finished with failed clones exits **3**
+  ("setup finished, but: …"), which is also how a hub tells the laptop that
+  a proxied create made the VM. The clone script exits **86** when the
+  guest's `gh` has no working login; those `owner/repo` specs are skipped
+  with a hint and setup exits 0. The script runs as `bash -c` under a login
+  shell (Lessons in `ROADMAP.md`: Ubuntu's `~/.bash_logout`).
+- **`agent = true` is file-only**: `config add --agent` was cut, and `config
+  show` prints the key.
+- **Leftover forwards for a hub machine**: the laptop clears its
+  `HUB@NAME` ports file after a proxied `create` that exited 0 or whose
+  output contains `wasCreated(name)` (the VM exists; setup failed after it,
+  or finished with a failed clone).
+- **`delete HUB/NAME --yes` forwards `--yes`** to the hub (an extra fix in
+  phase 4: without a terminal the hub's prompt had aborted). Hubs older
+  than v0.1.17 lacked the flag; moot at the v0.2.0 floor.
+- **The unlabelled-servers line** (step 13) comes from the live round's one
+  unfiltered `List`, partitioned on this host, not from a selector listing
+  plus an unfiltered one.
+- **Apt and the dpkg lock** (phase 1): see the note under Phase 1.
+- **Step 16 kept** the isolation a non-default `--config-dir` alone gives
+  (state inside it, `cli.stateDirFor`): a test and second-registry
+  feature, not an upgrade path. `update`'s re-exec now always passes
+  `--state-dir`. `SeedLegacyMarkers` had already gone in phase 4 (with the
+  marker). The `<State>/managed/` dirs phase 4 left are not read or
+  removed. The Swift app's `dormant` case went with the Go mapping. One
+  read-side filter from phase 4 stays: the provider cache skips unlabelled
+  rows an older devvm cached (they are gone after the next live round).
+- **The hub minimums** (step 16) are all v0.2.0, but none is compared to a
+  hub's version: each is named in the one-line refusal for a hub that lacks
+  what it marks. Step 17 dropped the old-hub check's `--no-ports` arm and
+  kept the rest (exit 127, no `setup`, no `--inline-template`: a hub older
+  than v0.1.16), so a hub far below the floor still gets one line naming
+  `devvm update`.
+
+Findings left open (`ROADMAP.md`, Known issues): a daemon started before
+`agent = true` was added keeps its record until it restarts; a smolvm whose
+`create` lacks `--label` is detected only at create; `<State>/managed/` is
+left on disk; `~/.devvm/agent.sock` outlives the agent on a remote box; the
+phase 4 Swift changes are uncompiled until CI on macOS.
 
 ## Settled after the review
 

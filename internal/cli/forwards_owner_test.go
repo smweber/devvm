@@ -88,7 +88,7 @@ func serveOwnerDaemon(t *testing.T, configDir config.Paths, name string, resp ma
 	return od
 }
 
-// saveRemote registers an adopted remote and saves ports as this host's
+// saveRemote registers a remote entry and saves ports as this host's
 // forwards for it.
 func saveRemote(t *testing.T, paths config.Paths, name string, ports ...string) {
 	t.Helper()

@@ -2,7 +2,9 @@
 
 Status: draft v2.6, 2026-09-15 (§3 notes what roadmap step 6 shipped for
 relay sessions, 2026-09-25; §1, §2, §4 and §5 note what step 7 shipped,
-2026-09-26; §3 and §6 note what step 8 shipped, 2026-09-27). Order of work lives in `ROADMAP.md` and
+2026-09-26; §3 and §6 note what step 8 shipped, 2026-09-27; §1, §5 and §6
+note what `simplify.md` changed in v0.2.0: no `auth`, no adopt hosts, `agent
+= true`). Order of work lives in `ROADMAP.md` and
 nowhere else. Revised after six independent reviews. **Sections 3 and 4 are
 the authoritative statement of leases, subscriptions, ownership and bind
 policy**; `hub.md` and `ROADMAP.md` reference them and do not restate them.
@@ -246,6 +248,18 @@ machine's is: past it the session starts and a bridge that lands later is
 adopted (if its daemon has an agent), so a box that does not answer costs
 the session at most that before its own ssh fails, not the daemon's whole
 come-up (ConnectTimeout + 10s).
+
+**As shipped (simplify.md, v0.2.0).** There are no adopt hosts and no
+consent prompt. The posture follows the record the daemon captured at its
+start: a box devvm made (smol, a provider server) gets the root
+`/usr/local/bin` install; an entry with `agent = true` gets the user-scoped
+`~/.local/bin` install from its daemon, never as root (and so replaces a
+stale agent after `devvm update` by itself); any other entry is only
+probed, and with no current agent its transport waits for a nudge (`kick`,
+a new subscriber). A key added to the file counts once the daemon restarts
+(`ports down`, end the attach). The smol transport's install gate and
+`agentbin.Install`'s approve callback are gone: every record that reaches
+an install is one of the first two.
 
 ### 2. Request/response events
 
@@ -631,6 +645,12 @@ the root shim on a managed box and `$HOME/.local/bin/devvm-open-url` on an
 adopt host, where it exists only once `auth` installed the agent with
 consent, so nothing is ever written there by attach and profile.d never.
 
+**As shipped (simplify.md, v0.2.0).** An entry never gets
+`/etc/profile.d/devvm.sh` or a root install; `BROWSER` there comes from
+`attach`'s tmux session, guarded on the shim in `~/.local/bin`, and in a bare
+`shell` it is the user's to export. A box devvm made gets agent, shim and
+profile.d at `setup`, as before.
+
 ### 6. `auth` becomes thin
 
 Where the daemon's transport has events, meaning smol today and hub machines
@@ -702,6 +722,16 @@ ssh transport knows a current agent (the echo is the transport's
 `hasEvents`, never the backend kind), so `auth`/`attach HUB/NAME` on a
 remote hub machine work through the relay like a smol one; with no agent
 there it echoes `NoEvents`, and the laptop's refusal names that.
+
+**As shipped (simplify.md, v0.2.0).** `auth` is removed, with
+`internal/auth`, `cli/auth.go`, the hub auth proxy and `openAuthBridge`.
+The bridge already covers it: `gh auth login` and `codex login` run inside
+`attach` open on the laptop, and codex's `:1455` callback is bound by the
+daemon's own URL classifier (§1, §4) as an exact `ttl`-owned forward. Lost
+with it: picking `codex login --device-auth`, and chaining `gh auth
+setup-git` after `gh auth login`. `DEVVM_NO_SUBSCRIBE` and the daemon's
+`kick` stay. The notes above that name `auth`, `--install-agent` or an adopt
+host describe the code before v0.2.0.
 
 ### 7. Trust boundary
 

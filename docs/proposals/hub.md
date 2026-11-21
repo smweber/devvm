@@ -2,7 +2,8 @@
 
 Status: draft v3.4, 2026-09-15, revised after six independent reviews;
 §2 and §7 updated 2026-09-25 to the mechanism roadmap step 6 shipped; §4,
-§7 and §8 updated 2026-09-27 to what step 8 shipped.
+§7 and §8 updated 2026-09-27 to what step 8 shipped; §3, §5 and §8 carry
+"As shipped (simplify.md)" notes for v0.2.0.
 Order of work lives in `ROADMAP.md` and nowhere else. Companion to
 `browser-bridge.md`, whose sections 3 and 4 are the authoritative statement
 of leases, subscriptions, ownership and bind policy; this doc references them
@@ -226,6 +227,23 @@ rule would break hub access on every `devvm update` taken on one side first,
 which the menu bar app makes routine. Nothing on the laptop ever dials the
 hub daemon's socket, so its `ping` version is irrelevant here.
 
+**As shipped (simplify.md, v0.2.0).** The hub floor is v0.2.0:
+`hubMinVersion`, `session.HubForwardsMinVersion` and
+`session.HubBridgeMinVersion` are all the release that carries
+`simplify.md`, since laptop and hubs update together across it. None is
+compared to a hub's version; each is named in the one-line refusal for a
+hub that lacks what it marks (`setup` or `--inline-template`, `__session`,
+a daemon with relays, the `Bridge` echo). `HUB/NAME` is only ever the hub's
+labelled smol VM, so a proxied `create`/`setup --template T` sends hook,
+memory, disk and repos (`--inline-template`, `--hook`, `--memory`,
+`--disk`, a hidden `--repo`) and a create `--backend=smol`; `--user`,
+`--key`, `--harden`, `--fail2ban`, `--port` and `--no-ports` are gone on
+both sides. `delete HUB/NAME --yes` forwards `--yes` (a hub then deletes
+without a terminal); without it the hub's own prompt runs over `-t`. After
+a proxied create that exited 0 or whose output carries `wasCreated(name)`
+(the VM exists, setup then failed or finished with a failed clone, exit 3),
+the laptop clears its own `HUB@NAME` ports file, as a local create does.
+
 ### 4. `hubBackend`
 
 Implements `backend.Backend` only as far as the local leaves need:
@@ -289,6 +307,12 @@ already receives, so an added or deleted hub gets or loses its pipe live.
 `--plain` gains no column: the hub is encoded in column 1 (`desktop/web`),
 which is what the menubar already keys on. Consumers that want to group by hub
 split on `/`.
+
+**As shipped (simplify.md, v0.2.0).** `parseHubRows` no longer maps an
+older hub's `remote-managed`/`remote-unmanaged`, and a hub row's `dormant`
+is not read: a hub's tokens are passed through as sent. A v0.2.0 hub sends
+`managed` in the fifth column for its labelled smol VMs and `-` for its
+entries.
 
 ### 6. File copy
 
@@ -657,6 +681,12 @@ an upstream failure is the ack's error (`subscribed here, but not
 upstream: …`) while the local registration stays for `restore()` to
 re-send. A relay subscriber already receives events unbound from step 7
 on (the hub daemon side of this section).
+
+**As shipped (simplify.md, v0.2.0).** `auth HUB/NAME` is gone with `auth`:
+a login typed inside `attach HUB/NAME` opens on the laptop through the
+relay, as any other URL does. A proxied attach/shell still runs under
+`DEVVM_NO_SUBSCRIBE=1`, and the laptop pushes its saved `HUB@NAME` forwards
+as it connects (never the hub).
 
 ### 9. Trust
 

@@ -182,9 +182,9 @@ func TestOnMasterUsesDaemonControlPath(t *testing.T) {
 }
 
 // Remote attach puts BROWSER into the dev session's environment only when
-// the shim beside this box's agent is executable (root's on a managed box,
-// ~/.local/bin's on an adopt host), creating the session first when it is
-// missing, then attaches. Run through a real sh with a fake tmux.
+// the shim beside this box's agent is executable (root's on a box devvm
+// made, ~/.local/bin's on an entry with agent = true), creating the session
+// first when it is missing, then attaches. Run through a real sh with a fake tmux.
 func TestRemoteAttachArgvSetsBrowserOnlyWithShim(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -193,11 +193,11 @@ func TestRemoteAttachArgvSetsBrowserOnlyWithShim(t *testing.T) {
 		session bool
 		want    string
 	}{
-		{"adopt, shim, new session", false, true, false,
+		{"entry, shim, new session", false, true, false,
 			"has-session -t dev|new-session -d -s dev|set-environment -t dev BROWSER HOME/.local/bin/devvm-open-url|attach-session -t dev"},
-		{"adopt, shim, existing session", false, true, true,
+		{"entry, shim, existing session", false, true, true,
 			"has-session -t dev|set-environment -t dev BROWSER HOME/.local/bin/devvm-open-url|attach-session -t dev"},
-		{"adopt, no agent", false, false, true,
+		{"entry, no agent", false, false, true,
 			"has-session -t dev|attach-session -t dev"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

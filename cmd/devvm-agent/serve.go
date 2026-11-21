@@ -16,9 +16,9 @@ import (
 
 // sockName is the guest unix socket where the running serve agent accepts
 // open-url handoffs from the BROWSER shim. There is one: the machine's
-// forward daemon owns the only serve exec on smol and on remote boxes alike,
-// and `auth` rides that daemon (browser-bridge.md §6), so the private auth
-// session and its own socket (`agent-auth.sock`, `serve --auth`) are gone.
+// forward daemon owns the only serve exec on smol and on remote boxes
+// alike, and a login run in the box (`gh auth login`, `codex login`) opens
+// its URL through that daemon's session (browser-bridge.md §6).
 const sockName = "agent.sock"
 
 // guestSockPath resolves a socket name under the dev user's ~/.devvm.
