@@ -235,8 +235,7 @@ func (c *Client) Add(pref, guest int) (host int, bumped, pending bool, err error
 
 // RemoveOwner drops one owner (OwnerConf or OwnerTTL) of a guest port's
 // forward. left is the forward as it stands afterwards if another owner
-// still holds it, nil if it is gone (or never existed). A daemon older than
-// owners removes the forward outright and reports nothing left.
+// still holds it, nil if it is gone (or never existed).
 func (c *Client) RemoveOwner(guest int, owner string) (left *Forward, err error) {
 	resp, err := c.request(Request{Op: OpRemove, Guest: guest, Owner: owner})
 	if err != nil {

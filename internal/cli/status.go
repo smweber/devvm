@@ -739,11 +739,7 @@ func (a *App) forwardSummary(name string) fwdSummary {
 	if err != nil {
 		return fwdSummary{}
 	}
-	state := st.State
-	if state == "" {
-		state = session.StateUp // a pre-0.1.11 daemon reports no state; it only ever ran up
-	}
-	return fwdSummary{daemon: true, state: state, n: len(st.Forwards), conf: st.ConfCount(), since: st.Since}
+	return fwdSummary{daemon: true, state: st.State, n: len(st.Forwards), conf: st.ConfCount(), since: st.Since}
 }
 
 // runStatus is the single-machine drill-in: always detailed (state, lifecycle,

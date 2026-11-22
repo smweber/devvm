@@ -64,9 +64,8 @@ type Forward struct {
 	Pending bool `json:"pending,omitempty"`
 	Exact   bool `json:"exact,omitempty"`
 	// Owners are the owner kinds holding the forward (OwnerConf,
-	// OwnerConnection, OwnerTTL), sorted and deduplicated. Empty only from
-	// a daemon older than owners, whose forwards were all configured ones
-	// (see IsConf).
+	// OwnerConnection, OwnerTTL), sorted and deduplicated. Never empty: a
+	// slot left with no owner mid-bind is not listed (daemon.list).
 	Owners []string `json:"owners,omitempty"`
 	// Expires is when the forward's ttl owner lapses (a bridge callback,
 	// browser-bridge.md §4); absent when no ttl owner holds it. A pointer
@@ -74,14 +73,8 @@ type Forward struct {
 	Expires *time.Time `json:"expires,omitempty"`
 }
 
-// IsConf reports whether a conf owner holds the forward. A forward from a
-// pre-owner daemon lists no owners and counts as configured: that is what
-// every forward it held was, bar an old login callback nobody counted
-// separately either.
+// IsConf reports whether a conf owner holds the forward.
 func (f Forward) IsConf() bool {
-	if len(f.Owners) == 0 {
-		return true
-	}
 	for _, o := range f.Owners {
 		if o == OwnerConf {
 			return true

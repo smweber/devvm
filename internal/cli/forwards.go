@@ -186,8 +186,7 @@ func (a *App) unportUnconfigured(name string, saved []string, mapping string, gu
 		}
 		// A ttl owner (a bridge callback) is what `ports rm` exists to drop
 		// here. A conf owner the ports file no longer names (a hand edit, an
-		// add from an older devvm's --ephemeral, or a pre-owner daemon,
-		// which removes outright) is stale and goes too.
+		// add from an older devvm's --ephemeral) is stale and goes too.
 		// A connection owner is never ours to drop.
 		var drop string
 		switch {
@@ -214,9 +213,6 @@ func (a *App) unportUnconfigured(name string, saved []string, mapping string, gu
 
 // ownerLabel names a forward's owner kinds for humans ("conf+connection").
 func ownerLabel(f session.Forward) string {
-	if len(f.Owners) == 0 {
-		return "conf" // a pre-owner daemon: every forward it held was configured
-	}
 	return strings.Join(f.Owners, "+")
 }
 

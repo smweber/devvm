@@ -175,9 +175,6 @@ func (a *App) provisionResource(name string, memory, disk int) error {
 	if !backend.SmolAvailable() {
 		return backend.ErrNoSmolvm
 	}
-	if disk <= 0 {
-		disk = backend.SmolDefaultDiskGiB
-	}
 	fmt.Fprintf(a.Stdout, "Using %d MiB RAM, %d GiB disk.\n", memory, disk)
 	if err := backend.SmolCreate(name, memory, disk); err != nil {
 		return err

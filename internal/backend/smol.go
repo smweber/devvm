@@ -315,17 +315,13 @@ var ErrNoSmolLabel = errors.New("this smolvm's 'machine create' has no --label, 
 
 // SmolCreate provisions a new microVM (net-enabled, SMOLVM_GUEST=1, devvm's
 // label) and starts it. Mirrors the `smolvm machine create` invocation in
-// create_machine. A diskGiB <= 0 falls back to SmolDefaultDiskGiB, so a
-// pre-disk conf still boots. A smolvm that does not know --label is told
+// create_machine. A smolvm that does not know --label is told
 // from its own stderr, clap's unknown-argument line for that flag
 // (ErrNoSmolLabel), so no version is probed up front; any other failure,
 // a refused label value included, is smolvm's own.
 func SmolCreate(name string, memoryMiB, diskGiB int) error {
 	if err := needSmolvm(); err != nil {
 		return err
-	}
-	if diskGiB <= 0 {
-		diskGiB = SmolDefaultDiskGiB
 	}
 	args := []string{
 		"machine", "create",

@@ -694,17 +694,15 @@ func TestSSHForwardSpecIsDualStack(t *testing.T) {
 	}
 }
 
-// A forward from a daemon older than owners lists none and counts as
-// configured; ConfCount counts conf owners only.
+// ConfCount counts conf owners only.
 func TestForwardConfCounting(t *testing.T) {
 	st := Status{Forwards: []Forward{
-		{Guest: 1},                           // pre-owner daemon
-		{Guest: 2, Owners: []string{"conf"}}, // configured
+		{Guest: 2, Owners: []string{"conf"}},
 		{Guest: 3, Owners: []string{"connection", "ttl"}},
 		{Guest: 4, Owners: []string{"conf", "connection"}},
 	}}
-	if n := st.ConfCount(); n != 3 {
-		t.Fatalf("ConfCount = %d, want 3", n)
+	if n := st.ConfCount(); n != 2 {
+		t.Fatalf("ConfCount = %d, want 2", n)
 	}
 }
 

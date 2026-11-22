@@ -199,7 +199,10 @@ func TestStatusMergesHubRows(t *testing.T) {
 	// This host's own daemon for h@web (serveFakeDaemon takes the runtime
 	// name): two forwards, against the hub's up:9.
 	serveFakeDaemon(t, a.Paths, config.RuntimeName("h/web"), session.Response{
-		State: session.StateUp, Forwards: []session.Forward{{Host: 3000, Guest: 3000}, {Host: 3001, Guest: 3001}},
+		State: session.StateUp, Forwards: []session.Forward{
+			{Host: 3000, Guest: 3000, Owners: []string{session.OwnerConf}},
+			{Host: 3001, Guest: 3001, Owners: []string{session.OwnerConf}},
+		},
 	})
 	var out bytes.Buffer
 	a.Stdout = &out
