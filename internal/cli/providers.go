@@ -269,7 +269,7 @@ func localOwner(f *config.File, smols smolMachines, name string) string {
 //	unlabelled=2
 //	error=listing failed: hetzner: GET /servers: 503 ...
 //	# name	id	state	status	address	type	location	labels
-//	web	4711	running	running	1.2.3.4	cx23	nbg1	devvm=true,devvm-template=default
+//	web	4711	running	running	1.2.3.4	cx23	nbg1	devvm=true
 //
 // fetched is when the rows were listed (Unix seconds; absent: never),
 // attempted when the last round tried, unlabelled how many servers that

@@ -142,7 +142,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	srv, err := cl.Create(ctx, provider.Spec{
 		Name: s.Name, Type: pl.ServerType, Image: pl.Image, Location: pl.Location, SSHKey: key,
 		IPv6Only: !pl.IPv4,
-		Labels:   map[string]string{provider.LabelManaged: provider.LabelManagedValue, provider.LabelTemplate: t.Name},
+		Labels:   map[string]string{provider.LabelManaged: provider.LabelManagedValue},
 	})
 	cancel()
 	if srv != nil {

@@ -129,10 +129,7 @@ func TestRecord(t *testing.T) {
 		t.Fatalf("same key under a second name: %+v, %v", k, err)
 	}
 
-	spec := provider.Spec{
-		Name: m.Server, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key,
-		Labels: map[string]string{provider.LabelManaged: provider.LabelManagedValue, provider.LabelTemplate: "record"},
-	}
+	spec := managedSpec(m)
 	rec.use("create")
 	srv, err := c.Create(ctx, spec)
 	if err != nil {

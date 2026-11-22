@@ -99,12 +99,11 @@ var (
 	ErrNotFound = errors.New("not found")
 )
 
-// Labels devvm sets at create. LabelManaged=LabelManagedValue is the managed
-// marker; LabelTemplate is informational only (nothing reads it).
+// The label devvm sets at create, its managed marker: LabelManaged=
+// LabelManagedValue.
 const (
 	LabelManaged      = "devvm"
 	LabelManagedValue = "true"
-	LabelTemplate     = "devvm-template"
 )
 
 // Managed reports whether the server carries devvm's managed label.

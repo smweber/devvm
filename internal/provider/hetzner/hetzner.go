@@ -319,7 +319,7 @@ func (c *Client) List(ctx context.Context) ([]provider.Server, error) {
 }
 
 // ListSelector returns the servers matching a Hetzner label selector
-// ("devvm=true", "devvm=true,devvm-template=web"); "" means all.
+// ("devvm=true"); "" means all.
 func (c *Client) ListSelector(ctx context.Context, selector string) ([]provider.Server, error) {
 	var out []provider.Server
 	for page := 1; ; {

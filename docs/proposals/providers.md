@@ -129,8 +129,8 @@ machine ls`:
   servers that would be broken by `setup`, and a prompt is not enough of a
   gate for that; the label is a deliberate act in another tool. Nothing in
   the `Provider` interface sets labels after creation (§7).
-- A second label, `devvm-template=NAME`, is informational only. Nothing reads
-  it; it answers "what made this" in the console.
+- No second label: nothing records which template made a box (servers an
+  older devvm made keep a `devvm-template=NAME` label, which nothing reads).
 - Name resolution follows `config.md` §2 as an ordered source list: `HUB/NAME`
   → `[machines.NAME]` → local smol → **each configured provider**. A name
   not found anywhere is "no such machine". The provider lookup is one `GET
@@ -165,8 +165,8 @@ devvm start NAME / stop NAME # power on / power off
 1. Resolve the template; refuse on a name collision (§2).
 2. Ensure the ssh key exists in the project (`ssh_key` by name, or upload
    `ssh_key_file` once).
-3. `POST /servers` with name, type, image, location, the key, labels
-   `devvm=true` and `devvm-template=T`, `public_net` per `ipv4`. No
+3. `POST /servers` with name, type, image, location, the key, the label
+   `devvm=true`, `public_net` per `ipv4`. No
    `user_data`: cloud-init is a second shaping system, and `setup` already
    does everything it would.
 4. Print the address, then wait for ssh (the bounded wait `config.md` §9

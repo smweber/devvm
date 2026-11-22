@@ -193,7 +193,7 @@ func TestProviderCreatePlacementAndPartialFailure(t *testing.T) {
 	}
 	sp := specs[0]
 	if sp.Name != "web" || sp.Type != "cx43" || sp.Location != "fsn1" || sp.Image != "debian-12" || sp.SSHKey != "scott" || !sp.IPv6Only ||
-		sp.Labels[provider.LabelManaged] != provider.LabelManagedValue || sp.Labels[provider.LabelTemplate] != "big" || len(sp.Labels) != 2 {
+		sp.Labels[provider.LabelManaged] != provider.LabelManagedValue || len(sp.Labels) != 1 {
 		t.Fatalf("spec = %+v", sp)
 	}
 	row := cachedRow(a, "web")
@@ -285,7 +285,7 @@ esac`)
 		t.Errorf("EnsureSSHKey %d, Create %d", p.CallCount("EnsureSSHKey"), p.CallCount("Create"))
 	}
 	sp := p.Specs()[0]
-	if !strings.HasPrefix(sp.SSHKey, "devvm-") || sp.SSHKey != providerKeyName(testPubKey) || sp.IPv6Only || sp.Labels[provider.LabelTemplate] != "default" {
+	if !strings.HasPrefix(sp.SSHKey, "devvm-") || sp.SSHKey != providerKeyName(testPubKey) || sp.IPv6Only {
 		t.Errorf("spec = %+v", sp)
 	}
 	row := cachedRow(a, "web")

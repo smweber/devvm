@@ -25,7 +25,9 @@ import (
 func managedSpec(m recordMeta) provider.Spec {
 	return provider.Spec{
 		Name: m.Server, Type: "cx23", Image: "ubuntu-24.04", Location: "nbg1", SSHKey: m.Key,
-		Labels: map[string]string{provider.LabelManaged: provider.LabelManagedValue, provider.LabelTemplate: "record"},
+		// The labels the fixtures were recorded with (an older devvm also
+		// wrote devvm-template); the client sends whatever it is given.
+		Labels: map[string]string{provider.LabelManaged: provider.LabelManagedValue, "devvm-template": "record"},
 	}
 }
 
@@ -102,7 +104,7 @@ func TestCreateWaitsForActions(t *testing.T) {
 	}
 	if s.Name != m.Server || s.State != provider.StateRunning || s.Status != "running" ||
 		s.Type != "cx23" || s.Location != "nbg1" || !provider.Managed(*s) ||
-		s.Labels[provider.LabelTemplate] != "record" || s.Created.IsZero() {
+		s.Labels["devvm-template"] != "record" || s.Created.IsZero() {
 		t.Fatalf("created %+v", s)
 	}
 	if strings.Contains(s.Address, ":") || s.Address == "" {
