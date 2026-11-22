@@ -540,7 +540,7 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 	var w bytes.Buffer
 	a.Stderr = &w
 	pm := config.NewProviderMachine("box", config.BackendHetzner, config.ProviderServer{Address: "1.2.3.4"})
-	a.warnIgnored(pm, config.Template{Name: "big", Memory: 8192, ServerType: "cx43"}, setupOpts{})
+	a.warnIgnored(pm, config.Template{Name: "big", Memory: 8192, ServerType: "cx43"})
 	if got := w.String(); !strings.Contains(got, "ignoring memory (not applicable to a Hetzner server)") {
 		t.Errorf("provider: %q", got)
 	}
@@ -553,7 +553,7 @@ func TestWarnIgnoredProviderFields(t *testing.T) {
 		{config.DefaultTemplate, ""},
 	} {
 		w.Reset()
-		a.warnIgnored(&config.Machine{Name: "r", Backend: config.BackendSmol}, config.Template{Name: tc.tmpl, ServerType: "cx43", Location: "fsn1", IPv4: &v}, setupOpts{})
+		a.warnIgnored(&config.Machine{Name: "r", Backend: config.BackendSmol}, config.Template{Name: tc.tmpl, ServerType: "cx43", Location: "fsn1", IPv4: &v})
 		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
 			t.Errorf("smol, %s: %q", tc.tmpl, got)
 		}

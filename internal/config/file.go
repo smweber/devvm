@@ -170,8 +170,8 @@ func (f *File) validate() []error {
 	return errs
 }
 
-// entryUserRe is a login name for an entry's `user`. Looser than
-// ValidUser: an entry may well be reached as root.
+// entryUserRe is a login name for an entry's `user` (which may well be
+// root).
 var entryUserRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]*$`)
 
 // machine validates one entry and builds its record.

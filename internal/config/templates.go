@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 )
@@ -160,32 +159,6 @@ func deref(p *[]string) []string {
 	return slices.Clone(*p)
 }
 
-// Spec turns a resolved template back into a layer with every field set:
-// the proxied form sends exactly this, so the hub's own file never matters.
-func (t Template) Spec() TemplateSpec {
-	hook, mem, disk := t.Hook, t.Memory, t.Disk
-	repos := slices.Clone(t.Repos)
-	gh, files := slices.Clone(t.AuthorizedKeysGithub), slices.Clone(t.AuthorizedKeys)
-	harden, f2b := t.Harden, t.Fail2ban
-	// Placement only where a layer set it: an empty field stays unset, so
-	// the provider table and built-ins still apply under it.
-	opt := func(v string) *string {
-		if v == "" {
-			return nil
-		}
-		return &v
-	}
-	var ipv4 *bool
-	if t.IPv4 != nil {
-		v := *t.IPv4
-		ipv4 = &v
-	}
-	return TemplateSpec{Hook: &hook, Memory: &mem, Disk: &disk,
-		Repos: &repos, AuthorizedKeysGithub: &gh, AuthorizedKeys: &files,
-		Harden: &harden, Fail2ban: &f2b,
-		ServerType: opt(t.ServerType), Location: opt(t.Location), Image: opt(t.Image), IPv4: ipv4}
-}
-
 // LoadTemplates reads every `[templates.*]` table of devvm.toml (LoadFile:
 // the whole file is validated, so a broken entry fails a template read
 // too). A missing file is valid and means no templates.
@@ -221,21 +194,6 @@ func TemplateLayers(p Paths, name string) (named, def TemplateSpec, err error) {
 			name, p.FilePath(), strings.Join(have, ", "))
 	}
 	return named, def, nil
-}
-
-// userRe is a conservative POSIX login name: it lands in useradd, sudoers
-// and sshd's AllowUsers.
-var userRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-
-// ValidUser reports whether a user is safe for setup to create and pin.
-func ValidUser(u string) error {
-	if !userRe.MatchString(u) {
-		return fmt.Errorf("invalid user %q (lowercase letters, digits, _ and -, starting with a letter or _)", u)
-	}
-	if u == "root" {
-		return fmt.Errorf("user cannot be root: setup creates an unprivileged user with sudo")
-	}
-	return nil
 }
 
 // Validate checks the fields config can check on its own. The hook spec is

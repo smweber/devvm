@@ -1001,15 +1001,3 @@ func TestCloneScriptGHNoLogin(t *testing.T) {
 		}
 	}
 }
-
-// shape's one backstop: a box devvm did not make is refused before any step
-// runs (the nil backend would panic on the first one).
-func TestShapeRefusesUnmanaged(t *testing.T) {
-	a := newTestApp(t)
-	for _, m := range []*config.Machine{{Name: "vm", Backend: config.BackendSmol}, config.NewRemote("box", "dev@box")} {
-		err := a.shape(context.Background(), m, nil, config.Template{Name: config.DefaultTemplate, Hook: "none"}, setupOpts{})
-		if err == nil || err.Error() != "'"+m.Name+"' is not a box devvm made: devvm never shapes it" {
-			t.Errorf("%s: err = %v", m.Name, err)
-		}
-	}
-}

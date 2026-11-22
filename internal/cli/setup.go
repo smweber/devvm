@@ -205,10 +205,6 @@ func (a *App) runSetup(name string, o setupOpts) error {
 	if err != nil {
 		return err
 	}
-	if m.IsRemote() && !m.IsProvider() {
-		// An entry (simplify.md step 12): devvm only connects to it.
-		return fmt.Errorf("'%s' is an entry in devvm.toml: devvm never shapes one (it connects: attach, shell, exec, ports, cp, keys)", name)
-	}
 	var t config.Template
 	if o.resolved != nil {
 		t = *o.resolved
@@ -217,32 +213,23 @@ func (a *App) runSetup(name string, o setupOpts) error {
 	}
 	ctx, stop := interruptContext()
 	defer stop()
-	return a.shape(ctx, m, b, t, o)
-}
-
-// loginUser is the user part of a remote record's ssh destination ("" for
-// a bare host or alias).
-func loginUser(m *config.Machine) string {
-	u, _, ok := strings.Cut(m.SSHHost, "@")
-	if !ok {
-		return ""
-	}
-	return u
+	return a.shape(ctx, m, b, t)
 }
 
 // browserStep is the agent + shim (+ profile.d) step, a var so a test can
 // stand in for agentbin's install.
 var browserStep = bootstrap.Browser
 
-// shape runs the fixed order on a box already cleared to be shaped. Its
-// one backstop: a box devvm did not make (Managed) is refused before any
-// step, since every step below installs, hardens or runs code as root
-// there. runSetup and create refuse such a box first.
-func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t config.Template, o setupOpts) error {
+// shape runs the fixed order on a box devvm made (Managed). Anything else
+// is refused before any step, since every step below installs, hardens or
+// runs code as root there: past resolve (which refuses a hub and a hub
+// machine) that is an entry (simplify.md step 12), which devvm only
+// connects to.
+func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t config.Template) error {
 	if !m.Managed() {
-		return fmt.Errorf("'%s' is not a box devvm made: devvm never shapes it", m.Name)
+		return fmt.Errorf("'%s' is an entry in devvm.toml: devvm never shapes one (it connects: attach, shell, exec, ports, cp, keys)", m.Name)
 	}
-	a.warnIgnored(m, t, o)
+	a.warnIgnored(m, t)
 	// 1. The user. A provider server may answer only as root (a fresh cloud
 	// VM); reachForSetup waits for it and creates the user there. On smol
 	// the exec enters as root and the backend is wired to dev.
@@ -255,7 +242,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 		if _, err := a.startStopped(m, b); err != nil {
 			return err
 		}
-		if err := bootstrap.EnsureUser(ctx, b, backend.ExecOpts{User: "root"}, backend.DefaultUser); err != nil {
+		if err := bootstrap.EnsureUser(ctx, b, backend.ExecOpts{User: "root"}); err != nil {
 			return err
 		}
 	}
@@ -400,7 +387,7 @@ func waitRunning(m *config.Machine, b backend.Backend) error {
 // warnIgnored names, in one line, the template fields that do not apply to
 // this box: sizes are create-time and smol-only; keys and hardening are for
 // boxes reached over ssh.
-func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
+func (a *App) warnIgnored(m *config.Machine, t config.Template) {
 	var ignored []string
 	if m.IsRemote() {
 		if t.Memory != 0 {
@@ -431,8 +418,7 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template, o setupOpts) {
 	}
 	if len(ignored) > 0 {
 		kind := "a smol VM"
-		switch {
-		case m.IsProvider():
+		if m.IsProvider() {
 			kind = "a " + providerTitle(m.Backend) + " server"
 		}
 		fmt.Fprintf(a.Stderr, "devvm: template %s: ignoring %s (not applicable to %s)\n",
@@ -560,8 +546,6 @@ func (a *App) waitSSH(ctx context.Context, m *config.Machine) (reachResult, erro
 // is written: devvm stores nothing per server (config.md §1, §3).
 func (a *App) reachForSetup(ctx context.Context, m *config.Machine) (*config.Machine, backend.Backend, error) {
 	cur := *m
-	// The login every later command uses, and so the user setup creates.
-	user := loginUser(m)
 	r, err := a.waitSSH(ctx, &cur)
 	if err != nil {
 		return nil, nil, err
@@ -587,26 +571,25 @@ func (a *App) reachForSetup(ctx context.Context, m *config.Machine) (*config.Mac
 	if err != nil {
 		return nil, nil, err
 	}
+	user := backend.DefaultUser
 	fmt.Fprintf(a.Stderr, "devvm: '%s' answers only as root; creating user '%s'\n", m.Name, user)
-	if err := bootstrap.EnsureUser(ctx, rb, backend.ExecOpts{}, user); err != nil {
+	if err := bootstrap.EnsureUser(ctx, rb, backend.ExecOpts{}); err != nil {
 		return nil, nil, err
 	}
-	um := cur
-	um.SSHHost = bootstrap.SwitchUser(cur.SSHHost, user)
 	// The user may have existed already, with keys of its own that are not
 	// this host's (EnsureUser copies root's only into an empty file).
-	if r, msg, err := a.probeSSH(ctx, &um); err != nil {
+	if r, msg, err := a.probeSSH(ctx, &cur); err != nil {
 		return nil, nil, err
 	} else if r == reachDenied {
 		return nil, nil, fmt.Errorf("user %s exists on '%s' but your key is not in its authorized_keys (add it as root, then re-run setup)", user, m.Name)
 	} else if r != reachOK {
-		return nil, nil, fmt.Errorf("cannot reach %s over ssh after creating user %s: %s", um.SSHHost, user, msg)
+		return nil, nil, fmt.Errorf("cannot reach %s over ssh after creating user %s: %s", cur.SSHHost, user, msg)
 	}
-	ub, err := backend.For(&um, a.Paths)
+	ub, err := backend.For(&cur, a.Paths)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &um, ub, nil
+	return &cur, ub, nil
 }
 
 // seedAuthorizedKeys pushes a template's keys at setup. A source that

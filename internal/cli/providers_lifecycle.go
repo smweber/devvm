@@ -186,10 +186,9 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	// setup's own path from the user step on (runSetup's gates are for a
 	// name it resolved; this record is the one just created): reachForSetup
 	// waits for ssh and creates the user as root, shape does the rest.
-	o := setupOpts{resolved: &t}
 	sctx, stop := interruptContext()
 	defer stop()
-	if err := a.shape(sctx, m, b, t, o); err != nil {
+	if err := a.shape(sctx, m, b, t); err != nil {
 		if sctx.Err() != nil {
 			return fmt.Errorf("'%s' was created (server %d at %s; it bills) but setup was interrupted; %s",
 				s.Name, srv.ID, srv.Address, next)

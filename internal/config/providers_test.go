@@ -53,11 +53,6 @@ memory = 8192
 	if fs := (TemplateSpec{}).ProviderFields(); len(fs) != 0 {
 		t.Errorf("empty spec fields = %v", fs)
 	}
-	// The proxied form carries the fields through.
-	back := f.Templates["big"].Resolve("big").Spec().Resolve("big")
-	if back.ServerType != "cx43" || back.IPv4 == nil || !*back.IPv4 {
-		t.Errorf("Spec round trip = %+v", back)
-	}
 }
 
 func TestNewProviderMachine(t *testing.T) {

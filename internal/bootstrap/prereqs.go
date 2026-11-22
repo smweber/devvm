@@ -119,18 +119,15 @@ func LoginUser(ctx context.Context, b backend.Backend) (string, error) {
 }
 
 // EnsureUser establishes the invariant the ssh backend's rootWrap (and the
-// smol backend's `sudo -u dev`) relies on: user exists, unprivileged, with
-// NOPASSWD sudo and root's keys. asRoot is how this backend runs a command
+// smol backend's `sudo -u dev`) relies on: config.DefaultUser exists,
+// unprivileged, with NOPASSWD sudo and root's keys. asRoot is how this backend runs a command
 // as root without sudo: on smol ExecOpts{User: "root"} (the exec enters as
 // root); on a remote box reached as root@host, the zero ExecOpts (the login
 // is root already, and a fresh box may have no sudo to wrap with).
-func EnsureUser(ctx context.Context, b backend.Backend, asRoot backend.ExecOpts, user string) error {
-	if err := config.ValidUser(user); err != nil {
-		return err
-	}
+func EnsureUser(ctx context.Context, b backend.Backend, asRoot backend.ExecOpts) error {
 	asRoot.Stream = true
-	if err := b.Run(ctx, asRoot, "bash", "-c", ensureUserScript, "_", user); err != nil {
-		return fmt.Errorf("creating user %s: %w", user, err)
+	if err := b.Run(ctx, asRoot, "bash", "-c", ensureUserScript, "_", config.DefaultUser); err != nil {
+		return fmt.Errorf("creating user %s: %w", config.DefaultUser, err)
 	}
 	return nil
 }

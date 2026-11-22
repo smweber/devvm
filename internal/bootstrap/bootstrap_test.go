@@ -80,27 +80,20 @@ func (f *fakeBackend) Spawn(context.Context, backend.ExecOpts, ...string) (*back
 	return nil, nil
 }
 
-// EnsureUser takes the template's user, not a hardcoded dev: the name
-// rides as $1 into the script (never interpolated), with the backend's
-// as-root opts.
+// EnsureUser creates dev: the name rides as $1 into the script (never
+// interpolated), with the backend's as-root opts.
 func TestEnsureUser(t *testing.T) {
 	ctx := context.Background()
 	fb := &fakeBackend{loginUser: "root"}
-	if err := EnsureUser(ctx, fb, backend.ExecOpts{}, "alice"); err != nil {
+	if err := EnsureUser(ctx, fb, backend.ExecOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fb.runs) != 1 {
 		t.Fatalf("runs = %v, want the one setup script", fb.runs)
 	}
 	run := fb.runs[0]
-	if run[0] != "bash" || run[len(run)-1] != "alice" || strings.Contains(run[2], "alice") ||
-		strings.Contains(run[2], "/home/dev") || !strings.Contains(run[2], "NOPASSWD") {
+	if run[0] != "bash" || run[len(run)-1] != "dev" || strings.Contains(run[2], "/home/dev") || !strings.Contains(run[2], "NOPASSWD") {
 		t.Errorf("run = %q", run)
-	}
-	for _, bad := range []string{"root", "Bob", "-x", "a b", ""} {
-		if err := EnsureUser(ctx, fb, backend.ExecOpts{}, bad); err == nil {
-			t.Errorf("EnsureUser(%q) accepted", bad)
-		}
 	}
 }
 

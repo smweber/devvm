@@ -115,16 +115,6 @@ harden = false
 	}
 }
 
-// Spec round-trips a resolved template with every field set, so nothing
-// below it can fill a gap.
-func TestTemplateSpecRoundTrip(t *testing.T) {
-	in := Template{Name: "x", Hook: "none", Repos: []string{"a"}}
-	out := in.Spec().Under(TemplateSpec{Memory: ptr(4096), Harden: ptr(true)}).Resolve("x")
-	if out.Memory != 0 || out.Harden || !slices.Equal(out.Repos, []string{"a"}) {
-		t.Errorf("round trip = %+v", out)
-	}
-}
-
 // An empty string is unset: it falls through like a missing key.
 func TestTemplateEmptyStringIsUnset(t *testing.T) {
 	p := Paths{Config: t.TempDir()}
