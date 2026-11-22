@@ -82,12 +82,7 @@ const shimName = "devvm-open-url"
 // path is shell-quoted only when it needs it, so the usual shim is byte
 // for byte what earlier installs wrote and its sha still matches.
 func shimScript(agentPath string) string {
-	return "#!/bin/sh\n" + shimExec(agentPath) + "\n"
-}
-
-// shimExec is the shim's one command line.
-func shimExec(agentPath string) string {
-	return "exec " + shq(agentPath) + ` open-url "$@"`
+	return "#!/bin/sh\nexec " + shq(agentPath) + " open-url \"$@\"\n"
 }
 
 // shq quotes s for a POSIX shell: as is when it is only safe characters
@@ -287,19 +282,19 @@ func installAgent(ctx context.Context, b backend.Backend, m *config.Machine, dat
 // installShim writes the BROWSER shim beside the agent, following its
 // ownership: root-owned beside a managed /usr/local/bin agent, user-owned in
 // ~/.local/bin on an entry. Staged and renamed, so a login tool never
-// runs a half-written shim. printf with the lines as arguments, never as
-// its format (a `%` in a path would be a conversion), and not stdin: a
-// one-shot smol exec has none. The bytes written equal shimScript, so the
-// sha check stays idempotent.
+// runs a half-written shim. The bytes go over stdin, so nothing in them is
+// shell-interpolated, and equal shimScript, so the sha check stays
+// idempotent. An empty file (a transport that delivered no stdin) fails
+// rather than becoming the shim.
 func installShim(ctx context.Context, b backend.Backend, m *config.Machine, p Paths) error {
 	tmp := p.Shim + ".new"
-	script := fmt.Sprintf(`mkdir -p %s && printf '%%s\n' '#!/bin/sh' %s > %s && chmod 0755 %s && mv %s %s`,
-		shq(path.Dir(p.Shim)), shq(shimExec(p.Agent)), shq(tmp), shq(tmp), shq(tmp), shq(p.Shim))
+	script := fmt.Sprintf(`mkdir -p %s && cat > %s && [ -s %s ] && chmod 0755 %s && mv %s %s`,
+		shq(path.Dir(p.Shim)), shq(tmp), shq(tmp), shq(tmp), shq(tmp), shq(p.Shim))
 	user := ""
 	if m.Managed() {
 		user = "root"
 	}
-	return b.Run(ctx, backend.ExecOpts{User: user}, "sh", "-c", script)
+	return b.Run(ctx, backend.ExecOpts{User: user, Stdin: strings.NewReader(shimScript(p.Agent))}, "sh", "-c", script)
 }
 
 // guestHome resolves the connecting user's home directory in the guest, so the

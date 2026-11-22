@@ -36,7 +36,8 @@ func Browser(ctx context.Context, b backend.Backend, m *config.Machine) error {
 	if err != nil {
 		return fmt.Errorf("install devvm-agent and browser shim: %w", err)
 	}
-	return b.Run(ctx, backend.ExecOpts{User: "root"}, "sh", "-c", writeProfileScript(p.Shim))
+	return b.Run(ctx, backend.ExecOpts{User: "root", Stdin: strings.NewReader(profileScript(p.Shim))},
+		"sh", "-c", writeProfileScript)
 }
 
 // profileScript is ProfilePath's content. The guard keeps it harmless: a
@@ -54,20 +55,12 @@ func profileScript(shim string) string {
 		"fi\n"
 }
 
-// writeProfileScript writes profileScript to ProfilePath as root, staged
-// and renamed so a login never sources half a file. The lines go to printf
-// as arguments, not as its format and not over stdin (a one-shot smol exec
-// has none), the same way agentbin writes the shim.
-func writeProfileScript(shim string) string {
-	lines := strings.Split(strings.TrimSuffix(profileScript(shim), "\n"), "\n")
-	q := make([]string, len(lines))
-	for i, l := range lines {
-		q[i] = sq(l)
-	}
-	tmp := ProfilePath + ".new"
-	return fmt.Sprintf(`mkdir -p /etc/profile.d && printf '%%s\n' %s > %s && chmod 0644 %s && mv %s %s`,
-		strings.Join(q, " "), tmp, tmp, tmp, ProfilePath)
-}
+// writeProfileScript writes its stdin (profileScript) to ProfilePath as
+// root, staged and renamed so a login never sources half a file, the same
+// way agentbin writes the shim. An empty file (a transport that delivered
+// no stdin) fails rather than replacing the profile.
+const writeProfileScript = `mkdir -p /etc/profile.d && cat > ` + ProfilePath + `.new && [ -s ` + ProfilePath + `.new ] && chmod 0644 ` +
+	ProfilePath + `.new && mv ` + ProfilePath + `.new ` + ProfilePath
 
 // sq single-quotes s for a POSIX shell.
 func sq(s string) string {

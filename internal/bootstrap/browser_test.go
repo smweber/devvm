@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,13 +73,15 @@ func TestProfileScriptGuard(t *testing.T) {
 	}
 }
 
-// The write script lands exactly profileScript, staged then renamed, and a
-// shim path with a quote in it cannot break out of the file.
+// The write script lands exactly its stdin (profileScript), staged then
+// renamed, and a shim path with a quote in it cannot break out of the file.
 func TestWriteProfileScriptContent(t *testing.T) {
 	for _, shim := range []string{backend.ManagedShimPath, `/opt/it's here/%s/devvm-open-url`} {
 		dir := t.TempDir()
-		script := strings.ReplaceAll(writeProfileScript(shim), "/etc/profile.d", dir)
-		if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+		script := strings.ReplaceAll(writeProfileScript, "/etc/profile.d", dir)
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Stdin = strings.NewReader(profileScript(shim))
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%q: write script failed: %v\n%s", shim, err, out)
 		}
 		got, err := os.ReadFile(filepath.Join(dir, "devvm.sh"))
@@ -95,16 +98,33 @@ func TestWriteProfileScriptContent(t *testing.T) {
 			t.Errorf("%q: mode %v, want 0644", shim, st.Mode().Perm())
 		}
 	}
+	// A transport that delivered no stdin fails, and leaves no profile.
+	dir := t.TempDir()
+	cmd := exec.Command("sh", "-c", strings.ReplaceAll(writeProfileScript, "/etc/profile.d", dir))
+	cmd.Stdin = strings.NewReader("")
+	if err := cmd.Run(); err == nil {
+		t.Error("an empty stdin wrote the profile")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "devvm.sh")); !os.IsNotExist(err) {
+		t.Errorf("profile exists after an empty write: %v", err)
+	}
 }
 
-// recBackend records every Run with the user it ran as.
+// recBackend records every Run with the user it ran as and its stdin.
 type recBackend struct {
 	fakeBackend
-	users []string
+	users  []string
+	stdins []string
 }
 
 func (r *recBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
 	r.users = append(r.users, o.User)
+	in := ""
+	if o.Stdin != nil {
+		b, _ := io.ReadAll(o.Stdin)
+		in = string(b)
+	}
+	r.stdins = append(r.stdins, in)
 	return r.fakeBackend.Run(ctx, o, argv...)
 }
 
@@ -130,7 +150,7 @@ func TestBrowserInstallsAndWritesProfile(t *testing.T) {
 			t.Fatalf("%s: installs = %v", m.Name, installs)
 		}
 		if len(rb.runs) != 1 || rb.users[0] != "root" || rb.runs[0][0] != "sh" ||
-			rb.runs[0][2] != writeProfileScript(backend.ManagedShimPath) {
+			rb.runs[0][2] != writeProfileScript || rb.stdins[0] != profileScript(backend.ManagedShimPath) {
 			t.Fatalf("%s: runs = %q as %q, want the profile.d write as root", m.Name, rb.runs, rb.users)
 		}
 	}

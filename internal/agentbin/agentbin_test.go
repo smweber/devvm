@@ -66,15 +66,20 @@ func (g *fakeGuest) Run(_ context.Context, o backend.ExecOpts, argv ...string) e
 		f := strings.Fields(argv[2])
 		g.files[f[4]] = g.staged[f[3]]
 		g.writes = append(g.writes, "install "+f[4]+" as "+o.User)
-	case strings.Contains(joined, "printf"):
-		// mkdir -p DIR && printf '…exec AGENT open-url…' > TMP && chmod && mv TMP SHIM
-		script := argv[2]
-		agent := strings.Fields(script[strings.Index(script, "exec ")+5:])[0]
-		f := strings.Fields(script)
+	case strings.Contains(joined, "cat > "):
+		// mkdir -p DIR && cat > TMP && chmod && mv TMP SHIM, the shim on stdin
+		if o.Stdin == nil {
+			return fmt.Errorf("fake guest: shim write with no stdin")
+		}
+		b, err := io.ReadAll(o.Stdin)
+		if err != nil {
+			return err
+		}
+		f := strings.Fields(argv[2])
 		shim := f[len(f)-1]
-		g.files[shim] = []byte(shimScript(agent))
+		g.files[shim] = b
 		g.writes = append(g.writes, "shim "+shim+" as "+o.User)
-	case strings.Contains(joined, "mkdir -p") && !strings.Contains(joined, "printf"):
+	case strings.Contains(joined, "mkdir -p") && !strings.Contains(joined, "cat > "):
 	case strings.Contains(joined, "chmod 0755") && strings.Contains(joined, " mv "):
 		f := strings.Fields(argv[2])
 		g.files[f[len(f)-1]] = g.staged[f[1]]
@@ -167,11 +172,32 @@ func (g localGuest) Run(_ context.Context, o backend.ExecOpts, argv ...string) e
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "HOME="+g.home)
-	cmd.Stdout, cmd.Stderr = o.Stdout, o.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = o.Stdin, o.Stdout, o.Stderr
 	if cmd.Stdout == nil {
 		cmd.Stdout = io.Discard
 	}
 	return cmd.Run()
+}
+
+// A transport that delivers no stdin leaves no shim: the empty staging
+// file fails the write instead of being renamed into place.
+func TestInstallShimRefusesEmptyStdin(t *testing.T) {
+	home := t.TempDir()
+	p := Paths{Agent: home + "/.local/bin/devvm-agent", Shim: home + "/.local/bin/devvm-open-url"}
+	if err := installShim(context.Background(), noStdinGuest{localGuest{home: home}}, config.NewRemote("box", ""), p); err == nil {
+		t.Fatal("an empty stdin wrote a shim")
+	}
+	if _, err := os.Stat(p.Shim); !os.IsNotExist(err) {
+		t.Errorf("shim exists after an empty write: %v", err)
+	}
+}
+
+// noStdinGuest is localGuest over a transport whose stdin arrives empty.
+type noStdinGuest struct{ localGuest }
+
+func (g noStdinGuest) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
+	o.Stdin = strings.NewReader("")
+	return g.localGuest.Run(ctx, o, argv...)
 }
 
 // A guest $HOME with a space, a `%` and a quote: every path is quoted, the
