@@ -2,20 +2,18 @@ package main
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/smweber/devvm/internal/agentrpc"
 )
 
-// The shim prints the host's reply; with none (an agent whose host predates
-// replies closes the socket without one) it keeps the old wording. It
-// succeeds only when the URL reached the host's user: opened, or printed
-// on the host's terminal (or an old host's silent open).
+// The shim prints the host's reply; with none, or one that is not JSON (an
+// agent that failed), it says so and fails. It succeeds only when the URL
+// reached the host's user: opened, or printed on the host's terminal.
 func TestShimMessage(t *testing.T) {
 	for _, tc := range []struct {
 		agent string
@@ -30,7 +28,8 @@ func TestShimMessage(t *testing.T) {
 			"devvm: not opened on host (rate limited); open it yourself: https://x/", false},
 		{`{"opened":false,"err":"no opener","printed":true}` + "\n",
 			"devvm: not opened on host (no opener); URL printed there", true},
-		{"", "devvm: sent to host browser -> https://x/", true},
+		{"", "devvm: no answer from the devvm agent; open it yourself: https://x/", false},
+		{"not json\n", "devvm: no answer from the devvm agent; open it yourself: https://x/", false},
 	} {
 		shim, agent := net.Pipe()
 		go func() {
@@ -45,15 +44,14 @@ func TestShimMessage(t *testing.T) {
 	}
 }
 
-// The agent's own answer when the host gave none: a timeout or a broken
-// stream is named, never passed off as "sent"; a host that closed without
-// a reply (older than replies) gets the shim's old wording.
+// The agent's own answer when the host gave none: a timeout, a broken
+// stream or a close without a reply is named, never passed off as "sent".
 func TestShimReply(t *testing.T) {
 	if got := shimReply([]byte("{\"opened\":true}\n"), nil); string(got) != "{\"opened\":true}\n" {
 		t.Errorf("verbatim reply = %q", got)
 	}
-	if got := shimReply(nil, agentrpc.ErrNoReply); got != nil {
-		t.Errorf("old host = %q, want nothing", got)
+	if got := string(shimReply(nil, io.ErrUnexpectedEOF)); got != `{"opened":false,"err":"the host did not answer: unexpected EOF"}`+"\n" {
+		t.Errorf("no reply = %q", got)
 	}
 	if got := string(shimReply(nil, os.ErrDeadlineExceeded)); got != `{"opened":false,"err":"the host did not answer in time"}`+"\n" {
 		t.Errorf("timeout = %q", got)

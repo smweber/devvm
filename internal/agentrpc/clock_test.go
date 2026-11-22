@@ -2,6 +2,7 @@ package agentrpc
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -58,16 +59,17 @@ func TestClockRoundTrip(t *testing.T) {
 	}
 }
 
-// An agent older than the time stream (no Clock handler) closes it on the
-// unknown header: the host reads that as unsupported, and the session
-// survives for everything else.
-func TestClockOldAgent(t *testing.T) {
+// An agent that closes a time stream unanswered (no Clock handler here) is
+// an error SyncClock names, and the session survives for the next one.
+func TestClockUnanswered(t *testing.T) {
 	sess := clockSession(t, GuestHandlers{})
-	if _, err := SyncClock(sess, time.Now()); !errors.Is(err, ErrClockUnsupported) {
-		t.Fatalf("SyncClock = %v, want ErrClockUnsupported", err)
+	for i := 0; i < 2; i++ {
+		if _, err := SyncClock(sess, time.Now()); !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "without a reply") {
+			t.Fatalf("SyncClock %d = %v, want the unanswered stream named", i, err)
+		}
 	}
 	if sess.IsClosed() {
-		t.Error("an old agent's refusal closed the session")
+		t.Error("an unanswered time stream closed the session")
 	}
 }
 

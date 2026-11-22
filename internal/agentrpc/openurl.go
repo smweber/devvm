@@ -16,16 +16,9 @@ import (
 //	guest → host:  event\n{"type":"open-url","url":"…"}\n
 //	host → guest:  {"opened":…,…}\n          (an OpenReply), then close
 //
-// Request/response since roadmap step 7. The two sides stay compatible with
-// the old write-and-close: an old agent closes after its event and never
-// reads the reply (the host's write lands on a closed stream and is
-// dropped, bounded by a deadline, so it never hangs); an old host closes
-// without replying, which OpenURL reports as ErrNoReply.
-
-// ErrNoReply is OpenURL's answer when the host closed the stream without a
-// reply: a host older than replies, which opened (or dropped) the URL on its
-// own.
-var ErrNoReply = errors.New("the host closed the event without a reply")
+// An agent whose wait ran out has closed its side: the host's reply write
+// then lands on a closed stream and is dropped, bounded by a deadline, so
+// it never hangs.
 
 // OpenURL pushes an open-url event and waits up to wait for the host's reply
 // line, returned raw (the agent hands it to the shim verbatim).
@@ -49,7 +42,7 @@ func openURLOn(s net.Conn, url string, wait time.Duration) ([]byte, error) {
 		return append(line, '\n'), nil
 	}
 	if err == nil || errors.Is(err, io.EOF) {
-		return nil, ErrNoReply
+		err = fmt.Errorf("the host closed the event without a reply: %w", io.ErrUnexpectedEOF)
 	}
 	return nil, err
 }
@@ -66,8 +59,8 @@ const (
 	maxHeaderLine = 64
 )
 
-// replyWriteWait bounds the host's reply write. An old agent closed its
-// side after the event; the write must fail or land, never block.
+// replyWriteWait bounds the host's reply write. An agent whose wait ran out
+// closed its side; the write must fail or land, never block.
 const replyWriteWait = 5 * time.Second
 
 // ReadEvent reads an event stream's header and JSON body, host side. A

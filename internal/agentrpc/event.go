@@ -9,8 +9,7 @@ import (
 // open-url (a URL the guest browser shim received). The host answers it
 // (browser-bridge.md §2): after the event the agent reads one OpenReply line
 // from the same stream and hands it to the shim, which prints what the host
-// did. A host older than replies closes the stream instead; the agent then
-// has nothing to report, and the shim says only that the URL was sent.
+// did.
 type Event struct {
 	Type string `json:"type"`
 	URL  string `json:"url,omitempty"`

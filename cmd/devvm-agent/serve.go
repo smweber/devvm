@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"log"
 	"net"
 	"os"
@@ -30,7 +29,7 @@ func guestSockPath(name string) string {
 	return filepath.Join(home, ".devvm", name)
 }
 
-// runServe carries every forward (and rpc/events) for one machine over this
+// runServe carries every forward (and the events) for one machine over this
 // single exec's stdio, multiplexed with yamux. On ready it also starts a guest
 // unix-socket listener so the open-url shim can push URLs to the host and
 // read back what the host did. The host may also push its clock (clock.go).
@@ -76,16 +75,11 @@ func serveURLSocket(g *agentrpc.GuestSession, path string) {
 }
 
 // shimReply is the line the agent hands the shim for OpenURL's result: the
-// host's reply verbatim; nothing when the host closed without one (a host
-// older than replies, which opened the URL itself: the shim then says it
-// was sent); otherwise a reply of the agent's own naming why no answer
-// came, so a timeout never reads as "sent to host browser".
+// host's reply verbatim, otherwise a reply of the agent's own naming why no
+// answer came, which the shim prints.
 func shimReply(reply []byte, err error) []byte {
-	switch {
-	case err == nil:
+	if err == nil {
 		return reply
-	case errors.Is(err, agentrpc.ErrNoReply):
-		return nil
 	}
 	why := "the host did not answer: " + err.Error()
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {

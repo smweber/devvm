@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -78,8 +77,7 @@ const clockSyncInterval = 60 * time.Second
 // a nudge that lands while one is in flight is satisfied by it.
 //
 // It logs only a step or a failure (each distinct failure once), never an
-// "ok". An agent older than the time stream stops it after one line. Close
-// never waits on it: the session's end stops the loop, and one exchange is
+// "ok". Close never waits on it: the session's end stops the loop, and one exchange is
 // bounded by agentrpc's own deadline.
 func syncClock(mux *yamux.Session, interval time.Duration, nudge chan struct{}) {
 	tick := time.NewTicker(interval)
@@ -89,9 +87,6 @@ func syncClock(mux *yamux.Session, interval time.Duration, nudge chan struct{}) 
 		r, err := agentrpc.SyncClock(mux, time.Now())
 		switch {
 		case mux.IsClosed():
-			return
-		case errors.Is(err, agentrpc.ErrClockUnsupported):
-			transportLogf("clock: the agent does not support clock sync (older than this devvm); not syncing")
 			return
 		case err != nil:
 			if msg := err.Error(); msg != lastErr {

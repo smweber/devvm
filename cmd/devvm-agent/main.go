@@ -1,7 +1,7 @@
 // Command devvm-agent runs inside a guest. It is copied in by the host and
 // invoked over the machine's exec channel. Modes:
 //
-//	serve            long-lived: yamux-multiplex forwards + rpc + events over stdio
+//	serve            long-lived: yamux-multiplex forwards, events and time over stdio
 //	open-url URL     BROWSER shim: hand a login URL to the running serve agent
 //
 // The single persistent `serve` exec is the crux of the design: smolvm has poor

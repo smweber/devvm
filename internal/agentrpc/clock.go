@@ -24,13 +24,6 @@ import (
 // does not resync after the host suspends (no service manager in the image
 // to run a time daemon), so the daemon that holds the agent exec pushes its
 // own clock over that exec instead of installing anything.
-//
-// An agent older than this closes the stream on the unknown header (Serve's
-// default case) without a reply: SyncClock reports ErrClockUnsupported.
-
-// ErrClockUnsupported is SyncClock's answer when the agent closed the stream
-// without a reply: an agent older than the time stream.
-var ErrClockUnsupported = errors.New("the agent does not support clock sync")
 
 // Clock results, the reply's last field.
 const (
@@ -95,7 +88,7 @@ func SyncClock(sess *yamux.Session, now time.Time) (ClockReply, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		if err == nil || errors.Is(err, io.EOF) {
-			return ClockReply{}, ErrClockUnsupported
+			err = fmt.Errorf("the agent closed the time stream without a reply: %w", io.ErrUnexpectedEOF)
 		}
 		return ClockReply{}, err
 	}

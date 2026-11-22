@@ -2,6 +2,7 @@ package agentrpc
 
 import (
 	"errors"
+	"io"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -49,9 +50,9 @@ func TestOpenURLReply(t *testing.T) {
 	}
 }
 
-// A host older than replies reads the event and closes the stream: the
-// agent reports ErrNoReply at once, it does not wait out its bound.
-func TestOpenURLOldHost(t *testing.T) {
+// A host that reads the event and closes the stream without a reply: the
+// agent reports it at once, it does not wait out its bound.
+func TestOpenURLHostClosedWithoutReply(t *testing.T) {
 	host, g := hostGuest(t)
 	go func() {
 		s, err := host.Accept()
@@ -63,8 +64,8 @@ func TestOpenURLOldHost(t *testing.T) {
 	}()
 	start := time.Now()
 	_, err := g.OpenURL("https://example.com/", time.Minute)
-	if !errors.Is(err, ErrNoReply) || time.Since(start) > 5*time.Second {
-		t.Fatalf("OpenURL against an old host = %v after %s", err, time.Since(start))
+	if !errors.Is(err, io.ErrUnexpectedEOF) || time.Since(start) > 5*time.Second {
+		t.Fatalf("OpenURL against a host that closed = %v after %s", err, time.Since(start))
 	}
 }
 
@@ -72,9 +73,9 @@ func TestOpenURLOldHost(t *testing.T) {
 func TestReadEventRefusesOtherStreams(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
-	go func() { b.Write([]byte("rpc\n")); b.Close() }()
+	go func() { b.Write([]byte("forward 127.0.0.1:1\n")); b.Close() }()
 	if _, err := ReadEvent(a); err == nil {
-		t.Fatal("ReadEvent accepted an rpc stream")
+		t.Fatal("ReadEvent accepted a forward stream")
 	}
 }
 

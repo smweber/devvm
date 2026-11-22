@@ -19,8 +19,7 @@ import (
 // manually.
 //
 // It exits 0 only when the URL reached a person on the host: opened there,
-// or printed on the host's terminal (Printed), or handed to a host too old
-// to reply (which opened it on its own). Everything else (refused, no
+// or printed on the host's terminal (Printed). Everything else (refused, no
 // session attached, no agent to ask, no answer in time) exits 1 after the
 // same line, so a caller that checks BROWSER's status can tell: gh then
 // says it failed to open a browser and asks for the URL to be entered by
@@ -45,9 +44,9 @@ func runOpenURL(args []string) {
 }
 
 // shimMessage reads the agent's reply line and words it; ok is whether
-// the URL reached the host's user (see runOpenURL). No reply (the agent's
-// host closed the event without answering: a daemon older than replies,
-// which opened it on its own) keeps the old wording.
+// the URL reached the host's user (see runOpenURL). The agent always
+// writes one JSON line (shimReply), so no line, or one that is not JSON,
+// is an agent that failed: the URL is the user's to open.
 func shimMessage(conn net.Conn, url string) (msg string, ok bool) {
 	_ = conn.SetReadDeadline(time.Now().Add(agentrpc.ShimReplyWait))
 	line, err := bufio.NewReader(conn).ReadString('\n')
@@ -55,14 +54,16 @@ func shimMessage(conn net.Conn, url string) (msg string, ok bool) {
 		if err != nil && isTimeout(err) {
 			return "devvm: sent to host, no answer in time: " + url, false
 		}
-		return "devvm: sent to host browser -> " + url, true
+		return noAnswer + url, false
 	}
 	var r agentrpc.OpenReply
 	if json.Unmarshal([]byte(line), &r) != nil {
-		return "devvm: sent to host browser -> " + url, true
+		return noAnswer + url, false
 	}
 	return r.Message(url), r.Opened || r.Printed
 }
+
+const noAnswer = "devvm: no answer from the devvm agent; open it yourself: "
 
 func isTimeout(err error) bool {
 	ne, ok := err.(net.Error)

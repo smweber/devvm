@@ -289,11 +289,12 @@ guest unix socket; the shim waits up to 75s and prints `OpenReply.Message`:
 `devvm: opened on host -> URL` (plus `(guest G, host port bumped to H)`),
 or `devvm: not opened on host (REASON); URL printed there` when the host
 printed it, else `…; open it yourself: URL`. The host's reply write has a
-5s deadline, so an old agent that closed after its event costs nothing; a
-new agent under an old host sees the stream close with no reply and the
-shim keeps the old `devvm: sent to host browser -> URL`. When the host
-does not answer in time, or the stream breaks, the agent writes the shim
-a reply of its own (`the host did not answer in time`), never silence.
+5s deadline, so an agent that gave up after its event costs nothing.
+When the host does not answer in time, closes the stream without a reply,
+or the stream breaks, the agent writes the shim a reply of its own (`the
+host did not answer in time`), never silence; a shim that gets no line,
+or one that is not JSON, says `devvm: no answer from the devvm agent;
+open it yourself: URL` and exits 1.
 Host side, guest-driven work is bounded before the rate limit applies:
 an event body is read through a 64 KiB limit, and at most 16 event
 streams are in flight per exec (accept to reply); a stream past that is

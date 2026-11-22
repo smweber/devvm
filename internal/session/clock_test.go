@@ -94,23 +94,30 @@ func TestSyncClockDialThenTicks(t *testing.T) {
 	}
 }
 
-// An agent older than the time stream closes it unanswered: one log line,
-// and the loop stops instead of asking again every tick.
-func TestSyncClockOldAgent(t *testing.T) {
+// An agent that leaves its time streams unanswered: logged once, and the
+// loop keeps asking (it does not end the session) until the session goes.
+func TestSyncClockUnansweredLoggedOnce(t *testing.T) {
 	logs := captureTransportLog(t)
-	host, _ := clockPipe(t, agentrpc.GuestHandlers{}) // no Clock: an old agent
+	host, closeConns := clockPipe(t, agentrpc.GuestHandlers{}) // no Clock: every stream closed unanswered
 	done := make(chan struct{})
 	go func() { syncClock(host, time.Millisecond, nil); close(done) }()
+	time.Sleep(100 * time.Millisecond) // many ticks
+	select {
+	case <-done:
+		t.Fatal("syncClock stopped on an unanswered stream")
+	default:
+	}
+	if host.IsClosed() {
+		t.Error("an unanswered time stream closed the session")
+	}
+	if got := logs(); len(got) != 1 || !strings.Contains(got[0], "without a reply") {
+		t.Errorf("log = %q, want one line naming the unanswered stream", got)
+	}
+	closeConns()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("syncClock kept going against an old agent")
-	}
-	if got := logs(); len(got) != 1 || !strings.Contains(got[0], "does not support") {
-		t.Errorf("log = %q, want one unsupported line", got)
-	}
-	if host.IsClosed() {
-		t.Error("an old agent's refusal closed the session")
+		t.Fatal("syncClock outlived its session")
 	}
 }
 

@@ -10,13 +10,11 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-// GuestHandlers are the guest-side callbacks the agent supplies. RPC handles an
-// "rpc" stream (keys/repos/prereqs — wired in later phases); nil rejects them.
+// GuestHandlers are the guest-side callbacks the agent supplies.
 type GuestHandlers struct {
-	RPC func(stream net.Conn)
 	// Clock answers a "time" stream: given the host's clock, it decides
 	// whether to step the guest's and reports what it did (clock.go). nil
-	// closes the stream unanswered, as an agent older than it does.
+	// (a test's agent) closes the stream unanswered.
 	Clock func(host time.Time) ClockReply
 }
 
@@ -73,12 +71,6 @@ func handleGuestStream(stream net.Conn, h GuestHandlers) {
 		guestForward(stream, br, target)
 	case strings.HasPrefix(header, TypeTime+" ") && h.Clock != nil:
 		guestClock(stream, header[len(TypeTime)+1:], h.Clock)
-	case header == TypeRPC:
-		if h.RPC != nil {
-			h.RPC(bufferedConn{Conn: stream, r: br})
-		} else {
-			stream.Close()
-		}
 	default:
 		stream.Close()
 	}
@@ -99,12 +91,3 @@ func guestForward(stream net.Conn, br *bufio.Reader, target string) {
 	}
 	Splice(stream, up)
 }
-
-// bufferedConn re-attaches a bufio.Reader (holding bytes read past the header)
-// to its net.Conn so RPC handlers read a continuous stream.
-type bufferedConn struct {
-	net.Conn
-	r *bufio.Reader
-}
-
-func (b bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }

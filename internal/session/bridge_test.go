@@ -494,10 +494,10 @@ func sendEvent(t *testing.T, g *yamux.Session, raw string) net.Conn {
 	return s
 }
 
-// An old agent closes its event stream right after writing: the daemon
-// still opens the URL, its reply write does not hang, and the next event,
-// from a new agent, gets its reply over the same session.
-func TestBridgeOldAgentDoesNotHangDaemon(t *testing.T) {
+// An agent that closes its event stream right after writing (its wait ran
+// out): the daemon still opens the URL, its reply write does not hang, and
+// the next event gets its reply over the same session.
+func TestBridgeClosedEventDoesNotHangDaemon(t *testing.T) {
 	dir := shortTempPaths(t)
 	d := startSockDaemon(t, dir)
 	tr := d.tr.(*fakeTransport)
@@ -508,23 +508,23 @@ func TestBridgeOldAgentDoesNotHangDaemon(t *testing.T) {
 	done := runLoop(d)
 	defer func() { d.triggerStop(); waitDone(t, done, "stop") }()
 
-	old := sendEvent(t, g, "https://example.com/old")
-	old.Close()
-	waitFor(t, "the old agent's URL to reach the subscriber", func() bool { return len(c.events()) == 1 })
+	gone := sendEvent(t, g, "https://example.com/gone")
+	gone.Close()
+	waitFor(t, "the closed event's URL to reach the subscriber", func() bool { return len(c.events()) == 1 })
 
-	s := sendEvent(t, g, "https://example.com/new")
+	s := sendEvent(t, g, "https://example.com/next")
 	defer s.Close()
 	s.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, err := io.ReadAll(s) // the reply, then the host's close
 	if err != nil {
-		t.Fatalf("new agent's reply: %v", err)
+		t.Fatalf("next event's reply: %v", err)
 	}
 	var rep agentrpc.OpenReply
 	if err := json.Unmarshal(line, &rep); err != nil || !rep.Opened {
-		t.Fatalf("new agent's reply = %q, %v", line, err)
+		t.Fatalf("next event's reply = %q, %v", line, err)
 	}
 	if r := d.dispatch(Request{Op: OpPing}); !r.OK {
-		t.Fatal("daemon unresponsive after an old agent's event")
+		t.Fatal("daemon unresponsive after a closed event")
 	}
 }
 

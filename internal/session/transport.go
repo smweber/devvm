@@ -320,9 +320,9 @@ func serveEvents(mux *yamux.Session, out chan<- bridgeRequest) {
 
 // serveEventStream reads one open-url and hands it on with a reply that
 // writes the answer to the stream and closes it (the agent is waiting on
-// that line, agentrpc's open-url exchange). An old agent closes the stream
-// right after its event and reads nothing: the reply's write fails or lands
-// on a closed stream within its deadline, so nothing waits on it. A stream
+// that line, agentrpc's open-url exchange). An agent whose wait ran out has
+// closed the stream: the reply's write fails or lands on a closed stream
+// within its deadline, so nothing waits on it. A stream
 // that is not an open-url is closed. done is the session's end: nobody will
 // take the request then. release frees the stream's slot (serveEvents'
 // bound) once it is answered or dropped.
