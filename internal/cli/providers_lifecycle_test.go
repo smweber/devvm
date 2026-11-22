@@ -219,6 +219,28 @@ func TestProviderCreatePlacementAndPartialFailure(t *testing.T) {
 	}
 }
 
+// A provider create's template carries no memory or disk (they size a smol
+// VM), so a shared default that sets them makes setup's warnIgnored say
+// nothing on a server create.
+func TestProviderCreateDropsSmolSizes(t *testing.T) {
+	a := newTestApp(t)
+	writeDevvmTOML(t, a, "[templates.default]\nmemory = 4096\ndisk = 20\n")
+	s := createSpec{Name: "web", Backend: config.BackendHetzner, Yes: true}
+	tm, _, err := a.gatherProviderSpec(&s, config.ProviderSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tm.Memory != 0 || tm.Disk != 0 {
+		t.Errorf("template = %+v, want no memory or disk", tm)
+	}
+	var w bytes.Buffer
+	a.Stderr = &w
+	a.warnIgnored(config.NewProviderMachine("web", config.BackendHetzner, config.ProviderServer{Address: "1.2.3.4"}), tm)
+	if w.Len() != 0 {
+		t.Errorf("warnIgnored = %q, want nothing", w.String())
+	}
+}
+
 // The whole create: key uploaded from ssh_key_file, the bill notice before
 // Create, the row cached before setup's first ssh, a stale pin for the
 // reused address dropped, then setup unchanged: the fresh server answers

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/smweber/devvm/internal/backend"
 	"github.com/smweber/devvm/internal/config"
 )
 
@@ -28,11 +29,11 @@ func TestResolveDefaultTemplateFillsUnsetFields(t *testing.T) {
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	if s.Memory != 4096 {
-		t.Errorf("memory = %d, want 4096 from [templates.default]", s.Memory)
+	if s.tmpl.Memory != 4096 {
+		t.Errorf("memory = %d, want 4096 from [templates.default]", s.tmpl.Memory)
 	}
-	if s.Hook != "cmd:/opt/setup.sh" {
-		t.Errorf("hook = %q, want the template's", s.Hook)
+	if s.tmpl.Hook != "cmd:/opt/setup.sh" {
+		t.Errorf("hook = %q, want the template's", s.tmpl.Hook)
 	}
 }
 
@@ -43,11 +44,11 @@ func TestResolveFlagBeatsTemplate(t *testing.T) {
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	if s.Memory != 1024 {
-		t.Errorf("memory = %d, want 1024 (flag wins)", s.Memory)
+	if s.tmpl.Memory != 1024 {
+		t.Errorf("memory = %d, want 1024 (flag wins)", s.tmpl.Memory)
 	}
-	if s.Hook != "none" {
-		t.Errorf("hook = %q, want none (flag wins)", s.Hook)
+	if s.tmpl.Hook != "none" {
+		t.Errorf("hook = %q, want none (flag wins)", s.tmpl.Hook)
 	}
 }
 
@@ -57,8 +58,8 @@ func TestResolveCompiledDefaultWhenUnset(t *testing.T) {
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatalf("gatherCreateSpec: %v", err)
 	}
-	if s.Hook != "none" {
-		t.Errorf("hook = %q, want the built-in none", s.Hook)
+	if s.tmpl.Hook != "none" || s.tmpl.Disk != backend.SmolDefaultDiskGiB {
+		t.Errorf("hook = %q, disk = %d, want the built-in none and %d", s.tmpl.Hook, s.tmpl.Disk, backend.SmolDefaultDiskGiB)
 	}
 }
 

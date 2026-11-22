@@ -117,11 +117,8 @@ repos = ["o/r"]
 	if err := a.gatherCreateSpec(&s); err != nil {
 		t.Fatal(err)
 	}
-	if s.Memory != 8192 || s.Disk != 3 || s.Hook != "cmd:/d" ||
-		!slices.Equal(s.Repos, []string{"o/r"}) {
-		t.Errorf("spec = %+v", s)
-	}
-	if tt := s.template(); tt.Name != "big" || tt.Memory != 8192 {
+	if tt := s.tmpl; tt.Name != "big" || tt.Memory != 8192 || tt.Disk != 3 || tt.Hook != "cmd:/d" ||
+		!slices.Equal(tt.Repos, []string{"o/r"}) {
 		t.Errorf("template = %+v", tt)
 	}
 }

@@ -243,11 +243,11 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (confi
 		defer tty.Close()
 	}
 	interactive := tty != nil && !s.Yes
-	t, err := a.resolveTemplate(s.Template, s.tmplFlags)
-	if err != nil {
+	var err error
+	if s.tmpl, err = a.resolveTemplate(s.Template, s.tmplFlags); err != nil {
 		return config.Template{}, config.Placement{}, err
 	}
-	pl := t.Placement(spec)
+	pl := s.tmpl.Placement(spec)
 	for _, f := range []struct {
 		key, flag string
 		dst       *string
@@ -265,18 +265,16 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (confi
 			return config.Template{}, config.Placement{}, err
 		}
 	}
-	if err := resolveHook(tty, interactive, s, t); err != nil {
+	if err := resolveHook(tty, interactive, s); err != nil {
 		return config.Template{}, config.Placement{}, err
 	}
-	s.Repos = t.Repos
-	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
-	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
 	if interactive {
-		if err := askExtras(tty, s); err != nil {
+		if err := askExtras(tty, &s.tmpl); err != nil {
 			return config.Template{}, config.Placement{}, err
 		}
 	}
-	out := s.template()
+	out := s.tmpl
+	out.Memory, out.Disk = 0, 0 // a smol VM's sizes: a server's is its type
 	out.ServerType, out.Location, out.Image = pl.ServerType, pl.Location, pl.Image
 	ipv4 := pl.IPv4
 	out.IPv4 = &ipv4

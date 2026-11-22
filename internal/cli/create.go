@@ -27,14 +27,11 @@ type createSpec struct {
 	Location   string
 	Image      string
 
-	// The template fields (hook, memory, disk, repos): flags here,
-	// then settled by gatherCreateSpec from flag > template > built-in.
+	// The template fields' flags (hook, memory, disk, repos).
 	tmplFlags
-	// The provider-server fields, from the template only (no flags).
-	KeysGithub []string
-	KeyFiles   []string
-	Harden     bool
-	Fail2ban   bool
+	// tmpl is the template gatherCreateSpec resolved (flag > template >
+	// built-in), patched by the prompts: what setup shapes with.
+	tmpl config.Template
 
 	Yes bool // skip prompts; resolve every unset field from flag > template > built-in
 }
@@ -95,19 +92,18 @@ func (a *App) runCreate(s createSpec) error {
 	if err := a.gatherCreateSpec(&s); err != nil {
 		return err
 	}
-	if s.Memory < 512 {
+	if s.tmpl.Memory < 512 {
 		return fmt.Errorf("smol needs --memory >= 512 (MiB)")
 	}
 
 	// Allocate the VM, labelled as devvm's; setup then shapes it (a
 	// mid-flight failure is resumable with `devvm setup`).
-	if err := a.provisionResource(s.Name, s.Memory, s.Disk); err != nil {
+	if err := a.provisionResource(s.Name, s.tmpl.Memory, s.tmpl.Disk); err != nil {
 		return err
 	}
 	// setup gets the template create settled (flags, prompts and all), so
 	// it resolves nothing again.
-	t := s.template()
-	err = a.runSetup(s.Name, setupOpts{resolved: &t})
+	err = a.runSetup(s.Name, setupOpts{resolved: &s.tmpl})
 	var si *setupIncomplete
 	if err != nil && !errors.As(err, &si) {
 		return fmt.Errorf("%s but setup failed: %w; re-run 'devvm setup %s'", wasCreated(s.Name), err, s.Name)
@@ -148,23 +144,6 @@ func checkCreateBackend(b string) error {
 		return fmt.Errorf("create allocates local smol VMs only; add a remote box or hub with 'devvm config add NAME --backend remote|hub --host H'")
 	default:
 		return fmt.Errorf("invalid backend %q (create makes smol VMs and %s servers)", b, strings.Join(config.KnownProviders(), ", "))
-	}
-}
-
-// template is the settled spec as the template setup shapes with.
-func (s createSpec) template() config.Template {
-	name := s.Template
-	if name == "" {
-		name = config.DefaultTemplate
-	}
-	hook := s.Hook
-	if hook == "" {
-		hook = config.DefaultBootstrapHook
-	}
-	return config.Template{
-		Name: name, Hook: hook, Memory: s.Memory, Disk: s.Disk, Repos: s.Repos,
-		AuthorizedKeysGithub: s.KeysGithub, AuthorizedKeys: s.KeyFiles,
-		Harden: s.Harden, Fail2ban: s.Fail2ban,
 	}
 }
 

@@ -26,26 +26,23 @@ func (a *App) gatherCreateSpec(s *createSpec) error {
 	// --yes forces the non-interactive path even on a terminal.
 	interactive := tty != nil && !s.Yes
 
-	t, err := a.resolveTemplate(s.Template, s.tmplFlags)
-	if err != nil {
+	var err error
+	if s.tmpl, err = a.resolveTemplate(s.Template, s.tmplFlags); err != nil {
 		return err
 	}
-	if err := resolveMemory(tty, interactive, s, t); err != nil {
+	if err := resolveMemory(tty, interactive, s); err != nil {
 		return err
 	}
-	if err := resolveDisk(tty, interactive, s, t); err != nil {
+	if err := resolveDisk(tty, interactive, s); err != nil {
 		return err
 	}
-	if err := resolveHook(tty, interactive, s, t); err != nil {
+	if err := resolveHook(tty, interactive, s); err != nil {
 		return err
 	}
-	// The rest come from the template (flags already folded in); the form
+	// The rest stay the template's (flags already folded in); the form
 	// below offers repos for editing, pre-filled.
-	s.Repos = t.Repos
-	s.KeysGithub, s.KeyFiles = t.AuthorizedKeysGithub, t.AuthorizedKeys
-	s.Harden, s.Fail2ban = t.Harden, t.Fail2ban
 	if interactive {
-		if err := askExtras(tty, s); err != nil {
+		if err := askExtras(tty, &s.tmpl); err != nil {
 			return err
 		}
 	}
@@ -76,21 +73,20 @@ func resolveName(s *createSpec) error {
 
 // resolveMemory settles smol's required memory: flag, else the template, else
 // prompt (interactive) or error (non-interactive) — smol has no universal default.
-func resolveMemory(tty *os.File, interactive bool, s *createSpec, t config.Template) error {
-	if s.Memory != 0 { // flag wins
+func resolveMemory(tty *os.File, interactive bool, s *createSpec) error {
+	if s.Memory != 0 { // flag wins (resolveTemplate folded it in)
 		return nil
 	}
 	if interactive {
-		return askMemory(tty, s, t)
+		return askMemory(tty, &s.tmpl)
 	}
-	if t.Memory != 0 {
-		s.Memory = t.Memory
+	if s.tmpl.Memory != 0 {
 		return nil
 	}
-	return fmt.Errorf("smol needs --memory MiB (or memory in the template, [templates.%s] in devvm.toml)", t.Name)
+	return fmt.Errorf("smol needs --memory MiB (or memory in the template, [templates.%s] in devvm.toml)", s.tmpl.Name)
 }
 
-func askMemory(tty *os.File, s *createSpec, t config.Template) error {
+func askMemory(tty *os.File, t *config.Template) error {
 	pref := suggestedMemoryMiB()
 	if t.Memory != 0 {
 		pref = t.Memory
@@ -111,29 +107,27 @@ func askMemory(tty *os.File, s *createSpec, t config.Template) error {
 		})); err != nil {
 		return err
 	}
-	s.Memory, _ = strconv.Atoi(strings.TrimSpace(val))
+	t.Memory, _ = strconv.Atoi(strings.TrimSpace(val))
 	return nil
 }
 
 // resolveDisk settles smol's disk: flag, else the template, else prompt
 // (interactive) or the compiled default (non-interactive). Unlike memory, disk
 // always has a built-in fallback (SmolDefaultDiskGiB), so it never errors.
-func resolveDisk(tty *os.File, interactive bool, s *createSpec, t config.Template) error {
-	if s.Disk != 0 { // flag wins
+func resolveDisk(tty *os.File, interactive bool, s *createSpec) error {
+	if s.Disk != 0 { // flag wins (resolveTemplate folded it in)
 		return nil
 	}
 	if interactive {
-		return askDisk(tty, s, t)
+		return askDisk(tty, &s.tmpl)
 	}
-	if t.Disk != 0 {
-		s.Disk = t.Disk
-	} else {
-		s.Disk = backend.SmolDefaultDiskGiB
+	if s.tmpl.Disk == 0 {
+		s.tmpl.Disk = backend.SmolDefaultDiskGiB
 	}
 	return nil
 }
 
-func askDisk(tty *os.File, s *createSpec, t config.Template) error {
+func askDisk(tty *os.File, t *config.Template) error {
 	pref := backend.SmolDefaultDiskGiB
 	if t.Disk != 0 {
 		pref = t.Disk
@@ -154,20 +148,20 @@ func askDisk(tty *os.File, s *createSpec, t config.Template) error {
 		})); err != nil {
 		return err
 	}
-	s.Disk, _ = strconv.Atoi(strings.TrimSpace(val))
+	t.Disk, _ = strconv.Atoi(strings.TrimSpace(val))
 	return nil
 }
 
 // askExtras prompts the optional create-time field, repos: a
 // space-separated list, safe to leave blank. (Forwards are not asked:
 // 'devvm ports add' saves one.)
-func askExtras(tty *os.File, s *createSpec) error {
-	repos := strings.Join(s.Repos, " ")
+func askExtras(tty *os.File, t *config.Template) error {
+	repos := strings.Join(t.Repos, " ")
 	if err := form(tty, huh.NewInput().Title("Repos to clone (owner/repo or URL, space-separated)").
 		Placeholder("me/app me/tools").Value(&repos)); err != nil {
 		return err
 	}
-	s.Repos = fields(repos)
+	t.Repos = fields(repos)
 	return nil
 }
 
@@ -182,19 +176,15 @@ func fields(s string) []string {
 }
 
 // resolveHook settles the hook: flag wins; otherwise prompt (interactive,
-// pre-selecting the template's) or take the template's silently.
-func resolveHook(tty *os.File, interactive bool, s *createSpec, t config.Template) error {
-	if s.Hook != "" { // flag wins
+// pre-selecting the template's) or keep the template's silently.
+func resolveHook(tty *os.File, interactive bool, s *createSpec) error {
+	if s.Hook != "" || !interactive { // flag wins (folded in), else the template's
 		return nil
 	}
-	if !interactive {
-		s.Hook = t.Hook
-		return nil
-	}
-	return askHook(tty, s, t)
+	return askHook(tty, &s.tmpl)
 }
 
-func askHook(tty *os.File, s *createSpec, t config.Template) error {
+func askHook(tty *os.File, t *config.Template) error {
 	const (
 		optDefault = "default"
 		optNone    = "none"
@@ -217,9 +207,8 @@ func askHook(tty *os.File, s *createSpec, t config.Template) error {
 	}
 	switch choice {
 	case optDefault:
-		s.Hook = t.Hook
 	case optNone:
-		s.Hook = bootstrap.KindNone
+		t.Hook = bootstrap.KindNone
 	case optCustom:
 		custom := ""
 		if err := form(tty, huh.NewInput().
@@ -232,7 +221,7 @@ func askHook(tty *os.File, s *createSpec, t config.Template) error {
 			})); err != nil {
 			return err
 		}
-		s.Hook = strings.TrimSpace(custom)
+		t.Hook = strings.TrimSpace(custom)
 	}
 	return nil
 }
