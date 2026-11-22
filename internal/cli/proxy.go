@@ -196,11 +196,11 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 //
 // With --template T (other than default, which is the same as no flag),
 // the template is resolved here, from this host's devvm.toml, and sent as
-// --inline-template plus hook, memory, disk and repos (templateArgv), so
-// the hub's own file never matters. HUB/NAME is only ever a hub's smol VM:
-// a template's keys, harden and fail2ban are a provider server's and never
-// cross. Without a template the leaf goes across as typed and the hub
-// resolves its own default.
+// --inline-template plus hook, memory, disk, repos and share_auth
+// (templateArgv), so the hub's own file never matters. HUB/NAME is only
+// ever a hub's smol VM: a template's keys, harden and fail2ban are a
+// provider server's and never cross. Without a template the leaf goes
+// across as typed and the hub resolves its own default.
 func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine, create bool) ([]string, error) {
 	fs := cmd.Flags()
 	name, _ := fs.GetString(flagTemplate)
@@ -214,6 +214,9 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		f.Disk, _ = fs.GetInt(flagDisk)
 		if fs.Changed(flagRepo) {
 			f.Repos, _ = fs.GetStringArray(flagRepo)
+		}
+		if fs.Changed(flagShareAuth) {
+			f.ShareAuth, _ = fs.GetStringArray(flagShareAuth)
 		}
 		t, err := a.resolveTemplate(name, f)
 		if err != nil {

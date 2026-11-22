@@ -226,7 +226,7 @@ func TestConfigCheck(t *testing.T) {
 func TestConfigShow(t *testing.T) {
 	a := newTestApp(t)
 	fakeHostname(t, "mac.local")
-	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/d\"\nmemory = 4096\n\n[templates.big]\nmemory = 8192\n\n"+
+	writeDevvmTOML(t, a, "[templates.default]\nhook = \"cmd:/d\"\nmemory = 4096\nshare_auth = [\"github\"]\n\n[templates.big]\nmemory = 8192\n\n"+
 		"[machines.mac]\nbackend = \"hub\"\nhost = \"h\"\n\n[machines.cloud]\nbackend = \"remote\"\nhost = \"c:2222\"\n"+
 		"\n[machines.box]\nbackend = \"remote\"\nagent = true\nhost = \"b\"\n")
 	if err := runTree(t, a, "config", "show"); err != nil {
@@ -239,6 +239,7 @@ func TestConfigShow(t *testing.T) {
 		"[templates.big]  # unset fields fall back to [templates.default]",
 		"memory = 8192\n",
 		`hook = "cmd:/d"`, "# from default",
+		"share_auth = [\"github\"]\n", "share_auth = [\"github\"]                  # from default\n",
 		"[machines.mac]  # (this host)",
 		"[machines.cloud]\nbackend = \"remote\"\nagent = false                            # default\n", `host = "c:2222"`,
 		"# user: unset, ~/.ssh/config decides",

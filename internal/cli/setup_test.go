@@ -523,6 +523,7 @@ memory = 4096
 memory = 8192
 repos = ["smweber/devvm", "https://x.example/a,b.git"]
 harden = true
+share_auth = ["github"]
 `)
 	if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
 		t.Fatal(err)
@@ -530,11 +531,11 @@ harden = true
 	if err := runTree(t, a, "setup", "h/web", "--template", "devvm"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
-	// hook, memory, disk and repos only: the template's harden is a
-	// provider server's and never crosses.
+	// hook, memory, disk, repos and share_auth only: the template's harden
+	// is a provider server's and never crosses.
 	want := []string{"setup", "web", "--inline-template",
 		"--hook=url:https://x/b.sh --profile agent-vm --yes", "--memory=8192",
-		"--repo=smweber/devvm", "--repo=https://x.example/a,b.git"}
+		"--repo=smweber/devvm", "--repo=https://x.example/a,b.git", "--share-auth=github"}
 	calls := devvmCalls(t, argvLog)
 	if len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Errorf("hub got %q\nwant %q", calls, want)
@@ -715,8 +716,8 @@ func TestCreateClearsLeftoverPorts(t *testing.T) {
 }
 
 // The template flags create and setup take (simplify.md step 17): hook,
-// memory and disk visible on create, repo and inline-template hidden, and
-// nothing for users, keys, hardening or ports.
+// memory and disk visible on create, repo, share-auth and inline-template
+// hidden, and nothing for users, keys, hardening or ports.
 func TestTemplateFlagSurface(t *testing.T) {
 	a := newTestApp(t)
 	root := a.rootCmd()
@@ -731,7 +732,7 @@ func TestTemplateFlagSurface(t *testing.T) {
 				t.Errorf("%s --%s is still a flag", leaf, n)
 			}
 		}
-		for _, n := range []string{flagHook, flagMemory, flagDisk, flagRepo, flagInline} {
+		for _, n := range []string{flagHook, flagMemory, flagDisk, flagRepo, flagShareAuth, flagInline} {
 			f := fs.Lookup(n)
 			if f == nil {
 				t.Errorf("%s lacks --%s", leaf, n)

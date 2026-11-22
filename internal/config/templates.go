@@ -23,6 +23,14 @@ const DefaultTemplate = "default"
 // one). An entry's own `user` is unrelated: it is how that box is reached.
 const DefaultUser = "dev"
 
+// ShareAuthGitHub is the one tool share_auth knows (share-auth.md §1):
+// setup copies the host's gh login for github.com into the box.
+const ShareAuthGitHub = "github"
+
+// ShareAuthTools is every name share_auth accepts; any other is a load
+// error. A list so later tools (claude, codex) join without a rename.
+var ShareAuthTools = []string{ShareAuthGitHub}
+
 // TemplateSpec is one layer of template values: a `[templates.NAME]`
 // table, or the flags given on the command line. Every field is a pointer so "unset" (fall back to the next
 // layer) is told apart from a deliberate zero (`harden = false`, `repos =
@@ -36,6 +44,7 @@ type TemplateSpec struct {
 	AuthorizedKeys       *[]string `toml:"authorized_keys"`
 	Harden               *bool     `toml:"harden"`
 	Fail2ban             *bool     `toml:"fail2ban"`
+	ShareAuth            *[]string `toml:"share_auth"` // tools whose host login setup copies in
 	// Provider placement (providers.md §1): create-time only, provider
 	// boxes only, over the `[providers.*]` table (Template.Placement).
 	ServerType *string `toml:"server_type"`
@@ -57,6 +66,7 @@ type Template struct {
 	AuthorizedKeys       []string
 	Harden               bool
 	Fail2ban             bool
+	ShareAuth            []string
 	// The provider fields as the template layers set them, "" (nil) when
 	// none did: the provider table and the built-ins go under them in
 	// Placement, which needs to know the table, so they are not filled here.
@@ -99,6 +109,9 @@ func (s TemplateSpec) Under(lower TemplateSpec) TemplateSpec {
 	if out.Fail2ban == nil {
 		out.Fail2ban = lower.Fail2ban
 	}
+	if out.ShareAuth == nil {
+		out.ShareAuth = lower.ShareAuth
+	}
 	if blank(out.ServerType) {
 		out.ServerType = lower.ServerType
 	}
@@ -136,6 +149,7 @@ func (s TemplateSpec) Resolve(name string) Template {
 	if s.Fail2ban != nil {
 		t.Fail2ban = *s.Fail2ban
 	}
+	t.ShareAuth = deref(s.ShareAuth)
 	trim := func(p *string) string {
 		if p == nil {
 			return ""
@@ -204,6 +218,13 @@ func (s TemplateSpec) Validate() error {
 	}
 	if s.Disk != nil && *s.Disk != 0 && *s.Disk < 1 {
 		return fmt.Errorf("disk %d too small (min 1 GiB)", *s.Disk)
+	}
+	if s.ShareAuth != nil {
+		for _, tool := range *s.ShareAuth {
+			if !slices.Contains(ShareAuthTools, tool) {
+				return fmt.Errorf("share_auth: unknown tool %q (have: %s)", tool, strings.Join(ShareAuthTools, ", "))
+			}
+		}
 	}
 	for _, kv := range []struct {
 		key string

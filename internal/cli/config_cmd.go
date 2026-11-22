@@ -105,6 +105,7 @@ func (a *App) showConfig(f *config.File) {
 		showInt(w, "memory", t.Memory, src(own.Memory != nil, def.Memory != nil), "unset: create asks, or --memory")
 		showInt(w, "disk", t.Disk, src(own.Disk != nil, def.Disk != nil), fmt.Sprintf("unset: create uses %d", backend.SmolDefaultDiskGiB))
 		showLine(w, "repos", tomlList(t.Repos), src(own.Repos != nil, def.Repos != nil))
+		showLine(w, "share_auth", tomlList(t.ShareAuth), src(own.ShareAuth != nil, def.ShareAuth != nil))
 		showLine(w, "authorized_keys_github", tomlList(t.AuthorizedKeysGithub), src(own.AuthorizedKeysGithub != nil, def.AuthorizedKeysGithub != nil))
 		showLine(w, "authorized_keys", tomlList(t.AuthorizedKeys), src(own.AuthorizedKeys != nil, def.AuthorizedKeys != nil))
 		showLine(w, "harden", strconv.FormatBool(t.Harden), src(own.Harden != nil, def.Harden != nil))

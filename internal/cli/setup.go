@@ -40,6 +40,9 @@ type tmplFlags struct {
 	Memory int
 	Disk   int
 	Repos  []string
+	// ShareAuth is share_auth's tools (share-auth.md §1), a hidden flag
+	// only: it is how a laptop-resolved template carries the list to a hub.
+	ShareAuth []string
 	// Inline: these flags are the whole template. The hub's own
 	// [templates.*] are not consulted; unset fields take the built-ins.
 	Inline bool
@@ -48,15 +51,16 @@ type tmplFlags struct {
 // Template flag names, defined once: addTemplateFlags registers them and
 // the proxy strips them before sending its own.
 const (
-	flagHook     = "hook"
-	flagMemory   = "memory"
-	flagDisk     = "disk"
-	flagRepo     = "repo"
-	flagInline   = "inline-template"
-	flagTemplate = "template"
+	flagHook      = "hook"
+	flagMemory    = "memory"
+	flagDisk      = "disk"
+	flagRepo      = "repo"
+	flagShareAuth = "share-auth"
+	flagInline    = "inline-template"
+	flagTemplate  = "template"
 )
 
-var templateFlagNames = []string{flagHook, flagMemory, flagDisk, flagRepo, flagInline}
+var templateFlagNames = []string{flagHook, flagMemory, flagDisk, flagRepo, flagShareAuth, flagInline}
 
 // addTemplateFlags registers the template flags on fs, hidden except the
 // names in visible (create shows --memory/--disk/--hook). memory and disk
@@ -66,6 +70,7 @@ func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
 	fs.IntVarP(&v.Memory, flagMemory, "m", 0, "smol: VM memory in MiB (template memory)")
 	fs.IntVarP(&v.Disk, flagDisk, "d", 0, "smol: VM disk in GiB (template disk; default 50)")
 	fs.StringArrayVar(&v.Repos, flagRepo, nil, "repo to clone into ~/src (repeatable; template repos)")
+	fs.StringArrayVar(&v.ShareAuth, flagShareAuth, nil, "tool whose host login setup copies into the box (repeatable; template share_auth)")
 	fs.BoolVar(&v.Inline, flagInline, false, "the template flags are the whole template (sent by a laptop to its hub)")
 	for _, n := range templateFlagNames {
 		if !slices.Contains(visible, n) {
@@ -93,6 +98,10 @@ func (v tmplFlags) layer() config.TemplateSpec {
 	if v.Repos != nil {
 		r := slices.Clone(v.Repos)
 		s.Repos = &r
+	}
+	if v.ShareAuth != nil {
+		sa := slices.Clone(v.ShareAuth)
+		s.ShareAuth = &sa
 	}
 	return s
 }
@@ -578,9 +587,11 @@ func (a *App) seedAuthorizedKeys(b backend.Backend, githubUsers, files []string)
 
 // templateArgv renders a resolved template as the explicit flag set the
 // laptop sends with a proxied create/setup --template (config.md §7):
-// every field a hub's smol VM takes (hook, memory, disk, repos), so nothing
-// on the hub fills a gap. Keys, harden and fail2ban are a provider
-// server's, and a hub machine is never one.
+// every field a hub's smol VM takes (hook, memory, disk, repos,
+// share_auth), so nothing on the hub fills a gap. Keys, harden and
+// fail2ban are a provider server's, and a hub machine is never one.
+// share_auth's tools are the hub's own logins (share-auth.md §5): only the
+// list crosses, never a token.
 func templateArgv(t config.Template) []string {
 	out := []string{"--" + flagInline, "--" + flagHook + "=" + t.Hook}
 	if t.Memory != 0 {
@@ -591,6 +602,9 @@ func templateArgv(t config.Template) []string {
 	}
 	for _, r := range t.Repos {
 		out = append(out, "--"+flagRepo+"="+r)
+	}
+	for _, s := range t.ShareAuth {
+		out = append(out, "--"+flagShareAuth+"="+s)
 	}
 	return out
 }

@@ -56,12 +56,13 @@ host = "2.29.47.196"
 
 func TestLoadTemplatesRejects(t *testing.T) {
 	for body, want := range map[string]string{
-		"[templates.x]\nmemroy = 1\n":         "[templates.x]: unknown key \"memroy\"",
-		"[templates.x]\nmemory = 100\n":       "too small",
-		"[templates.x]\nuser = \"dev\"\n":     "[templates.x]: user is gone from templates (a box devvm makes always has the user dev); delete the line",
-		"[templates.\"a/b\"]\nmemory = 1\n":   "invalid",
-		"[templates.x\n":                      "parse",
-		"[templates.x]\nports = [\"3000\"]\n": "ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'",
+		"[templates.x]\nmemroy = 1\n":                            "[templates.x]: unknown key \"memroy\"",
+		"[templates.x]\nmemory = 100\n":                          "too small",
+		"[templates.x]\nuser = \"dev\"\n":                        "[templates.x]: user is gone from templates (a box devvm makes always has the user dev); delete the line",
+		"[templates.\"a/b\"]\nmemory = 1\n":                      "invalid",
+		"[templates.x\n":                                         "parse",
+		"[templates.x]\nports = [\"3000\"]\n":                    "ports is gone from templates; delete the line and save each forward with 'devvm ports add NAME PORT'",
+		"[templates.x]\nshare_auth = [\"github\", \"gitlab\"]\n": "[templates.x]: share_auth: unknown tool \"gitlab\" (have: github)",
 	} {
 		p := Paths{Config: t.TempDir()}
 		writeFile(t, p, body)
@@ -82,11 +83,15 @@ hook = "cmd:/d"
 memory = 4096
 repos = ["o/default"]
 harden = true
+share_auth = ["github"]
 
 [templates.web]
 memory = 8192
 repos = []
 harden = false
+share_auth = []
+
+[templates.api]
 `)
 	named, def, err := TemplateLayers(p, "web")
 	if err != nil {
@@ -95,8 +100,13 @@ harden = false
 	got := named.Under(def).Resolve("web")
 	want := Template{Name: "web", Hook: "cmd:/d", Memory: 8192, Repos: []string{}, Harden: false}
 	if got.Name != want.Name || got.Hook != want.Hook || got.Memory != want.Memory ||
-		len(got.Repos) != 0 || got.Harden || got.Disk != 0 {
+		len(got.Repos) != 0 || got.Harden || got.Disk != 0 || len(got.ShareAuth) != 0 {
 		t.Errorf("web = %+v, want %+v", got, want)
+	}
+	// share_auth falls back to default like any field; [] turns it off.
+	named, def, _ = TemplateLayers(p, "api")
+	if got := named.Under(def).Resolve("api"); !slices.Equal(got.ShareAuth, []string{ShareAuthGitHub}) {
+		t.Errorf("api share_auth = %q, want default's", got.ShareAuth)
 	}
 	// Default alone, and the built-ins under an empty file.
 	_, def, _ = TemplateLayers(p, "")
@@ -106,7 +116,10 @@ harden = false
 	if b := (TemplateSpec{}).Resolve(DefaultTemplate); b.Hook != "none" || b.Memory != 0 {
 		t.Errorf("built-ins = %+v", b)
 	}
-	if _, _, err := TemplateLayers(p, "nope"); err == nil || !strings.Contains(err.Error(), "default, web") {
+	if b := (TemplateSpec{}).Resolve(DefaultTemplate); len(b.ShareAuth) != 0 {
+		t.Errorf("built-in share_auth = %q, want none", b.ShareAuth)
+	}
+	if _, _, err := TemplateLayers(p, "nope"); err == nil || !strings.Contains(err.Error(), "api, default, web") {
 		t.Errorf("unknown template: %v", err)
 	}
 	empty := Paths{Config: t.TempDir()}
