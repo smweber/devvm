@@ -210,8 +210,8 @@ func TestEntryShadowsSmolVM(t *testing.T) {
 	}
 	writeDevvmTOML(t, a, "[machines.web]\nbackend = \"remote\"\nhost = \"web.example\"\n")
 	os.Remove(smolLog)
-	m, b, err := a.resolveAny("web")
-	if err != nil || !m.IsRemote() || m.Managed() || b.Kind() != config.BackendRemote {
+	m, _, err = a.resolveAny("web")
+	if err != nil || !m.IsRemote() || m.Managed() {
 		t.Fatalf("with an entry: %+v, %v", m, err)
 	}
 	if _, err := os.Stat(smolLog); !os.IsNotExist(err) {

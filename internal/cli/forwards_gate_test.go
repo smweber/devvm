@@ -27,7 +27,7 @@ func (b *statusBackend) Status() (backend.State, error) {
 	if b.statusErr != nil {
 		return backend.State{}, b.statusErr
 	}
-	return backend.State{Exists: true, Running: b.runningAfter >= 0 && b.calls > b.runningAfter}, nil
+	return backend.State{Running: b.runningAfter >= 0 && b.calls > b.runningAfter}, nil
 }
 
 func shrinkRunningPoll(t *testing.T) {

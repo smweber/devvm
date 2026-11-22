@@ -101,23 +101,13 @@ func (b *hubBackend) ProxyInteractive(transport string, argv ...string) error {
 	return b.Proxy(context.Background(), ExecOpts{TTY: true}, argv...)
 }
 
-func (b *hubBackend) Kind() string { return config.BackendHub }
-
-// Exists is true: resolve never asks the hub whether a machine exists (the
-// proxied command reports that itself), and the leaves that would act on
-// the answer are refused for hub machines before they ask.
-func (b *hubBackend) Exists() (bool, error) { return true, nil }
-
 // Status reports what the laptop knows on its own, which is nothing about the
 // VM's state: the merged listing (cli's hubRows) takes state and backend from
 // the hub's `status --plain --local` row instead, and `status HUB/NAME`
 // goes there rather than here.
 func (b *hubBackend) Status() (State, error) {
 	return State{
-		Name:    b.m.Name,
-		Backend: config.BackendHub,
-		Exists:  true,
-		Raw:     fmt.Sprintf("on hub %s (%s); see 'devvm status'", b.m.Hub.Name, b.m.Hub.SSHHost),
+		Raw: fmt.Sprintf("on hub %s (%s); see 'devvm status'", b.m.Hub.Name, b.m.Hub.SSHHost),
 	}, nil
 }
 
@@ -130,9 +120,8 @@ func (b *hubBackend) refused(verb string) error {
 // The lifecycle verbs are proxied by the cli from the parsed command, not
 // through these: `delete --force` and friends carry flags a Power* call
 // cannot, and the hub's own confirm prompts run through the forwarded tty.
-func (b *hubBackend) PowerStart() error  { return b.refused("start") }
-func (b *hubBackend) PowerStop() error   { return b.refused("stop") }
-func (b *hubBackend) PowerDelete() error { return b.refused("delete") }
+func (b *hubBackend) PowerStart() error { return b.refused("start") }
+func (b *hubBackend) PowerStop() error  { return b.refused("stop") }
 
 // Copy is never used for hub machines: cp streams a tar over the proxy
 // (cli's cp_hub.go, hub.md §6) because the hub's `cp-in` needs the archive,

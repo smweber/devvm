@@ -42,8 +42,6 @@ func (b *sshBackend) OnMaster(controlPath string) Backend {
 	return &c
 }
 
-func (b *sshBackend) Kind() string { return b.m.Backend }
-
 // defaultSSHConnectTimeout bounds ssh's TCP connect and banner exchange.
 const defaultSSHConnectTimeout = 10
 
@@ -301,14 +299,9 @@ func scpTarget(dest, path string) string {
 	return user + host + ":" + path
 }
 
-func (b *sshBackend) Exists() (bool, error) { return true, nil } // devvm doesn't create ssh hosts
-
 // PowerStart/Stop are no-ops for ssh hosts: devvm doesn't manage their power.
 func (b *sshBackend) PowerStart() error { return b.lifecycleNoop("start") }
 func (b *sshBackend) PowerStop() error  { return b.lifecycleNoop("stop") }
-
-// PowerDelete is a backend no-op; the cli removes the entry.
-func (b *sshBackend) PowerDelete() error { return nil }
 
 func (b *sshBackend) lifecycleNoop(action string) error {
 	fmt.Fprintf(os.Stderr,
@@ -327,7 +320,7 @@ func (b *sshBackend) lifecycleNoop(action string) error {
 // carries its power state, which is the truer answer (a stopped server
 // would only read as a failed connect).
 func (b *sshBackend) Status() (State, error) {
-	st := State{Name: b.m.Name, Backend: b.m.Backend, Exists: true, Raw: "ssh -> " + b.m.SSHHost}
+	st := State{Raw: "ssh -> " + b.m.SSHHost}
 	if b.m.IsHub() {
 		st.Running = true
 		return st, nil

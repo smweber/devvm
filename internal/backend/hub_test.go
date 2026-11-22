@@ -23,8 +23,8 @@ func TestForHub(t *testing.T) {
 	// The hub itself is reached like a remote box: same ssh plumbing, and
 	// unmanaged, so the user's own known_hosts (no TOFU pin file).
 	sb, ok := b.(*sshBackend)
-	if !ok || b.Kind() != config.BackendHub {
-		t.Fatalf("hub backend = %T kind %q, want *sshBackend/hub", b, b.Kind())
+	if !ok {
+		t.Fatalf("hub backend = %T, want *sshBackend", b)
 	}
 	if flags := strings.Join(sb.sshFlags(), " "); strings.Contains(flags, "UserKnownHostsFile") {
 		t.Errorf("hub must not get the managed known_hosts pin: %s", flags)
@@ -39,16 +39,12 @@ func TestForHub(t *testing.T) {
 	if !ok || hb.hub.m != hub {
 		t.Fatalf("hub-machine backend = %T, want *hubBackend over the hub conf", b)
 	}
-	if ok, err := hb.Exists(); !ok || err != nil {
-		t.Errorf("Exists = %v, %v; resolve never asks the hub", ok, err)
-	}
 	if _, err := hb.Spawn(context.Background(), ExecOpts{}, "devvm-agent", "serve"); err == nil {
 		t.Error("Spawn must refuse: the hub daemon owns the only agent exec")
 	}
 	for name, err := range map[string]error{
-		"start":  hb.PowerStart(),
-		"delete": hb.PowerDelete(),
-		"copy":   hb.Copy("a", "b"),
+		"start": hb.PowerStart(),
+		"copy":  hb.Copy("a", "b"),
 	} {
 		if !errors.Is(err, ErrHubProxy) {
 			t.Errorf("%s = %v, want ErrHubProxy (the cli proxies these from the parsed command)", name, err)

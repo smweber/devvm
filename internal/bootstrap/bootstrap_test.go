@@ -67,11 +67,8 @@ func (f *fakeBackend) Run(_ context.Context, o backend.ExecOpts, argv ...string)
 	return nil
 }
 
-func (f *fakeBackend) Kind() string          { return config.BackendRemote }
-func (f *fakeBackend) Exists() (bool, error) { return true, nil }
-func (f *fakeBackend) PowerStart() error     { return nil }
-func (f *fakeBackend) PowerStop() error      { return nil }
-func (f *fakeBackend) PowerDelete() error    { return nil }
+func (f *fakeBackend) PowerStart() error { return nil }
+func (f *fakeBackend) PowerStop() error  { return nil }
 func (f *fakeBackend) Status() (backend.State, error) {
 	return backend.State{}, nil
 }

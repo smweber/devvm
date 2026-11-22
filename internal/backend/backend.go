@@ -20,9 +20,6 @@ const DefaultUser = config.DefaultUser
 
 // State is a machine's lifecycle snapshot for `devvm status`.
 type State struct {
-	Name    string
-	Backend string
-	Exists  bool
 	Running bool
 	Raw     string // backend-native status line, for display
 }
@@ -58,11 +55,8 @@ func (o ExecOpts) user() string {
 // two exec styles: Run waits with stdio wired through; Spawn returns a Session
 // whose stdin/stdout pipes the caller drives (the persistent agent exec).
 type Backend interface {
-	Kind() string // config.BackendSmol | config.BackendRemote | config.BackendHub | config.BackendHetzner
-	Exists() (bool, error)
 	PowerStart() error
 	PowerStop() error
-	PowerDelete() error
 	Status() (State, error)
 	Copy(hostSrc, guestDst string) error
 	Run(ctx context.Context, o ExecOpts, argv ...string) error
@@ -103,6 +97,14 @@ func For(m *config.Machine, paths config.Paths) (Backend, error) {
 // record it was built from.
 type Refresher interface {
 	Refresh() (m *config.Machine, running bool, err error)
+}
+
+// Deleter is a backend that destroys its machine (smol: `smolvm machine
+// delete`). Only smol is one: a provider server goes through its API, a
+// hub machine's delete is proxied, and an entry is never destroyed (`config
+// rm` removes the entry).
+type Deleter interface {
+	PowerDelete() error
 }
 
 // RootCopier is a backend whose Copy leaves files owned by root (smol:

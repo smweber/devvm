@@ -53,8 +53,8 @@ func TestResolveHubMachineNeverDials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveAny: %v", err)
 	}
-	if !m.IsHubMachine() || m.Hub.Name != "h" || b.Kind() != config.BackendHub {
-		t.Errorf("record = %+v backend %q", m, b.Kind())
+	if _, ok := b.(backend.Proxier); !m.IsHubMachine() || m.Hub.Name != "h" || !ok {
+		t.Errorf("record = %+v backend %T", m, b)
 	}
 	if _, err := os.Stat(log); !os.IsNotExist(err) {
 		data, _ := os.ReadFile(log)

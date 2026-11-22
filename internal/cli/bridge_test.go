@@ -378,7 +378,7 @@ type bootBackend struct {
 func (b *bootBackend) Status() (backend.State, error) {
 	raw := b.states[min(b.calls, len(b.states)-1)]
 	b.calls++
-	return backend.State{Exists: true, Running: raw == "running", Raw: raw}, nil
+	return backend.State{Running: raw == "running", Raw: raw}, nil
 }
 
 func (b *bootBackend) PowerStart() error { b.starts++; return b.startErr }
@@ -556,7 +556,7 @@ func (b *serialBoot) Status() (backend.State, error) {
 	if b.running {
 		raw = "running"
 	}
-	return backend.State{Exists: true, Running: b.running, Raw: raw}, nil
+	return backend.State{Running: b.running, Raw: raw}, nil
 }
 
 func (b *serialBoot) PowerStart() error {

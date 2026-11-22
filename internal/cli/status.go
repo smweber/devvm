@@ -44,10 +44,8 @@ type statusRow struct {
 	backend     string
 	state       string // running | stopped | reachable | unreachable | ? (an older hub may send others)
 	hub         string // the hub this row belongs to (its own row included); "" for a local machine
-	exists      bool
-	running     bool
-	mem         int // MiB (smol: smolvm's own record)
-	disk        int // GiB (smol: smolvm's own record)
+	mem         int    // MiB (smol: smolvm's own record)
+	disk        int    // GiB (smol: smolvm's own record)
 	cpus        int
 	host        string
 	fwds        fwdSummary
@@ -392,7 +390,7 @@ func (a *App) renderVerboseDetail(r statusRow) {
 	} else if r.reach != nil {
 		fmt.Fprintf(a.Stdout, "    reach: %s\n", r.reach.Describe(time.Now()))
 	}
-	if r.backend == config.BackendSmol && r.exists && r.hub == "" {
+	if r.backend == config.BackendSmol && r.hub == "" {
 		fmt.Fprintf(a.Stdout, "    lifecycle: %s\n", lifecycleTrack(smolLifecycle, r.state))
 		if r.cpus > 0 {
 			fmt.Fprintf(a.Stdout, "    resources: %d CPUs\n", r.cpus)
@@ -528,7 +526,7 @@ func (a *App) providerRows(f *config.File, smols smolMachines, rows []statusRow)
 			}
 			m := providerRecord(pn, s)
 			r := statusRow{name: s.Name, backend: pn, state: s.State, host: dash(s.Address), m: m,
-				managed: ownManaged, exists: true, running: s.State == provider.StateRunning}
+				managed: ownManaged}
 			if r.state == "" {
 				r.state = provider.StateUnknown
 			}
@@ -636,7 +634,6 @@ func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config
 			if v, _, _ := strings.Cut(hr.rest, "\t"); strings.HasPrefix(v, "verified=") {
 				r.hubVerified = v
 			}
-			r.exists, r.running = true, hr.state == "running"
 		} else {
 			r.backend, r.state = config.BackendHub, "?"
 		}
@@ -654,15 +651,14 @@ func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config
 // devvm did not create is invisible to it, so it has no row, no
 // completion, and shadows nothing.
 type smolMachines struct {
-	available bool // smolvm is installed; otherwise every smol row is "?"
-	list      []backend.SmolMachine
-	byName    map[string]backend.SmolMachine
+	list   []backend.SmolMachine
+	byName map[string]backend.SmolMachine
 }
 
 func smolSnapshot() smolMachines {
-	s := smolMachines{available: backend.SmolAvailable(), byName: map[string]backend.SmolMachine{}}
-	if !s.available {
-		return s
+	s := smolMachines{byName: map[string]backend.SmolMachine{}}
+	if !backend.SmolAvailable() {
+		return s // no smolvm: no smol rows
 	}
 	all, _ := backend.SmolList()
 	for _, sm := range all {
@@ -687,7 +683,6 @@ func (s smolMachines) shadow(r *statusRow) {
 // smolRow fills a row's state and sizes from the VM's listing row: sizes are
 // smolvm's own (config.md §3), for running and stopped VMs alike.
 func smolRow(r statusRow, sm backend.SmolMachine) statusRow {
-	r.exists, r.running = true, sm.Running()
 	r.state = smolStateLabel(sm)
 	r.mem, r.disk, r.cpus = sm.MemoryMiB, sm.StorageGB, sm.CPUs
 	return r
@@ -705,15 +700,10 @@ func (a *App) rowFor(m *config.Machine, smols smolMachines) statusRow {
 	// An entry is never managed: devvm only connects to it (`-`).
 	r := statusRow{name: m.Name, backend: m.Backend, m: m, host: m.SSHHost, saved: a.hasSavedPorts(m.Name), managed: ownNone}
 	smols.shadow(&r)
-	if _, err := backend.For(m, a.Paths); err != nil {
-		r.state = "?"
-		return r
-	}
 	// The reach cache, never a live call: this runs on every --watch
 	// snapshot (gatherRows' probe is what refreshes it first).
 	e := reach.Read(a.Paths, m.Name)
 	r.reach = &e
-	r.exists, r.running = true, e.State == reach.Reachable
 	r.state = e.State
 	r.fwds = a.forwardSummary(m.Name)
 	return r

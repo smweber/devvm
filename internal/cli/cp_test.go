@@ -23,7 +23,6 @@ type localCopyBackend struct {
 	failUpload bool
 }
 
-func (b *localCopyBackend) Kind() string { return "remote" }
 func (b *localCopyBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
 	if argv[0] == "mktemp" {
 		// Mirror the real template so the caller's prefix check is exercised:

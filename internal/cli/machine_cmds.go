@@ -233,6 +233,10 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 	}
 	// A smol VM resolve found is one devvm made (its label): devvm destroys
 	// only what it made, and one it did not is not found at all.
+	d, ok := b.(backend.Deleter)
+	if !ok {
+		return fmt.Errorf("'%s': backend %q cannot delete", name, m.Backend)
+	}
 	if !yes {
 		ok, err := confirmYes(fmt.Sprintf("Delete VM '%s' and its disk (irreversible)?", name))
 		if err != nil {
@@ -243,7 +247,7 @@ func (a *App) runDelete(name string, _ bool, yes bool) error {
 		}
 	}
 	a.reapRunFiles(name) // the daemon's exec goes before the VM does
-	if err := b.PowerDelete(); err != nil {
+	if err := d.PowerDelete(); err != nil {
 		return err
 	}
 	if err := a.forgetHostState(name, nil); err != nil {
@@ -399,7 +403,7 @@ func (a *App) deleteHubMachine(m *config.Machine, b backend.Backend, yes bool) e
 	hub, machine := m.Hub, m.HubMachineName()
 	p, ok := b.(backend.Proxier)
 	if !ok {
-		return fmt.Errorf("%s: backend %q cannot proxy", m.Name, b.Kind())
+		return fmt.Errorf("%s: backend %q cannot proxy", m.Name, m.Backend)
 	}
 	argv := []string{"delete", machine}
 	if yes {

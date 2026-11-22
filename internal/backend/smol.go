@@ -33,8 +33,6 @@ type smolBackend struct {
 	row   *SmolMachine
 }
 
-func (b *smolBackend) Kind() string { return config.BackendSmol }
-
 // ErrNoSmolvm is every refusal for a host without smolvm on PATH, naming
 // smolvm's own installer.
 var ErrNoSmolvm = errors.New("smolvm is not installed; install it with: curl -sSL https://smolmachines.com/install.sh | bash")
@@ -168,11 +166,6 @@ func SmolRow(b Backend) (SmolMachine, bool) {
 	return SmolMachine{}, false
 }
 
-func (b *smolBackend) Exists() (bool, error) {
-	_, ok, err := smolLookup(b.m.Name)
-	return ok, err
-}
-
 func (b *smolBackend) PowerStart() error {
 	if err := needSmolvm(); err != nil {
 		return err
@@ -201,9 +194,9 @@ func (b *smolBackend) Status() (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	st := State{Name: b.m.Name, Backend: config.BackendSmol, Raw: "not created"}
+	st := State{Raw: "not created"}
 	if ok {
-		st.Exists, st.Running, st.Raw = true, sm.Running(), sm.State
+		st.Running, st.Raw = sm.Running(), sm.State
 	}
 	return st, nil
 }

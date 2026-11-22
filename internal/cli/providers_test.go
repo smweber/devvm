@@ -79,9 +79,6 @@ func TestProviderResolveOrder(t *testing.T) {
 		m.SSHHost != "dev@3.3.3.3" || m.SSHPort != 22 || m.User != "" || m.Server.ID == 0 || m.Server.Status != "off" {
 		t.Fatalf("box record = %+v %+v", m, m.Server)
 	}
-	if b.Kind() != config.BackendHetzner {
-		t.Fatalf("Kind = %q", b.Kind())
-	}
 	if _, ok := b.(backend.SSHConnector); !ok {
 		t.Fatal("a hetzner record must get the ssh backend")
 	}
