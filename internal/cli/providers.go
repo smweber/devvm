@@ -25,8 +25,8 @@ import (
 // ones, counting the rest for one line of `status`. It is the last
 // of resolve's ordered sources (HUB/NAME → entry → local smol → each
 // configured provider), and listed by `status` from a per-provider cache
-// that only a live round writes. It lives here rather than among
-// backend.Discover's sources because it needs what only the cli has: the
+// that only a live round writes. It lives here rather than beside
+// backend.DiscoverSmol because it needs what only the cli has: the
 // file's `[providers.*]` tables, this host's token, and the cache.
 //
 // The API calls: Get in providerLookup (resolve, only after every earlier

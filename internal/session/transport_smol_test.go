@@ -44,12 +44,12 @@ func writeFile(t *testing.T, path, data string) {
 // runDaemonBounded is RunDaemon with a deadline: a daemon that dials (and
 // so serves) where it should refuse fails the test in seconds rather than
 // hanging the package until go test's own timeout.
-func runDaemonBounded(t *testing.T, paths config.Paths, d backend.Discovered) error {
+func runDaemonBounded(t *testing.T, paths config.Paths, m *config.Machine, b backend.Backend) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- RunDaemon(ctx, paths, d.Machine, d.Backend, "test") }()
+	go func() { done <- RunDaemon(ctx, paths, m, b, "test") }()
 	select {
 	case err := <-done:
 		return err
@@ -73,13 +73,13 @@ func TestDaemonRefusesInstallIntoRecreatedVM(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(state) })
 	paths := config.Paths{Config: t.TempDir(), State: state}
 	writeFile(t, ls, `[{"name":"web","state":"running","labels":{"devvm":"true"}}]`)
-	d, ok, err := backend.Discover(paths, "web")
-	if err != nil || !ok || !d.Machine.Managed() {
-		t.Fatalf("Discover = %+v, %v, %v; want a managed VM", d.Machine, ok, err)
+	m, b, ok, err := backend.DiscoverSmol(paths, "web")
+	if err != nil || !ok || !m.Managed() {
+		t.Fatalf("DiscoverSmol = %+v, %v, %v; want a managed VM", m, ok, err)
 	}
 	// Recreated while no daemon ran: same name, no label.
 	writeFile(t, ls, `[{"name":"web","state":"running","labels":{}}]`)
-	err = runDaemonBounded(t, paths, d)
+	err = runDaemonBounded(t, paths, m, b)
 	if !errors.Is(err, errVMNotListed) {
 		t.Fatalf("RunDaemon = %v, want it not dialled", err)
 	}
@@ -91,7 +91,7 @@ func TestDaemonRefusesInstallIntoRecreatedVM(t *testing.T) {
 	}
 	// A stopped VM is still never dialed at all.
 	writeFile(t, ls, `[{"name":"web","state":"stopped","labels":{"devvm":"true"}}]`)
-	if err := runDaemonBounded(t, paths, d); !errors.Is(err, errVMNotRunning) {
+	if err := runDaemonBounded(t, paths, m, b); !errors.Is(err, errVMNotRunning) {
 		t.Errorf("stopped VM: RunDaemon = %v, want errVMNotRunning", err)
 	}
 }

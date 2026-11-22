@@ -76,14 +76,14 @@ func TestStoppedRowFixtureSettles(t *testing.T) {
 	ls := strings.Replace(string(data), `"labels": {},`, `"labels": {"devvm": "true"},`, 1)
 	fakeSmolList(t, &ls)
 	p := testPaths(t)
-	d, ok, err := Discover(p, "web")
+	m, b, ok, err := DiscoverSmol(p, "web")
 	if err != nil || !ok {
-		t.Fatalf("Discover = %v, %v", ok, err)
+		t.Fatalf("DiscoverSmol = %v, %v", ok, err)
 	}
-	if !d.Machine.Managed() {
+	if !m.Managed() {
 		t.Error("stopped labelled VM reads unmanaged")
 	}
-	row, _ := SmolRow(d.Backend)
+	row, _ := SmolRow(b)
 	if row.Running() || row.State != "stopped" || row.MemoryMiB != 1024 || row.StorageGB != 10 || row.CPUs != 4 {
 		t.Errorf("stopped row = %+v, want stopped with sizes", row)
 	}
@@ -117,27 +117,22 @@ func TestDiscoverSmolSettlesManaged(t *testing.T) {
 	fakeSmolList(t, &ls)
 	p := testPaths(t)
 
-	discover := func(name string) Discovered {
-		t.Helper()
-		d, ok, err := Discover(p, name)
-		if err != nil || !ok {
-			t.Fatalf("Discover(%s) = %v, %v", name, ok, err)
-		}
-		return d
+	m, b, ok, err := DiscoverSmol(p, "web")
+	if err != nil || !ok {
+		t.Fatalf("DiscoverSmol(web) = %v, %v", ok, err)
 	}
-	d := discover("web")
-	if !d.Machine.Managed() || d.Machine.Backend != config.BackendSmol {
-		t.Errorf("labelled: record = %+v, want managed smol", d.Machine)
+	if !m.Managed() || m.Backend != config.BackendSmol {
+		t.Errorf("labelled: record = %+v, want managed smol", m)
 	}
-	if row, ok := SmolRow(d.Backend); !ok || row.MemoryMiB != 2048 || row.StorageGB != 20 || row.CPUs != 4 {
+	if row, ok := SmolRow(b); !ok || row.MemoryMiB != 2048 || row.StorageGB != 20 || row.CPUs != 4 {
 		t.Errorf("backend row = %+v, %v; want the listing's sizes", row, ok)
 	}
-	if _, ok, err := Discover(p, "raw"); ok || err != nil {
-		t.Errorf("Discover(raw) = %v, %v; want an unlabelled VM not found", ok, err)
+	if _, _, ok, err := DiscoverSmol(p, "raw"); ok || err != nil {
+		t.Errorf("DiscoverSmol(raw) = %v, %v; want an unlabelled VM not found", ok, err)
 	}
 	// Nobody knows the name: not found, no error.
-	if _, ok, err := Discover(p, "nope"); ok || err != nil {
-		t.Errorf("Discover(nope) = %v, %v; want not found", ok, err)
+	if _, _, ok, err := DiscoverSmol(p, "nope"); ok || err != nil {
+		t.Errorf("DiscoverSmol(nope) = %v, %v; want not found", ok, err)
 	}
 	if _, err := os.Stat(p.State); err == nil {
 		t.Error("discovery wrote host state")
@@ -148,8 +143,8 @@ func TestDiscoverSmolSettlesManaged(t *testing.T) {
 // laptop that only reaches remote boxes never needs smolvm.
 func TestDiscoverWithoutSmolvm(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	if _, ok, err := Discover(testPaths(t), "web"); ok || err != nil {
-		t.Errorf("Discover = %v, %v; want not found", ok, err)
+	if _, _, ok, err := DiscoverSmol(testPaths(t), "web"); ok || err != nil {
+		t.Errorf("DiscoverSmol = %v, %v; want not found", ok, err)
 	}
 }
 
@@ -161,8 +156,8 @@ func TestSmolRefreshResettles(t *testing.T) {
 	ls := `[{"name":"web","state":"running","labels":{"devvm":"true"}}]`
 	fakeSmolList(t, &ls)
 	p := testPaths(t)
-	d, _, _ := Discover(p, "web")
-	r, ok := d.Backend.(Refresher)
+	m, b, _, _ := DiscoverSmol(p, "web")
+	r, ok := b.(Refresher)
 	if !ok {
 		t.Fatal("smol backend is not a Refresher")
 	}
@@ -179,7 +174,7 @@ func TestSmolRefreshResettles(t *testing.T) {
 	if fresh, running, err := r.Refresh(); err != nil || running || fresh != nil {
 		t.Errorf("recreated VM: Refresh = %v, %v, %v; want nil, not running", fresh, running, err)
 	}
-	if !d.Machine.Managed() {
+	if !m.Managed() {
 		t.Error("Refresh mutated the original record")
 	}
 	// Deleted since: not running (the daemon waits as for a stopped VM).

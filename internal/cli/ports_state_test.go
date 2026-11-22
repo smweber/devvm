@@ -167,12 +167,12 @@ func TestEditPortsConcurrentAndDeleted(t *testing.T) {
 func TestEditPortsSmolListsOnce(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeLocalSmolvm(t, `[{"name":"web","state":"stopped",`+devvmLabel+`}]`)
-	d, ok, err := backend.Discover(a.Paths, "web")
+	m, _, ok, err := backend.DiscoverSmol(a.Paths, "web")
 	if err != nil || !ok {
-		t.Fatalf("Discover = %v, %v", ok, err)
+		t.Fatalf("DiscoverSmol = %v, %v", ok, err)
 	}
 	os.Remove(log)
-	if err := a.editPorts(d.Machine, func(p []string) []string { return append(p, "3000") }); err != nil {
+	if err := a.editPorts(m, func(p []string) []string { return append(p, "3000") }); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(log); strings.Count(string(data), "machine ls --json") != 1 {

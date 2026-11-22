@@ -58,7 +58,7 @@ func requireMachine(m *config.Machine) error {
 //   - a `[machines.NAME]` entry wins: a remote box or a hub runs no smolvm
 //     command, and the entry shadows a local smol VM of the same name
 //     (status reports that);
-//   - any other name goes to discovery (backend.Discover: today, one
+//   - any other name goes to discovery (backend.DiscoverSmol: one
 //     `smolvm machine ls --json`), which knows only the VMs with devvm's
 //     label (a smol VM devvm did not create is invisible to it);
 //   - and only then each configured provider (providerLookup: one API Get
@@ -96,12 +96,12 @@ func (a *App) resolveAny(name string) (*config.Machine, backend.Backend, error) 
 	}
 	m, ok := f.Entry(name)
 	if !ok {
-		d, ok, err := backend.Discover(a.Paths, name)
+		dm, db, ok, err := backend.DiscoverSmol(a.Paths, name)
 		if err != nil {
 			return nil, nil, err
 		}
 		if ok {
-			return d.Machine, d.Backend, nil
+			return dm, db, nil
 		}
 		// Last, the providers (providers.md §2): one API call each, only
 		// now that every local source has missed.

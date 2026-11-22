@@ -55,8 +55,8 @@ const (
 const DefaultBootstrapHook = "none"
 
 // ErrNotFound is returned by Load when the file has no `[machines.NAME]`
-// entry. The cli then asks discovery (backend.Discover), which finds local
-// smol VMs.
+// entry. The cli then asks discovery (backend.DiscoverSmol), which finds
+// local smol VMs.
 var ErrNotFound = errors.New("no such entry")
 
 // nameRe mirrors valid_name in bin/devvm: names land in file paths and process
