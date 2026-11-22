@@ -165,13 +165,11 @@ func (a *App) runCopyIn(ctx context.Context, name string, srcs []string, dst str
 	return nil
 }
 
-// copyStageDir is where the uploaded archive is staged in the guest. It must
-// NOT be /tmp: `smolvm machine cp` writes into the machine's overlay upperdir,
-// bypassing the running machine's mount namespace, and the machine mounts a
-// tmpfs over /tmp (and /run, /dev). An archive uploaded there lands in the
-// overlay's shadowed /tmp, invisible to every guest process, so the chmod and
-// extract steps fail with "No such file" and the cleanup can't remove it
-// either. /var/tmp is on the overlay, so uploads there are visible.
+// copyStageDir is where the uploaded archive is staged in the guest: /var/tmp,
+// on the overlay that `smolvm machine cp` writes into. Not /tmp: on smolvm
+// 1.16.1 the machine mounted a tmpfs over it, so an archive uploaded there
+// landed in the overlay's shadowed /tmp, invisible to every guest process
+// (1.35.5 mounts none; /var/tmp works on both, and is disk, not RAM).
 const copyStageDir = "/var/tmp"
 
 // copyArchive uploads archive (holding one top-level entry per base) and runs
@@ -312,21 +310,11 @@ done
 `
 
 // copyOutScript is the guest half of cp-out: validate one source and stream it
-// as a tar on stdout, or, given a staging directory ($3, see
-// downloadStaged), write the tar to $3/a.tar instead. Kept beside
-// copyArchiveScript so the ~ handling stays in one place.
-//
-// The stage is a directory made by mkdir under the name the host chose, the
-// cp-in shape: mkdir never follows a pre-planted final symlink and fails if
-// the name exists, and -m 700 keeps the tar private. The host can always
-// remove it, even when this script never got to report back. A failed tar
-// (a full disk) removes its partial stage itself. No sync: machine cp reads
-// the guest's live filesystem from inside the guest (shown on real smolvm,
-// even for a file on the guest's /tmp tmpfs).
+// as a tar on stdout. Kept beside copyArchiveScript so the ~ handling stays
+// in one place.
 const copyOutScript = `set -eu
 cd "$HOME"
 src=$1
-stage=${3-}
 case "$src" in
   '~') src=$HOME ;;
   '~/'*) src="$HOME/${src#\~/}" ;;
@@ -345,11 +333,5 @@ fi
 if [ ! -f "$src" ] && [ ! -d "$src" ] && [ ! -L "$src" ]; then
   echo "$src is missing or has an unsupported file type" >&2; exit 1
 fi
-if [ -z "$stage" ]; then
-  exec tar -cf - -C "$(dirname -- "$src")" -- "$(basename -- "$src")"
-fi
-mkdir -m 700 -- "$stage"
-if ! tar -cf "$stage/a.tar" -C "$(dirname -- "$src")" -- "$(basename -- "$src")"; then
-  rm -rf -- "$stage"; exit 1
-fi
+exec tar -cf - -C "$(dirname -- "$src")" -- "$(basename -- "$src")"
 `

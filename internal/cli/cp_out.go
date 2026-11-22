@@ -3,15 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/smweber/devvm/internal/backend"
 	"github.com/spf13/cobra"
@@ -189,23 +186,14 @@ func copyOutWith(ctx context.Context, name string, srcs []string, dst string, o 
 	return nil
 }
 
-// downloadArchive fetches one guest source as a host tar file. Streaming
-// stdout is binary-safe on both transports, needs no guest staging or root,
-// and a failed download never touches DEST. The guest script's stderr is
-// captured so its refusal reads as the error, prefixed with the machine name.
-//
-// A backend.Downloader (smol) cannot stream more than 11 MiB: smolvm caps a
-// `machine exec`'s streamed stdout there. Its tar is staged in the guest and
-// pulled with CopyOut (downloadStaged).
+// downloadArchive fetches one guest source as a host tar file, streamed
+// over exec stdout. That is binary-safe on both transports (smol's
+// `machine exec --stream` has no tty and, unlike a plain exec, no 11 MiB
+// stdout cap on smolvm 1.35.5), needs no guest staging or root, and a
+// failed download never touches DEST. The guest script's stderr is
+// captured so its refusal reads as the error, prefixed with the machine
+// name.
 func downloadArchive(ctx context.Context, b backend.Backend, name, src, archive string, recursive bool, stderr io.Writer) error {
-	if d, ok := b.(backend.Downloader); ok {
-		return downloadStaged(ctx, b, d, name, src, archive, recursive, stderr)
-	}
-	return downloadStream(ctx, b, name, src, archive, recursive, stderr)
-}
-
-// downloadStream is downloadArchive over exec stdout.
-func downloadStream(ctx context.Context, b backend.Backend, name, src, archive string, recursive bool, stderr io.Writer) error {
 	f, err := os.Create(archive)
 	if err != nil {
 		return err
@@ -221,59 +209,6 @@ func downloadStream(ctx context.Context, b backend.Backend, name, src, archive s
 		stderr.Write(msg.Bytes())
 	}
 	return closeErr
-}
-
-// copyOutStagePrefix names cp-out's guest stage: a directory in copyStageDir
-// holding the tar as a.tar. A download reads the guest's live filesystem, so
-// /tmp would do as well, but it is a RAM tmpfs (510 MiB on real smolvm) and
-// a large tar belongs on disk: /var/tmp.
-const copyOutStagePrefix = copyStageDir + "/devvm-cp-out-"
-
-// downloadStaged is downloadArchive through a guest stage: one exec writes
-// the tar into a directory in copyStageDir, CopyOut pulls it to archive (still in
-// the host temp dir, so a failure never touches DEST), and one more exec
-// removes the stage. The host picks the stage's name rather than the guest's
-// mktemp, so the removal knows it on every path out, including an
-// interruption that cut the first exec short; it runs on a fresh context for
-// that reason, as copyArchive's does. The execs and the copy are sequential
-// one-shots, like cp-in's (the one-exec rule is about parallel execs).
-//
-// A CopyOut that fails (not cancelled) falls back to streaming: if `machine
-// cp NAME:SRC DST` were missing from a smolvm, every smol cp-out would break
-// otherwise. Up to 11 MiB the stream then succeeds; past it the error names
-// both failures.
-func downloadStaged(ctx context.Context, b backend.Backend, d backend.Downloader, name, src, archive string, recursive bool, stderr io.Writer) error {
-	var rnd [8]byte
-	if _, err := rand.Read(rnd[:]); err != nil {
-		return err
-	}
-	stage := copyOutStagePrefix + hex.EncodeToString(rnd[:])
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		// Like cp-in's cleanup, this exec boots a VM the user stopped mid-copy.
-		if err := b.Run(cleanupCtx, backend.ExecOpts{Stdin: strings.NewReader(""), Stderr: stderr}, "rm", "-rf", "--", stage); err != nil {
-			fmt.Fprintf(stderr, "devvm: could not clean up %s: %v\n", stage, err)
-		}
-	}()
-	var msg bytes.Buffer
-	if err := b.Run(ctx, backend.ExecOpts{Stdin: strings.NewReader(""), Stderr: &msg},
-		"sh", "-c", copyOutScript, "devvm-cp-out", src, strconv.FormatBool(recursive), stage); err != nil {
-		return guestCopyError(name, &msg, fmt.Errorf("archive %s in the guest: %w", src, err))
-	}
-	if err := d.CopyOut(ctx, stage+"/a.tar", archive); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("download %s: %w", src, err)
-		}
-		if serr := downloadStream(ctx, b, name, src, archive, recursive, stderr); serr != nil {
-			return fmt.Errorf("download %s: %v; streaming instead: %w", src, err, serr)
-		}
-		return nil
-	}
-	if msg.Len() > 0 {
-		stderr.Write(msg.Bytes()) // tar warnings on an otherwise good archive
-	}
-	return nil
 }
 
 // guestCopyError is the guest script's own stderr as the error, prefixed

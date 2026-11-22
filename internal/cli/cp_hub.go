@@ -26,8 +26,8 @@ import (
 // tar on stdin (`cp-in NAME --from-tar - DEST`) or writes it to stdout
 // (`cp-out NAME SRC --to-tar -`) and otherwise reuses copyArchive and
 // downloadArchive against its own backend. So the hub-side forms work for
-// any machine the hub runs — smol through `machine cp` staging, remote over
-// scp — and nothing here knows which.
+// any machine the hub runs (smol through `machine cp` staging in and an
+// exec stream out, remote over scp) and nothing here knows which.
 //
 // The stream rides a plain ssh (no -t: a pty would turn \n into \r\n and
 // merge stderr into it) with BatchMode, over the same login-shell wrapper
@@ -499,9 +499,9 @@ func (a *App) runCopyOutToTar(ctx context.Context, spec string, args []string, t
 
 // copyOutToTar is runCopyOutToTar past its argument checks. Nothing reaches
 // stdout until the download is done, so a laptop that hangs up (^C) would
-// go unnoticed until then: a whole guest tar and machine cp, however large.
-// watchHangup cancels the download as soon as stdout's reader is gone, and
-// the cancel path kills machine cp and removes the guest stage.
+// go unnoticed until then: a whole guest tar, however large. watchHangup
+// cancels the download as soon as stdout's reader is gone, which kills its
+// exec.
 func copyOutToTar(ctx context.Context, b backend.Backend, name, src string, recursive bool, stdout, stderr io.Writer) error {
 	ctx, cancel := watchHangup(ctx, stdout)
 	defer cancel()

@@ -11,35 +11,30 @@ import (
 	"github.com/smweber/devvm/internal/backend"
 )
 
-// hangupBackend makes the guest stage, then holds the staging exec until
+// hangupBackend streams the guest tar, then holds the download exec until
 // its context is cancelled, as a long guest tar would: only a cancel ends
 // it.
 type hangupBackend struct {
-	localDownloadBackend
-	stage  string
-	staged chan struct{} // closed once the stage exists
+	localCopyBackend
+	started chan struct{} // closed once the tar is streamed
 }
 
 func (b *hangupBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
-	if argv[0] == "sh" && b.stage == "" && len(argv) == 7 { // copyOutScript with a stage
-		if err := b.localDownloadBackend.Run(ctx, o, argv...); err != nil {
-			return err
-		}
-		b.stage = argv[len(argv)-1]
-		close(b.staged)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Second):
-			return fmt.Errorf("the staging exec was never cancelled")
-		}
+	if err := b.localCopyBackend.Run(ctx, o, argv...); err != nil {
+		return err
 	}
-	return b.localDownloadBackend.Run(ctx, o, argv...)
+	close(b.started)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("the download exec was never cancelled")
+	}
 }
 
 // The hub side of cp-out stops as soon as the laptop hangs up (stdout's
 // reader gone) mid-download, before anything is written: the guest exec is
-// cancelled, CopyOut never runs, and the stage is removed.
+// cancelled.
 func TestCopyOutToTarStopsOnHangup(t *testing.T) {
 	home := t.TempDir()
 	writeTree(t, home, "source")
@@ -48,14 +43,13 @@ func TestCopyOutToTarStopsOnHangup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	b := &hangupBackend{localDownloadBackend: localDownloadBackend{localCopyBackend: localCopyBackend{home: home}},
-		staged: make(chan struct{})}
+	b := &hangupBackend{localCopyBackend: localCopyBackend{home: home}, started: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() { done <- copyOutToTar(context.Background(), b, "vm", "source", false, w, io.Discard) }()
 	select {
-	case <-b.staged:
+	case <-b.started:
 	case err := <-done:
-		t.Fatalf("cp-out ended before staging: %v", err)
+		t.Fatalf("cp-out ended before the download: %v", err)
 	}
 	r.Close() // the laptop's ssh is gone
 	select {
@@ -65,12 +59,6 @@ func TestCopyOutToTarStopsOnHangup(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("cp-out did not notice the hangup")
-	}
-	if _, err := os.Lstat(b.stage); !os.IsNotExist(err) {
-		t.Fatalf("stage %s left behind (%v)", b.stage, err)
-	}
-	if len(b.stages) != 0 {
-		t.Fatalf("CopyOut ran after the hangup: %q", b.stages)
 	}
 }
 

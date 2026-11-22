@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -383,9 +382,10 @@ func (b *bootBackend) Status() (backend.State, error) {
 
 func (b *bootBackend) PowerStart() error { b.starts++; return b.startErr }
 
-// startStopped waits for a VM already starting (a second PowerStart would
-// fail on it), forgives a PowerStart that failed when the VM runs anyway,
-// and never blocks the session on a Status error.
+// startStopped starts a VM listed booting too (smolvm 1.35.5 lists one as
+// unreachable, and answers a second start "already running", rc 0),
+// forgives a PowerStart that failed when the VM runs anyway, and never
+// blocks the session on a Status error.
 func TestStartStoppedRaces(t *testing.T) {
 	shrinkRunningPoll(t)
 	m := managedSmol("web")
@@ -397,7 +397,7 @@ func TestStartStoppedRaces(t *testing.T) {
 		wantErr    string
 		wantLine   string
 	}{
-		{"starting is waited for", &bootBackend{states: []string{"starting", "starting", "running"}}, true, 0, "", "waiting for web to start"},
+		{"a booting VM is started again", &bootBackend{states: []string{"unreachable", "unreachable", "running"}}, true, 1, "", "starting web…"},
 		{"stopped is started", &bootBackend{states: []string{"stopped", "stopped", "running"}}, true, 1, "", "starting web…"},
 		{"a failed start that raced another", &bootBackend{states: []string{"stopped", "stopped", "running"}, startErr: errors.New("already starting")}, true, 1, "", "starting web…"},
 		{"a failed start", &bootBackend{states: []string{"stopped"}, startErr: errors.New("boom")}, false, 1, "boom", "starting web…"},
@@ -535,62 +535,5 @@ func TestBridgePushIsQuietAndBestEffort(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a.Paths.RuntimeDir(), "box.sock")); err == nil {
 		t.Error("the push spawned a daemon")
-	}
-}
-
-// serialBoot is a smol VM listed "stopped" while its start is in flight
-// (smolvm 1.16.1), whose PowerStart blocks until the test releases it.
-type serialBoot struct {
-	backend.Backend
-	mu      sync.Mutex
-	running bool
-	starts  int
-	release chan struct{}
-	entered chan struct{}
-}
-
-func (b *serialBoot) Status() (backend.State, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	raw := "stopped"
-	if b.running {
-		raw = "running"
-	}
-	return backend.State{Running: b.running, Raw: raw}, nil
-}
-
-func (b *serialBoot) PowerStart() error {
-	b.mu.Lock()
-	b.starts++
-	b.mu.Unlock()
-	b.entered <- struct{}{}
-	<-b.release
-	b.mu.Lock()
-	b.running = true
-	b.mu.Unlock()
-	return nil
-}
-
-// Two attaches starting one stopped VM at once: the second waits for the
-// first's start (lockStart) and finds it running, so smolvm is asked to
-// start it once (a second start would kill the first one's boot).
-func TestStartStoppedSerialized(t *testing.T) {
-	shrinkRunningPoll(t)
-	b := &serialBoot{release: make(chan struct{}), entered: make(chan struct{}, 2)}
-	a, _ := bridgeApp(t)
-	m := managedSmol("web")
-	errs := make(chan error, 2)
-	go func() { _, err := a.startStopped(m, b); errs <- err }()
-	<-b.entered // the first holds the lock inside PowerStart
-	go func() { _, err := a.startStopped(m, b); errs <- err }()
-	time.Sleep(20 * time.Millisecond) // give the second time to (wrongly) start too
-	close(b.release)
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if b.starts != 1 {
-		t.Fatalf("PowerStart ran %d times, want once", b.starts)
 	}
 }

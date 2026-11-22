@@ -3,14 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/smweber/devvm/internal/backend"
 	"github.com/spf13/cobra"
 )
 
@@ -47,252 +45,69 @@ func TestCopyOut(t *testing.T) {
 		{name: "root rejected", srcs: []string{"/"}, dst: "destination", opts: copyOpts{recursive: true}, wantErr: "filesystem root"},
 		{name: "several need directory", srcs: []string{"a.txt", "b.txt"}, files: []string{"a.txt", "b.txt"}, dst: "destination", wantErr: "destination directory"},
 	} {
-		for _, staged := range []bool{false, true} {
-			name := tc.name
-			if staged {
-				name += " staged"
-			}
-			t.Run(name, func(t *testing.T) {
-				home, root := t.TempDir(), t.TempDir()
-				writeTree(t, home, tc.files...)
-				for _, f := range tc.existing {
-					p := filepath.Join(root, f)
-					if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-						t.Fatal(err)
-					}
-					if err := os.WriteFile(p, []byte("old"), 0644); err != nil {
-						t.Fatal(err)
-					}
-				}
-				dst := filepath.Join(root, tc.dst)
-				if strings.HasSuffix(tc.dst, "/") {
-					dst += "/"
-				}
-				var stderr bytes.Buffer
-				var b backend.Backend = &localCopyBackend{home: home}
-				if staged {
-					b = &localDownloadBackend{localCopyBackend: localCopyBackend{home: home}}
-				}
-				err := copyOut(context.Background(), b, "vm", tc.srcs, dst, tc.opts, &stderr)
-				if d, ok := b.(*localDownloadBackend); ok {
-					d.checkCleaned(t)
-				}
-				if _, err := os.Stat(filepath.Join(home, "INJECTED")); !os.IsNotExist(err) {
-					t.Fatal("source executed as code")
-				}
-				if tc.wantErr != "" {
-					if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-						t.Fatalf("error = %v; want %q", err, tc.wantErr)
-					}
-					for _, f := range tc.existing { // a refusal wrote nothing
-						if data, _ := os.ReadFile(filepath.Join(root, f)); string(data) != "old" {
-							t.Fatalf("%s changed on a refused copy: %q", f, data)
-						}
-					}
-					if tc.dst != "" && len(tc.existing) == 0 {
-						if _, err := os.Lstat(dst); !os.IsNotExist(err) {
-							t.Fatal("failed download changed destination")
-						}
-					}
-					return
-				}
-				if err != nil {
-					t.Fatalf("copy: %v (stderr %q)", err, stderr.String())
-				}
-				for _, f := range tc.want {
-					data, err := os.ReadFile(filepath.Join(root, f))
-					if err != nil || string(data) != payload {
-						t.Fatalf("%s = %q, %v", f, data, err)
-					}
-				}
-				if tc.name == "force merges" {
-					if data, _ := os.ReadFile(filepath.Join(root, "source/keep")); string(data) != "old" {
-						t.Fatalf("merge clobbered an unrelated file: %q", data)
-					}
-				}
-				if !strings.Contains(stderr.String(), "vm:"+strings.TrimSuffix(tc.srcs[0], "/")) {
-					t.Fatalf("no per-file report in %q", stderr.String())
-				}
-			})
-		}
-	}
-}
-
-// localDownloadBackend is localCopyBackend with a CopyOut, so cp-out takes
-// the staged path (a smol backend's): the guest script writes its tar into a
-// stage directory under copyStageDir and CopyOut copies it to the host
-// archive. It records every file it was asked for, and can fail the
-// download, or the streaming fallback (a capped exec stdout).
-type localDownloadBackend struct {
-	localCopyBackend
-	failDownload, failStream bool
-	stages                   []string // stage directories CopyOut read from
-}
-
-func (b *localDownloadBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
-	if b.failStream && argv[0] == "sh" && len(argv) == 6 { // copyOutScript without a stage
-		fmt.Fprintln(o.Stderr, "stdout capped")
-		return fmt.Errorf("exit status 1")
-	}
-	return b.localCopyBackend.Run(ctx, o, argv...)
-}
-
-func (b *localDownloadBackend) CopyOut(ctx context.Context, guestSrc, hostDst string) error {
-	stage := filepath.Dir(guestSrc)
-	b.stages = append(b.stages, stage)
-	if !strings.HasPrefix(stage, copyOutStagePrefix) || filepath.Base(guestSrc) != "a.tar" {
-		return fmt.Errorf("download %q is not a.tar in a stage under %s", guestSrc, copyStageDir)
-	}
-	info, err := os.Lstat(stage)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode().Perm() != 0700 {
-		return fmt.Errorf("stage %s has mode %v, want a 0700 directory", stage, info.Mode())
-	}
-	if b.failDownload {
-		return fmt.Errorf("download failed")
-	}
-	data, err := os.ReadFile(guestSrc)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(hostDst, data, 0600)
-}
-
-// checkCleaned fails if a stage this backend downloaded is still in the
-// guest. Only recorded names are checked: /var/tmp is shared with other runs.
-func (b *localDownloadBackend) checkCleaned(t *testing.T) {
-	t.Helper()
-	for _, s := range b.stages {
-		if _, err := os.Lstat(s); !os.IsNotExist(err) {
-			t.Errorf("stage %s left behind (%v)", s, err)
-		}
-	}
-}
-
-// TestCopyOutStaged pins the staged download (a Downloader backend): the
-// archive comes through CopyOut rather than exec stdout, the stage is
-// removed after a good copy and after a failed one, a failed CopyOut falls
-// back to streaming, and a download that fails both ways leaves the
-// destination alone and names both errors.
-func TestCopyOutStaged(t *testing.T) {
-	for _, tc := range []struct {
-		name                     string
-		failDownload, failStream bool
-		wantErr                  string
-	}{
-		{name: "copy out"},
-		{name: "fallback", failDownload: true},
-		{name: "both fail", failDownload: true, failStream: true,
-			wantErr: "download source: download failed; streaming instead: vm: stdout capped"},
-	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, root := t.TempDir(), t.TempDir()
-			writeTree(t, home, "source/a", "source/b")
-			b := &localDownloadBackend{localCopyBackend: localCopyBackend{home: home},
-				failDownload: tc.failDownload, failStream: tc.failStream}
-			dst := filepath.Join(root, "destination")
-			err := copyOut(context.Background(), b, "vm", []string{"source"}, dst, copyOpts{recursive: true}, io.Discard)
-			if len(b.stages) != 1 {
-				t.Fatalf("CopyOut called for %q, want one stage", b.stages)
+			writeTree(t, home, tc.files...)
+			for _, f := range tc.existing {
+				p := filepath.Join(root, f)
+				if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("old"), 0644); err != nil {
+					t.Fatal(err)
+				}
 			}
-			b.checkCleaned(t)
+			dst := filepath.Join(root, tc.dst)
+			if strings.HasSuffix(tc.dst, "/") {
+				dst += "/"
+			}
+			var stderr bytes.Buffer
+			b := &localCopyBackend{home: home}
+			err := copyOut(context.Background(), b, "vm", tc.srcs, dst, tc.opts, &stderr)
+			if b.outUnstreamed != 0 {
+				t.Errorf("%d of %d cp-out execs were not Stream (smol would cap their stdout)", b.outUnstreamed, b.outRuns)
+			}
+			if _, err := os.Stat(filepath.Join(home, "INJECTED")); !os.IsNotExist(err) {
+				t.Fatal("source executed as code")
+			}
 			if tc.wantErr != "" {
-				if err == nil || err.Error() != tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error = %v; want %q", err, tc.wantErr)
 				}
-				if _, err := os.Lstat(dst); !os.IsNotExist(err) {
-					t.Fatal("failed download changed destination")
+				for _, f := range tc.existing { // a refusal wrote nothing
+					if data, _ := os.ReadFile(filepath.Join(root, f)); string(data) != "old" {
+						t.Fatalf("%s changed on a refused copy: %q", f, data)
+					}
+				}
+				if tc.dst != "" && len(tc.existing) == 0 {
+					if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+						t.Fatal("failed download changed destination")
+					}
 				}
 				return
 			}
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("copy: %v (stderr %q)", err, stderr.String())
 			}
-			for _, f := range []string{"a", "b"} {
-				if data, err := os.ReadFile(filepath.Join(dst, f)); err != nil || string(data) != payload {
+			if b.outRuns == 0 {
+				t.Fatal("the cp-out script never ran")
+			}
+			for _, f := range tc.want {
+				data, err := os.ReadFile(filepath.Join(root, f))
+				if err != nil || string(data) != payload {
 					t.Fatalf("%s = %q, %v", f, data, err)
 				}
 			}
+			if tc.name == "force merges" {
+				if data, _ := os.ReadFile(filepath.Join(root, "source/keep")); string(data) != "old" {
+					t.Fatalf("merge clobbered an unrelated file: %q", data)
+				}
+			}
+			if !strings.Contains(stderr.String(), "vm:"+strings.TrimSuffix(tc.srcs[0], "/")) {
+				t.Fatalf("no per-file report in %q", stderr.String())
+			}
 		})
 	}
-}
-
-// TestCopyOutScriptStageExists: the guest script never writes through a
-// name that already exists, a pre-planted symlink included (mkdir neither
-// follows a final symlink nor accepts an existing path).
-func TestCopyOutScriptStageExists(t *testing.T) {
-	home, dir := t.TempDir(), t.TempDir()
-	writeTree(t, home, "source")
-	victim := filepath.Join(dir, "victim")
-	if err := os.Mkdir(victim, 0755); err != nil {
-		t.Fatal(err)
-	}
-	stage := filepath.Join(dir, "stage")
-	if err := os.Symlink(victim, stage); err != nil {
-		t.Fatal(err)
-	}
-	b := &localCopyBackend{home: home}
-	var msg bytes.Buffer
-	err := b.Run(context.Background(), backend.ExecOpts{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: &msg},
-		"sh", "-c", copyOutScript, "devvm-cp-out", "source", "false", stage)
-	if err == nil {
-		t.Fatal("script accepted an existing stage")
-	}
-	if ents, _ := os.ReadDir(victim); len(ents) != 0 {
-		t.Fatalf("script wrote through the symlink: %v", ents)
-	}
-}
-
-// TestCopyOutStagedCancelled: an interruption during the guest exec still
-// removes the stage, by the name the host chose, and does not fall back.
-func TestCopyOutStagedCancelled(t *testing.T) {
-	home := t.TempDir()
-	writeTree(t, home, "source")
-	b := &cancellingBackend{localDownloadBackend: localDownloadBackend{localCopyBackend: localCopyBackend{home: home}}}
-	ctx, cancel := context.WithCancel(context.Background())
-	b.cancel = cancel
-	err := copyOut(ctx, b, "vm", []string{"source"}, filepath.Join(t.TempDir(), "destination"), copyOpts{}, io.Discard)
-	if err == nil {
-		t.Fatal("cancelled copy succeeded")
-	}
-	if b.stage == "" {
-		t.Fatal("the guest script never ran")
-	}
-	if _, err := os.Lstat(b.stage); !os.IsNotExist(err) {
-		t.Fatalf("stage %s left behind after cancel (%v)", b.stage, err)
-	}
-	if len(b.stages) != 0 {
-		t.Fatalf("CopyOut ran after cancel: %q", b.stages)
-	}
-}
-
-// cancellingBackend runs the staging script, then cancels the copy's context
-// and fails as a killed exec would, so the stage exists but was never
-// reported back.
-type cancellingBackend struct {
-	localDownloadBackend
-	cancel func()
-	stage  string
-}
-
-func (b *cancellingBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
-	if argv[0] == "sh" && b.stage == "" {
-		if err := b.localDownloadBackend.Run(ctx, o, argv...); err != nil {
-			return err
-		}
-		b.stage = argv[len(argv)-1]
-		if _, err := os.Stat(b.stage + "/a.tar"); err != nil {
-			return fmt.Errorf("script made no stage: %w", err)
-		}
-		b.cancel()
-		return context.Canceled
-	}
-	if argv[0] == "sh" {
-		return fmt.Errorf("streamed after cancel")
-	}
-	return b.localDownloadBackend.Run(ctx, o, argv...)
 }
 
 func TestCopyOutDefaultIsWorkingDirectory(t *testing.T) {

@@ -200,3 +200,19 @@ func managedSmol(name string) *config.Machine {
 	m.SetManaged(true)
 	return m
 }
+
+// A Stream exec (cp-out's tar) is `machine exec --stream` with neither -i
+// nor -t: no tty, so stdout is byte-clean, and smolvm 1.35.5 does not cap
+// a --stream exec's stdout as it does a plain one's.
+func TestSmolStreamExecArgv(t *testing.T) {
+	b := &smolBackend{m: managedSmol("x")}
+	got := b.execArgv(ExecOpts{Stream: true}, false, []string{"true"})
+	if want := []string{"smolvm", "machine", "exec", "--stream", "--name", "x", "--"}; strings.Join(got[:len(want)], " ") != strings.Join(want, " ") {
+		t.Fatalf("argv = %q, want it to start %q", got, want)
+	}
+	for _, a := range got {
+		if a == "-i" || a == "-t" || a == "-it" {
+			t.Errorf("argv %q has %s", got, a)
+		}
+	}
+}

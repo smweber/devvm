@@ -6,13 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -312,36 +309,21 @@ const exitSetupIncomplete = 3
 
 // startStopped boots a stopped smol VM the way `start` does (PowerStart,
 // then wait for "running") and reports whether it had to. setup calls it
-// before its first exec, attach/shell before theirs (bootForSession): on
-// smolvm 1.16.1 an exec into a stopped VM is refused, not a boot, and
-// starting it here also keeps a forward daemon that may be reconnecting
-// from starting its serve exec mid-boot.
+// before its first exec, attach/shell before theirs (bootForSession):
+// smolvm's exec into a stopped VM is refused, not a boot, and starting it
+// here also keeps a forward daemon that may be reconnecting from starting
+// its serve exec mid-boot.
 //
-// Two starts at once (two attaches, an attach right after `start &`) are
-// serialized by lockStart and the second finds the VM running: smolvm
-// 1.16.1 lists a VM whose start is in flight as "stopped", and a second
-// `machine start` then kills the first one's boot ("Killing orphaned
-// _boot-vm process"), failing that start (ROADMAP Lessons). A VM smolvm
-// does report "starting" is only waited for. A PowerStart that fails is
-// forgiven when the VM runs anyway (a start from outside devvm). A Status
-// error is no block (the session's own exec reports what is wrong), as in
-// requireRunningForForwards.
+// Two starts at once (two attaches, an attach right after `start &`) need
+// no lock: smolvm (1.35.5) lists a booting VM as "unreachable", and a
+// second `machine start` during the boot answers "already running" (rc 0)
+// without disturbing it, so both wait for "running". A PowerStart that
+// fails is forgiven when the VM runs anyway (a start from outside devvm).
+// A Status error is no block (the session's own exec reports what is
+// wrong), as in requireRunningForForwards.
 func (a *App) startStopped(m *config.Machine, b backend.Backend) (bool, error) {
 	if st, err := b.Status(); err != nil || st.Running {
 		return false, nil
-	}
-	unlock, err := lockStart(a.Paths, m.Name)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-	st, err := b.Status() // again, under the lock: the start we waited for
-	if err != nil || st.Running {
-		return false, nil
-	}
-	if st.Raw == smolStarting {
-		fmt.Fprintf(a.Stderr, "devvm: waiting for %s to start…\n", m.Name)
-		return true, waitRunning(m, b)
 	}
 	fmt.Fprintf(a.Stderr, "devvm: starting %s…\n", m.Name)
 	if err := b.PowerStart(); err != nil {
@@ -351,28 +333,6 @@ func (a *App) startStopped(m *config.Machine, b backend.Backend) (bool, error) {
 		return false, err
 	}
 	return true, waitRunning(m, b)
-}
-
-// smolStarting is smolvm's state for a VM whose boot is in flight (1.16.1
-// never reports it: such a VM lists as "stopped").
-const smolStarting = "starting"
-
-// lockStart serializes this host's starts of one smol VM (`start`, and
-// attach/shell/setup starting it first): run/.start-NAME.lock, flock'd,
-// never unlinked (like the ports locks).
-func lockStart(p config.Paths, name string) (unlock func(), err error) {
-	if err := p.EnsureRuntimeDir(); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(filepath.Join(p.RuntimeDir(), ".start-"+config.RuntimeName(name)+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("lock the start of %s: %w", name, err)
-	}
-	return func() { f.Close() }, nil // closing releases the flock
 }
 
 // waitRunning waits (runningPollTimeout) for a VM just started to report

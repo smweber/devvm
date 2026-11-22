@@ -162,20 +162,11 @@ func (a *App) runStart(name string) error {
 	return nil
 }
 
-// powerStartWait is `start`'s PowerStart, under lockStart for a smol VM (a
-// concurrent attach starting it must not make smolvm kill one boot for
-// the other: startStopped), then a wait for "running": smolvm may return
-// before it, and whoever runs next (a proxied attach's __session, a
-// script's exec) needs it running. A failed PowerStart is forgiven when
-// the VM runs anyway.
+// powerStartWait is `start`'s PowerStart, then a wait for "running":
+// smolvm may return before it, and whoever runs next (a proxied attach's
+// __session, a script's exec) needs it running. A failed PowerStart is
+// forgiven when the VM runs anyway.
 func (a *App) powerStartWait(m *config.Machine, b backend.Backend) error {
-	if !m.IsRemote() {
-		unlock, err := lockStart(a.Paths, m.Name)
-		if err != nil {
-			return err
-		}
-		defer unlock()
-	}
 	if err := b.PowerStart(); err != nil {
 		if m.IsRemote() || waitRunning(m, b) != nil {
 			return err

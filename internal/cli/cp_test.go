@@ -21,6 +21,8 @@ type localCopyBackend struct {
 	home       string
 	stage      string
 	failUpload bool
+	// cp-out's script runs, and how many of them were not Stream execs.
+	outRuns, outUnstreamed int
 }
 
 func (b *localCopyBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...string) error {
@@ -36,6 +38,12 @@ func (b *localCopyBackend) Run(ctx context.Context, o backend.ExecOpts, argv ...
 			fmt.Fprintln(o.Stdout, b.stage)
 		}
 		return err
+	}
+	if len(argv) > 2 && argv[2] == copyOutScript {
+		b.outRuns++
+		if !o.Stream {
+			b.outUnstreamed++
+		}
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "HOME="+b.home)
