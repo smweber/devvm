@@ -222,15 +222,13 @@ func (a *App) stopCmd() *cobra.Command {
 }
 
 func (a *App) deleteCmd() *cobra.Command {
-	var force, yes bool
+	var yes bool
 	c := &cobra.Command{
 		Use:   "delete NAME",
 		Short: "Delete a smol VM or Hetzner server devvm made, or HUB/NAME (an entry is 'config rm')",
-		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], force, yes) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return a.runDelete(args[0], yes) },
 	}
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "don't confirm")
-	c.Flags().BoolVar(&force, "force", false, "deprecated: no effect (a hub entry is removed with 'devvm config rm --force')")
-	_ = c.Flags().MarkHidden("force")
 	a.machineArg(c)
 	c.ValidArgsFunction = a.completeDeletable
 	return c

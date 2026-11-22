@@ -662,7 +662,7 @@ var createOutcomes = []struct {
 	{"clone failed", "[templates.default]\nrepos = [\"o/bad\"]\n", "[]", "  *o/bad*) exit 1;;\n", true},
 	{"an entry has the name", "[machines.web]\nbackend = \"remote\"\nhost = \"w.example\"\n", "[]", "", false},
 	{"a smol VM has the name", "", `[{"name":"web","state":"running","labels":{}}]`, "", false},
-	{"smolvm has no --label", "", "[]", "  'machine create'*) echo \"error: unexpected argument '--label' found\" >&2; exit 2;;\n", false},
+	{"machine create fails", "", "[]", "  'machine create'*) echo \"error: create failed\" >&2; exit 1;;\n", false},
 }
 
 // runLocalCreate runs `create web` for one outcome with a leftover saved
@@ -682,8 +682,7 @@ func runLocalCreate(t *testing.T, tc int) (error, bool) {
 }
 
 // create labels the VM as devvm's (smolvm machine create --label
-// devvm=true); a smolvm whose create has no --label is told apart from
-// its own error, in one line naming the upgrade.
+// devvm=true).
 func TestCreateLabelsTheVM(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeCreateSmolvm(t, "[]", "")
@@ -692,18 +691,6 @@ func TestCreateLabelsTheVM(t *testing.T) {
 	}
 	data, _ := os.ReadFile(log)
 	inOrder(t, string(data), "machine create --name web", "--label devvm=true", "machine start --name web", "machine exec")
-
-	i := len(createOutcomes) - 1 // smolvm has no --label
-	err, _ := runLocalCreate(t, i)
-	if !errors.Is(err, backend.ErrNoSmolLabel) || strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), "upgrade smolvm") {
-		t.Errorf("no --label: err = %v, want ErrNoSmolLabel", err)
-	}
-	// A refused label value is smolvm's own error, not a missing flag.
-	b := newTestApp(t)
-	fakeCreateSmolvm(t, "[]", "  'machine create'*) echo \"error: invalid value 'devvm=true' for '--label <KEY=VALUE>'\" >&2; exit 2;;\n")
-	if err := runTree(t, b, "create", "web", "--memory", "1024", "--yes"); err == nil || errors.Is(err, backend.ErrNoSmolLabel) {
-		t.Errorf("refused value: err = %v, want smolvm's own failure", err)
-	}
 }
 
 // create clears a leftover ports file once its VM exists, however it ends

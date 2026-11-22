@@ -206,10 +206,9 @@ func (a *App) runStop(name string) error {
 // runDelete destroys a smol VM or provider server devvm made, or proxies
 // `delete NAME` to a hub for HUB/NAME. It never removes a config entry: an
 // entry is the user's line in devvm.toml, and the one command that removes
-// it, and this host's state for it, is `config rm` (config.md §4). force
-// is accepted and ignored, for scripts written when `delete HUB --force`
-// existed; yes skips the confirm.
-func (a *App) runDelete(name string, _ bool, yes bool) error {
+// it, and this host's state for it, is `config rm` (config.md §4). yes
+// skips the confirm.
+func (a *App) runDelete(name string, yes bool) error {
 	defer config.TouchChanged(a.Paths) // wake `status --watch`
 	a.providerAsk = true
 	m, b, err := a.resolveAny(name) // delete applies to hub machines too

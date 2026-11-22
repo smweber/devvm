@@ -1,15 +1,12 @@
 package backend
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
@@ -302,16 +299,9 @@ func (b *smolBackend) guestArgv(o ExecOpts, argv []string) []string {
 	return append(out, argv...)
 }
 
-// ErrNoSmolLabel is create's refusal on a smolvm whose `machine create`
-// has no --label (1.16.1 has it): devvm owns only the VMs it labels.
-var ErrNoSmolLabel = errors.New("this smolvm's 'machine create' has no --label, which devvm needs to mark the VMs it makes; upgrade smolvm: curl -sSL https://smolmachines.com/install.sh | bash")
-
 // SmolCreate provisions a new microVM (net-enabled, SMOLVM_GUEST=1, devvm's
 // label) and starts it. Mirrors the `smolvm machine create` invocation in
-// create_machine. A smolvm that does not know --label is told
-// from its own stderr, clap's unknown-argument line for that flag
-// (ErrNoSmolLabel), so no version is probed up front; any other failure,
-// a refused label value included, is smolvm's own.
+// create_machine. A failure is smolvm's own error.
 func SmolCreate(name string, memoryMiB, diskGiB int) error {
 	if err := needSmolvm(); err != nil {
 		return err
@@ -328,13 +318,7 @@ func SmolCreate(name string, memoryMiB, diskGiB int) error {
 		"--label", smolLabel,
 	}
 	fmt.Printf("+ smolvm %v\n", args)
-	var stderr bytes.Buffer
-	cmd := exec.Command("smolvm", args...)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
-	if err := cmd.Run(); err != nil {
-		if strings.Contains(stderr.String(), "unexpected argument '--label'") {
-			return ErrNoSmolLabel
-		}
+	if err := smolCmd(args...); err != nil {
 		return err
 	}
 	return smolCmd("machine", "start", "--name", name)
