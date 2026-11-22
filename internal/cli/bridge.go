@@ -138,8 +138,7 @@ func vmNotRunning(err error) bool {
 
 // notRunningNotice is attach/shell's one line for a VM still not running
 // when the bridge opens, although the session started it first
-// (bootForSession, hubBootForSession): stopped again meanwhile. No bridge
-// for this session.
+// (bootForSession): stopped again meanwhile. No bridge for this session.
 func (a *App) notRunningNotice(m *config.Machine) {
 	fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable: %s is not running; URLs opened in the guest will be printed there\n", m.Name)
 }
@@ -161,25 +160,6 @@ func noSubscribe() bool {
 // the URL here, and print it on this terminal when no opener can.
 func (a *App) hostOpener() session.SessionOptions {
 	return session.SessionOptions{OnEvent: session.OpenOnHost(a.Stderr, hostbrowser.Open)}
-}
-
-// bridged reports whether attach/shell hold a subscription for m: a
-// local smol VM (Managed: devvm made it, which every smol record is; its
-// daemon's agent exec carries events), a remote box (its daemon runs the
-// agent exec on its own ssh master: browser-bridge.md §1, "Remote"; on an
-// entry only once the agent is there, which bridgeSession checks), or a
-// machine on a hub, through this host's daemon for HUB@NAME, whose relay
-// subscribes on the hub daemon (hub.md §8; the hub refuses a VM it did not
-// create). A hub itself is not a machine.
-func bridged(m *config.Machine) bool {
-	switch {
-	case m.IsHub():
-		return false
-	case m.IsHubMachine(), m.IsRemote():
-		return true
-	default:
-		return m.Managed()
-	}
 }
 
 // shimPinger is the session's ping (*session.Session), asked after a
@@ -230,20 +210,11 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool 
 // (update, ports down/up). Best-effort: without it the shell still opens,
 // and the guest's shim prints the URL instead.
 //
-// For a machine on a hub this is the laptop half of a proxied attach/shell
-// (hub.md §8): subscribed here, acked only once this host's daemon is
-// subscribed on the hub's, before the leaf is proxied with
-// DEVVM_NO_SUBSCRIBE=1, so the first URL the session opens already lands
-// here. The attach waits at most hubBridgeWait for it: past that it goes
-// ahead and the bridge is adopted whenever it comes up.
-//
-// A hub bridge that fails for a reason a retry may cure (a slow or briefly
-// unreachable hub) is retried in the background for bridgeRetryWaits and
-// adopted the same way; the attach itself never waits on a retry.
-// attach/shell start a stopped VM before they get here (bootForSession,
-// hubBootForSession), so a VM still not running gets one line and no
-// bridge. b is only asked whether a smol VM runs (a stopped one gets no
-// daemon), so it may be nil for a hub machine.
+// A machine on a hub never gets here (resolve refuses it): its proxied
+// attach/shell open the bridge with hubBridge. attach/shell start a
+// stopped VM before they get here (bootForSession), so a VM still not
+// running gets one line and no bridge. b is only asked whether a smol VM
+// runs (a stopped one gets no daemon).
 //
 // On a remote box the session spawns the daemon (and its ssh master) if no
 // forward holds one, for the life of the session: it idles out once the
@@ -255,11 +226,7 @@ func (a *App) remoteWithoutAgent(m *config.Machine, s bridgeSub, say bool) bool 
 // gets no push either.
 func (a *App) bridgeSession(m *config.Machine, b backend.Backend) (release func()) {
 	release = func() {}
-	if noSubscribe() || !bridged(m) {
-		return release
-	}
-	if m.IsHubMachine() {
-		release, _ = a.hubBridge(m, nil)
+	if noSubscribe() {
 		return release
 	}
 	if requireRunningForForwards(m, b, 0) != nil {
@@ -334,19 +301,24 @@ func (a *App) remoteBridge(m *config.Machine) (release func()) {
 	}
 }
 
-// hubBridge is bridgeSession for a machine on a hub. The wait is bounded
-// (hubBridgeWait), the setup is not. A cold start (the first attach after
-// a break, when a login is most likely) pays for the laptop and hub
-// daemons either way, so the open finishes in the background and the late
-// session is adopted for the rest of the attach instead of being thrown
-// away. A failed open is retried in the background (bridgeRetryWaits).
+// hubBridge is bridgeSession for a machine on a hub, the laptop half of a
+// proxied attach/shell (hub.md §8): subscribed here, acked only once this
+// host's daemon is subscribed on the hub's, before the leaf is proxied with
+// DEVVM_NO_SUBSCRIBE=1, so the first URL the session opens already lands
+// here. The wait is bounded (hubBridgeWait), the setup is not. A cold
+// start (the first attach after a break, when a login is most likely) pays
+// for the laptop and hub daemons either way, so the open finishes in the
+// background and the late session is adopted for the rest of the attach
+// instead of being thrown away. A failed open a retry may cure (a slow or
+// briefly unreachable hub) is retried in the background (bridgeRetryWaits)
+// and adopted the same way; the attach itself never waits on a retry.
 //
 // The hub's `__session` refuses a VM that is not running. Answered within
-// the wait, boot (when set: proxyInteractive's hubBootForSession) starts
-// it and the bridge is opened once more, so the session that follows is
-// bridged from its first URL; boot's error is the attach's. Refused again
-// after boot (a hub whose start returned before "running"), it is retried
-// in the background. Without boot it is one line and no bridge.
+// the wait, boot (proxyInteractive's hubBootForSession) starts it and the
+// bridge is opened once more, so the session that follows is bridged from
+// its first URL; boot's error is the attach's. Refused again after boot (a
+// hub whose start returned before "running"), it is retried in the
+// background.
 //
 // Whenever an open reaches this host's daemon for the machine (in time,
 // after a boot, late or on a retry), this host's saved forwards for it
@@ -378,15 +350,11 @@ func (a *App) hubBridge(m *config.Machine, boot func() error) (release func(), e
 				return func() { r.s.Close() }, nil
 			}
 			if vmNotRunning(r.err) && !booted {
-				if boot != nil {
-					if err := boot(); err != nil {
-						return release, err
-					}
-					boot, booted = nil, true
-					continue
+				if err := boot(); err != nil {
+					return release, err
 				}
-				a.notRunningNotice(m)
-				return release, nil
+				booted = true
+				continue
 			}
 			if session.BridgeRefusedForGood(r.err) {
 				fmt.Fprintf(a.Stderr, "devvm: browser bridge unavailable (%v); %s\n", r.err, lost)

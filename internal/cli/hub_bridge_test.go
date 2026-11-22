@@ -119,25 +119,6 @@ func TestHubAttachOldHubIsANotice(t *testing.T) {
 	}
 }
 
-// bridged: the machines attach/shell subscribe for.
-func TestBridgedMachines(t *testing.T) {
-	hub := config.NewHub("h", "u@h.example")
-	for _, tc := range []struct {
-		m    *config.Machine
-		want bool
-	}{
-		{managedSmol("web"), true},
-		{&config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: hub}, true},
-		{config.NewRemote("box", "box"), true},
-		{config.NewRemote("box", "box"), true},
-		{hub, false},
-	} {
-		if got := bridged(tc.m); got != tc.want {
-			t.Errorf("bridged(%s %s) = %v", tc.m.Name, tc.m.Backend, got)
-		}
-	}
-}
-
 // A proxied attach waits at most hubBridgeWait for its bridge: past it the
 // attach runs at once with a one-line notice, the open is neither
 // cancelled nor abandoned, and a session that opens after the attach has
@@ -175,8 +156,7 @@ func TestHubAttachAdoptsLateBridge(t *testing.T) {
 	a, errBuf := bridgeApp(t)
 	gate := slowHubBridge(t)
 	late := newSignalBridge()
-	m := &config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: config.NewHub("h", "u@h.example")}
-	release := a.bridgeSession(m, nil)
+	release := openHubBridge(t, a)
 	if !strings.Contains(errBuf.String(), "not up yet") {
 		t.Fatalf("notice = %q", errBuf.String())
 	}
@@ -302,6 +282,17 @@ func hubMachine() *config.Machine {
 	return &config.Machine{Name: "h/web", Backend: config.BackendHub, Hub: config.NewHub("h", "u@h.example")}
 }
 
+// openHubBridge is a proxied attach's hubBridge on hubMachine, with a boot
+// that must not run.
+func openHubBridge(t *testing.T, a *App) (release func()) {
+	t.Helper()
+	release, err := a.hubBridge(hubMachine(), func() error { t.Error("booted"); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return release
+}
+
 // noRetries fails the test if a background retry is ever scheduled.
 func noRetries(t *testing.T) {
 	t.Helper()
@@ -311,23 +302,6 @@ func noRetries(t *testing.T) {
 		return make(chan time.Time)
 	}
 	t.Cleanup(func() { bridgeRetryAfter = oldAfter })
-}
-
-// A bridge open the hub refuses for a VM not running, with nothing to
-// start it (bridgeSession, not a proxied attach): one line, no retry.
-func TestHubAttachStoppedVMIsANotice(t *testing.T) {
-	t.Setenv(backend.NoSubscribeEnv, "")
-	noRetries(t)
-	stopped := errors.New("forward daemon for 'h/web' exited: h/web: the hub's __session ended before it started: devvm: web is not running; start it first ('devvm start web' also brings its forwards up)")
-	opens := scriptedOpens(t, nil, stopped, newSignalBridge())
-	a, errBuf := bridgeApp(t)
-	a.bridgeSession(hubMachine(), nil)()
-	if msg := errBuf.String(); !strings.Contains(msg, "browser bridge unavailable: h/web is not running; URLs opened in the guest will be printed there") {
-		t.Fatalf("notice = %q", msg)
-	}
-	if opens.Load() != 1 {
-		t.Fatalf("opened %d times, want 1", opens.Load())
-	}
 }
 
 // A proxied attach/shell on a VM its hub says is not running: the proxied
@@ -400,7 +374,7 @@ func TestHubAttachLateStoppedVMRetried(t *testing.T) {
 	s := newSignalBridge()
 	opens := scriptedOpens(t, gate, errors.New("h/web: hub: devvm: web is not running; start it first"), s)
 	a, _ := bridgeApp(t)
-	release := a.bridgeSession(hubMachine(), nil)
+	release := openHubBridge(t, a)
 	close(gate)
 	tick <- time.Time{}
 	<-ended
@@ -424,7 +398,7 @@ func TestHubAttachRetriesAfterLateFailure(t *testing.T) {
 	s := newSignalBridge()
 	opens := scriptedOpens(t, gate, errors.New("h/web: the hub's __session did not start within 20s"), s)
 	a, errBuf := bridgeApp(t)
-	release := a.bridgeSession(hubMachine(), nil)
+	release := openHubBridge(t, a)
 	if !strings.Contains(errBuf.String(), "browser bridge to hub h not up yet; URLs opened before it is will print in the guest") {
 		t.Fatalf("notice = %q", errBuf.String())
 	}
@@ -447,7 +421,7 @@ func TestHubAttachRetriesBounded(t *testing.T) {
 	down := errors.New("h/web: hub: connection refused")
 	opens := scriptedOpens(t, nil, down, down, down, down)
 	a, _ := bridgeApp(t)
-	release := a.bridgeSession(hubMachine(), nil)
+	release := openHubBridge(t, a)
 	release()
 	<-ended
 	if opens.Load() != 1 {
@@ -458,7 +432,7 @@ func TestHubAttachRetriesBounded(t *testing.T) {
 	bridgeRetryWaits = []time.Duration{time.Second, time.Second}
 	t.Cleanup(func() { bridgeRetryWaits = oldWaits })
 	opens = scriptedOpens(t, nil, down, down, down, down)
-	release = a.bridgeSession(hubMachine(), nil)
+	release = openHubBridge(t, a)
 	defer release()
 	tick <- time.Time{}
 	tick <- time.Time{}
@@ -481,7 +455,7 @@ func TestHubAttachNoRetryWhenRefusedForGood(t *testing.T) {
 		fb := &fakeBridge{subErr: errors.New(msg)}
 		opens := scriptedOpens(t, nil, fb)
 		a, errBuf := bridgeApp(t)
-		a.bridgeSession(hubMachine(), nil)()
+		openHubBridge(t, a)()
 		if !strings.Contains(errBuf.String(), "browser bridge unavailable ("+msg+"); forwards still work") {
 			t.Errorf("notice = %q", errBuf.String())
 		}
@@ -535,7 +509,7 @@ func TestHubBridgeRetryBringsSavedForwardsUp(t *testing.T) {
 	pushed := observePushes(t)
 	s := newSignalBridge()
 	opens := scriptedOpens(t, nil, &fakeBridge{subErr: errors.New("subscribe timed out")}, s)
-	release := a.bridgeSession(hubMachine(), nil)
+	release := openHubBridge(t, a)
 	waitPushed(t, pushed, "h/web") // the first open's, before any retry
 	if adds := od.requests(session.OpAdd); len(adds) != 1 || adds[0].Guest != 3000 {
 		t.Fatalf("adds = %+v, want 3000 up behind the first open", adds)
