@@ -106,7 +106,7 @@ func cachedHubMachines(paths config.Paths, hub string) []string {
 // and discovery (a stray local ports file names no machine).
 func savedHubPorts(paths config.Paths) []string {
 	var names []string
-	saved, _ := config.SavedPortsNames(paths) // a hint here; the ports verbs report a failed migration
+	saved, _ := config.SavedPortsNames(paths) // a hint here; the ports verbs report a read error
 	for _, n := range saved {
 		if _, _, ok, err := config.SplitHubName(n); ok && err == nil {
 			names = append(names, n)

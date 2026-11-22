@@ -26,6 +26,10 @@ provider's console). An entry is never shaped: devvm connects to it
 thing it may write there beyond `~/.ssh` is its agent, when the entry says
 `agent = true`.
 
+The `smol` backend needs **smolvm 1.35.5 or newer** (devvm relies on how it
+answers a second start and on uncapped `--stream` execs; nothing checks the
+version).
+
 Everything you configure is one file, `~/.config/devvm/devvm.toml`, safe to
 keep in dotfiles: `[templates.*]` (how `create`/`setup` shape a box),
 `[machines.*]` (remote boxes and hubs) and `[providers.*]`:
@@ -208,12 +212,12 @@ binary current.
 
 ```
 cmd/devvm/          host CLI entrypoint
-cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
+cmd/devvm-agent/    guest agent: serve (forwards+events+time) | open-url
 internal/cli/       cobra command tree (+ create's huh form, the `config` noun)
 internal/config/    the devvm.toml loader + its two table edits, templates, host-state paths
 internal/backend/   Backend interface + smol.go + ssh.go (remote boxes and the hop to a hub)
 internal/session/   per-machine forward daemon (owns the one exec) + client
-internal/agentrpc/  yamux stream protocol (forward / rpc / event) shared host+guest
+internal/agentrpc/  yamux stream protocol (forward / event / time) shared host+guest
 internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)
 internal/keys/      authorized_keys logic (dedup / revoke / list), host-side, was awk
 internal/provider/  cloud providers: the Provider interface, Hetzner (plain REST), a fake
@@ -224,7 +228,7 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
 ### The one-exec rule
 
 smolvm (1.16.1, where this was learned) has poor concurrency across separate
-`machine exec` sessions, so every forward, rpc, and browser event for a
+`machine exec` sessions, so every forward, clock sync and browser event for a
 machine rides a *single* persistent `devvm-agent serve` exec, multiplexed
 with yamux. This is why the session daemon
 exists (it owns that exec for the machine's lifetime) and why forwards are yamux

@@ -278,7 +278,7 @@ func TestTTLLeft(t *testing.T) {
 }
 
 // attach/shell on a stopped smol VM start it the way `start` does (smolvm
-// 1.16.1 refuses an exec into a stopped VM; it never boots one) and only
+// refuses an exec into a stopped VM; it never boots one) and only
 // then open the bridge and run their own execs, so the session is bridged.
 func TestAttachStartsStoppedSmol(t *testing.T) {
 	t.Setenv(backend.NoSubscribeEnv, "")

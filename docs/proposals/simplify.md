@@ -325,10 +325,24 @@ its commit message too):
   kept the rest (exit 127, no `setup`, no `--inline-template`: a hub older
   than v0.1.16), so a hub far below the floor still gets one line naming
   `devvm update`.
+- **Post-review cleanup (C1–C13, 2026-11-22).** Deleted what the result no
+  longer used: the session client API `auth` stranded (and `Request.Exact`),
+  `bridged()` and the unreachable hub branch of `bridgeSession`,
+  `Template.Spec`, `ValidUser`, `loginUser`, the pre-owner and pre-state
+  daemon shims, two of three disk defaults, `Backend.Exists`/`Kind` and the
+  unread `State` and status-row fields (`PowerDelete` is now a `Deleter`
+  capability only smol has), createSpec's copied template fields, the
+  one-source discovery framework (now `DiscoverSmol`), the `managed:` line
+  of `status NAME`, the `devvm-template` label, `ErrNoSmolLabel`, the no-op
+  `delete --force`, the agent's `rpc` stream with its old-host and
+  old-agent paths (`ErrNoReply`, `ErrClockUnsupported`), and, with smolvm
+  **1.35.5 as the floor** (ThinkPad answers, item 4), `lockStart`, the
+  `starting` branch and smol cp-out's `/var/tmp` stage + `machine cp` pull:
+  cp-out now streams over `machine exec --stream` on smol as on ssh.
 
 Findings left open (`ROADMAP.md`, Known issues): a daemon started before
 `agent = true` was added keeps its record until it restarts; a smolvm whose
-`create` lacks `--label` is detected only at create; `<State>/managed/` is
+`create` lacks `--label` fails in its own words; `<State>/managed/` is
 left on disk; `~/.devvm/agent.sock` outlives the agent on a remote box; the
 phase 4 Swift changes are uncompiled until CI on macOS.
 

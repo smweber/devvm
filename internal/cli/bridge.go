@@ -41,11 +41,11 @@ var hubBridgeWait = 5 * time.Second
 // stays unreachable is given up on. A var for tests.
 //
 // A VM the hub reported not running only after the attach stopped waiting
-// is retried too: a hub at this version starts it in the hub-side attach
-// (bootForSession; an older hub's attach still fails on a stopped VM), and
-// the retries' exec startups then overlap only that attach's, which smolvm
-// 1.16.1 merely serializes (an exec during a boot waits for it, ~1s;
-// measured on real smol, ROADMAP "Lessons").
+// is retried too: the hub-side attach starts it (bootForSession), and the
+// retries' exec startups then overlap only that attach's boot (on smolvm
+// 1.16.1 an exec during a boot waited for it, ~1s, ROADMAP "Lessons";
+// 1.35.5 refuses one and says to retry once the start finishes, which the
+// retries do).
 var bridgeRetryWaits = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 15 * time.Second}
 
 // bridgeRetryAfter is time.After for the retries; tests swap in a channel

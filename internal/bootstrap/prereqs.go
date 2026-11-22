@@ -80,14 +80,12 @@ grep -qs '^precedence ::ffff:0:0/96  100' /etc/gai.conf || \
     printf 'precedence ::ffff:0:0/96  100\n' >>/etc/gai.conf
 `
 
-// ensureUserScript creates the unprivileged user ($1) devvm works as, with
+// ensureUserScript creates the unprivileged user ($1, always dev) devvm works as, with
 // NOPASSWD sudo, and copies root's authorized_keys over so the client key
 // that reached root keeps working as that user. Runs as root with no sudo
 // wrap: sudo may not be installed yet (a fresh cloud VM, a smol base
 // image), so it installs it here. Idempotent; an existing user keeps its
-// home and keys. The sudoers drop-in is per user (devvm-USER), so a user an
-// earlier setup made (an older devvm wrote /etc/sudoers.d/devvm for dev)
-// keeps its sudo when a template names another.
+// home and keys. The sudoers drop-in is /etc/sudoers.d/devvm-USER.
 const ensureUserScript = `
 set -e
 u="$1"

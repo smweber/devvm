@@ -18,7 +18,9 @@ transport (`ssh.go`). Everything the user writes is one file,
 everything else.** It is a **host CLI** (`cmd/devvm`) plus a **guest agent**
 (`cmd/devvm-agent`) the host installs into a box only when needed (see the
 agent note below). It began as a ~2,100-line bash script; comments often
-explain *why* a behavior exists because it was hard-won there.
+explain *why* a behavior exists because it was hard-won there. smol needs
+**smolvm ≥ 1.35.5** (its start and `--stream` behaviour, below); nothing
+checks the version.
 
 **Backend axes: two, not one enum.** `backend` ∈ {`smol`, `remote`, `hub`,
 `hetzner`} says who owns the registry and lifecycle (smolvm, the file, a hub,
@@ -79,13 +81,13 @@ rule stays: the bridge's one guest socket and the clock sync assume one
 daemon holding one exec.
 
 ssh has no such limit: its forwards are native `ssh -L` on a ControlMaster; only
-rpc/events ride the agent exec. **`authorized_keys` management is host-side**
+events ride the agent exec. **`authorized_keys` management is host-side**
 (`internal/keys` over one plain exec — read, process on the host, atomic
 write-back), so `keys` needs no agent and touches nothing on an entry but
 `~/.ssh`. The agent is pulled in by the forward daemon: on smol it carries
-everything (forwards, rpc, the browser events `attach`/`shell` subscribe
-to); on a box reached over ssh one `devvm-agent serve` exec rides the
-daemon's own ControlMaster for browser events only. Either way it is one
+everything (forwards, the clock's time stream, the browser events
+`attach`/`shell` subscribe to); on a box reached over ssh one `devvm-agent
+serve` exec rides the daemon's own ControlMaster for browser events only. Either way it is one
 exec per daemon and one guest socket (`~/.devvm/agent.sock`).
 
 A machine on a hub is the same rule one host removed: **the laptop never owns an
@@ -109,7 +111,7 @@ daemon for it is a client of that daemon over a relay (see Hubs).
 
 ```
 cmd/devvm/          host CLI entrypoint
-cmd/devvm-agent/    guest agent: serve (forwards+rpc+events) | open-url
+cmd/devvm-agent/    guest agent: serve (forwards+events+time) | open-url
 internal/cli/       cobra command tree + handlers (create's huh form in createform.go;
                     the `config` noun in config_cmd.go; hub proxying in proxy.go +
                     hub*.go; attach/shell's bridge in bridge.go)
@@ -118,12 +120,15 @@ internal/config/    the devvm.toml loader (file.go: [templates.*] + [machines.*]
                     templates, Paths (config vs state dirs), saved forwards
                     (ports.go), [providers.*] (providers.go)
 internal/backend/   Backend interface + smol.go + ssh.go (remote and the hop to a hub)
-                    + hub.go (HUB/NAME: proxy argv, `__session` argv; never spawns)
+                    + hub.go (HUB/NAME: proxy argv, `__session` argv; never spawns);
+                    optional capabilities asserted by the cli (Refresher, RootCopier,
+                    Deleter: only smol's VMs are deleted through a backend);
+                    discovery.go = DiscoverSmol
 internal/session/   per-machine forward daemon (owns the exec) + client + transports
                     (transport_{smol,ssh,hub}.go, transport_ssh_agent.go = a remote
                     box's agent exec); daemon_session.go = sessions and
                     relays; bridge.go = URL classify/bind/deliver (browser bridge)
-internal/agentrpc/  yamux stream protocol (forward/rpc/event), shared host+guest
+internal/agentrpc/  yamux stream protocol (forward/event/time), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
 internal/provider/  cloud providers: Provider interface + hetzner/ (plain REST) + fake/
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
@@ -234,8 +239,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `[machines.NAME]` entry uses it (a remote box never runs smolvm; an entry
   **shadows** a discovered machine of the same name: `shadowed` in
   `--plain`, a `config check` warning, and `create NAME` refuses). Any other
-  name goes to `backend.Discover`, an ordered list of sources, first match
-  wins; smol is the only one: one `smolvm machine ls --json` (existence,
+  name goes to `backend.DiscoverSmol`: one `smolvm machine ls --json` (existence,
   state, sizes, labels, pinned by `backend/testdata`), the row kept on the
   backend (`SmolRow`, so `status -v` needs no guest exec). After that miss,
   resolve asks each `[providers.*]` (Providers, below). A
@@ -247,8 +251,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   shadowing, and a command naming an unlabelled smol VM says in one line
   that devvm did not create it and how to label it (one more `ls`, on that
   failure path only); `create X` refuses the name. No host file says who
-  made a VM, and devvm reads no `created_at`. A smolvm whose `create` has no
-  `--label` is told from its own stderr, at create only (`ErrNoSmolLabel`).
+  made a VM, and devvm reads no `created_at`.
   The daemon re-settles through `backend.Refresher` before every dial, first
   included, on a copy of the record: "still listed with the label". A VM
   gone or recreated without it reads as not running, so it is never dialled
@@ -279,7 +282,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Providers** (`providers.md`, `cli/providers.go`): no entry; resolve asks each `[providers.*]` (one Get) only after entry+smol miss and with a token
   (`<State>/providers/NAME.token` via `providers token`; `HCLOUD_TOKEN` wins). `status` reads `cache/provider-NAME.list`, written only by the
   live round (one-shot `status`, `__refresh`); `--local` skips providers; daemon, `__session`, completion and `config rm` read the cache only (no API, no token). Lifecycle (`cli/providers_lifecycle.go`):
-  `create --backend hetzner` refuses everything before Create (name, collisions, key), labels the server `devvm=true`, then hands it to `shape` unchanged (never deletes it on failure);
+  `create --backend hetzner` refuses everything before Create (name, collisions, key), labels the server `devvm=true` (its only label), then hands it to `shape` unchanged (never deletes it on failure);
   `delete`/`start`/`stop` act on the row resolve just fetched, merge the answer into the cache; `stop` warns it still bills. Labelled servers only: resolve's Get ignores an unlabelled server, and the cache keeps labelled rows; the live round's one List is unfiltered and counts the rest (`unlabelled=N` in the cache), so a one-shot human `status` ends with one line naming that count (a billing server that lost its label is still noticed). Adding the label by hand is the only promotion. `forgetHostState` drops the address pin too.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
@@ -384,7 +387,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   come back as such: `auth` (a login is typed inside `attach`, below),
   `repos` (a template's `repos` are setup's last step; anything else is `git
   clone` in the box), `lockdown` (setup's harden step), `setup --adopt`,
-  `setup --host`, `config add --managed`, `ports add --ephemeral`.
+  `setup --host`, `config add --managed`, `ports add --ephemeral`; and by
+  the post-review cleanup, the hidden no-op `delete --force`.
 - **Keys**: `internal/keys` is pure text logic (SHA256 fingerprint computed in-Go,
   matches `ssh-keygen`). It runs **host-side** — read `~/.ssh/authorized_keys`,
   process on the host, write back atomically (`umask 077` + temp + `mv`, content
@@ -425,10 +429,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   then adopts a late one, retrying failures in the background (a refusal for
   good excepted). attach/shell on a stopped VM **start it first**, as
   `start` does (`bootForSession`; smolvm's `machine exec` refuses a stopped
-  VM, it never boots one; this host's starts of one VM hold `lockStart`,
-  since on 1.16.1 a second `machine start` killed an in-flight boot that
-  still listed as `stopped`: 1.35.5 answers "already running" instead, and
-  the lock is kept as harmless), then open the bridge: on a hub, a
+  VM, it never boots one; no lock: smolvm 1.35.5 lists a booting VM as
+  `unreachable` and answers a second `machine start` "already running",
+  rc 0, without disturbing the boot, so two starts both wait for
+  "running"), then open the bridge: on a hub, a
   `__session` refusal for a VM not running within the 5s makes the laptop
   proxy `start NAME` (no `-t`) and open once more (`hubBootForSession`);
   past the 5s the retry adopts it once the hub-side attach has started it.
@@ -574,12 +578,12 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   successor socket can share dev+ino with the one just unlinked.
 - **cp**: the upload archive is built in Go (no host tar, no xattr pax headers);
   the guest needs only a busybox-compatible `tar` (no `--no-same-owner`, no
-  `realpath`). Staging is `/var/tmp` (`/tmp` was tmpfs-shadowed under
-  `machine cp` on smolvm 1.16.1; not on 1.35.5, and `/var/tmp` still works);
-  smol cp-out stages its tar there too and pulls it with `machine cp`
-  (`backend.Downloader`), because smolvm caps a plain exec's stdout at 11 MiB
-  (1.35.5 fails past it with an explicit error; `-i`/`--stream` execs are
-  not capped).
+  `realpath`). cp-in stages in `/var/tmp` (`/tmp` was tmpfs-shadowed under
+  `machine cp` on smolvm 1.16.1; not on 1.35.5, and `/var/tmp` still works).
+  cp-out streams the guest's tar over exec stdout on every backend: on smol
+  a `machine exec --stream` (no tty, so byte-clean), because smolvm caps a
+  plain exec's stdout at 11 MiB (1.35.5 fails past it with an explicit
+  error) and does not cap a `--stream` or `-i` one.
   Extraction guards for cp-out live in `cp_tar.go` and are tested with
   hostile archives — keep them all-or-nothing. cp-in/cp-out run under
   `interruptible`: a signal kills the host command via the context, the

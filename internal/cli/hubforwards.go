@@ -149,7 +149,7 @@ func (a *App) stillThere(m *config.Machine) bool {
 
 // dialForwards dials the machine's forward daemon. A hub machine's daemon
 // may fail to come up for a moment right after `start HUB/NAME` (smolvm on
-// the hub can still say "starting", so its __session refuses); with wait
+// the hub can still list it as booting, so its __session refuses); with wait
 // > 0 that is retried until wait elapses. Dial fails fast when the daemon
 // exits early, so a retry costs about one ssh round trip.
 func (a *App) dialForwards(m *config.Machine, wait time.Duration) (*session.Client, error) {
@@ -171,7 +171,7 @@ func (a *App) startHubMachine(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// proxy resolved the hub's entry already; tunnelUpWait waits out a hub
-	// whose smolvm still says "starting" (dialForwards).
+	// whose smolvm still lists the VM as booting (dialForwards).
 	if saved, err := a.savedPorts(args[0]); err != nil || len(saved) == 0 {
 		return err
 	}

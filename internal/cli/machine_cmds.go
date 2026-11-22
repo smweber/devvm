@@ -103,7 +103,7 @@ func (a *App) interactive(name, transport string) (*config.Machine, backend.Inte
 // bootForSession is attach/shell on a stopped smol VM: `start` first (wait
 // for "running"), and only then the bridge, which brings the saved
 // forwards up behind it as on any connect (pushSaved), and the session's
-// own execs. smolvm 1.16.1's `machine exec` refuses a stopped VM rather
+// own execs. smolvm's `machine exec` refuses a stopped VM rather
 // than booting it, so the session would fail outright (attach as "tmux not
 // found"); started here, the VM is running when the bridge opens, so the
 // session is bridged like any other, and no daemon exec ever starts
@@ -157,7 +157,7 @@ func (a *App) runStart(name string) error {
 		return err
 	}
 	if len(saved) > 0 {
-		return a.tunnelUpWait(name, runningPollTimeout) // smolvm may still say "starting"
+		return a.tunnelUpWait(name, runningPollTimeout) // smolvm may still list it as booting
 	}
 	return nil
 }

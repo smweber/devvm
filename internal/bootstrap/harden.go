@@ -87,7 +87,7 @@ func Harden(ctx context.Context, b backend.Backend, m *config.Machine, withFail2
 	}
 	port := m.SSHPort
 	if port == 0 {
-		port = 22 // no port in the entry's host: the ssh default
+		port = 22 // the ssh default (a provider record says 22)
 	}
 	script := fmt.Sprintf("SSH_PORT=%d\nWANT_FAIL2BAN=%s\n%s", port, fail2ban, hardenBody)
 	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true}, "bash", "-c", script, "_", user)

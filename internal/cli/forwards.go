@@ -405,12 +405,12 @@ func plural(n int, one, many string) string {
 }
 
 // tunnelUp brings up every configured forward for the machine (used by
-// `tunnel up` and `start`).
+// `ports up` and `start`).
 func (a *App) tunnelUp(name string) error { return a.tunnelUpWait(name, 0) }
 
 // tunnelUpWait is tunnelUp with a bound on how long to wait for a smol VM
 // to report running. `start` passes runningPollTimeout because smolvm can
-// return from `machine start` while the state is still "starting"; `ports
+// return from `machine start` while the VM still lists as booting; `ports
 // up` passes 0 so a deliberately stopped VM fails fast instead of stalling
 // ten seconds on forty `smolvm machine ls` calls.
 func (a *App) tunnelUpWait(name string, wait time.Duration) error {
@@ -462,13 +462,15 @@ func (a *App) tunnelUpWait(name string, wait time.Duration) error {
 
 // requireRunningForForwards refuses to spawn a forward daemon for a stopped
 // smol VM. resolve only checks the VM exists; the daemon's first
-// transport would exec into the machine, and smolvm's exec may boot one the
-// user deliberately stopped. (The daemon guards its reconnect dials the same
-// way; this catches the initial dial before a daemon exists.)
+// transport would exec into the machine, which smolvm refuses for a stopped
+// VM, so the daemon would only fail and redial. (The daemon guards its
+// reconnect dials the same way; this catches the initial dial before a
+// daemon exists.)
 //
 // With wait > 0 it polls: `devvm start` calls tunnelUp right after `smolvm
-// machine start` returns, and smolvm can still report the box as starting for
-// a moment. Failing there would tell the user to start a VM they just started.
+// machine start` returns, and smolvm can still list the box as booting
+// (1.35.5: "unreachable") for a moment. Failing there would tell the user
+// to start a VM they just started.
 // `ports add`/`ports up` pass 0 so a deliberately stopped VM answers at once.
 func requireRunningForForwards(m *config.Machine, b backend.Backend, wait time.Duration) error {
 	if m.IsRemote() {

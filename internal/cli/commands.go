@@ -240,34 +240,33 @@ func (a *App) statusCmd() *cobra.Command {
 		Use:   "status [NAME]",
 		Short: "Machine status, grouped by backend; no NAME lists all machines",
 		Long: "Show machine status. Without NAME, lists every machine grouped by backend\n" +
-			"(smol, remote, hub)\n" +
-			"with a live forward count. -v adds a lifecycle track, live smol resource\n" +
-			"sizes, and per-machine forward detail. With NAME, always shows full detail.\n" +
+			"(smol, remote, hub, hetzner) with a live forward count. -v adds a lifecycle\n" +
+			"track, live smol resource sizes, and per-machine forward detail. With NAME,\n" +
+			"always shows full detail.\n" +
 			"A remote box is probed first (a live ssh master, else a TCP connect: never a\n" +
 			"login) and is reachable, unreachable, or ? when never probed or behind a\n" +
 			"ProxyJump; -v says when and how it was last reached.\n" +
-			"Machines on a hub are listed as HUB/NAME with the state the hub reports\n" +
-			"(each hub is asked in parallel, with a short timeout; a hub that does not\n" +
-			"answer shows its last listing as 'unreachable'). --local lists this host\n" +
-			"only: no hub is read or dialed, and remote boxes show their last probe.\n" +
+			"Machines on a hub are listed as HUB/NAME with the state the hub reports (each\n" +
+			"hub is asked in parallel, with a short timeout; a hub that does not answer\n" +
+			"shows its last listing as 'unreachable'). --local lists this host only: no hub\n" +
+			"is read or dialed, and remote boxes show their last probe.\n" +
 			"--plain emits one tab-separated\n" +
-			"'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed<TAB>verified' row per machine (no\n" +
-			"headers or grouping) for scripts: backend is smol, remote or hub; state is\n" +
-			"one of running, stopped, reachable, unreachable or ?; forwards is up:N,\n" +
-			"reconnecting:N, down (ports configured, no daemon) or - (none configured);\n" +
-			"managed is managed (a smol VM or server devvm made; one it did not make is\n" +
-			"not listed), shadowed (a devvm.toml entry hiding a local smol VM of the same\n" +
-			"name) or - (entries, hubs, and machines on a hub too old to say); verified\n" +
-			"is verified=<unix>:<how> or verified=- for a remote box, - otherwise.\n" +
-			"Consumers should treat any other token as unknown. A devvm.toml that does\n" +
-			"not parse fails status (non-zero); under --watch it pauses the stream until\n" +
-			"the file parses again.\n" +
+			"'name<TAB>backend<TAB>state<TAB>forwards<TAB>managed<TAB>verified' row per\n" +
+			"machine (no headers or grouping) for scripts: backend is smol, remote, hub or\n" +
+			"hetzner; state is one of running, stopped, starting, stopping, reachable,\n" +
+			"unreachable, broken conf or ?; forwards is up:N, reconnecting:N, down (ports\n" +
+			"configured, no daemon) or - (none configured); managed is managed (a smol VM\n" +
+			"or server devvm made; one it did not make is not listed), shadowed (a\n" +
+			"devvm.toml entry hiding a local smol VM of the same name) or - (entries, hubs,\n" +
+			"and machines on a hub too old to say); verified is verified=<unix>:<how> or\n" +
+			"verified=- for a remote box, - otherwise. Consumers should treat any other\n" +
+			"token as unknown. A devvm.toml that does not parse fails status (non-zero);\n" +
+			"under --watch it pauses the stream until the file parses again.\n" +
 			"--plain --watch keeps running and re-emits the whole listing, blank-line\n" +
-			"separated, whenever devvm changes a machine's state or a hub reports one\n" +
-			"(no polling; remote boxes are probed at start and on 'devvm __refresh').\n" +
-			"Changes made behind devvm's back — 'smolvm machine stop' run\n" +
-			"directly, a VM crash — are not observed; re-run a plain status on demand\n" +
-			"for those.",
+			"separated, whenever devvm changes a machine's state or a hub reports one (no\n" +
+			"polling; remote boxes are probed at start and on 'devvm __refresh'). Changes\n" +
+			"made behind devvm's back — 'smolvm machine stop' run directly, a VM crash —\n" +
+			"are not observed; re-run a plain status on demand for those.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if watch && !plain {

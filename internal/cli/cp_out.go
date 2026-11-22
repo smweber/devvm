@@ -33,8 +33,8 @@ func (a *App) cpOutCmd() *cobra.Command {
 			"  devvm cp-out -f myvm notes.txt                # overwrite ./notes.txt",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// A signal mid-copy unwinds through the cleanup (the spool,
-			// the guest stage) instead of killing devvm on the spot.
+			// A signal mid-copy unwinds through the cleanup (the spool)
+			// instead of killing devvm on the spot.
 			return interruptible(cmd.Context(), func(ctx context.Context) error {
 				if cmd.Flags().Changed(toTarFlag) { // Changed, so `--to-tar=` is refused, not the normal path
 					return a.runCopyOutToTar(ctx, toTar, args, target, o)

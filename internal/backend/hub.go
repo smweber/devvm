@@ -35,7 +35,7 @@ type hubBackend struct {
 // ErrHubProxy is returned by hub-machine ops the laptop does not serve
 // through the Backend interface: Copy (see there), and any leaf that
 // neither proxies nor runs on this host (resolve's guard).
-var ErrHubProxy = errors.New("hub machines are not supported by this command yet")
+var ErrHubProxy = errors.New("hub machines are not supported by this command")
 
 // Proxier is the hub-machine backend's proxy surface, which the cli's
 // dispatch uses without knowing the ssh details. argv is the devvm command

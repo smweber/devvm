@@ -42,7 +42,7 @@ const (
 type statusRow struct {
 	name        string
 	backend     string
-	state       string // running | stopped | reachable | unreachable | ? (an older hub may send others)
+	state       string // running | stopped | starting | stopping | reachable | unreachable | ? (a hub's rows as it sent them)
 	hub         string // the hub this row belongs to (its own row included); "" for a local machine
 	mem         int    // MiB (smol: smolvm's own record)
 	disk        int    // GiB (smol: smolvm's own record)
@@ -173,7 +173,7 @@ func (a *App) providerSourceLines(local bool) map[string]string {
 // scraping the human-formatted table. The token sets are the format's
 // contract:
 //
-//	state:    running | stopped | reachable | unreachable | ?
+//	state:    running | stopped | starting | stopping | reachable | unreachable | broken conf | ?
 //	forwards: up:N | reconnecting:N | down | -
 //	managed:  managed | shadowed | -
 //	verified: verified=<unix>:<how> | verified=- | -

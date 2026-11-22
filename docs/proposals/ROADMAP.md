@@ -15,6 +15,7 @@ and carry "as shipped" notes where the code departed from them.
 | ssh agent exec for remote boxes | `browser-bridge.md` §1, §5, §6 | v0.1.19 |
 | Menu bar relaunch fix | Lessons below | v0.1.20 |
 | Simplify (phases 0–5, steps 1–18) | `simplify.md` v1.3 (implemented, "As shipped") | v0.2.0 |
+| Post-review cleanup C1–C13 | `simplify.md` "As shipped" | done 2026-11-22 (ThinkPad: 250 MiB stream cp-out, concurrent starts, hub; both sides v0.2.0) |
 
 The long form (per-step live-test lists, "what shipped differently" notes)
 is in git history before the commit "docs/proposals: ROADMAP trimmed to a
@@ -194,8 +195,8 @@ Cosmetic or accepted:
 - A daemon started before `agent = true` was added to an entry keeps the
   record it captured until it restarts (`ports down`, end the attach): the
   key counts from the next start.
-- A smolvm whose `machine create` has no `--label` is detected only at
-  `create` (its own stderr, `ErrNoSmolLabel`), not by a version probe.
+- A smolvm older than 1.35.5 is not detected (no version probe): one whose
+  `machine create` has no `--label` fails `create` in its own words.
 - `<State>/managed/` (the markers before phase 4) is left on disk, unread.
 - `~/.devvm/agent.sock` outlives the agent on a remote box (the exec dies,
   the socket file stays until the next agent rebinds it).
@@ -214,12 +215,12 @@ Cosmetic or accepted:
   never started lists `created`; a second `machine start` during a boot
   answers "already running" and no longer kills the first (on 1.16.1 a
   booting VM listed `stopped` and the second start killed it, which is why
-  this host's starts are serialized by `lockStart`: now redundant, kept as
-  harmless). `/tmp` is not tmpfs-shadowed under `machine cp` (staging in
+  this host's starts were serialized by `lockStart`, dropped in the
+  post-review cleanup with 1.35.5 as the floor). `/tmp` is not tmpfs-shadowed under `machine cp` (staging in
   `/var/tmp` still works). Parallel execs are fine (30 short, 25
   concurrent 8 MiB `-i` streams). A plain exec's stdout is still capped at
   11534336 bytes, now with an explicit error; `-i` and `--stream` execs are
-  not capped. stdin on a one-shot `exec -i` arrives whole and EOF reaches
+  not capped (so smol cp-out streams over `--stream`). stdin on a one-shot `exec -i` arrives whole and EOF reaches
   the guest when the host closes the pipe. `machine update --label` works
   on a running VM (not in 1.16.1). Stop every VM before upgrading smolvm.
 - **A login bash at SHLVL=1 with `set -e` turns any `exit N` into 1**

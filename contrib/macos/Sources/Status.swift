@@ -23,12 +23,12 @@ import Foundation
 struct Machine {
     let name: String
     let backend: String
-    let state: String    // running | stopped | reachable | unreachable | broken conf | ?
+    let state: String    // running | stopped | starting | stopping | reachable | unreachable | broken conf | ?
     let forwards: String // up:N | reconnecting:N | down | -
 
     /// A cloud provider's server (backend `hetzner`), discovered from its
-    /// API. Start/stop/delete on one come later in the CLI, so the app
-    /// offers none yet.
+    /// API. The app offers no start/stop/delete for one: those are the
+    /// CLI's (`devvm start`/`stop`/`delete`).
     var isProvider: Bool { backend == "hetzner" }
 
     /// A hub's own row: a host machines live on, not a machine. Never a
