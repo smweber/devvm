@@ -413,7 +413,7 @@ func TestProviderStatusRows(t *testing.T) {
 	if err := runTree(t, a, "status", "off"); err != nil {
 		t.Fatal(err)
 	}
-	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "off (hetzner)") || !strings.Contains(out, "managed: yes") || !strings.Contains(out, "still billed") {
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "off (hetzner)") || !strings.Contains(out, "still billed") {
 		t.Errorf("status off:\n%s", out)
 	}
 }

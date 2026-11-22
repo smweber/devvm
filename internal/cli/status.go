@@ -733,7 +733,7 @@ func (a *App) forwardSummary(name string) fwdSummary {
 }
 
 // runStatus is the single-machine drill-in: always detailed (state, lifecycle,
-// smolvm's sizes and ownership for smol, and live forwards).
+// smolvm's sizes for smol, and live forwards).
 func (a *App) runStatus(name string) error {
 	m, b, err := a.resolveAny(name) // a hub and a hub machine both have a status
 	if err != nil {
@@ -743,15 +743,14 @@ func (a *App) runStatus(name string) error {
 		return a.runStatusHubMachine(m)
 	}
 	if sm, ok := backend.SmolRow(b); ok {
-		// The row resolve already listed: state, sizes and ownership with no
-		// second `smolvm machine ls`, and no guest exec (a stopped VM has
-		// sizes too).
+		// The row resolve already listed: state and sizes with no second
+		// `smolvm machine ls`, and no guest exec (a stopped VM has sizes
+		// too).
 		fmt.Fprintf(a.Stdout, "%s (%s)\n", m.Name, m.Backend)
 		fmt.Fprintf(a.Stdout, "  lifecycle: %s\n", lifecycleTrack(smolLifecycle, smolStateLabel(sm)))
 		fmt.Fprintf(a.Stdout, "  resources: %d CPUs, %s RAM, %s disk\n", sm.CPUs, memHuman(sm.MemoryMiB), diskHuman(sm.StorageGB))
-		fmt.Fprintln(a.Stdout, "  managed: yes (created by devvm: the devvm=true label)")
 	} else {
-		// A entry: no smolvm call (a shadowed VM shows in the
+		// An entry or a provider server: no smolvm call (a shadowed VM shows in the
 		// listing's fifth column, not here).
 		st, err := b.Status()
 		if err != nil {
@@ -766,13 +765,6 @@ func (a *App) runStatus(name string) error {
 				fmt.Fprintf(a.Stdout, "  billing: stopped but still billed by %s\n", providerTitle(m.Backend))
 			}
 			fmt.Fprintf(a.Stdout, "  contact: %s\n", providerContact(reach.Read(a.Paths, m.Name)))
-		}
-		switch {
-		case m.IsHub():
-		case m.IsProvider():
-			fmt.Fprintln(a.Stdout, "  managed: yes (the devvm=true label: devvm shapes it)")
-		default:
-			fmt.Fprintln(a.Stdout, "  managed: no (an entry: devvm only connects to it)")
 		}
 	}
 	a.forwardReport(name)
