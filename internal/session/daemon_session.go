@@ -202,7 +202,7 @@ func (d *daemon) serveSession(conn net.Conn, br *bufio.Reader, open Request) {
 func (d *daemon) sessionDispatch(s *sess, req Request) Response {
 	switch req.Op {
 	case OpAdd:
-		host, bumped, pending, err := d.add(req.Host, req.Guest, req.Exact, connOwner(s.id))
+		host, bumped, pending, err := d.add(req.Host, req.Guest, false, connOwner(s.id))
 		if err != nil {
 			return Response{Err: err.Error()}
 		}

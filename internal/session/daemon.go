@@ -1587,7 +1587,7 @@ func (d *daemon) handleConn(conn net.Conn) {
 func (d *daemon) dispatch(req Request) Response {
 	switch req.Op {
 	case OpAdd:
-		host, bumped, pending, err := d.add(req.Host, req.Guest, req.Exact, confOwner)
+		host, bumped, pending, err := d.add(req.Host, req.Guest, false, confOwner)
 		if err != nil {
 			return Response{Err: err.Error()}
 		}

@@ -440,7 +440,7 @@ func TestRelayClosedOnTransportDeathLocalSurvives(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { local.Close() })
-	if _, _, _, err := local.Add(farPort(t), gLocal, false); err != nil {
+	if _, err := sessAdd(local, farPort(t), gLocal); err != nil {
 		t.Fatal(err)
 	}
 	l := newLaptopRig(t, h, false)
@@ -471,7 +471,7 @@ func TestRelayClosedOnTransportDeathLocalSurvives(t *testing.T) {
 	}
 	// The local session is the same connection, never reconnected: it can
 	// still add.
-	if _, _, _, err := local.Add(farPort(t), gRelay, false); err != nil {
+	if _, err := sessAdd(local, farPort(t), gRelay); err != nil {
 		t.Errorf("local session after the hub's reconnect: %v", err)
 	}
 }

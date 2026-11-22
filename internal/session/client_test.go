@@ -59,7 +59,7 @@ func TestClientDaemonRoundTrip(t *testing.T) {
 	if fwds, err := cl.List(); err != nil || len(fwds) != 1 {
 		t.Fatalf("List = %v err=%v", fwds, err)
 	}
-	if err := cl.Remove(guest); err != nil {
+	if _, err := cl.RemoveOwner(guest, OwnerConf); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if fwds, _ := cl.List(); len(fwds) != 0 {

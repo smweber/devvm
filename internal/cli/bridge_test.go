@@ -499,7 +499,7 @@ func TestAttachStoppedSmolPushesSavedForwards(t *testing.T) {
 	}
 	waitPushed(t, pushed, "web")
 	adds := od.requests(session.OpAdd)
-	if len(adds) != 2 || adds[0].Host != 3000 || adds[0].Guest != 3000 || adds[1].Host != 8080 || adds[1].Guest != 80 || adds[0].Exact {
+	if len(adds) != 2 || adds[0].Host != 3000 || adds[0].Guest != 3000 || adds[1].Host != 8080 || adds[1].Guest != 80 {
 		t.Errorf("adds = %+v, want 3000 then 8080:80", adds)
 	}
 	if out := a.Stdout.(*bytes.Buffer).String() + a.Stderr.(*bytes.Buffer).String(); strings.Contains(out, "forward") {

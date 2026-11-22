@@ -52,6 +52,25 @@ func testSession(t *testing.T, dir config.Paths, opts SessionOptions) *Session {
 	return s
 }
 
+// sessAdd adds a forward owned by s's connection, as the hub relay's adds
+// are (transport_hub.go).
+func sessAdd(s *Session, pref, guest int) (host int, err error) {
+	sc := s.current()
+	if sc == nil {
+		return 0, ErrSessionDown
+	}
+	resp, err := sc.call(Request{Op: OpAdd, Host: pref, Guest: guest})
+	return resp.Host, err
+}
+
+// unsubscribe stops events reaching s, as the hub relay's unsubscribe does.
+func unsubscribe(t *testing.T, s *Session) {
+	t.Helper()
+	if _, err := s.current().call(Request{Op: OpUnsubscribe}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // named is an OnEvent handler that answers with a fixed name, so a test can
 // tell which subscriber got an event.
 func named(name string) func(json.RawMessage) json.RawMessage {
@@ -155,7 +174,7 @@ func TestDownWithSessionLeavesDaemon(t *testing.T) {
 	if _, _, _, err := (&Client{paths: dir, name: "t"}).Add(p1, g1); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := s.Add(p2, g2, false); err != nil {
+	if _, err := sessAdd(s, p2, g2); err != nil {
 		t.Fatal(err)
 	}
 	r := d.dispatch(Request{Op: OpDown})
@@ -275,9 +294,7 @@ func TestSubscribeOrder(t *testing.T) {
 	if got := deliverTo(t, d); got != "C" {
 		t.Fatalf("after A disconnected: got %s, want C", got)
 	}
-	if err := sc.Unsubscribe(); err != nil {
-		t.Fatal(err)
-	}
+	unsubscribe(t, sc)
 	if got := deliverTo(t, d); got != "B" {
 		t.Fatalf("after C unsubscribed: got %s, want B", got)
 	}
@@ -294,7 +311,7 @@ func TestSessionEventAndAddInterleave(t *testing.T) {
 	pref := freePort(t)
 	var s *Session
 	s = testSession(t, dir, SessionOptions{OnEvent: func(json.RawMessage) json.RawMessage {
-		host, _, _, err := s.Add(pref, guest, false)
+		host, err := sessAdd(s, pref, guest)
 		if err != nil {
 			return json.RawMessage(strconv.Quote(err.Error()))
 		}
@@ -418,7 +435,7 @@ func TestTransportDeathKeepsSessions(t *testing.T) {
 	d.dial = func() (transport, error) { return second, nil }
 	s := testSession(t, dir, SessionOptions{})
 	pref := freePort(t)
-	if _, _, _, err := s.Add(pref, guest, false); err != nil {
+	if _, err := sessAdd(s, pref, guest); err != nil {
 		t.Fatal(err)
 	}
 	states := recordStates(d)

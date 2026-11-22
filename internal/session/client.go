@@ -233,13 +233,6 @@ func (c *Client) Add(pref, guest int) (host int, bumped, pending bool, err error
 	return resp.Host, resp.Bumped, resp.Pending, nil
 }
 
-// Remove drops the conf owner of a guest port's forward (`ports rm` on a
-// configured mapping); the forward goes when no other owner holds it.
-func (c *Client) Remove(guest int) error {
-	_, err := c.RemoveOwner(guest, OwnerConf)
-	return err
-}
-
 // RemoveOwner drops one owner (OwnerConf or OwnerTTL) of a guest port's
 // forward. left is the forward as it stands afterwards if another owner
 // still holds it, nil if it is gone (or never existed). A daemon older than
@@ -339,20 +332,6 @@ func (c *Client) Kick() error {
 func (c *Client) List() ([]Forward, error) {
 	st, err := c.Status()
 	return st.Forwards, err
-}
-
-// Shim is the BROWSER shim path the daemon reports on ping (Session.Ping),
-// for a caller that must not hold a session: a one-shot ping of a daemon
-// that is already up.
-func (c *Client) Shim() (string, error) {
-	resp, err := c.request(Request{Op: OpPing})
-	if err != nil {
-		return "", err
-	}
-	if !resp.OK {
-		return "", errors.New(resp.Err)
-	}
-	return resp.Shim, nil
 }
 
 // Stop asks the daemon to exit (reaping all forwards).

@@ -263,9 +263,7 @@ func TestSubscriberHook(t *testing.T) {
 	if err := b.Subscribe(); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Unsubscribe(); err != nil {
-		t.Fatal(err)
-	}
+	unsubscribe(t, a)
 	if got := tr.calls(); got != "sub,sub" {
 		t.Fatalf("a subscriber left while another remains: %q", got)
 	}
@@ -339,9 +337,7 @@ func TestSubscriberHookLateAnswerOrdered(t *testing.T) {
 	if err := a.Subscribe(); err == nil {
 		t.Fatal("a wedged upstream subscribe was acked as done")
 	}
-	if err := a.Unsubscribe(); err != nil {
-		t.Fatal(err)
-	}
+	unsubscribe(t, a)
 	if got := tr.calls(); got != "" {
 		t.Fatalf("an unsubscribe was sent past the call still in flight: %q", got)
 	}

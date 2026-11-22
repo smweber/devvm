@@ -31,9 +31,6 @@ type Request struct {
 	Op    string `json:"op,omitempty"`    // add | remove | list | ping | kick | stop | down | session | subscribe | unsubscribe
 	Host  int    `json:"host,omitempty"`  // preferred host port (add)
 	Guest int    `json:"guest,omitempty"` // guest port (add/remove)
-	// Exact (add): the host port may not bump, now or on any later restore;
-	// a busy port fails the add instead. Sticky on the forward once set.
-	Exact bool `json:"exact,omitempty"`
 	// Owner (one-shot remove): which owner to drop, OwnerConf (the default)
 	// or OwnerTTL. A connection owner is dropped only by its own session.
 	Owner string `json:"owner,omitempty"`

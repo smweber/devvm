@@ -414,6 +414,12 @@ func TestHubTooOldForBrowserOpens(t *testing.T) {
 	}
 }
 
+// pingShim is the shim a one-shot ping reports.
+func pingShim(c *Client) (string, error) {
+	resp, err := c.request(Request{Op: OpPing})
+	return resp.Shim, err
+}
+
 // The daemon reports its transport's shim on ping and on the session open
 // (what a relay learns it from); a transport without one reports none.
 func TestPingReportsShim(t *testing.T) {
@@ -423,7 +429,7 @@ func TestPingReportsShim(t *testing.T) {
 	d.tr.(*fakeTransport).shim = testShim
 	d.mu.Unlock()
 	cl := &Client{paths: dir, name: "t"}
-	if shim, err := cl.Shim(); err != nil || shim != testShim {
+	if shim, err := pingShim(cl); err != nil || shim != testShim {
 		t.Fatalf("one-shot ping shim = %q, %v", shim, err)
 	}
 	d.mu.Lock()
@@ -436,7 +442,7 @@ func TestPingReportsShim(t *testing.T) {
 	d.mu.Lock()
 	d.tr.(*fakeTransport).shim = ""
 	d.mu.Unlock()
-	if shim, err := cl.Shim(); err != nil || shim != "" {
+	if shim, err := pingShim(cl); err != nil || shim != "" {
 		t.Fatalf("no shim: %q, %v", shim, err)
 	}
 }

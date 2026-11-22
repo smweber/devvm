@@ -229,22 +229,6 @@ func (s *Session) Subscribe() error {
 	return err
 }
 
-// Unsubscribe stops events reaching this session (they fall through to the
-// next most recent subscriber) and stops re-subscribing on reconnect.
-func (s *Session) Unsubscribe() error {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
-	s.mu.Lock()
-	s.subscribed = false
-	s.mu.Unlock()
-	sc := s.current()
-	if sc == nil {
-		return nil // the next connection starts unsubscribed
-	}
-	_, err := sc.call(Request{Op: OpUnsubscribe})
-	return err
-}
-
 // PingInfo is what a ping says about the daemon: its state and the guest
 // path of the BROWSER shim its transport installed (for a hub machine, the
 // one the hub reported). Shim is "" when the transport carries no events
@@ -266,31 +250,6 @@ func (s *Session) Ping() (PingInfo, error) {
 	}
 	resp, err := sc.call(Request{Op: OpPing})
 	return PingInfo{State: resp.State, Shim: resp.Shim}, err
-}
-
-// Add brings up a forward owned by this session's connection: it lives
-// until Remove or until the connection closes. exact refuses a busy port
-// instead of bumping (and keeps it from bumping on any later restore).
-func (s *Session) Add(pref, guest int, exact bool) (host int, bumped, pending bool, err error) {
-	sc := s.current()
-	if sc == nil {
-		return 0, false, false, ErrSessionDown
-	}
-	resp, err := sc.call(Request{Op: OpAdd, Host: pref, Guest: guest, Exact: exact})
-	if err != nil {
-		return 0, false, false, err
-	}
-	return resp.Host, resp.Bumped, resp.Pending, nil
-}
-
-// Remove drops this connection's ownership of a guest port's forward.
-func (s *Session) Remove(guest int) error {
-	sc := s.current()
-	if sc == nil {
-		return ErrSessionDown
-	}
-	_, err := sc.call(Request{Op: OpRemove, Guest: guest})
-	return err
 }
 
 // Close ends the session for good: no reconnect, and the daemon drops the
