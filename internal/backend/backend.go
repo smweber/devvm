@@ -34,7 +34,7 @@ type ExecOpts struct {
 	Login     bool              // wrap argv in `bash -lc` so the user's env/PATH is present
 	User      string            // guest user; "" -> DefaultUser, or "root"
 	Env       map[string]string // extra environment for the guest command
-	Stdin     io.Reader         // default os.Stdin
+	Stdin     io.Reader         // nil: this process's stdin (the terminal) on ssh, nothing on smol; set: smol passes -i (execArgv)
 	Stdout    io.Writer         // default os.Stdout
 	Stderr    io.Writer         // default os.Stderr
 

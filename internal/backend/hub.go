@@ -137,8 +137,9 @@ func (b *hubBackend) Copy(hostSrc, guestDst string) error {
 // hub-side ssh command instead. o.Env rides in the guest argv as `env
 // K=V … argv…` (roadmap step 8: BROWSER, for a login run on a hub
 // machine): as ExecOpts it would land on the hub-side ssh process, not in
-// the guest. A smol one-shot exec has no stdin (no -i), so callers that
-// need it use the tar path (cli's cp_hub.go), not Run.
+// the guest. The hub's `devvm exec` sets no Stdin, so its smol exec has no
+// -i and the input never reaches the guest: callers that need stdin use
+// the tar path (cli's cp_hub.go), not Run.
 func (b *hubBackend) Run(ctx context.Context, o ExecOpts, argv ...string) error {
 	envArgv, err := guestEnvArgv(o.Env)
 	if err != nil {

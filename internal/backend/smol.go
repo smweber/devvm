@@ -251,6 +251,12 @@ func (b *smolBackend) Spawn(ctx context.Context, o ExecOpts, argv ...string) (*S
 
 // execArgv builds the full `smolvm machine exec` host command. spawn forces the
 // `-i --stream` bytes-pipe mode used for the persistent agent (mux-style).
+// A one-shot exec passes -i ("keep stdin open") exactly when the caller set
+// o.Stdin: without it smolvm never reads the host's stdin, so the guest
+// gets nothing, and with it the guest reads the reader to EOF (smolvm
+// 1.35.5: an empty reader is EOF at once). It is decided on the caller's
+// value, before runHost defaults a nil Stdin to the terminal, so a caller
+// that sets none never hands the guest the host's terminal.
 func (b *smolBackend) execArgv(o ExecOpts, spawn bool, argv []string) []string {
 	h := []string{"smolvm", "machine", "exec"}
 	switch {
@@ -258,8 +264,13 @@ func (b *smolBackend) execArgv(o ExecOpts, spawn bool, argv []string) []string {
 		h = append(h, "-i", "--stream")
 	case o.TTY:
 		h = append(h, "-it", "-e", "TERM="+term())
-	case o.Stream:
-		h = append(h, "--stream")
+	default:
+		if o.Stdin != nil {
+			h = append(h, "-i")
+		}
+		if o.Stream {
+			h = append(h, "--stream")
+		}
 	}
 	h = append(h, "--name", b.m.Name, "--")
 	return append(h, b.guestArgv(o, argv)...)

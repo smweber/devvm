@@ -188,11 +188,12 @@ func copyOutWith(ctx context.Context, name string, srcs []string, dst string, o 
 
 // downloadArchive fetches one guest source as a host tar file, streamed
 // over exec stdout. That is binary-safe on both transports (smol's
-// `machine exec --stream` has no tty and, unlike a plain exec, no 11 MiB
-// stdout cap on smolvm 1.35.5), needs no guest staging or root, and a
-// failed download never touches DEST. The guest script's stderr is
-// captured so its refusal reads as the error, prefixed with the machine
-// name.
+// `machine exec -i --stream` has no tty and, unlike a plain exec, no
+// 11 MiB stdout cap on smolvm 1.35.5; the empty Stdin keeps the terminal
+// out of ssh, and on smol is -i and an instant EOF), needs no guest
+// staging or root, and a failed download never touches DEST. The guest
+// script's stderr is captured so its refusal reads as the error,
+// prefixed with the machine name.
 func downloadArchive(ctx context.Context, b backend.Backend, name, src, archive string, recursive bool, stderr io.Writer) error {
 	f, err := os.Create(archive)
 	if err != nil {

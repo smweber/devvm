@@ -201,18 +201,32 @@ func managedSmol(name string) *config.Machine {
 	return m
 }
 
-// A Stream exec (cp-out's tar) is `machine exec --stream` with neither -i
-// nor -t: no tty, so stdout is byte-clean, and smolvm 1.35.5 does not cap
-// a --stream exec's stdout as it does a plain one's.
-func TestSmolStreamExecArgv(t *testing.T) {
+// A one-shot exec passes -i exactly when the caller set Stdin, and a
+// Stream exec is --stream, so cp-out's tar (Stream, an empty Stdin) is
+// `-i --stream`: the guest sees EOF at once, no tty keeps stdout
+// byte-clean, and smolvm 1.35.5 caps neither an -i nor a --stream exec's
+// stdout as it does a plain one's. No Stdin means no -i: smolvm then
+// never reads the host's stdin, which runHost defaults to the terminal.
+func TestSmolExecArgvStdin(t *testing.T) {
 	b := &smolBackend{m: managedSmol("x")}
-	got := b.execArgv(ExecOpts{Stream: true}, false, []string{"true"})
-	if want := []string{"smolvm", "machine", "exec", "--stream", "--name", "x", "--"}; strings.Join(got[:len(want)], " ") != strings.Join(want, " ") {
-		t.Fatalf("argv = %q, want it to start %q", got, want)
-	}
-	for _, a := range got {
-		if a == "-i" || a == "-t" || a == "-it" {
-			t.Errorf("argv %q has %s", got, a)
+	in := strings.NewReader("")
+	for _, c := range []struct {
+		o     ExecOpts
+		spawn bool
+		want  string
+	}{
+		{ExecOpts{}, false, "smolvm machine exec --name x --"},
+		{ExecOpts{Stdin: in}, false, "smolvm machine exec -i --name x --"},
+		{ExecOpts{Stream: true}, false, "smolvm machine exec --stream --name x --"},
+		{ExecOpts{Stream: true, Stdin: in}, false, "smolvm machine exec -i --stream --name x --"},
+		{ExecOpts{}, true, "smolvm machine exec -i --stream --name x --"},
+	} {
+		got := strings.Join(b.execArgv(c.o, c.spawn, []string{"true"}), " ")
+		if !strings.HasPrefix(got, c.want+" ") {
+			t.Errorf("%+v spawn=%v: argv = %q, want it to start %q", c.o, c.spawn, got, c.want)
+		}
+		if strings.Contains(got, " -t") {
+			t.Errorf("%+v: argv %q asks for a tty", c.o, got)
 		}
 	}
 }

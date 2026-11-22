@@ -252,8 +252,9 @@ Implements `backend.Backend` only as far as the local leaves need:
   miss.
 - `Run`: `proxy(hub, ["exec", name, "--", argv…])` for the few non-interactive
   probes `auth` and `cp` make; `ExecOpts.Env` rides in the guest argv as
-  `env K=V …` (step 8). Guest stdin is not wired on a smol one-shot exec
-  (no `-i`), so callers that need stdin use the tar path in section 6, not `Run`.
+  `env K=V …` (step 8). Guest stdin is not wired: the hub's `devvm exec`
+  sets none, so its smol exec has no `-i`, and callers that need stdin use
+  the tar path in section 6, not `Run`.
 - `Spawn`: returns an error. A hub machine never gets a laptop-owned agent
   exec; that is the whole point.
 - `Copy`: error; cp uses section 6.

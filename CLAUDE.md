@@ -581,9 +581,17 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `realpath`). cp-in stages in `/var/tmp` (`/tmp` was tmpfs-shadowed under
   `machine cp` on smolvm 1.16.1; not on 1.35.5, and `/var/tmp` still works).
   cp-out streams the guest's tar over exec stdout on every backend: on smol
-  a `machine exec --stream` (no tty, so byte-clean), because smolvm caps a
-  plain exec's stdout at 11 MiB (1.35.5 fails past it with an explicit
-  error) and does not cap a `--stream` or `-i` one.
+  a `machine exec -i --stream` (no tty, so byte-clean; `-i` for its empty
+  stdin, below), because smolvm caps a plain exec's stdout at 11 MiB
+  (1.35.5 fails past it with an explicit error) and does not cap a
+  `--stream` or `-i` one.
+- **stdin on a smol one-shot exec**: `execArgv` passes `-i` exactly when the
+  caller set `ExecOpts.Stdin` (decided before runHost defaults a nil one to
+  the terminal); smolvm 1.35.5 delivers the input whole and EOF when the
+  host closes it, and an empty reader is EOF at once. Without `-i` smolvm
+  never reads the host's stdin. A caller that must keep the terminal out of
+  an ssh exec sets an empty reader, which on smol is `-i` and an instant
+  EOF.
   Extraction guards for cp-out live in `cp_tar.go` and are tested with
   hostile archives — keep them all-or-nothing. cp-in/cp-out run under
   `interruptible`: a signal kills the host command via the context, the

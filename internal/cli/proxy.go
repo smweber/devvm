@@ -327,7 +327,7 @@ func (a *App) resolveProxy(name string) (*config.Machine, backend.Proxier, error
 // stdin the hub gets one too (-t), so its prompts — the huh form of
 // `create`, a delete's confirm, a key-comment prompt — work; without one
 // nothing is piped: no proxied leaf reads stdin (prompts use /dev/tty), a
-// smol one-shot exec has none (hub.md §4), and forwarding a script's stdin
+// proxied exec passes none to its guest (hub.md §4), and forwarding a script's stdin
 // into ssh would eat it, the classic `while read` trap `ssh -n` exists for.
 // BatchMode goes with it: no terminal means no way to answer a passphrase
 // prompt, so fail fast rather than hang a script.
