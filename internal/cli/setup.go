@@ -620,10 +620,11 @@ func templateArgv(t config.Template) []string {
 // clone so non-GitHub hosts work too. Runs in a login shell so gh (Homebrew) is
 // on PATH.
 //
-// An owner/repo spec needs gh's login, which a fresh box lacks: the script
-// checks it after the already-cloned test (so a checkout there is never
-// reported) and exits ghNoLoginExit without one, and such specs are
-// skipped, named in one line with the fix, never counted as failed. A
+// An owner/repo spec needs gh's login, which a fresh box lacks unless the
+// template shares this host's (share_auth): the script checks it after
+// the already-cloned test (so a checkout there is never reported) and
+// exits ghNoLoginExit without one, and such specs are skipped, named in
+// one line with the fix (share_auth first), never counted as failed. A
 // missing gh, or an API outage, is no working login too. URL specs need no
 // login.
 //
@@ -668,7 +669,7 @@ esac`
 		}
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(a.Stderr, "devvm: skipped %s: gh in the box has no working login; run 'gh auth login' in the box, then clone them by hand\n",
+		fmt.Fprintf(a.Stderr, "devvm: skipped %s: gh in the box has no working login; set share_auth = [\"github\"] in the template and run setup again, or run 'gh auth login' in the box and clone them by hand\n",
 			strings.Join(skipped, ", "))
 	}
 	return failed, nil

@@ -912,7 +912,7 @@ repos = ["o/r", "https://x.example/u.git", "o/s"]
 	}
 	data, _ := os.ReadFile(log)
 	inOrder(t, string(data), "o/r", "https://x.example/u.git", "o/s")
-	want := "devvm: skipped o/r, o/s: gh in the box has no working login; run 'gh auth login' in the box, then clone them by hand\n"
+	want := "devvm: skipped o/r, o/s: gh in the box has no working login; set share_auth = [\"github\"] in the template and run setup again, or run 'gh auth login' in the box and clone them by hand\n"
 	if w := a.Stderr.(*bytes.Buffer).String(); strings.Count(w, want) != 1 || strings.Contains(w, "failed to clone") {
 		t.Errorf("stderr = %q, want the one skip line", w)
 	}
