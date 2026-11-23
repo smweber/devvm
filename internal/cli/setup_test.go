@@ -625,6 +625,16 @@ func TestProxiedSetupOldHub(t *testing.T) {
 	if err := runTree(t, a, "create", "h/api", "-t", "t", "--yes"); err == nil || !strings.Contains(err.Error(), "older than v0.2.0") {
 		t.Errorf("unknown flag: %v", err)
 	}
+	// A hub without --share-auth (share-auth.md §5) is below the same
+	// floor: nothing has been released between, so no minimum of its own.
+	fakeHubWith(t, a, t.TempDir(), `echo 'Error: unknown flag: --share-auth' >&2; exit 1`+"\n")
+	writeDevvmTOML(t, a, "[templates.t]\nshare_auth = [\"github\"]\n")
+	for _, argv := range [][]string{{"setup", "h/web", "-t", "t"}, {"create", "h/api", "-t", "t", "--yes"}} {
+		err := runTree(t, a, argv...)
+		if err == nil || err.Error() != "hub h runs devvm older than v0.2.0; run 'devvm update' there" {
+			t.Errorf("%v: %v", argv, err)
+		}
+	}
 }
 
 // fakeCreateSmolvm is smolvm for a local `create web`: ls answers from a

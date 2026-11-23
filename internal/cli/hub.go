@@ -11,9 +11,11 @@ package cli
 // The floor is v0.2.0, the release that carries simplify.md: a hub
 // machine is only ever the hub's labelled smol VM, a proxied
 // `create`/`setup` sends the narrowed template flags (hook, memory, disk,
-// repos) and nothing for ports, and the hub's listing speaks the label
-// model. Laptop and hubs update together across it; nothing here shims an
-// older hub (its own cobra error comes through as it said it).
+// repos, share_auth: share-auth.md ships in this same release, so it
+// needs no minimum of its own) and nothing for ports, and the hub's
+// listing speaks the label model. Laptop and hubs update together across
+// it; nothing here shims an older hub (its own cobra error comes through
+// as it said it).
 // session.HubForwardsMinVersion and session.HubBridgeMinVersion are the
 // same release, named where a relay open finds a hub daemon without
 // relays or the bridge. A hub is not version-checked when it is

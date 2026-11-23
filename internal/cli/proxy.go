@@ -245,9 +245,10 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 }
 
 // runProxiedShaping is runProxied for create/setup, mapping a hub that has
-// no `setup` or --inline-template (older than v0.1.16, so below
-// hubMinVersion) to one line: it answers with cobra's "unknown
-// command"/"unknown flag", or a login shell's 127.
+// no `setup` or --inline-template (older than v0.1.16), or no
+// --share-auth (share-auth.md §5: it ships in hubMinVersion itself, so a
+// hub without it is below the floor too), to one line: it answers with
+// cobra's "unknown command"/"unknown flag", or a login shell's 127.
 // The hub's output is passed through as it comes (a pty run merges both
 // streams, so both are watched), and returned for the caller to read too.
 func (a *App) runProxiedShaping(m *config.Machine, p backend.Proxier, argv []string) (string, error) {
@@ -259,7 +260,8 @@ func (a *App) runProxiedShaping(m *config.Machine, p backend.Proxier, argv []str
 	var ee *exec.ExitError
 	if err != nil && errors.As(err, &ee) {
 		if ee.ExitCode() == 127 || strings.Contains(out, `unknown command "setup"`) ||
-			strings.Contains(out, "unknown flag: --"+flagInline) {
+			strings.Contains(out, "unknown flag: --"+flagInline) ||
+			strings.Contains(out, "unknown flag: --"+flagShareAuth) {
 			return out, fmt.Errorf("hub %s runs devvm older than %s; run 'devvm update' there", m.Hub.Name, hubMinVersion)
 		}
 	}
