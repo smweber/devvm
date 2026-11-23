@@ -1,7 +1,8 @@
 # Proposal: share the host's logins with a new box (`share_auth`)
 
-Status: proposed, 2026-11-20, from a design discussion with the user. Not
-scheduled, nothing built. **Built after `simplify.md`** and written against
+Status: **implemented** 2026-11-23 (live test pending); proposed
+2026-11-20, from a design discussion with the user. "As shipped" at the
+end lists what departed from the text. **Built after `simplify.md`** and written against
 its model: `auth`, `repos add` and "managed" are gone, `setup` applies only
 to boxes devvm created (smol VMs, provider servers), and a failed clone no
 longer ends setup. First and only tool in this cut: GitHub. Once agreed,
@@ -231,3 +232,41 @@ No guest agent rebuild; no `--plain` change, so no Swift change.
 - Should `create` on a TTY offer the share when the template has repos and
   the key is unset? Left out; the skip hint may be enough.
 - If cli/cli #15100 lands, should `status` notice a box whose copy died?
+
+## As shipped
+
+Built in one commit per step (two for step 0). Departures from the text,
+each a decision of the user's:
+
+- **Step 0: no new `ExecOpts` field.** A one-shot smol exec passes `-i`
+  exactly when the caller set `ExecOpts.Stdin` (decided before `runHost`
+  defaults a nil one to the terminal), which the ThinkPad answers in
+  `simplify.md` (item 3) showed safe: input arrives whole, EOF when the
+  host closes it, an empty reader is EOF at once. The callers that set an
+  empty reader to keep the terminal out of ssh (guest path completion,
+  cp-out) now pass `-i` on smol too; cp-out is `machine exec -i --stream`.
+  With stdin working, the agentbin shim and `/etc/profile.d/devvm.sh` are
+  written from stdin (`cat > tmp && mv`) instead of `printf` arguments.
+- **§5 / step 4: no new hub minimum.** Nothing was released since the hub
+  floor moved to v0.2.0, and share-auth ships in v0.2.0 itself, so
+  `--share-auth` needs no minimum of its own: `runProxiedShaping` maps a
+  hub answering "unknown flag: --share-auth" to the same `devvm update`
+  line as one without `--inline-template`, pinned by a test.
+
+Details the text left open: the guest check runs `gh api user` in a login
+shell, as the repos step checks gh; the install runs as the login user,
+not in a login shell (nothing in a profile can read the token off
+stdin), as `sh -c` with `--insecure-storage` when `gh auth login --help`
+names it, then `gh auth setup-git` and `gh config set git_protocol https
+--host github.com`. An expiring login is the active `github.com` account
+with `"refreshable": true` in `gh auth status --json hosts` (gh 2.105
+tags the field `omitempty`, so it is absent when false); output that does
+not parse, such as a gh too old for `--json`, reads as not expiring. The
+`--help` probe reads `/dev/null`, so only `gh auth login` sees the token
+pipe. A login that went in with `setup-git` or `git_protocol` failing
+after it exits 87 and says so ("logged in, but … failed: run it in the
+box"), since the next setup's guest check leaves a working login alone.
+A guest error that echoes the token is scrubbed before it is printed. The
+success line names this host's hostname. The shim and profile.d writes
+refuse an empty stdin (`[ -s tmp ]`), so a transport that delivers none
+fails loudly. Not tried live yet: an expiring login.

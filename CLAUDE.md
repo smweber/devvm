@@ -516,10 +516,23 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   it. **`setup`** (was `bootstrap`) shapes a box devvm made and is the single
   place devvm touches its contents, in a fixed order: ensure user → prereqs
   (incl. tmux, gh, mosh-server) → agent + shim + profile.d → **keys →
-  harden** (a provider server) → **`hook`** → repos. The security steps sit
-  before user code and the network, so a failed hook or clone never leaves a
-  billing server open. The **`hook`** (template key) is the *user's* step
-  inside it, often a dotfiles script itself named `bootstrap.sh`. So
+  harden** (a provider server) → **share auth** → **`hook`** → repos. The
+  security steps sit before user code and the network, so a failed hook or
+  clone never leaves a billing server open. **Share auth**
+  (`cli/shareauth.go`, share-auth.md) copies this host's `gh` login into
+  the box when the template's `share_auth` lists `"github"`: a working
+  guest login (`gh api user`) is left alone; else `gh auth token
+  --hostname github.com` on the host (`hostGH`, a var for tests; an
+  expiring login, `refreshable` in `gh auth status --json hosts`, is
+  refused) goes over the install exec's **stdin only** (never argv, env,
+  a file or a log) to `gh auth login --with-token` + `setup-git` +
+  `git_protocol https`, as the login user. Every failure is one warning,
+  never a failed setup (a login that went in with `setup-git` or
+  `git_protocol` failing says so: the next setup leaves it alone). On a
+  hub machine "this host" is the hub (its own login); only the list
+  crosses, as the hidden `--share-auth`. The **`hook`** (template key) is
+  the *user's* step inside it, often a dotfiles script itself named
+  `bootstrap.sh`. So
   `create` = make the box exist; `setup` = shape it; `hook` = the user's
   part of shaping. A failed clone does not end setup: every repo is tried
   and setup exits **3** at the end, "setup finished, but: failed to clone
@@ -527,7 +540,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   created-with-a-problem, and a hub passes the 3 back to the laptop as is.
   An `owner/repo` spec while the guest's `gh` has no working login is a
   skip, not a failure: the clone script exits **86** (`ghNoLoginExit`), the
-  spec is named in one line with the fix (`gh auth login` in the box), and
+  spec is named in one line with the fix (`share_auth = ["github"]` first,
+  `gh auth login` in the box second), and
   setup exits 0; URL specs are still tried with plain `git`. The script runs
   as `bash -c` under `ExecOpts.Login`, since a login bash at SHLVL=1 with
   `set -e` turns any `exit N` into 1 through Ubuntu's stock
@@ -543,7 +557,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Templates** (`internal/config/templates.go`, config.md §3): `[templates.*]`
   in devvm.toml, beside `[machines.*]`. Fields: `hook` (`url:`/`cmd:`/`none`,
   built-in **`none`**: nothing personal baked into the binary),
-  `memory`/`disk` (create-time, smol), `repos`, `authorized_keys[_github]`
+  `memory`/`disk` (create-time, smol), `repos`, `share_auth` (tools whose
+  host login setup copies in: `"github"` only, any other a load error;
+  `[]` in a named template turns default's off), `authorized_keys[_github]`
   and `harden`/`fail2ban` (provider servers), `server_type`/`location`/
   `image`/`ipv4` (create-time, provider). No `user` (always `dev`) and no
   `ports` (`ports add`): both are load errors. Fields that don't apply are
@@ -552,15 +568,17 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `--template T` > `[templates.default]` > built-in. `config show` prints each
   template resolved, annotated with where each value came from. Nothing records which template made a box: `setup
   NAME` re-runs whatever `default` says now. The template flags are
-  `--hook`/`--memory`/`--disk` (visible on create) and a hidden `--repo`;
-  keys, harden and fail2ban have no flag. A proxied `create`/`setup
-  HUB/NAME --template T` resolves T on the laptop and sends what a hub's
-  smol VM takes, hook, memory, disk and repos, as those flags plus a hidden
-  `--inline-template` (`templateArgv`), so the hub's file never matters;
+  `--hook`/`--memory`/`--disk` (visible on create) and a hidden `--repo`
+  and `--share-auth`; keys, harden and fail2ban have no flag. A proxied
+  `create`/`setup HUB/NAME --template T` resolves T on the laptop and
+  sends what a hub's smol VM takes, hook, memory, disk, repos and
+  share_auth, as those flags plus a hidden `--inline-template`
+  (`templateArgv`), so the hub's file never matters;
   a create with no `--backend` also sends `--backend=smol`. Nothing about
   forwards crosses (the laptop clears its own `HUB@NAME` file after a
-  create, above). A hub with no `setup` or `--inline-template` maps to one
-  line naming `devvm update` (`runProxiedShaping`).
+  create, above). A hub with no `setup`, `--inline-template` or
+  `--share-auth` maps to one line naming `devvm update`
+  (`runProxiedShaping`; `--share-auth` ships in the v0.2.0 floor itself).
 - **No global defaults file**: `config.toml` and the `defaults` noun are gone;
   their values are `[templates.default]`, edited with `config edit`.
 

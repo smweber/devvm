@@ -18,7 +18,8 @@ devvm shapes what it creates and only connects to everything else:
 | `hub`     | another host running devvm; its smol VMs are `HUB/NAME`           | an entry in `devvm.toml`           | ssh           |
 
 `create` makes a smol VM or a server and labels it; `setup` shapes it (user,
-prereqs, agent, keys and hardening on a server, your hook, repos). A smol VM
+prereqs, agent, keys and hardening on a server, this host's `gh` login if the
+template shares it, your hook, repos). A smol VM
 or server without the label is invisible to devvm: label it by hand to hand
 it over (`smolvm machine update --name NAME --label devvm=true`, or the
 provider's console). An entry is never shaped: devvm connects to it
@@ -39,6 +40,7 @@ keep in dotfiles: `[templates.*]` (how `create`/`setup` shape a box),
 hook = "url:https://example.com/bootstrap.sh --yes"
 memory = 4096
 repos = ["owner/repo"]
+share_auth = ["github"]  # setup copies this host's gh login into the box
 
 [machines.cloud]
 backend = "remote"
@@ -67,8 +69,15 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
   (via [huh](https://github.com/charmbracelet/huh)) for whatever's unset.
   `devvm setup NAME` re-runs the shaping. A failed clone does not stop it:
   setup tries every repo and exits 3 ("setup finished, but …"). An
-  `owner/repo` is cloned with the guest's `gh`, so until you run `gh auth
-  login` in the box those are skipped with a hint. A remote box is `devvm
+  `owner/repo` is cloned with the guest's `gh`. With `share_auth =
+  ["github"]` in the template, setup first copies this host's `gh` login
+  (`gh auth token`) into the box over the exec's stdin, unless the box
+  already has a working one; that token has your login's full scopes and
+  sits in the box's `~/.config/gh/hosts.yml`, cloud servers included
+  (`share_auth = []` in a template opts out). An expiring login (`gh auth
+  login --expiring=false` avoids one) is not copied. Without a login in
+  the box, `owner/repo` specs are skipped with a hint; `gh auth login`
+  inside `attach` works too. On a hub machine the login is the hub's. A remote box is `devvm
   config add`.
 - `devvm attach NAME` — join the persistent dev tmux session.
 - `devvm shell NAME` — a raw login shell, no tmux.

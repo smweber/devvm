@@ -16,6 +16,7 @@ and carry "as shipped" notes where the code departed from them.
 | Menu bar relaunch fix | Lessons below | v0.1.20 |
 | Simplify (phases 0–5, steps 1–18) | `simplify.md` v1.3 (implemented, "As shipped") | v0.2.0 |
 | Post-review cleanup C1–C13 | `simplify.md` "As shipped" | done 2026-11-22 (ThinkPad: 250 MiB stream cp-out, concurrent starts, hub; both sides v0.2.0) |
+| Share auth (steps 0–5) | `share-auth.md` (implemented, "As shipped") | done 2026-11-23 (ThinkPad smol VM + Hetzner, both v0.2.0) |
 
 The long form (per-step live-test lists, "what shipped differently" notes)
 is in git history before the commit "docs/proposals: ROADMAP trimmed to a
@@ -38,7 +39,7 @@ is v0.2.0, which is also the hub floor (`hubMinVersion`,
 | 3 | Ports out of templates/create/setup; no `--ephemeral`; restore on attach | 9–11 | ThinkPad hub + local | done 2026-11-21 (ThinkPad on the same build) |
 | 4 | No "managed": labels, no adopt, no managed entries; Swift | 12–15 | ThinkPad (labels), Hetzner (unlabelled count) | done 2026-11-21 (Swift uncompiled until CI) |
 | 5 | Delete upgrade paths, shrink hub flags, docs | 16–18 | ThinkPad hub at the new minimum | done 2026-11-21 (ThinkPad hub and laptop both v0.2.0) |
-| 6 | `share-auth.md` | its 0–5 | ThinkPad smol VM + Hetzner | open |
+| 6 | `share-auth.md` | its 0–5 | ThinkPad smol VM + Hetzner | done 2026-11-23 (live: ThinkPad smol VM via a piped GH_TOKEN, hub path, Hetzner with harden) |
 
 ## Config redesign (done, v0.1.16)
 

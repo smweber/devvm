@@ -363,6 +363,18 @@ and provider servers only (`setup --host` is gone). The template flags are
 nothing else (no `--user`, `--key`, `--harden`, `--fail2ban`, `--port`,
 `--no-ports`).
 
+**As shipped (share-auth.md, v0.2.0).** Templates gain `share_auth`, a
+list of tools whose host login setup copies into the box (`"github"`
+only; any other name is a load error; built-in empty, `[]` in a named
+template turns default's off; `config show` prints it with its source).
+setup's order becomes ensure user → prereqs → agent + shim + profile.d →
+keys → harden → **share auth** → hook → repos. The step leaves a working
+guest login alone, refuses an expiring host login, sends the host's
+`gh auth token` over the install exec's stdin only, and is a warning at
+worst. It travels to a hub as one more hidden flag, `--share-auth`, and
+the hub shares its own login. The repos skip's hint names `share_auth`
+first.
+
 ### 4. Config editing is its own noun
 
 Every VM command reads `devvm.toml`; none writes it. Every `config` command

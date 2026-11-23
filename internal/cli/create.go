@@ -192,7 +192,8 @@ func (a *App) clearLeftoverPorts(name string) {
 func (a *App) printCreateNext(name, backendName string) {
 	fmt.Fprintf(a.Stdout, "\nMachine '%s' (%s) is ready.\n\nNext:\n", name, backendName)
 	fmt.Fprintf(a.Stdout, "  devvm attach %s          # join the persistent dev tmux session\n", name)
-	fmt.Fprintln(a.Stdout, "  (log in inside it: gh auth login, codex login; the browser opens where you attach from)")
+	fmt.Fprintln(a.Stdout, "  (log in inside it: gh auth login, codex login; the browser opens where you attach from;")
+	fmt.Fprintln(a.Stdout, "   share_auth = [\"github\"] in a template copies the gh login of the host that runs setup)")
 }
 
 // suggestedMemoryMiB is half of host RAM, clamped to [1024, 2048].
