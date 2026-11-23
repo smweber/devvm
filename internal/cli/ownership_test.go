@@ -18,8 +18,9 @@ const devvmLabel = `"labels":{"devvm":"true"}`
 
 // fakeLocalSmolvm puts a smolvm on PATH answering `machine ls --json` with
 // rows (one JSON array) and logging every call, so a test resolves local
-// smol VMs exactly as the cli does: through discovery, one listing.
-func fakeLocalSmolvm(t *testing.T, rows string) (log string) {
+// smol VMs exactly as the cli does: through discovery, one listing. A
+// version makes `--version` print "smolvm VERSION" (else nothing: no block).
+func fakeLocalSmolvm(t *testing.T, rows string, version ...string) (log string) {
 	t.Helper()
 	dir := t.TempDir()
 	ls, log := filepath.Join(dir, "ls.json"), filepath.Join(dir, "smolvm.log")
@@ -27,7 +28,11 @@ func fakeLocalSmolvm(t *testing.T, rows string) (log string) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n" +
-		"[ \"$*\" = 'machine ls --json' ] && cat " + ls + "\nexit 0\n"
+		"[ \"$*\" = 'machine ls --json' ] && cat " + ls + "\n"
+	if len(version) > 0 {
+		script += "[ \"$*\" = --version ] && echo 'smolvm " + version[0] + "'\n"
+	}
+	script += "exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "smolvm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +48,7 @@ func smolvmCalls(t *testing.T, log string) []string {
 	}
 	var calls []string
 	for _, c := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		if c != "" && c != "machine ls --json" {
+		if c != "" && c != "machine ls --json" && c != "--version" { // queries, not actions
 			calls = append(calls, c)
 		}
 	}

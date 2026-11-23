@@ -196,8 +196,9 @@ Cosmetic or accepted:
 - A daemon started before `agent = true` was added to an entry keeps the
   record it captured until it restarts (`ports down`, end the attach): the
   key counts from the next start.
-- A smolvm older than 1.35.5 is not detected (no version probe): one whose
-  `machine create` has no `--label` fails `create` in its own words.
+- A smolvm older than 1.35.5 is detected at create/start (`smolvm
+  --version`, one line naming the stop-first upgrade); a `--version` that
+  fails or is unparseable is not.
 - `<State>/managed/` (the markers before phase 4) is left on disk, unread.
 - `~/.devvm/agent.sock` outlives the agent on a remote box (the exec dies,
   the socket file stays until the next agent rebinds it).

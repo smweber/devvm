@@ -332,21 +332,30 @@ const exitSetupIncomplete = 3
 // no lock: smolvm (1.35.5) lists a booting VM as "unreachable", and a
 // second `machine start` during the boot answers "already running" (rc 0)
 // without disturbing it, so both wait for "running". A PowerStart that
-// fails is forgiven when the VM runs anyway (a start from outside devvm).
-// A Status error is no block (the session's own exec reports what is
-// wrong), as in requireRunningForForwards.
+// fails is forgiven when the VM runs anyway (a start from outside devvm),
+// unless it refused a smolvm below the floor (at once: no wait for a boot
+// that never began). A Status error is no block (the session's own exec
+// reports what is wrong), as in requireRunningForForwards.
 func (a *App) startStopped(m *config.Machine, b backend.Backend) (bool, error) {
 	if st, err := b.Status(); err != nil || st.Running {
 		return false, nil
 	}
 	fmt.Fprintf(a.Stderr, "devvm: starting %s…\n", m.Name)
 	if err := b.PowerStart(); err != nil {
-		if waitRunning(m, b) == nil {
+		if !smolvmTooOld(err) && waitRunning(m, b) == nil {
 			return true, nil
 		}
 		return false, err
 	}
 	return true, waitRunning(m, b)
+}
+
+// smolvmTooOld reports PowerStart's refusal of a smolvm below
+// backend.SmolvmMinVersion: the start never ran, so there is nothing to
+// wait for.
+func smolvmTooOld(err error) bool {
+	var old *backend.SmolvmTooOld
+	return errors.As(err, &old)
 }
 
 // waitRunning waits (runningPollTimeout) for a VM just started to report

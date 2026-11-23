@@ -165,10 +165,10 @@ func (a *App) runStart(name string) error {
 // powerStartWait is `start`'s PowerStart, then a wait for "running":
 // smolvm may return before it, and whoever runs next (a proxied attach's
 // __session, a script's exec) needs it running. A failed PowerStart is
-// forgiven when the VM runs anyway.
+// forgiven when the VM runs anyway; a smolvm below the floor is not.
 func (a *App) powerStartWait(m *config.Machine, b backend.Backend) error {
 	if err := b.PowerStart(); err != nil {
-		if m.IsRemote() || waitRunning(m, b) != nil {
+		if m.IsRemote() || smolvmTooOld(err) || waitRunning(m, b) != nil {
 			return err
 		}
 		return nil

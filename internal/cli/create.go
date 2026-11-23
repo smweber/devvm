@@ -53,6 +53,11 @@ func (a *App) runCreate(s createSpec) error {
 		if err := s.refuseSmolPlacement(); err != nil {
 			return err
 		}
+		// smolvm present and at the floor, before any prompt: a form filled
+		// in for a create that cannot run is wasted.
+		if err := backend.SmolReady(); err != nil {
+			return err
+		}
 	}
 	// Name may be omitted on the command line; prompt for it before anything else
 	// so `devvm create` can be run bare on a terminal.
@@ -151,9 +156,6 @@ func checkCreateBackend(b string) error {
 // allocation step. SmolCreate (create with devvm's label, then start). A
 // provider box is allocated by runCreateProvider instead.
 func (a *App) provisionResource(name string, memory, disk int) error {
-	if !backend.SmolAvailable() {
-		return backend.ErrNoSmolvm
-	}
 	fmt.Fprintf(a.Stdout, "Using %d MiB RAM, %d GiB disk.\n", memory, disk)
 	if err := backend.SmolCreate(name, memory, disk); err != nil {
 		return err

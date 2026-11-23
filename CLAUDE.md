@@ -19,8 +19,15 @@ everything else.** It is a **host CLI** (`cmd/devvm`) plus a **guest agent**
 (`cmd/devvm-agent`) the host installs into a box only when needed (see the
 agent note below). It began as a ~2,100-line bash script; comments often
 explain *why* a behavior exists because it was hard-won there. smol needs
-**smolvm ≥ 1.35.5** (its start and `--stream` behaviour, below); nothing
-checks the version.
+**smolvm ≥ 1.35.5** (its start and `--stream` behaviour, below):
+`backend.SmolvmMinVersion`, pinned by a test. `backend.SmolReady` (one
+`smolvm --version`) checks it in `create` (before its prompts) and in
+`PowerStart` (every boot of a stopped VM, attach/shell/setup's included; a
+hub's VM is checked by the hub's own proxied devvm), refusing below it in
+one line that says to stop every VM before upgrading; a `--version` that
+fails or prints no X.Y.Z is no block. Listing, exec and cp never run it.
+devvm never installs or upgrades smolvm (an upgrade breaks a running VM,
+and devvm cannot see unlabelled ones to stop them).
 
 **Backend axes: two, not one enum.** `backend` ∈ {`smol`, `remote`, `hub`,
 `hetzner`} says who owns the registry and lifecycle (smolvm, the file, a hub,

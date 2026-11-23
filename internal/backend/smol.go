@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 
 	"github.com/smweber/devvm/internal/config"
 	"github.com/smweber/devvm/internal/provider"
@@ -37,6 +39,68 @@ var ErrNoSmolvm = errors.New("smolvm is not installed; install it with: curl -sS
 func needSmolvm() error {
 	if _, err := exec.LookPath("smolvm"); err != nil {
 		return ErrNoSmolvm
+	}
+	return nil
+}
+
+// SmolvmMinVersion is the oldest smolvm devvm drives (simplify.md,
+// "ThinkPad answers"): labels, a second `machine start` during a boot
+// answering "already running" instead of killing it, `-i`/`--stream` execs
+// without 1.16.1's output cap, and one-shot `-i` stdin. Checked at create
+// and start only (SmolReady); pinned by a test, so a bump is deliberate.
+const SmolvmMinVersion = "1.35.5"
+
+// smolvmVersionRe is the first X.Y.Z in `smolvm --version` ("smolvm 1.35.5").
+var smolvmVersionRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// smolvmBelowFloor reads the first X.Y.Z in out (`smolvm --version`'s
+// stdout) and reports it when it is below SmolvmMinVersion; ok is false
+// when out has none (no block: a later smolvm may change the format).
+func smolvmBelowFloor(out string) (have string, below, ok bool) {
+	m := smolvmVersionRe.FindStringSubmatch(out)
+	f := smolvmVersionRe.FindStringSubmatch(SmolvmMinVersion)
+	if m == nil {
+		return "", false, false
+	}
+	for i := 1; i <= 3; i++ {
+		x, errX := strconv.Atoi(m[i])
+		y, _ := strconv.Atoi(f[i])
+		if errX != nil {
+			return "", false, false
+		}
+		if x != y {
+			return m[0], x < y, true
+		}
+	}
+	return m[0], false, true
+}
+
+// SmolvmTooOld is the refusal of a create or start on a smolvm below
+// SmolvmMinVersion. devvm never upgrades smolvm itself: an upgrade with a
+// VM running breaks that VM, and devvm cannot see unlabelled VMs to stop
+// them, so the line names the stop first.
+type SmolvmTooOld struct{ Version string }
+
+func (e *SmolvmTooOld) Error() string {
+	return "smolvm " + e.Version + " is older than " + SmolvmMinVersion + ", which devvm needs; " +
+		"stop every VM first (smolvm machine ls; smolvm machine stop --name NAME), " +
+		"then upgrade: curl -sSL https://smolmachines.com/install.sh | bash"
+}
+
+// SmolReady is needSmolvm plus the version floor, for the two verbs that
+// make a VM run: create (runCreate, before its prompts) and PowerStart.
+// Nothing else asks, so no listing, exec or cp pays the extra exec. A
+// `--version` that fails or prints no X.Y.Z is no block.
+func SmolReady() error {
+	if err := needSmolvm(); err != nil {
+		return err
+	}
+	out, err := exec.Command("smolvm", "--version").Output()
+	if err != nil {
+		return nil
+	}
+	if have, below, _ := smolvmBelowFloor(string(out)); below {
+		return &SmolvmTooOld{Version: have}
 	}
 	return nil
 }
@@ -164,7 +228,7 @@ func SmolRow(b Backend) (SmolMachine, bool) {
 }
 
 func (b *smolBackend) PowerStart() error {
-	if err := needSmolvm(); err != nil {
+	if err := SmolReady(); err != nil {
 		return err
 	}
 	return smolCmd("machine", "start", "--name", b.m.Name)
@@ -300,7 +364,8 @@ func (b *smolBackend) guestArgv(o ExecOpts, argv []string) []string {
 
 // SmolCreate provisions a new microVM (net-enabled, SMOLVM_GUEST=1, devvm's
 // label) and starts it. Mirrors the `smolvm machine create` invocation in
-// create_machine. A failure is smolvm's own error.
+// create_machine. A failure is smolvm's own error (runCreate checked the
+// version floor, SmolReady, before its prompts).
 func SmolCreate(name string, memoryMiB, diskGiB int) error {
 	if err := needSmolvm(); err != nil {
 		return err

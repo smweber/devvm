@@ -28,8 +28,9 @@ thing it may write there beyond `~/.ssh` is its agent, when the entry says
 `agent = true`.
 
 The `smol` backend needs **smolvm 1.35.5 or newer** (devvm relies on how it
-answers a second start and on uncapped `--stream` execs; nothing checks the
-version).
+answers a second start and on uncapped `--stream` execs). `create` and every
+start of a smol VM refuse an older one, saying to stop every VM before
+upgrading; devvm never upgrades smolvm itself.
 
 Everything you configure is one file, `~/.config/devvm/devvm.toml`, safe to
 keep in dotfiles: `[templates.*]` (how `create`/`setup` shape a box),
