@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -19,6 +21,14 @@ import (
 // t.TempDir() there is /var/folders/…/T/TestName…/001.
 func newTestApp(t *testing.T) *App {
 	t.Helper()
+	// No test reads this host's real gh login: share_auth's tests fake it
+	// (hostGHFake), and any other path to hostGH is a test failure.
+	orig := hostGH
+	hostGH = func(_ context.Context, args ...string) ([]byte, error) {
+		t.Errorf("this host's gh was asked for %q", args)
+		return nil, errors.New("no host gh in tests")
+	}
+	t.Cleanup(func() { hostGH = orig })
 	return &App{Paths: testPaths(shortTempDir(t))}
 }
 

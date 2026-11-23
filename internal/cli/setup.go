@@ -25,11 +25,11 @@ import (
 // devvm=true label), never an entry. It replaced
 // `bootstrap`, whose name also meant the user's own hook script. Its order
 // is fixed: ensure user → prereqs → agent + shim (+ profile.d) → keys →
-// harden → hook → repos. The user comes first because everything after
-// it runs as that user or through its sudo;
-// harden comes after keys because it refuses on an empty authorized_keys,
-// and both come before the hook and the repos, so neither user code nor
-// the network can leave a billing cloud server unhardened.
+// harden → share auth → hook → repos. The user comes first because
+// everything after it runs as that user or through its sudo; harden
+// comes after keys because it refuses on an empty authorized_keys, and
+// both come before the hook and the repos, so neither user code nor the
+// network can leave a billing cloud server unhardened.
 
 // tmplFlags are the template fields as flags, shared by `create` and
 // `setup`. They are the explicit form the laptop sends to a hub's proxied
@@ -164,12 +164,13 @@ func (a *App) setupCmd() *cobra.Command {
 	var o setupOpts
 	c := &cobra.Command{
 		Use:   "setup NAME",
-		Short: "Shape a box: user, prereqs, agent, keys, hardening, hook, repos",
+		Short: "Shape a box: user, prereqs, agent, keys, hardening, logins, hook, repos",
 		Long: "Shape a box from a template ([templates.*] in devvm.toml; default without\n" +
 			"--template). The one place devvm changes a box's contents, in a fixed order:\n" +
 			"user, prereqs (incl. tmux, gh, mosh), agent + BROWSER shim, keys and\n" +
-			"hardening (a provider server), the template's hook, repos (cloned into\n" +
-			"~/src). Safe to re-run. Forwards are saved with 'devvm ports add', not here.\n\n" +
+			"hardening (a provider server), this host's logins (the template's\n" +
+			"share_auth), the template's hook, repos (cloned into ~/src). Safe to\n" +
+			"re-run. Forwards are saved with 'devvm ports add', not here.\n\n" +
 			"Only a smol VM or a provider server devvm made is shaped; an entry in\n" +
 			"devvm.toml (a remote box, a hub) never is. A server that answers only as\n" +
 			"root gets its user created first.\n" +
@@ -277,11 +278,15 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 			}
 		}
 	}
-	// 6. The user's hook.
+	// 6. Share auth: after harden, so it can never cost the box its
+	// hardening; before the hook, so the hook has the login. A warning at
+	// worst, never a failed setup.
+	a.shareAuth(ctx, m, b, t.ShareAuth)
+	// 7. The user's hook.
 	if err := bootstrap.RunHook(ctx, b, t.Hook); err != nil {
 		return err
 	}
-	// 7. Repos: cloneRepos skips a checkout that exists, so a re-run is
+	// 8. Repos: cloneRepos skips a checkout that exists, so a re-run is
 	// idempotent. A failed clone does not end setup: every repo is tried,
 	// and setup reports the failures last (setupIncomplete).
 	// An interrupt during the clones is an interrupt, never "finished".

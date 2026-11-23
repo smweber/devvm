@@ -528,6 +528,8 @@ share_auth = ["github"]
 	if err := config.SavePorts(a.Paths, "h/web", []string{"3000"}); err != nil {
 		t.Fatal(err)
 	}
+	// share_auth crosses as the list alone: newTestApp's hostGH fails the
+	// test if this host's token is read.
 	if err := runTree(t, a, "setup", "h/web", "--template", "devvm"); err != nil {
 		t.Fatalf("setup: %v\n%s", err, a.Stderr)
 	}
