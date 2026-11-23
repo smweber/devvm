@@ -3,7 +3,7 @@
 A macOS menu bar companion for `devvm`. It is a thin shell: every action is a
 `devvm` invocation, and the machine list comes from `devvm status --plain
 --watch`, so it shows what the CLI would and nothing else. It never opens a
-terminal; `attach`, `shell`, and `auth` stay in your own tmux.
+terminal; `attach` and `shell` stay in your own terminal.
 
 What it does:
 
@@ -123,9 +123,12 @@ instead.
 - Notifications need the app to be a proper bundle; if the notification
   center is unavailable or denied, results show in a small floating panel
   that closes itself.
-- Remote machines always report `reachable` (devvm does not probe them), so
-  a drop onto an unreachable host fails after ssh's 10-second connect
-  timeout, with the error in a notification.
+- A remote box's state is devvm's last probe of it (`reachable`,
+  `unreachable`, or `?` when never probed or behind a `ProxyJump`), refreshed
+  by the one-off `status` each menu open runs. A box at `?` still gets a
+  tile, so a drop onto a host that is in fact down fails after ssh's connect
+  timeout (10 seconds unless the entry sets `connect_timeout`), with the
+  error in a notification.
 - After `devvm update` replaces the CLI, the watch child keeps running the
   old binary until the app restarts it; the app does that when it notices
   the CLI version changed (on the next menu open), and the update flow

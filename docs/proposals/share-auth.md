@@ -1,6 +1,7 @@
 # Proposal: share the host's logins with a new box (`share_auth`)
 
-Status: **implemented** 2026-11-23 (live test pending); proposed
+Status: **implemented**, shipped in v0.2.0 (live-tested 2026-11-23 on a
+ThinkPad smol VM, the hub path and a Hetzner server); proposed
 2026-11-20, from a design discussion with the user. "As shipped" at the
 end lists what departed from the text. **Built after `simplify.md`** and written against
 its model: `auth`, `repos add` and "managed" are gone, `setup` applies only

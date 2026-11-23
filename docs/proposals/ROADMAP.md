@@ -3,8 +3,9 @@
 Once the single ordered plan for the design docs here; now a record, since
 every planned step has shipped, plus the live lists: shared decisions, known
 issues, lessons, live-test environments. The design docs (`hub.md`,
-`browser-bridge.md`, `config.md`, `providers.md`) own the *what* and *why*
-and carry "as shipped" notes where the code departed from them.
+`browser-bridge.md`, `config.md`, `providers.md`, `simplify.md`,
+`share-auth.md`) own the *what* and *why* and carry "as shipped" notes
+where the code departed from them.
 
 | Milestone | Design doc | Tags |
 |-----------|------------|------|
@@ -16,7 +17,8 @@ and carry "as shipped" notes where the code departed from them.
 | Menu bar relaunch fix | Lessons below | v0.1.20 |
 | Simplify (phases 0–5, steps 1–18) | `simplify.md` v1.3 (implemented, "As shipped") | v0.2.0 |
 | Post-review cleanup C1–C13 | `simplify.md` "As shipped" | done 2026-11-22 (ThinkPad: 250 MiB stream cp-out, concurrent starts, hub; both sides v0.2.0) |
-| Share auth (steps 0–5) | `share-auth.md` (implemented, "As shipped") | done 2026-11-23 (ThinkPad smol VM + Hetzner, both v0.2.0) |
+| Share auth (steps 0–5) | `share-auth.md` (implemented, "As shipped") | v0.2.0 (live 2026-11-23: ThinkPad smol VM + Hetzner) |
+| smolvm floor: `create` and every start refuse smolvm below 1.35.5 | Known issues and Lessons below | v0.2.1 |
 
 The long form (per-step live-test lists, "what shipped differently" notes)
 is in git history before the commit "docs/proposals: ROADMAP trimmed to a
@@ -37,7 +39,7 @@ is v0.2.0, which is also the hub floor (`hubMinVersion`,
 | 1 | `setup` never skips keys and hardening; mosh UDP in harden | 1–3 | throwaway Hetzner server: create with a repo that cannot clone, harden applied, mosh connects | done 2026-11-20 (live on Hetzner; mosh checked from the ThinkPad) |
 | 2 | Remove `auth`, `repos`, `lockdown`; `agent = true` | 4–8 | an entry with `agent = true` (not `scottdev3`: the user adds that line) | done 2026-11-20 (live: ThinkPad host as an `agent = true` entry) |
 | 3 | Ports out of templates/create/setup; no `--ephemeral`; restore on attach | 9–11 | ThinkPad hub + local | done 2026-11-21 (ThinkPad on the same build) |
-| 4 | No "managed": labels, no adopt, no managed entries; Swift | 12–15 | ThinkPad (labels), Hetzner (unlabelled count) | done 2026-11-21 (Swift uncompiled until CI) |
+| 4 | No "managed": labels, no adopt, no managed entries; Swift | 12–15 | ThinkPad (labels), Hetzner (unlabelled count) | done 2026-11-21 (Swift built by CI's macOS job at v0.2.0) |
 | 5 | Delete upgrade paths, shrink hub flags, docs | 16–18 | ThinkPad hub at the new minimum | done 2026-11-21 (ThinkPad hub and laptop both v0.2.0) |
 | 6 | `share-auth.md` | its 0–5 | ThinkPad smol VM + Hetzner | done 2026-11-23 (live: ThinkPad smol VM via a piped GH_TOKEN, hub path, Hetzner with harden) |
 
@@ -196,14 +198,16 @@ Cosmetic or accepted:
 - A daemon started before `agent = true` was added to an entry keeps the
   record it captured until it restarts (`ports down`, end the attach): the
   key counts from the next start.
-- A smolvm older than 1.35.5 is detected at create/start (`smolvm
-  --version`, one line naming the stop-first upgrade); a `--version` that
-  fails or is unparseable is not.
+- A smolvm older than 1.35.5 is refused at create and at every start
+  since v0.2.1 (`backend.SmolReady`: one `smolvm --version`, one line
+  naming the stop-first upgrade); a `--version` that fails or is
+  unparseable is no block, and listing, exec and cp never check.
 - `<State>/managed/` (the markers before phase 4) is left on disk, unread.
 - `~/.devvm/agent.sock` outlives the agent on a remote box (the exec dies,
   the socket file stays until the next agent rebinds it).
-- The Swift changes of phase 4 (and step 16's `dormant` removal) are
-  uncompiled until CI runs on macOS.
+- The Swift changes of phase 4 (and step 16's `dormant` removal) compile
+  (CI's macOS job, v0.2.0) but were never run on a Mac: see "Mac tests the
+  user still owes".
 
 ## Lessons (don't relearn)
 
@@ -235,7 +239,9 @@ Cosmetic or accepted:
 - **macOS kqueue coalesces a relink into nothing** (2026-10-17): a symlink
   renamed over `devvm.toml` under load merges into one dir event, the old
   target's fd stays watched, and no Create/Remove fires. `status --watch`
-  re-resolves a symlinked `devvm.toml` on a 2s timer for that reason. A
+  re-resolves a symlinked `devvm.toml` on every debounce for that reason,
+  and a one-shot `status` touches the change marker on its way out, so the
+  menu bar app's status per menu open is the nudge (no timer). A
   test that "passed once on macOS" after a kqueue change proved nothing.
 - **A scratch binary that imports `internal/session` must hand `__daemon`
   to the real devvm.** `spawnDaemon` re-execs `os.Executable()`; under a
@@ -316,6 +322,7 @@ Cosmetic or accepted:
   with no doubled slash and Right arrow accepts so the next Tab does; a
   unique directory is still entered by the next Tab); the v0.1.14 menu bar
   changes (drop shelf, Tab completion, save panel); the fifth `--plain`
-  column's Swift change; a Mac as a smol hub (`smolvm machine create` and
+  column's Swift change and the rest of simplify phase 4's (no `dormant`,
+  `managed`/`shadowed`); a Mac as a smol hub (`smolvm machine create` and
   `open` from an sshd session, a daemon spawned there surviving logout);
   the v0.1.20 menu bar relaunch after "Update devvm".

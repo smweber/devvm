@@ -341,10 +341,12 @@ its commit message too):
   cp-out now streams over `machine exec --stream` on smol as on ssh.
 
 Findings left open (`ROADMAP.md`, Known issues): a daemon started before
-`agent = true` was added keeps its record until it restarts; a smolvm whose
-`create` lacks `--label` fails in its own words; `<State>/managed/` is
-left on disk; `~/.devvm/agent.sock` outlives the agent on a remote box; the
-phase 4 Swift changes are uncompiled until CI on macOS.
+`agent = true` was added keeps its record until it restarts;
+`<State>/managed/` is left on disk; `~/.devvm/agent.sock` outlives the
+agent on a remote box; the phase 4 Swift changes compile (CI's macOS job)
+but were never run on a Mac. Closed since: a smolvm below the floor no
+longer fails in its own words (a `create` without `--label`): v0.2.1
+refuses it at `create` and at every start (`backend.SmolReady`).
 
 ## Settled after the review
 

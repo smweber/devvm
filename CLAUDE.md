@@ -142,6 +142,8 @@ internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-t
 internal/bootstrap/ the guest steps of `setup`: EnsureUser, prereqs, the template's
                     hook, hardening + browser.go (agent + shim + /etc/profile.d/devvm.sh)
 internal/hostbrowser/ open guest login URLs on the host (sanitized)
+internal/reach/     the reach cache (`cache/reach/NAME`) and its probe: a remote row's state
+contrib/fakesmol/   a fake `smolvm` (shell) for a hub with no KVM; live tests only
 contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop shelf,
                     one tile per live machine = cp-in; menu + shelf fed by
                     `status --plain --watch`); built only by its build.sh

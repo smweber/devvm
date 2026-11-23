@@ -6,6 +6,21 @@ remote host reached over ssh. A Go rewrite of the old `bin/devvm` bash script.
 
 Module: `github.com/smweber/devvm`.
 
+## Install
+
+Download `devvm-{darwin,linux}-{arm64,amd64}` from the
+[latest release](https://github.com/smweber/devvm/releases/latest), check it
+against `SHA256SUMS`, and put it on your `PATH` as `devvm`; or, with Go:
+
+```sh
+go install github.com/smweber/devvm/cmd/devvm@latest
+```
+
+After that, `devvm update` keeps it current. The `smol` backend also needs
+[smolvm](https://smolmachines.com) 1.35.5 or newer, which devvm never
+installs or upgrades. Building from a clone is in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Backends
 
 devvm shapes what it creates and only connects to everything else:
@@ -81,14 +96,24 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
   inside `attach` works too. On a hub machine the login is the hub's. A remote box is `devvm
   config add`.
 - `devvm attach NAME` — join the persistent dev tmux session.
-- `devvm shell NAME` — a raw login shell, no tmux.
+- `devvm shell NAME` — a raw login shell, no tmux. `attach` and `shell` both
+  take `--transport ssh|mosh` for machines reached over ssh (default from the
+  entry's `transport` field); smol ignores it. (There is no separate
+  `ssh`/`mosh` command.) Either one starts a stopped VM first.
+- `devvm exec NAME CMD…` — run one command as the box's user, under a
+  login shell.
+- `devvm status [NAME]` — every machine with its state and forwards (`-v`
+  for detail; `--plain` for scripts). `devvm start|stop|delete NAME` act on
+  a smol VM or a server devvm made (a stopped Hetzner server still bills);
+  an entry is removed with `config rm`.
+- `devvm keys add|rm|list|dedupe NAME` — manage `~/.ssh/authorized_keys`
+  on a box reached over ssh, from this host; needs no agent, so it works on
+  any entry (a smol VM has no ssh to hold keys for).
 - `devvm ports add NAME PORT` (or `HOST:GUEST`) — forward a guest port to
   this host and remember it here; saved forwards come back on every
   `attach`, `shell`, `start` and `ports up` (`ports down` holds until then).
   A loopback URL a guest program opens is forwarded by itself while a
   session is attached (below); `ports add` is for ports worth keeping.
-- Both take `--transport ssh|mosh` for remote machines (default from the
-  entry's `transport` field); smol ignores it. (There is no separate `ssh`/`mosh` command.)
 - **Browser opens.** While `attach`/`shell` is open on a machine, a
   URL a guest program opens through `$BROWSER` opens in the host's browser,
   and a loopback URL (a dev server, an OAuth callback) gets its forward
@@ -122,8 +147,9 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
   guest paths for registered machines (two-second timeout, no SSH password
   prompts; `DEVVM_COMPLETE_TIMEOUT=10s` raises it). Directory suggestions end
   in `/` so you can keep completing inside. Every ssh invocation uses a
-  10-second connect timeout; `DEVVM_SSH_CONNECT_TIMEOUT=30` (or `30s`) raises
-  it for slow hosts.
+  10-second connect timeout; an entry's `connect_timeout`, or
+  `DEVVM_SSH_CONNECT_TIMEOUT=30` (or `30s`) for every machine, raises it for
+  slow hosts.
 - `devvm cp-out NAME SOURCE [DEST]` — copy a guest file onto the host; add `-r`
   for directories. SOURCE is relative to the guest user's home unless absolute;
   DEST is a local path, defaulting to the current directory, with the same
@@ -147,16 +173,18 @@ devvm cp-out -r myvm project ./backup/
 and then restarts every running forward daemon so none keeps executing the old
 code. `--check` only reports (`--check --plain` prints
 `current<TAB>latest<TAB>true|false` for scripts); `--version vX.Y.Z` pins a
-release. A `dev` build has no version to compare and needs `--force`. First-time
-installs go through `install.sh`. If the menu
+release. A `dev` build has no version to compare and needs `--force`. If the menu
 bar app is installed, `update` brings it to the same version too.
 
-## Upgrading to v0.2.0
+## Upgrading from v0.1.x
 
 v0.2.0 carries the simplification in
 [docs/proposals/simplify.md](docs/proposals/simplify.md): no `auth`, `repos`
 or `lockdown` commands, no "managed" entries, ownership by label, and no
-upgrade code for older layouts.
+upgrade code for older layouts. v0.2.1 adds one thing: `create` and every
+start of a smol VM refuse a smolvm older than 1.35.5, so step 2 is no longer
+optional. From v0.2.0, v0.2.1 is a plain `devvm update` once smolvm is at
+1.35.5.
 
 In this order, on the laptop and on every hub:
 
@@ -165,8 +193,8 @@ In this order, on the laptop and on every hub:
    --version v0.1.21`, then any command once) and still writes `devvm.toml`
    by hand ([config.md §8](docs/proposals/config.md)): only v0.1.16–v0.1.21
    carry the upgrade seeds and the pointer line.
-2. Stop every VM, then upgrade smolvm (1.35.5 has `machine update
-   --label`), and label each VM devvm made once: `smolvm machine update
+2. Stop every VM, then upgrade smolvm to 1.35.5 or newer (required since
+   v0.2.1, and the first with `machine update --label`), and label each VM devvm made once: `smolvm machine update
    --name NAME --label devvm=true`. An unlabelled VM is invisible to v0.2.0:
    `devvm update` does not cycle its daemon and `devvm stop` refuses it.
 3. In `devvm.toml`, delete any `managed = …` line, and any `user` or
@@ -205,68 +233,9 @@ signed app opens without Gatekeeper prompts. Sources and a local build script
 live in [`contrib/macos`](contrib/macos/README.md). Remove it by dragging
 `DevVM.app` out of `~/Applications`.
 
-## Build
+## Contributing
 
-```sh
-go build ./...            # everything
-go test ./...             # unit tests (forwards, daemon, keys, config, setup)
-./install.sh              # install the host CLI to ~/.local/bin, version-stamped
-```
-
-`install.sh` stamps the version from `git describe`; a bare `go build` yields
-a `dev` build that `devvm update` and `devvm menubar` refuse (they can't tell
-what release it is). After the first install, `devvm update` keeps a release
-binary current.
-
-## Layout
-
-```
-cmd/devvm/          host CLI entrypoint
-cmd/devvm-agent/    guest agent: serve (forwards+events+time) | open-url
-internal/cli/       cobra command tree (+ create's huh form, the `config` noun)
-internal/config/    the devvm.toml loader + its two table edits, templates, host-state paths
-internal/backend/   Backend interface + smol.go + ssh.go (remote boxes and the hop to a hub)
-internal/session/   per-machine forward daemon (owns the one exec) + client
-internal/agentrpc/  yamux stream protocol (forward / event / time) shared host+guest
-internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)
-internal/keys/      authorized_keys logic (dedup / revoke / list), host-side, was awk
-internal/provider/  cloud providers: the Provider interface, Hetzner (plain REST), a fake
-internal/bootstrap/ the guest steps of `setup`: user, prereqs, the template hook, hardening
-internal/hostbrowser/ open guest login URLs on the host (sanitized)
-```
-
-### The one-exec rule
-
-smolvm (1.16.1, where this was learned) has poor concurrency across separate
-`machine exec` sessions, so every forward, clock sync and browser event for a
-machine rides a *single* persistent `devvm-agent serve` exec, multiplexed
-with yamux. This is why the session daemon
-exists (it owns that exec for the machine's lifetime) and why forwards are yamux
-streams for smol. ssh has no such limit, so its forwards are native `-L` on a
-ControlMaster; only the agent's browser events ride its exec, which runs on
-the daemon's own ControlMaster. authorized_keys
-management runs host-side (`internal/keys` over one plain exec), so it needs no
-agent — which is what lets `keys` work on any entry with zero footprint.
-
-## Guest binaries
-
-`internal/agentbin/bin/devvm-agent-linux-{amd64,arm64}` are cross-compiled and
-committed, then `go:embed`-ed into the host binary so `go install …@latest`
-yields a self-contained artifact. Guests must be **Linux**: anything needing the
-agent (smol forwards, browser opens) fails early with a clear error on other OSes,
-while agent-free commands (`shell`, `attach`, `exec`, `keys`, ssh forwards)
-work on any remote with an sshd. Regenerate after changing `cmd/devvm-agent`:
-
-```sh
-./build.sh
-```
-
-## Publishing for `go install`
-
-`go install github.com/smweber/devvm/cmd/devvm@latest` resolves the module from
-the repo named by its module path (`go.mod`), at the repo root. Publishing is
-just tagging a release:
-
-```sh
-git tag v0.1.0 && git push --tags
-```
+Building, the source layout, the one-exec rule, the embedded guest agents
+and how a release is cut are in [CONTRIBUTING.md](CONTRIBUTING.md); the
+design docs are in [docs/proposals](docs/proposals), with
+[ROADMAP.md](docs/proposals/ROADMAP.md) as the record of what shipped when.
