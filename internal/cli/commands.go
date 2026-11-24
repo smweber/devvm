@@ -309,13 +309,17 @@ func (a *App) keysCmd() *cobra.Command {
 	c := &cobra.Command{Use: "keys", Short: "Manage a machine's authorized SSH keys"}
 
 	add := &cobra.Command{
-		Use:                "add NAME [KEY|--from-github USER]",
-		Short:              "Add a client pubkey (remote machines)",
-		Args:               cobra.ArbitraryArgs, // counted below, after a --help
-		DisableFlagParsing: true,                // pass --from-github through untouched
+		Use:   "add NAME [github:USER | FILE | KEY...]",
+		Short: "Add public keys (remote machines); no spec adds this host's ~/.ssh/id_*.pub",
+		Long: "Add public keys to the machine's ~/.ssh/authorized_keys: github:USER's keys\n" +
+			"(commented USER@github), the keys in FILE, or one key typed inline. With no\n" +
+			"spec, this host's own ~/.ssh/id_*.pub. A key with no comment gets this\n" +
+			"host's short hostname; a key already there is not added twice.",
+		Args: cobra.ArbitraryArgs, // counted below, after a retired flag's refusal
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args = leafArgs(args); wantsHelp(args) {
-				return cmd.Help()
+			// Retired: a spec, not a flag, since flags parse like any leaf's.
+			if cmd.Flags().Changed("from-github") {
+				return fmt.Errorf("--from-github is gone: use 'devvm keys add NAME github:USER'")
 			}
 			if len(args) < 1 {
 				return fmt.Errorf("requires at least 1 arg(s), only received 0")
@@ -324,7 +328,18 @@ func (a *App) keysCmd() *cobra.Command {
 				return a.runAuthorizeKey(args[0], args[1:])
 			})(cmd, args)
 		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) == 0 {
+				return a.completeMachines(cmd, args, toComplete)
+			}
+			return nil, cobra.ShellCompDirectiveDefault // a key file
+		},
 	}
+	// Kept only to refuse it. NoOptDefVal: a bare --from-github, or one
+	// followed by USER as a positional, refuses with the same line.
+	add.Flags().String("from-github", "", "retired: use github:USER")
+	add.Flags().Lookup("from-github").NoOptDefVal = "USER"
+	_ = add.Flags().MarkHidden("from-github")
 	list := &cobra.Command{
 		Use:   "list NAME",
 		Short: "List authorized keys (remote machines)",
@@ -332,18 +347,13 @@ func (a *App) keysCmd() *cobra.Command {
 	}
 	a.machineArg(list)
 	rm := &cobra.Command{
-		Use:   "rm NAME PATTERN",
-		Short: "Remove one key by fingerprint, comment, or key-line substring",
-		Args:  cobra.ExactArgs(2),
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runRevokeKey(args[0], args[1]) }),
+		Use:               "rm NAME PATTERN",
+		Short:             "Remove one key by fingerprint, comment, or key-line substring",
+		Args:              cobra.ExactArgs(2),
+		RunE:              a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runRevokeKey(args[0], args[1]) }),
+		ValidArgsFunction: a.completeMachines,
 	}
-	dedupe := &cobra.Command{
-		Use:   "dedupe NAME",
-		Short: "Remove duplicate authorized keys (remote machines)",
-		RunE:  a.hubOr(func(cmd *cobra.Command, args []string) error { return a.runCleanupKeys(args[0]) }),
-	}
-	a.machineArg(dedupe)
 
-	c.AddCommand(add, list, rm, dedupe)
+	c.AddCommand(add, list, rm)
 	return c
 }

@@ -33,36 +33,17 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestDedupKeepsFirstAdoptsComment(t *testing.T) {
+func TestMergeKeepsFirstAdoptsComment(t *testing.T) {
 	// First copy has no comment; a later duplicate does -> first adopts it.
-	lines := []string{
+	existing := []string{
 		"# header",
 		edA,             // first, no comment
 		edB + " keep-b", // distinct
-		edA + " laptop", // dup of first, has comment
 	}
-	kept, dup, own := Dedup(lines, nil)
-	if dup != 1 || own != 0 {
-		t.Fatalf("dup=%d own=%d, want 1,0", dup, own)
-	}
+	kept := Merge(existing, []string{edA + " laptop", edB + " other"})
 	want := []string{"# header", edA + " laptop", edB + " keep-b"}
 	if strings.Join(kept, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("kept = %v, want %v", kept, want)
-	}
-}
-
-func TestDedupRemovesOwn(t *testing.T) {
-	own := IDs([]string{edB + " machine"})
-	lines := []string{edA + " me", edB + " machine-copy", edA + " me"}
-	kept, dup, removedOwn := Dedup(lines, own)
-	if removedOwn != 1 {
-		t.Errorf("removedOwn = %d, want 1", removedOwn)
-	}
-	if dup != 1 {
-		t.Errorf("dup = %d, want 1", dup)
-	}
-	if len(kept) != 1 || kept[0] != edA+" me" {
-		t.Errorf("kept = %v", kept)
 	}
 }
 

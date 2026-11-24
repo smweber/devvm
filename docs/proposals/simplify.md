@@ -57,7 +57,8 @@ devvm is conceptually complicated, a result of organic growth:
    reached as an entry, or gets a provider.
 8. Ports leave templates, `create` and `setup`. `--ephemeral` goes. Saved
    forwards stay, and come up on `attach`/`shell` too.
-9. Left alone: `keys dedupe`, `providers token`, the hub/remote entry split
+9. Left alone: `keys dedupe` (removed later, 2026-11, with `--from-github`
+   and the key-comment prompt: `keys add` takes `github:USER`), `providers token`, the hub/remote entry split
    (one entry per role, as now), the "no saved forwards at all" option, the
    OAuth callback's 10-minute ttl, forward ownership and the bump rule, and
    the daemon, relay and bridge machinery.

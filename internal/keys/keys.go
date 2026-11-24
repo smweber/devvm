@@ -1,7 +1,7 @@
 // Package keys is the authorized_keys logic that replaces the ~50-line nested
-// awk programs in bin/devvm (push/cleanup/revoke/list). It is pure and text-only
-// so it can be unit-tested against the old behavior; the guest agent supplies
-// the filesystem glue (reading authorized_keys and the machine's own id_*.pub).
+// awk programs in bin/devvm (push/revoke/list). It is pure and text-only so it
+// can be unit-tested against the old behavior; the cli supplies the
+// filesystem glue (reading and rewriting authorized_keys over one exec).
 package keys
 
 import (
@@ -16,7 +16,7 @@ import (
 var keyPrefixes = []string{"ssh-", "ecdsa-", "sk-"}
 
 // Key is a parsed authorized_keys entry. Identity is Type+Blob; the comment is
-// not part of identity (dedup is by key material).
+// not part of identity (Merge collapses by key material).
 type Key struct {
 	Line    string // the original line, verbatim
 	Type    string // e.g. ssh-ed25519
@@ -55,7 +55,7 @@ func Parse(line string) (Key, bool) {
 	return Key{}, false
 }
 
-// ID is a key's identity for dedup/protection (type + material, not comment).
+// ID is a key's identity for Merge/protection (type + material, not comment).
 func (k Key) ID() string { return k.Type + " " + k.Blob }
 
 // Fingerprint returns the SHA256 fingerprint in ssh-keygen's format
@@ -93,32 +93,28 @@ func (k Key) Summary() string {
 	return fmt.Sprintf("%s %s (%s)", k.Fingerprint(), comment, k.TypeName())
 }
 
-// Dedup removes keys whose identity is in ownIDs (the machine's own keys) and
-// collapses duplicates by key material, keeping the first occurrence. If the
-// first copy has no comment but a later duplicate does, the later comment is
-// adopted onto the first line. Non-key lines (comments/blanks) are preserved.
-// Returns the rewritten lines and how many duplicate / own lines were dropped.
-func Dedup(lines []string, ownIDs map[string]bool) (kept []string, removedDup, removedOwn int) {
+// Merge adds incoming key lines to an authorized_keys file's lines,
+// collapsing duplicates by key material: the first copy is kept, and if it
+// has no comment it adopts a later copy's. Non-key lines (comments, blanks)
+// are kept. No key is dropped for being the machine's own: a box that
+// reaches itself (a loopback "self" entry, or any box whose user ssh-es to
+// localhost) has its own id_*.pub in authorized_keys on purpose.
+func Merge(existing, incoming []string) []string {
 	type firstRef struct {
 		idx     int
 		comment string
 		prefix  string
 	}
-	out := make([]string, 0, len(lines))
+	out := make([]string, 0, len(existing)+len(incoming))
 	first := map[string]*firstRef{}
-	for _, line := range lines {
+	for _, line := range append(append([]string(nil), existing...), incoming...) {
 		k, ok := Parse(line)
 		if !ok {
 			out = append(out, line)
 			continue
 		}
 		id := k.ID()
-		if ownIDs[id] {
-			removedOwn++
-			continue
-		}
 		if ref, seen := first[id]; seen {
-			removedDup++
 			if ref.comment == "" && k.Comment != "" {
 				out[ref.idx] = ref.prefix + " " + k.Comment
 				ref.comment = k.Comment
@@ -128,19 +124,7 @@ func Dedup(lines []string, ownIDs map[string]bool) (kept []string, removedDup, r
 		out = append(out, line)
 		first[id] = &firstRef{idx: len(out) - 1, comment: k.Comment, prefix: k.Prefix}
 	}
-	return out, removedDup, removedOwn
-}
-
-// Merge adds incoming key lines to an authorized_keys file's lines, collapsing
-// duplicates by key material as Dedup does. Unlike Dedup it drops no key for
-// being the machine's own: an add only ever adds. A machine that reaches
-// itself (a loopback "self" entry, or any box whose user ssh-es to localhost)
-// has its own id_*.pub in authorized_keys on purpose, and stripping it there
-// broke that box's own `ssh localhost`. Removing own keys stays `keys
-// dedupe`'s explicit, reported job.
-func Merge(existing, incoming []string) []string {
-	kept, _, _ := Dedup(append(append([]string(nil), existing...), incoming...), nil)
-	return kept
+	return out
 }
 
 // ErrNoMatch / ErrAmbiguous / ErrProtected classify Revoke failures.
@@ -216,7 +200,7 @@ func Join(lines []string) string {
 }
 
 // IDs returns the identity set for a list of public-key lines (e.g. id_*.pub),
-// used to build ownIDs / protected sets.
+// used to build Revoke's protected set.
 func IDs(pubLines []string) map[string]bool {
 	m := map[string]bool{}
 	for _, l := range pubLines {

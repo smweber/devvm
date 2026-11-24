@@ -99,7 +99,7 @@ func TestShapingVerbsRefuseHub(t *testing.T) {
 		{"cp-in", "h", src, "/tmp"}, {"cp-out", "h", "/etc/hostname", t.TempDir()},
 		{"ports", "add", "h", "3000"}, {"ports", "rm", "h", "3000"}, {"ports", "list", "h"},
 		{"ports", "up", "h"}, {"ports", "down", "h"},
-		{"keys", "add", "h", src}, {"keys", "list", "h"}, {"keys", "rm", "h", "x"}, {"keys", "dedupe", "h"},
+		{"keys", "add", "h", src}, {"keys", "list", "h"}, {"keys", "rm", "h", "x"},
 	}
 	for _, argv := range verbs {
 		a.Stdout, a.Stderr = new(bytes.Buffer), new(bytes.Buffer)

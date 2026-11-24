@@ -34,7 +34,8 @@ devvm shapes what it creates and only connects to everything else:
 
 `create` makes a smol VM or a server and labels it; `setup` shapes it (user,
 prereqs, agent, keys and hardening on a server, this host's `gh` login if the
-template shares it, your hook, repos). A smol VM
+template shares it, your hook, repos). A server is hardened unless its
+template says `harden = false`. A smol VM
 or server without the label is invisible to devvm: label it by hand to hand
 it over (`smolvm machine update --name NAME --label devvm=true`, or the
 provider's console). An entry is never shaped: devvm connects to it
@@ -106,9 +107,14 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
   for detail; `--plain` for scripts). `devvm start|stop|delete NAME` act on
   a smol VM or a server devvm made (a stopped Hetzner server still bills);
   an entry is removed with `config rm`.
-- `devvm keys add|rm|list|dedupe NAME` — manage `~/.ssh/authorized_keys`
-  on a box reached over ssh, from this host; needs no agent, so it works on
-  any entry (a smol VM has no ssh to hold keys for).
+- `devvm keys list NAME`, `devvm keys add NAME [github:USER | FILE | KEY]`,
+  `devvm keys rm NAME PATTERN` — manage `~/.ssh/authorized_keys` on a box
+  reached over ssh, from this host; needs no agent, so it works on any entry
+  (a smol VM has no ssh to hold keys for). `keys add` with no spec adds this
+  host's own `~/.ssh/id_*.pub`; GitHub's keys are commented `USER@github`, and
+  any other key without a comment gets this host's name. A key already there
+  is not added twice. `keys rm` takes a fingerprint, comment or substring
+  and never removes this host's own key.
 - `devvm ports add NAME PORT` (or `HOST:GUEST`) — forward a guest port to
   this host and remember it here; saved forwards come back on every
   `attach`, `shell`, `start` and `ports up` (`ports down` holds until then).

@@ -386,8 +386,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   shapes it. `--yes` skips prompts and resolves every unset field from flag >
   template > built-in (erroring on a required field with no default).
   Multi-op nouns are grouped: `ports {add,rm,list,up,down}`,
-  `keys {add,rm,list,dedupe}`, `config {path,show,edit,check,add,rm}` and
-  `providers token`. NAME is always the **first positional of the leaf**
+  `keys {add,rm,list}`, `config {path,show,edit,check,add,rm}` and
+  `providers token`. An unknown word under a noun is a one-line error naming
+  its leaves, exit 1 (`guardNouns`; cobra itself checks only at the root),
+  and a bare noun prints its help. NAME is always the **first positional of the leaf**
   (`devvm ports add NAME PORT`) so completion and "first arg = machine" hold
   at any depth. Single-action verbs (create/start/stop/delete/attach/…)
   stay flat, but `--help` clusters them into Lifecycle/Connect/Configure/Config
@@ -396,13 +398,27 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   come back as such: `auth` (a login is typed inside `attach`, below),
   `repos` (a template's `repos` are setup's last step; anything else is `git
   clone` in the box), `lockdown` (setup's harden step), `setup --adopt`,
-  `setup --host`, `config add --managed`, `ports add --ephemeral`; and by
-  the post-review cleanup, the hidden no-op `delete --force`.
+  `setup --host`, `config add --managed`, `ports add --ephemeral`; by
+  the post-review cleanup, the hidden no-op `delete --force`; and by the
+  keys simplification, `keys dedupe` and `keys add --from-github` (a hidden
+  flag kept only to refuse it, naming `github:USER`).
 - **Keys**: `internal/keys` is pure text logic (SHA256 fingerprint computed in-Go,
   matches `ssh-keygen`). It runs **host-side** — read `~/.ssh/authorized_keys`,
   process on the host, write back atomically (`umask 077` + temp + `mv`, content
   over stdin so nothing is shell-interpolated). No agent, so it works on any
   entry with zero footprint. `internal/keys` preserves options/comments verbatim.
+  `keys add NAME [github:USER | FILE | KEY...]` is a normal flag-parsing leaf;
+  no spec means this host's `~/.ssh/id_*.pub` (no prompt). The spec is
+  resolved on the host it was typed on (`hostKeyLines`, a hub machine's
+  too: proxy sends each resolved line as one token). GitHub's keys get the
+  comment `USER@github`; any other uncommented key gets this host's short
+  hostname (`labelKeys`, no prompt; also a template's `authorized_keys`
+  files at setup); a non-key line is refused. `keys.Merge` collapses
+  duplicates by key material (first copy kept, adopting a later comment if
+  it had none) and never drops the box's own key; `keys rm` refuses this
+  host's own keys (`hostProtectedPubs`: `~/.ssh/id_*.pub`, an entry's
+  `identity`, and on a provider server its `[providers.NAME]`
+  `ssh_key_file`, the login key create gave it; one unreadable adds nothing).
 - **Hubs** (`docs/proposals/hub.md`): a hub is a `[machines.HUB]` entry with
   `backend = "hub"`, reached like a remote box and never shaped like one (it
   needs only `devvm` and `smolvm`; registering one dials nothing, so its
@@ -515,7 +531,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   only on a provider server. This is what establishes the invariant
   `rootWrap` assumes (login user = unprivileged user with sudo). `Harden`
   pins `AllowUsers` to the actual connection user, opens ssh over tcp and
-  mosh's `60000:61000/udp`, and refuses to run as root (it would write
+  mosh's `60000:61000/udp` additively (never `ufw reset`: every setup re-runs
+  it, and a reset would wipe rules the user or the hook added), and refuses
+  to run as root (it would write
   `PermitRootLogin no` + `AllowUsers root` — a lockout). devvm's own apt
   calls wait for the dpkg lock (`-o DPkg::Lock::Timeout`) and its `apt-get
   update` retries (the lock timeout does not cover the lists lock); a
@@ -569,7 +587,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `memory`/`disk` (create-time, smol), `repos`, `share_auth` (tools whose
   host login setup copies in: `"github"` only, any other a load error;
   `[]` in a named template turns default's off), `authorized_keys[_github]`
-  and `harden`/`fail2ban` (provider servers), `server_type`/`location`/
+  and `harden`/`fail2ban` (provider servers; `harden`'s built-in is **on**,
+  `harden = false` opts out, and `Template.HardenSet` keeps smol's ignored
+  warning to an explicit `harden`; `fail2ban` is off), `server_type`/`location`/
   `image`/`ipv4` (create-time, provider). No `user` (always `dev`) and no
   `ports` (`ports add`): both are load errors. Fields that don't apply are
   ignored with one warning line. Unset fields fall back to

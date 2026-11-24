@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -18,7 +17,7 @@ import (
 	"github.com/smweber/devvm/internal/keys"
 )
 
-// Host-side authorized_keys management. The heavy logic (dedup/revoke/fingerprint)
+// Host-side authorized_keys management. The heavy logic (merge/revoke/fingerprint)
 // lives in internal/keys and runs on the host; the guest is touched only to read
 // and atomically rewrite the file — so no guest agent is needed for keys, and an
 // entry gets nothing installed. authorized_keys holds public keys only,
@@ -35,18 +34,9 @@ func (a *App) guestAuthKeys(b backend.Backend) ([]string, error) {
 	return keys.Split(buf.String()), nil
 }
 
-// guestOwnIDs returns the identities of the guest's own keys (~/.ssh/id_*.pub),
-// which `keys dedupe` strips. A missing glob is simply "none".
-func (a *App) guestOwnIDs(b backend.Backend) map[string]bool {
-	var buf bytes.Buffer
-	_ = b.Run(context.Background(), backend.ExecOpts{Stdout: &buf},
-		"sh", "-c", "cat ~/.ssh/id_*.pub 2>/dev/null")
-	return keys.IDs(keys.Split(buf.String()))
-}
-
 // writeGuestAuthKeys atomically replaces ~/.ssh/authorized_keys. The content
 // rides stdin (never the command line — comments/options can be attacker-shaped,
-// e.g. --from-github), umask 077 fixes perms, and mv is an atomic same-dir swap
+// e.g. github:USER), umask 077 fixes perms, and mv is an atomic same-dir swap
 // so a dropped connection can't leave a half-written file (or lock you out).
 func (a *App) writeGuestAuthKeys(b backend.Backend, lines []string) error {
 	const script = "umask 077; mkdir -p ~/.ssh && cat > ~/.ssh/.authorized_keys.devvm && " +
@@ -57,20 +47,28 @@ func (a *App) writeGuestAuthKeys(b backend.Backend, lines []string) error {
 
 // addGuestKeys merges incoming key lines into authorized_keys (dedup by
 // material). It drops none of the guest's own keys (keys.Merge says why), so
-// it needs no read of ~/.ssh/id_*.pub. Shared by authorize-key and setup
-// seeding.
+// it needs no read of ~/.ssh/id_*.pub. Shared by `keys add` and setup
+// seeding. It returns how many keys were new to the file, so `keys add`
+// does not claim to have added a key that was already there.
 // The read-modify-write isn't locked: two concurrent invocations (from different
 // hosts, say) can lose one side's update — the atomic mv prevents corruption,
 // not lost writes. Re-running is always safe.
-func (a *App) addGuestKeys(b backend.Backend, incoming []string) error {
+func (a *App) addGuestKeys(b backend.Backend, incoming []string) (int, error) {
 	if len(incoming) == 0 {
-		return nil
+		return 0, nil
 	}
 	existing, err := a.guestAuthKeys(b)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return a.writeGuestAuthKeys(b, keys.Merge(existing, incoming))
+	have := keys.IDs(existing)
+	added := 0
+	for id := range keys.IDs(incoming) {
+		if !have[id] {
+			added++
+		}
+	}
+	return added, a.writeGuestAuthKeys(b, keys.Merge(existing, incoming))
 }
 
 // requireRemote gates commands that act on a guest's authorized_keys — allowed
@@ -107,30 +105,6 @@ func (a *App) runKeys(name string) error {
 	return nil
 }
 
-func (a *App) runCleanupKeys(name string) error {
-	m, b, err := a.resolve(name)
-	if err != nil {
-		return err
-	}
-	if err := requireRemote(m, "keys dedupe"); err != nil {
-		return err
-	}
-	lines, err := a.guestAuthKeys(b)
-	if err != nil {
-		return err
-	}
-	if len(lines) == 0 {
-		fmt.Fprintln(a.Stdout, "devvm: no authorized_keys")
-		return nil
-	}
-	kept, dup, own := keys.Dedup(lines, a.guestOwnIDs(b))
-	if err := a.writeGuestAuthKeys(b, kept); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.Stdout, "devvm: removed %d duplicate and %d machine-owned key line(s)\n", dup, own)
-	return nil
-}
-
 func (a *App) runRevokeKey(name, pattern string) error {
 	m, b, err := a.resolve(name)
 	if err != nil {
@@ -147,9 +121,9 @@ func (a *App) runRevokeKey(name, pattern string) error {
 		fmt.Fprintln(a.Stdout, "devvm: no authorized_keys")
 		return nil
 	}
-	// The host's own keys (id_*.pub + configured IDENTITY) are protected so you
-	// can't cut the key you're connecting with.
-	idx, summary, err := keys.Revoke(lines, pattern, keys.IDs(hostProtectedPubs(m)))
+	// The host's own keys (hostProtectedPubs) are protected so you can't
+	// cut the key you're connecting with.
+	idx, summary, err := keys.Revoke(lines, pattern, keys.IDs(a.hostProtectedPubs(m)))
 	if err != nil {
 		return err
 	}
@@ -169,53 +143,69 @@ func (a *App) runAuthorizeKey(name string, spec []string) error {
 	if err := requireRemote(m, "keys add"); err != nil {
 		return err
 	}
-	if len(spec) == 0 {
-		user, err := promptTTY("GitHub user ID: ")
-		if err != nil {
-			return err
-		}
-		if user == "" {
-			return fmt.Errorf("GitHub user ID is required")
-		}
-		spec = []string{"--from-github", user}
-	}
-	resolved, err := resolvePubkeys(spec)
+	lines, err := hostKeyLines(spec)
 	if err != nil {
 		return err
 	}
-	labeled, err := labelKeys(resolved)
+	added, err := a.addGuestKeys(b, lines)
 	if err != nil {
 		return err
 	}
-	if err := a.addGuestKeys(b, labeled); err != nil {
-		return err
+	if dup := len(keys.IDs(lines)) - added; dup > 0 {
+		fmt.Fprintf(a.Stdout, "devvm: added %d key(s) to '%s' (%d already there)\n", added, name, dup)
+		return nil
 	}
-	fmt.Fprintf(a.Stdout, "devvm: added %d key(s) to '%s'\n", len(labeled), name)
+	fmt.Fprintf(a.Stdout, "devvm: added %d key(s) to '%s'\n", added, name)
 	return nil
 }
 
-// resolvePubkeys turns a key spec into public-key lines, mirroring resolve_pubkeys:
-// --from-github USER, a bare inline key, a file path, or (empty) all local id_*.pub.
+// hostKeyLines resolves a `keys add` spec on this host into commented key
+// lines, for the local leaf and for HUB/NAME alike (proxy sends the lines),
+// so a key file or the bare form always means the keys of the host it was
+// typed on.
+func hostKeyLines(spec []string) ([]string, error) {
+	lines, err := resolvePubkeys(spec)
+	if err != nil {
+		return nil, err
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("no ~/.ssh/id_*.pub on this host; pass github:USER, a key file or a key")
+	}
+	return labelKeys(lines)
+}
+
+// githubSpec is the `keys add` prefix that fetches a GitHub user's keys
+// (github:USER): a spec, not a flag, so the leaf parses flags like any
+// other and the prefix can never be read as a path or a key.
+const githubSpec = "github:"
+
+// resolvePubkeys turns a key spec into public-key lines: github:USER, an
+// inline key (its words joined), a file path, or (empty) all local id_*.pub.
 func resolvePubkeys(spec []string) ([]string, error) {
 	switch {
 	case len(spec) == 0:
 		return localPubkeys(), nil
-	case spec[0] == "--from-github":
-		if len(spec) < 2 || spec[1] == "" {
-			return nil, fmt.Errorf("keys add --from-github needs a USER")
+	case strings.HasPrefix(spec[0], githubSpec):
+		if len(spec) > 1 {
+			return nil, fmt.Errorf("keys add takes one github:USER, file or key, not %q too", strings.Join(spec[1:], " "))
 		}
-		return githubKeys(spec[1])
+		return githubKeys(strings.TrimPrefix(spec[0], githubSpec))
 	case isInlineKey(spec[0]):
 		return []string{strings.Join(spec, " ")}, nil
 	default:
+		if len(spec) > 1 {
+			return nil, fmt.Errorf("keys add takes one github:USER, file or key, not %q too", strings.Join(spec[1:], " "))
+		}
 		data, err := os.ReadFile(spec[0])
 		if err != nil {
-			return nil, fmt.Errorf("not a public-key file: %s", spec[0])
+			return nil, fmt.Errorf("not github:USER, a key or a public-key file: %s", spec[0])
 		}
+		// Blank and # lines are skipped: an authorized_keys-shaped file
+		// may carry them, and only key lines are added.
 		var out []string
 		for _, l := range strings.Split(string(data), "\n") {
-			if strings.TrimSpace(l) != "" {
-				out = append(out, strings.TrimSpace(l))
+			if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+				out = append(out, l)
 			}
 		}
 		return out, nil
@@ -250,6 +240,10 @@ func localPubkeys() []string {
 	return out
 }
 
+// githubBase is where github:USER's keys come from, a var so a test can
+// serve them.
+var githubBase = "https://github.com"
+
 // githubUserRe matches a GitHub username (alphanumeric and hyphens). The user
 // string lands in a URL path, so this also blocks path traversal into other
 // github.com endpoints.
@@ -260,7 +254,7 @@ func githubKeys(user string) ([]string, error) {
 		return nil, fmt.Errorf("invalid GitHub user %q", user)
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get("https://github.com/" + user + ".keys")
+	resp, err := client.Get(githubBase + "/" + user + ".keys")
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +281,7 @@ func githubKeys(user string) ([]string, error) {
 		// only to a token with admin:public_key, so the comment says
 		// where the key came from; `keys list` prints the fingerprint
 		// GitHub's settings page shows beside each title. A copy already
-		// in authorized_keys keeps its own comment (keys.Dedup).
+		// in authorized_keys keeps its own comment (keys.Merge).
 		out = append(out, l+" "+user+"@github")
 	}
 	if len(out) == 0 {
@@ -296,9 +290,12 @@ func githubKeys(user string) ([]string, error) {
 	return out, nil
 }
 
-// hostProtectedPubs returns the host's own public keys (id_*.pub + IDENTITY.pub),
-// whose identities the guest must never revoke.
-func hostProtectedPubs(m *config.Machine) []string {
+// hostProtectedPubs returns the host's own public keys (id_*.pub +
+// IDENTITY.pub, and on a provider server its table's ssh_key_file, the key
+// create gave it, which need not be named id_*), whose identities the guest
+// must never revoke: on a hardened box that is a lockout. A file that is
+// missing or does not parse adds nothing; rm still runs.
+func (a *App) hostProtectedPubs(m *config.Machine) []string {
 	pubs := localPubkeys()
 	if m.Identity != "" {
 		p := config.ExpandHome(m.Identity) + ".pub"
@@ -306,28 +303,26 @@ func hostProtectedPubs(m *config.Machine) []string {
 			pubs = append(pubs, strings.TrimSpace(string(data)))
 		}
 	}
+	if m.IsProvider() {
+		// A provider record's backend is its [providers.NAME] table.
+		if f, err := config.LoadFile(a.Paths); err == nil {
+			if spec := f.Providers[m.Backend]; spec.SSHKeyFile != "" {
+				if line, err := providerKeyFile(m.Backend, config.Placement{SSHKeyFile: spec.SSHKeyFile}); err == nil {
+					pubs = append(pubs, line)
+				}
+			}
+		}
+	}
 	return pubs
 }
 
-var bareEmailRe = regexp.MustCompile(`^[^\s@]+@[^\s@]+$`)
-
-// labelKeys ensures every key carries a comment: already-commented keys pass
-// through verbatim (options and all), and uncommented ones prompt (defaulting
-// to the local hostname), rejecting a bare email. GitHub's keys arrive
-// commented (githubKeys), so only a bare inline key or file line prompts.
-// The TTY is only opened if a prompt is actually needed, so a commented key
-// works non-interactively.
+// labelKeys gives every key a comment, so `keys list` and `keys rm` can
+// name it: a commented key passes through verbatim, and an uncommented one
+// gets this host's short hostname, the host it was added from. Options on
+// the line are kept. A line that is not a key is refused, never written.
 func labelKeys(lines []string) ([]string, error) {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown"
-	}
-	if i := strings.IndexByte(host, '.'); i > 0 {
-		host = host[:i]
-	}
-	var tty *os.File
-	var r *bufio.Reader
-	var out []string
+	host := shortHostname()
+	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		k, ok := keys.Parse(line)
 		if !ok {
@@ -337,42 +332,21 @@ func labelKeys(lines []string) ([]string, error) {
 			out = append(out, k.Line)
 			continue
 		}
-		if tty == nil {
-			tty, err = os.OpenFile("/dev/tty", os.O_RDWR, 0)
-			if err != nil {
-				return nil, fmt.Errorf("no terminal for key comments; pass an explicitly commented key")
-			}
-			defer tty.Close()
-			r = bufio.NewReader(tty)
-		}
-		var comment string
-		for {
-			fmt.Fprintf(tty, "Comment for %s key [%s]: ", k.Type, host)
-			text, _ := r.ReadString('\n')
-			comment = strings.TrimSpace(text)
-			if comment == "" {
-				comment = host
-			}
-			if bareEmailRe.MatchString(comment) {
-				fmt.Fprintln(tty, "devvm: use a hostname or other descriptive label, not just an email address")
-				continue
-			}
-			break
-		}
 		// Prefix keeps any options on the line, not just type+blob.
-		out = append(out, k.Prefix+" "+comment)
+		out = append(out, k.Prefix+" "+host)
 	}
 	return out, nil
 }
 
-// promptTTY reads a single line from the controlling terminal.
-func promptTTY(prompt string) (string, error) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return "", fmt.Errorf("no terminal; use --from-github USER")
+// shortHostname is this host's name up to the first dot (macOS reports
+// NAME.local), or "unknown".
+func shortHostname() string {
+	host, err := hostname()
+	if err != nil || host == "" {
+		return "unknown"
 	}
-	defer tty.Close()
-	fmt.Fprint(tty, prompt)
-	line, _ := bufio.NewReader(tty).ReadString('\n')
-	return strings.TrimSpace(line), nil
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		host = host[:i]
+	}
+	return host
 }

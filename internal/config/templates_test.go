@@ -119,6 +119,17 @@ share_auth = []
 	if b := (TemplateSpec{}).Resolve(DefaultTemplate); len(b.ShareAuth) != 0 {
 		t.Errorf("built-in share_auth = %q, want none", b.ShareAuth)
 	}
+	// harden is on unless a layer turns it off; fail2ban stays off.
+	if b := (TemplateSpec{}).Resolve(DefaultTemplate); !b.Harden || b.HardenSet || b.Fail2ban {
+		t.Errorf("built-in harden/fail2ban = %v (set %v)/%v, want on (unset)/off", b.Harden, b.HardenSet, b.Fail2ban)
+	}
+	if got.HardenSet != true {
+		t.Errorf("web's harden = false must read as set")
+	}
+	named, def, _ = TemplateLayers(p, "api")
+	if got := named.Under(def).Resolve("api"); !got.Harden || !got.HardenSet {
+		t.Errorf("api harden = %v (set %v), want default's explicit true", got.Harden, got.HardenSet)
+	}
 	if _, _, err := TemplateLayers(p, "nope"); err == nil || !strings.Contains(err.Error(), "api, default, web") {
 		t.Errorf("unknown template: %v", err)
 	}

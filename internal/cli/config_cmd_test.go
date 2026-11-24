@@ -235,7 +235,7 @@ func TestConfigShow(t *testing.T) {
 	out := a.Stdout.(*bytes.Buffer).String()
 	for _, want := range []string{
 		"[templates.default]\n",
-		"harden = false", "# built-in",
+		"harden = true", "fail2ban = false",
 		"[templates.big]  # unset fields fall back to [templates.default]",
 		"memory = 8192\n",
 		`hook = "cmd:/d"`, "# from default",
@@ -248,6 +248,12 @@ func TestConfigShow(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("show lacks %q:\n%s", want, out)
+		}
+	}
+	// harden's built-in is on, and annotated as the built-in.
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "harden = ") && (!strings.HasPrefix(l, "harden = true ") || !strings.HasSuffix(l, "# built-in")) {
+			t.Errorf("harden line = %q, want true # built-in", l)
 		}
 	}
 }

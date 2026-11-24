@@ -70,7 +70,9 @@ fi
 // "setlocale: LC_ALL: cannot change locale" from every bash and perl there.
 // /etc/locale.gen is edited where it exists (Debian, Ubuntu 22.04+: a bare
 // locale-gen reads it), else the name goes to locale-gen (older Ubuntu). A
-// failure here is one warning, never a failed setup.
+// failure here is one warning, never a failed setup. Both prereq scripts run
+// it right after apt_update (it may install locales) and before the package
+// install, so the apt and perl calls after it do not warn on a first setup.
 const genLocales = `
 gen_locales() {
     gen=
@@ -128,6 +130,7 @@ const smolPrereqs = `
 set -e
 ` + aptUpdateFn + `
 apt_update
+` + genLocales + `
 DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y ` + devvmPackages + `
 ` + installGH + `
 printf '%s\n' "$1" >/etc/hostname
@@ -139,7 +142,7 @@ grep -qE "[[:space:]]$1([[:space:]]|\$)" /etc/hosts || printf '127.0.1.1 %s\n' "
 # so getaddrinfo prefers IPv4.
 grep -qs '^precedence ::ffff:0:0/96  100' /etc/gai.conf || \
     printf 'precedence ::ffff:0:0/96  100\n' >>/etc/gai.conf
-` + genLocales
+`
 
 // ensureUserScript creates the unprivileged user ($1, always dev) devvm works as, with
 // NOPASSWD sudo, and copies root's authorized_keys over so the client key
@@ -209,8 +212,9 @@ const remotePrereqs = `
 set -e
 ` + aptUpdateFn + `
 apt_update
+` + genLocales + `
 DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y ` + devvmPackages + `
-` + installGH + genLocales
+` + installGH
 
 // Prereqs installs the minimal packages as root, on a box devvm made (a smol
 // VM, a provider server): setup's one caller has refused anything else.

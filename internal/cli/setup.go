@@ -383,7 +383,10 @@ func (a *App) warnIgnored(m *config.Machine, t config.Template) {
 		if len(t.AuthorizedKeysGithub) > 0 || len(t.AuthorizedKeys) > 0 {
 			ignored = append(ignored, "keys")
 		}
-		if t.Harden {
+		// harden is on by default (config.DefaultHarden), so only a
+		// template that says `harden = true` is named: the built-in is no
+		// mistake on every smol setup.
+		if t.Harden && t.HardenSet {
 			ignored = append(ignored, "harden")
 		}
 		if t.Fail2ban {
@@ -576,8 +579,10 @@ func (a *App) reachForSetup(ctx context.Context, m *config.Machine) (*config.Mac
 }
 
 // seedAuthorizedKeys pushes a template's keys at setup. A source that
-// yields no keys (e.g. a keyless github user) warns and moves on rather
-// than aborting the whole setup.
+// yields no keys (e.g. a keyless github user) or a line that is not a key
+// warns and moves on rather than aborting the whole setup. A file's
+// uncommented key gets this host's name, as `keys add` gives it
+// (labelKeys); GitHub's arrive commented.
 func (a *App) seedAuthorizedKeys(b backend.Backend, githubUsers, files []string) error {
 	var lines []string
 	for _, u := range githubUsers {
@@ -590,13 +595,17 @@ func (a *App) seedAuthorizedKeys(b backend.Backend, githubUsers, files []string)
 	}
 	for _, f := range files {
 		keys, err := resolvePubkeys([]string{config.ExpandHome(f)})
+		if err == nil {
+			keys, err = labelKeys(keys)
+		}
 		if err != nil {
 			fmt.Fprintf(a.Stderr, "devvm: %v\n", err)
 			continue
 		}
 		lines = append(lines, keys...)
 	}
-	return a.addGuestKeys(b, lines)
+	_, err := a.addGuestKeys(b, lines)
+	return err
 }
 
 // templateArgv renders a resolved template as the explicit flag set the

@@ -8,7 +8,8 @@ import (
 	"github.com/smweber/devvm/internal/config"
 )
 
-// hardenBody is setup's hardening script (ufw + sshd drop-in + auto-updates). It
+// hardenBody is setup's hardening script (ufw + sshd drop-in + auto-updates),
+// idempotent and additive: safe on every setup re-run. It
 // reads SSH_PORT and WANT_FAIL2BAN prepended by Harden and takes the dev user
 // as $1. Preserves the two fail-safes from harden_machine: refuse if
 // authorized_keys is empty (would lock you out) and validate sshd config before
@@ -29,11 +30,13 @@ export DEBIAN_FRONTEND=noninteractive
 apt_update
 ` + aptGet + ` install -y ufw unattended-upgrades${WANT_FAIL2BAN:+ fail2ban}
 
-# Firewall: default-deny inbound; SSH is the only public TCP port. Everything
-# else is reached over the SSH -L tunnel. mosh-server (a prereq) listens on
-# UDP 60000-61000, so that range is open too, or the mosh transport could
-# not reach a hardened box.
-ufw --force reset
+# Firewall: default-deny inbound; SSH is the only public TCP port devvm
+# opens. Everything else is reached over the SSH -L tunnel. mosh-server (a
+# prereq) listens on UDP 60000-61000, so that range is open too, or the mosh
+# transport could not reach a hardened box. Additive, never a reset: every
+# setup re-runs this, and a reset would drop rules the user or the hook
+# added (and leave six /etc/ufw/*.rules.TIMESTAMP backups per run). Each
+# command below is idempotent on its own.
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow "${SSH_PORT}/tcp"

@@ -199,6 +199,11 @@ HUB/NAME --yes` resolves unset fields from the **hub's** `config.toml`,
 deliberately: the hub's defaults describe the hub's VMs. Nothing else in the
 proxied set reads a local file.
 
+*Later (2026-11):* `keys add` parses flags like any leaf; GitHub's keys are
+the `github:USER` spec (`--from-github` is refused), and an uncommented key
+gets the laptop's hostname without a prompt. The laptop still resolves the
+spec and sends whole lines.
+
 A login shell is required: a plain `ssh HUB devvm` runs in a non-login shell
 where Homebrew's `devvm` and `smolvm` are usually not on `PATH`. This is what
 `remoteCommand(Login: true)` already does for guest execs. `-t` is passed only

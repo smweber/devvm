@@ -375,6 +375,11 @@ worst. It travels to a hub as one more hidden flag, `--share-auth`, and
 the hub shares its own login. The repos skip's hint names `share_auth`
 first.
 
+**Later (2026-11).** `harden`'s built-in is on: a provider server is
+hardened unless its template says `harden = false` (`fail2ban` stays off).
+smol ignores it, and setup names harden as ignored only when a template
+sets it.
+
 ### 4. Config editing is its own noun
 
 Every VM command reads `devvm.toml`; none writes it. Every `config` command

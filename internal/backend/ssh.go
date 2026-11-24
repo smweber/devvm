@@ -249,6 +249,13 @@ func controlPathErr(path string) error {
 	return nil
 }
 
+// ControlPathErr is controlPathErr for this host's shared master
+// (paths.ControlPath), for a caller that must refuse before it makes
+// anything: a provider create, whose server bills from Create on.
+func ControlPathErr(paths config.Paths) error {
+	return controlPathErr(paths.ControlPath())
+}
+
 // checkControlPaths checks the master Run and Spawn share
 // (paths.ControlPath). The daemon's own master is under run/, which is
 // shorter than or equal to the state dir's.

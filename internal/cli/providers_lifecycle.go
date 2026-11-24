@@ -95,6 +95,11 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	if s.Memory != 0 || s.Disk != 0 {
 		return fmt.Errorf("--memory and --disk size a smol VM; a %s server's size is its server type (--server-type, or server_type in the template)", providerTitle(pn))
 	}
+	// setup reaches the server over ssh on this host's ControlMaster: a
+	// state dir too long for its socket would fail only after Create.
+	if err := backend.ControlPathErr(a.Paths); err != nil {
+		return err
+	}
 	t, pl, err := a.gatherProviderSpec(&s, spec)
 	if err != nil {
 		return err
@@ -137,19 +142,20 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	fmt.Fprintf(a.Stdout, "Creating %s server '%s': %s in %s, image %s, %s, ssh key %s.\n",
 		providerTitle(pn), s.Name, pl.ServerType, pl.Location, pl.Image, nets, key)
 	fmt.Fprintf(a.Stdout, "It bills from now until 'devvm delete %s' (a stopped server still bills).\n", s.Name)
-	// The default template hardens nothing and adds no keys unless it says
-	// so, and a server that came up open with one key was a surprise:
-	// say it before the server exists.
-	if !t.Harden || len(t.AuthorizedKeysGithub)+len(t.AuthorizedKeys) == 0 {
-		var miss []string
+	// The built-in template hardens but adds no keys, and a template may
+	// turn harden off: a server that comes up open, or with one key, is a
+	// surprise, so say it before the server exists.
+	noKeys := len(t.AuthorizedKeysGithub)+len(t.AuthorizedKeys) == 0
+	if !t.Harden || noKeys {
+		var miss, fields []string
 		if !t.Harden {
-			miss = append(miss, "does not harden it")
+			miss, fields = append(miss, "turns hardening off"), append(fields, "harden")
 		}
-		if len(t.AuthorizedKeysGithub)+len(t.AuthorizedKeys) == 0 {
-			miss = append(miss, "adds no keys beyond "+key)
+		if noKeys {
+			miss, fields = append(miss, "adds no keys beyond "+key), append(fields, "authorized_keys_github")
 		}
-		fmt.Fprintf(a.Stdout, "Template '%s' %s (harden, authorized_keys_github; 'devvm setup %s --template T' applies another template later).\n",
-			t.Name, strings.Join(miss, " and "), s.Name)
+		fmt.Fprintf(a.Stdout, "Template '%s' %s (%s; 'devvm setup %s --template T' applies another template later).\n",
+			t.Name, strings.Join(miss, " and "), strings.Join(fields, ", "), s.Name)
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), providerTimes.create)

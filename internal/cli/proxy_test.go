@@ -443,7 +443,7 @@ func TestIsInlineKey(t *testing.T) {
 		"no-pty,command=\"x\" ssh-rsa AAAA c": true,
 		"restrict ssh-ed25519 AAAA":           true,
 		"/home/me/.ssh/id_ed25519.pub":        false,
-		"--from-github":                       false,
+		"github:alice":                        false,
 		"alice":                               false,
 		"opt1 opt2 ssh-ed25519 AAAA":          false, // options are one comma-joined token
 		"":                                    false,

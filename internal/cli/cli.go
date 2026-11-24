@@ -161,7 +161,7 @@ func (a *App) rootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// A leaf that disables flag parsing (exec, keys add) gets the
+			// A leaf that disables flag parsing (exec) gets the
 			// root's own flags typed before it as arguments: apply them
 			// here, as parsing would have, and the leaf strips them
 			// (leafArgs).
@@ -243,7 +243,43 @@ func (a *App) rootCmd() *cobra.Command {
 	root.AddCommand(a.daemonCmd())  // hidden; falls under "Additional Commands"
 	root.AddCommand(a.sessionCmd()) // hidden: the hub side of hub forwards
 	root.AddCommand(a.refreshCmd()) // hidden: the menu bar app's "probe the remotes now"
+	guardNouns(root)
 	return root
+}
+
+// guardNouns makes every noun under root (a command with subcommands and
+// no Run of its own: ports, keys, config, providers) refuse a word it does
+// not know. cobra only checks that at the root: a non-runnable noun prints
+// its help and exits 0, so a script calling a removed leaf (`keys dedupe`)
+// would see success. A bare noun still prints its help, exit 0.
+func guardNouns(root *cobra.Command) {
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+		if c == root || !c.HasSubCommands() || c.Runnable() {
+			return
+		}
+		// Runnable now, so cobra's usage would list a bare `devvm keys
+		// [flags]`; the noun's usage keeps only `devvm keys [command]`.
+		c.SetUsageTemplate(strings.Replace(c.UsageTemplate(),
+			"Usage:{{if .Runnable}}", "Usage:{{if and .Runnable (not .HasAvailableSubCommands)}}", 1))
+		c.RunE = func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			var names []string
+			for _, sub := range cmd.Commands() {
+				if sub.IsAvailableCommand() {
+					names = append(names, sub.Name())
+				}
+			}
+			return fmt.Errorf("unknown command %q for %q (its commands: %s)",
+				args[0], cmd.CommandPath(), strings.Join(names, ", "))
+		}
+	}
+	walk(root)
 }
 
 // rootFlags are the root's persistent flags, each taking a value.

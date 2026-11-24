@@ -23,6 +23,11 @@ const DefaultTemplate = "default"
 // one). An entry's own `user` is unrelated: it is how that box is reached.
 const DefaultUser = "dev"
 
+// DefaultHarden is harden's built-in: on. Only a provider server is ever
+// hardened, and it is reachable from the internet as soon as it exists, so
+// leaving it open is the choice a template makes (`harden = false`).
+const DefaultHarden = true
+
 // ShareAuthGitHub is the one tool share_auth knows (share-auth.md §1):
 // setup copies the host's gh login for github.com into the box.
 const ShareAuthGitHub = "github"
@@ -64,9 +69,13 @@ type Template struct {
 	Repos                []string
 	AuthorizedKeysGithub []string
 	AuthorizedKeys       []string
-	Harden               bool
-	Fail2ban             bool
-	ShareAuth            []string
+	// Harden is on unless a layer says `harden = false`: a provider server
+	// is public from its first boot. HardenSet says a layer set it at all,
+	// so a smol setup warns about an explicit harden, never the built-in.
+	Harden    bool
+	HardenSet bool
+	Fail2ban  bool
+	ShareAuth []string
 	// The provider fields as the template layers set them, "" (nil) when
 	// none did: the provider table and the built-ins go under them in
 	// Placement, which needs to know the table, so they are not filled here.
@@ -127,10 +136,10 @@ func (s TemplateSpec) Under(lower TemplateSpec) TemplateSpec {
 	return out
 }
 
-// Resolve fills the built-ins under every unset field: hook none,
-// everything else empty.
+// Resolve fills the built-ins under every unset field: hook none, harden
+// on (DefaultHarden), everything else empty.
 func (s TemplateSpec) Resolve(name string) Template {
-	t := Template{Name: name, Hook: DefaultBootstrapHook}
+	t := Template{Name: name, Hook: DefaultBootstrapHook, Harden: DefaultHarden}
 	if s.Hook != nil && strings.TrimSpace(*s.Hook) != "" {
 		t.Hook = strings.TrimSpace(*s.Hook)
 	}
@@ -144,7 +153,7 @@ func (s TemplateSpec) Resolve(name string) Template {
 	t.AuthorizedKeysGithub = deref(s.AuthorizedKeysGithub)
 	t.AuthorizedKeys = deref(s.AuthorizedKeys)
 	if s.Harden != nil {
-		t.Harden = *s.Harden
+		t.Harden, t.HardenSet = *s.Harden, true
 	}
 	if s.Fail2ban != nil {
 		t.Fail2ban = *s.Fail2ban

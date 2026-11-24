@@ -37,7 +37,7 @@ internal/backend/   Backend interface + smol.go + ssh.go (remote boxes and the h
 internal/session/   per-machine forward daemon (owns the one exec) + client
 internal/agentrpc/  yamux stream protocol (forward / event / time) shared host+guest
 internal/agentbin/  embedded, cross-compiled guest agent binaries (go:embed)
-internal/keys/      authorized_keys logic (dedup / revoke / list), host-side, was awk
+internal/keys/      authorized_keys logic (merge / revoke / list), host-side, was awk
 internal/reach/     the reach cache: a remote box's last probe (ssh -O check, else a TCP connect)
 internal/provider/  cloud providers: the Provider interface, Hetzner (plain REST), a fake
 internal/bootstrap/ the guest steps of `setup`: user, prereqs, the template hook, hardening

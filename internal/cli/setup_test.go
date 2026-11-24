@@ -83,12 +83,13 @@ harden = true
 	if got.Memory != 512 || got.Hook != "none" || !got.Harden || !slices.Equal(got.Repos, []string{"o/flag"}) {
 		t.Errorf("flags = %+v", got)
 	}
-	// Inline: the flags are the whole template, nothing on this host fills in.
+	// Inline: the flags are the whole template, nothing on this host fills
+	// in (web's harden included: what is left is the built-in, unset).
 	got, err = a.resolveTemplate("web", tmplFlags{Inline: true, Hook: "cmd:/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Memory != 0 || got.Harden || len(got.Repos) != 0 || got.Hook != "cmd:/x" {
+	if got.Memory != 0 || !got.Harden || got.HardenSet || len(got.Repos) != 0 || got.Hook != "cmd:/x" {
 		t.Errorf("inline = %+v", got)
 	}
 	// Bad values are refused before anything runs.
@@ -156,6 +157,32 @@ func inOrder(t *testing.T, hay string, needles ...string) {
 			t.Fatalf("%q missing (or out of order) after offset %d in:\n%s", n, at, hay)
 		}
 		at += i + len(n)
+	}
+}
+
+// harden is on by default, which a smol VM ignores: only a template that
+// says so is named on the warning line, never the built-in. harden = false
+// is no mistake either.
+func TestWarnIgnoredHardenOnlyWhenSet(t *testing.T) {
+	a := newTestApp(t)
+	var w bytes.Buffer
+	a.Stderr = &w
+	smol := &config.Machine{Name: "web", Backend: config.BackendSmol}
+	for _, tc := range []struct{ toml, want string }{
+		{"", ""},
+		{"[templates.default]\nharden = false\n", ""},
+		{"[templates.default]\nharden = true\n", "ignoring harden (not applicable to a smol VM)"},
+	} {
+		writeDevvmTOML(t, a, tc.toml)
+		tm, err := a.resolveTemplate("", tmplFlags{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Reset()
+		a.warnIgnored(smol, tm)
+		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
+			t.Errorf("%q: warning = %q, want %q", tc.toml, got, tc.want)
+		}
 	}
 }
 

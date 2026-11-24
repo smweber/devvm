@@ -26,8 +26,8 @@ import (
 // registry. The remote command line is *rebuilt* from the parsed cobra
 // command — the leaf's path, the flags that were explicitly set, the
 // positionals — never replayed from os.Args: the persistent --config-dir and
-// --state-dir name laptop directories and must never be sent, and `exec`/`keys add`
-// disable flag parsing precisely so the guest command's own arguments (a
+// --state-dir name laptop directories and must never be sent, and `exec`
+// disables flag parsing precisely so the guest command's own arguments (a
 // guest --config-dir after `exec NAME --`, say) pass through untouched.
 //
 // Dispatch happens in each proxied leaf's RunE (see commands.go), because
@@ -52,7 +52,7 @@ var proxiedStateVerbs = map[string]bool{
 // is not enough: `devvm exec h/web -- cat f > out` from an interactive shell
 // would get a remote pty whose ONLCR turns every \n into \r\n and merges
 // stderr into stdout — local exec never allocates one. Every prompt case
-// (the huh form, a confirm, a key-comment prompt) has both. Step 4's tar
+// (the huh form, a confirm) has both. Step 4's tar
 // over stdio relies on this rule: its stdout is a pipe, so no pty can
 // corrupt the stream. A real isatty (termios ioctl), not a ModeCharDevice
 // check: /dev/null is a character device too, and `</dev/null` is exactly
@@ -158,19 +158,21 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	case key == "keys add":
-		lines, err := laptopKeyLines(args[1:])
+		// The spec is resolved here (hostKeyLines): a file, github:USER
+		// or the bare form's ~/.ssh/id_*.pub are the laptop's, and an
+		// uncommented key is labeled with the laptop's hostname, not the
+		// hub's. On a hub machine the point is to get the laptop in.
+		lines, err := hostKeyLines(args[1:])
 		if err != nil {
 			return err
 		}
 		// One run per key line: the hub's `keys add` takes a single inline
 		// key, and the line rides as one token so its comment survives
-		// verbatim (the hub's isInlineKey sees the key type first).
+		// verbatim (the hub's isInlineKey sees the key type first). Built
+		// here, not by hubArgv: the leaf has no flag to send, and a `--`
+		// the user typed indexes the spec, not these lines.
 		for _, line := range lines {
-			argv, err := hubArgv(cmd, []string{args[0], line})
-			if err != nil {
-				return err
-			}
-			runs = append(runs, argv)
+			runs = append(runs, []string{"keys", "add", m.HubMachineName(), line})
 		}
 	default:
 		argv, err := hubArgv(cmd, args)
@@ -330,7 +332,7 @@ func (a *App) resolveProxy(name string) (*config.Machine, backend.Proxier, error
 
 // runProxied runs one rebuilt devvm argv on the hub. With a terminal on
 // stdin the hub gets one too (-t), so its prompts — the huh form of
-// `create`, a delete's confirm, a key-comment prompt — work; without one
+// `create`, a delete's confirm — work; without one
 // nothing is piped: no proxied leaf reads stdin (prompts use /dev/tty), a
 // proxied exec passes none to its guest (hub.md §4), and forwarding a script's stdin
 // into ssh would eat it, the classic `while read` trap `ssh -n` exists for.
@@ -382,29 +384,12 @@ func (a *App) exitStatus(m *config.Machine, err error) error {
 	return &exitCode{code: code}
 }
 
-// laptopKeyLines resolves a `keys add` spec on the laptop: a file path, an
-// inline key, --from-github USER, or (bare) every ~/.ssh/id_*.pub here. The
-// bare form deliberately means "my keys" rather than the local leaf's
-// GitHub-user prompt: on a hub machine the point is to get the laptop in.
-// labelKeys runs here too, so an uncommented key is labeled with the
-// laptop's hostname, not the hub's.
-func laptopKeyLines(spec []string) ([]string, error) {
-	lines, err := resolvePubkeys(spec)
-	if err != nil {
-		return nil, err
-	}
-	if len(lines) == 0 {
-		return nil, fmt.Errorf("no ~/.ssh/id_*.pub on this host; pass a key file or --from-github USER")
-	}
-	return labelKeys(lines)
-}
-
 // hubArgv rebuilds the devvm argv to run on the hub from a parsed leaf:
 // the leaf's path, then its first positional with HUB/ stripped, then the
 // flags that were explicitly set, then the remaining positionals. A `--`
 // the user typed is put back where it was (ArgsLenAtDash) so everything
-// after it is byte-identical; a leaf with flag parsing disabled (exec, keys
-// add) has its args verbatim already, `--` included. Only the leaf's own
+// after it is byte-identical; a leaf with flag parsing disabled (exec) has
+// its args verbatim already, `--` included. Only the leaf's own
 // flags are walked: --config-dir and any other persistent flag of a parent
 // belong to the laptop.
 func hubArgv(cmd *cobra.Command, args []string) ([]string, error) {

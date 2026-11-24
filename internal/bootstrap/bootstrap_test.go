@@ -110,7 +110,7 @@ func TestParseSpecDefault(t *testing.T) {
 }
 
 // Harden opens mosh's UDP range beside the ssh port (prereqs install
-// mosh-server, and the firewall is default-deny), and every apt-get devvm
+// mosh-server, and the firewall is default-deny) without resetting ufw, and every apt-get devvm
 // runs itself waits for apt's locks: installs with the dpkg lock timeout,
 // updates through apt_update's bounded retry (the timeout does not cover
 // the lists lock). A fresh cloud VM runs apt-daily from boot.
@@ -126,6 +126,11 @@ func TestHardenFirewallAndAptLock(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Errorf("harden script lacks %q:\n%s", want, script)
 		}
+	}
+	// Additive: harden runs on every setup, and a reset would wipe rules
+	// the user or the hook added.
+	if strings.Contains(script, "ufw --force reset") || strings.Contains(script, "ufw reset") {
+		t.Errorf("harden script resets the firewall:\n%s", script)
 	}
 	for name, s := range map[string]string{"harden": script, "ensureUser": ensureUserScript,
 		"smolPrereqs": smolPrereqs, "remotePrereqs": remotePrereqs} {

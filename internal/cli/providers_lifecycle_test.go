@@ -163,6 +163,14 @@ func TestProviderCreateRefusals(t *testing.T) {
 	if p.CallCount("Get") != gets {
 		t.Error("no token dialled the API")
 	}
+	// A state dir too long for the ssh master's socket: setup could never
+	// reach the server, so it is refused before Create, not after.
+	saved := a.Paths
+	a.Paths.State = filepath.Join(t.TempDir(), strings.Repeat("s", 100))
+	if err := runTree(t, a, "create", "new", "--backend", "hetzner", "--yes"); err == nil || !strings.Contains(err.Error(), "too long for ssh ControlPath") {
+		t.Errorf("long state dir: %v", err)
+	}
+	a.Paths = saved
 	if n := p.CallCount("Create"); n != 0 {
 		t.Fatalf("a refusal called Create %d times", n)
 	}
@@ -172,14 +180,14 @@ func TestProviderCreateRefusals(t *testing.T) {
 }
 
 // Placement: template > [providers.hetzner] > built-in, flags over all;
-// the labels; ipv4 = false is a v6-only server. A Create that made the
+// the labels; ipv4 = false is a v6-only server; harden = false is named. A Create that made the
 // server and then failed names it and the two ways forward, keeps it in the
 // cache, and never deletes it.
 func TestProviderCreatePlacementAndPartialFailure(t *testing.T) {
 	a := newTestApp(t)
 	fakeLocalSmolvm(t, `[]`)
 	sshLog := fakeSSH(t, "exit 0")
-	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\nipv4 = false\nimage = \"ubuntu-22.04\"\n\n[templates.big]\nserver_type = \"cx43\"\n", false)
+	p := withFakeHetzner(t, a, "ssh_key = \"scott\"\nipv4 = false\nimage = \"ubuntu-22.04\"\n\n[templates.big]\nserver_type = \"cx43\"\nharden = false\nauthorized_keys_github = [\"me\"]\n", false)
 	p.AddKey("scott", testPubKey)
 	p.CreateErr = errors.New("hetzner: action start_server failed")
 
@@ -216,6 +224,10 @@ func TestProviderCreatePlacementAndPartialFailure(t *testing.T) {
 	}
 	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "cx43 in fsn1, image debian-12, IPv6 only") {
 		t.Errorf("plan = %q", out)
+	}
+	// harden = false is said before the server exists; keys are there.
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "Template 'big' turns hardening off (harden; 'devvm setup web --template T'") {
+		t.Errorf("template note = %q", out)
 	}
 }
 
@@ -281,6 +293,12 @@ esac`)
 		!strings.Contains(atCreate, "It bills from now until 'devvm delete web'") {
 		t.Errorf("printed before Create: %q", atCreate)
 	}
+	// No template: the built-in hardens, so the note names only the keys.
+	if !strings.Contains(atCreate, "Template 'default' adds no keys beyond devvm-") ||
+		!strings.Contains(atCreate, "(authorized_keys_github; 'devvm setup web --template T'") ||
+		strings.Contains(atCreate, "harden") {
+		t.Errorf("template note: %q", atCreate)
+	}
 	if p.CallCount("EnsureSSHKey") != 1 || p.CallCount("Create") != 1 {
 		t.Errorf("EnsureSSHKey %d, Create %d", p.CallCount("EnsureSSHKey"), p.CallCount("Create"))
 	}
@@ -301,6 +319,7 @@ esac`)
 		" dev@"+row.Address+" 'true'", " root@"+row.Address+" 'true'", // denied, then root
 		"useradd", "'dev'", // the template user, as root
 		"dev@"+row.Address, "build-essential", // prereqs as it
+		"AllowUsers", // hardened by the built-in
 	)
 	kh, _ := os.ReadFile(a.Paths.KnownHostsPath())
 	if strings.Contains(string(kh), row.Address+" ") || !strings.Contains(string(kh), "other.example") {

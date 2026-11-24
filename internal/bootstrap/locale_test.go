@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,20 @@ func TestPrereqScriptsParse(t *testing.T) {
 	for name, script := range map[string]string{"smol": smolPrereqs, "remote": remotePrereqs} {
 		if out, err := exec.Command(bash, "-n", "-c", script).CombinedOutput(); err != nil {
 			t.Errorf("%s prereqs do not parse: %v\n%s", name, err, out)
+		}
+	}
+}
+
+// The locale step runs right after apt_update and before the package
+// install, so the apt and perl calls of a first setup do not warn about
+// the host's locale.
+func TestPrereqLocalesBeforeInstall(t *testing.T) {
+	for name, script := range map[string]string{"smol": smolPrereqs, "remote": remotePrereqs} {
+		update := strings.Index(script, "\napt_update\n")
+		gen := strings.Index(script, "\ngen_locales \"${@:2}\"")
+		install := strings.Index(script, "install -y "+devvmPackages)
+		if update < 0 || gen < 0 || install < 0 || !(update < gen && gen < install) {
+			t.Errorf("%s prereqs: apt_update at %d, gen_locales at %d, install at %d; want them in that order", name, update, gen, install)
 		}
 	}
 }
