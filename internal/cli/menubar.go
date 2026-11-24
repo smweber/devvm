@@ -226,8 +226,15 @@ func (m *menubarInstaller) installedVersion() string {
 
 // running matches by exact name within this user's processes only; another
 // user's process called DevVM must neither read as "our app" nor be killed.
+//
+// `-a` (here and in quit's pkill) is what makes the app's own "Update now"
+// work: macOS's pgrep and pkill leave out their own ancestors by default,
+// and when the app runs `devvm update` it is one. Without it the app read
+// as not running, was neither quit nor relaunched, and (seeing a new bundle
+// on disk) exited by itself: an update from the menu ended with no app.
+// These tools are only ever run on macOS; procps gives `-a` another meaning.
 func (m *menubarInstaller) running() bool {
-	_, err := m.run("pgrep", "-x", "-U", strconv.Itoa(os.Getuid()), menubarAppName)
+	_, err := m.run("pgrep", "-x", "-U", strconv.Itoa(os.Getuid()), "-a", menubarAppName)
 	return err == nil
 }
 
@@ -256,11 +263,11 @@ func (m *menubarInstaller) waitRunning(want bool, d time.Duration) bool {
 // ignored: "no match" means the app already exited, and running() decides.
 func (m *menubarInstaller) quit() error {
 	uid := strconv.Itoa(os.Getuid())
-	_, _ = m.run("pkill", "-TERM", "-x", "-U", uid, menubarAppName)
+	_, _ = m.run("pkill", "-TERM", "-x", "-U", uid, "-a", menubarAppName)
 	if m.waitRunning(false, menubarQuitTimeout) {
 		return nil
 	}
-	_, _ = m.run("pkill", "-KILL", "-x", "-U", uid, menubarAppName)
+	_, _ = m.run("pkill", "-KILL", "-x", "-U", uid, "-a", menubarAppName)
 	if m.waitRunning(false, menubarKillTimeout) {
 		return nil
 	}

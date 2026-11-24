@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,12 @@ type fakeMac struct {
 
 func (f *fakeMac) run(name string, args ...string) (string, error) {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	// macOS's pgrep and pkill leave out their own ancestors unless given
+	// -a, and the app is one whenever its "Update now" runs devvm. The fake
+	// always plays that case: without -a the app is not seen at all.
+	if (name == "pgrep" || name == "pkill") && !slices.Contains(args, "-a") {
+		return "", fmt.Errorf("%s: exit status 1", name)
+	}
 	switch name {
 	case "pgrep":
 		if f.running {

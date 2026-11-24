@@ -722,16 +722,18 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
     }
 
-    /// After `devvm update`: if devvm already replaced and relaunched this
-    /// bundle (the version on disk no longer matches the one this process
-    /// started from), the new instance is up and this one just exits.
-    /// Otherwise start a fresh instance of the bundle and exit only once
-    /// that launch is confirmed, so a failed launch never leaves no app.
+    /// After `devvm update` succeeded with this process still alive: start a
+    /// fresh instance of the bundle (the new one, if devvm replaced it) and
+    /// exit only once that launch is confirmed, so a failed launch never
+    /// leaves no app. When devvm replaces the bundle it quits this app first
+    /// and relaunches it itself, so this process never gets here; being here
+    /// means nobody relaunched anything, whatever version is on disk. (It
+    /// once took a newer bundle on disk as proof that devvm had relaunched
+    /// the app and just exited; devvm had missed the running app, and the
+    /// update ended with none.)
     static func relaunch() {
         if let onDisk = installedBundleVersion, onDisk != appVersion {
-            Log.update.notice("bundle on disk is \(onDisk, privacy: .public), this process is \(appVersion, privacy: .public): devvm already relaunched the app; exiting")
-            NSApp.terminate(nil)
-            return
+            Log.update.notice("bundle on disk is \(onDisk, privacy: .public), this process is \(appVersion, privacy: .public)")
         }
         Log.update.notice("relaunching \(Bundle.main.bundlePath, privacy: .public) via NSWorkspace")
         let config = NSWorkspace.OpenConfiguration()
