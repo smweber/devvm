@@ -1,0 +1,15 @@
+[
+  {
+    "note": "the shape of unauthorized.json, on the catalogue's first call",
+    "method": "GET",
+    "path": "/server_types?page=1&per_page=50",
+    "status": 401,
+    "response": {
+      "error": {
+        "code": "unauthorized",
+        "details": null,
+        "message": "the token you have provided is invalid"
+      }
+    }
+  }
+]

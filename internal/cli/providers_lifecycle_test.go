@@ -238,7 +238,7 @@ func TestProviderCreateDropsSmolSizes(t *testing.T) {
 	a := newTestApp(t)
 	writeDevvmTOML(t, a, "[templates.default]\nmemory = 4096\ndisk = 20\n")
 	s := createSpec{Name: "web", Backend: config.BackendHetzner, Yes: true}
-	tm, _, err := a.gatherProviderSpec(&s, config.ProviderSpec{})
+	tm, _, err := a.gatherProviderSpec(&s, config.ProviderSpec{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

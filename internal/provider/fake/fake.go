@@ -6,6 +6,7 @@ package fake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -38,11 +39,22 @@ type Provider struct {
 	// for its context, returning the server with the context's error: the
 	// real client's "created, then the wait for the start ran out".
 	CreateBlocks bool
+	// Cat is what Catalog answers; nil answers ErrNoCatalog, so a test
+	// that seeds none exercises the "catalogue unavailable" path (the
+	// text inputs, no placement check). SampleCatalog is one to seed.
+	Cat *provider.Catalog
+	// CatalogErr, when set, is Catalog's answer: an API outage for the
+	// catalogue alone.
+	CatalogErr error
 }
+
+// ErrNoCatalog is Catalog's answer when no Cat was seeded.
+var ErrNoCatalog = errors.New("fake: no catalog seeded")
 
 var (
 	_ provider.Provider   = (*Provider)(nil)
 	_ provider.KeyEnsurer = (*Provider)(nil)
+	_ provider.Cataloger  = (*Provider)(nil)
 )
 
 // New returns an empty project.
@@ -251,6 +263,53 @@ func (p *Provider) FindSSHKey(ctx context.Context, name string) (*provider.SSHKe
 		return &c, nil
 	}
 	return nil, nil
+}
+
+func (p *Provider) Catalog(ctx context.Context) (*provider.Catalog, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.enter(ctx, "Catalog"); err != nil {
+		return nil, err
+	}
+	switch {
+	case p.CatalogErr != nil:
+		return nil, p.CatalogErr
+	case p.Cat == nil:
+		return nil, ErrNoCatalog
+	}
+	c := *p.Cat
+	return &c, nil
+}
+
+// SampleCatalog is a small catalogue shaped like Hetzner's (2026-11): cx23
+// sold out in fsn1, cx43 there only, an arm type, a dedicated one
+// everywhere, a deprecated one, a type sold out everywhere, and IPv4
+// priced apart. The values the cli tests' templates use (cx23, cx43, fsn1,
+// nbg1) are placements it accepts where the test means them to be.
+func SampleCatalog() *provider.Catalog {
+	eu := func(m, h float64) map[string]provider.Price {
+		return map[string]provider.Price{"fsn1": {Monthly: m, Hourly: h}, "nbg1": {Monthly: m, Hourly: h}, "hel1": {Monthly: m, Hourly: h}}
+	}
+	ccx := eu(12.49, 0.02)
+	ccx["ash"] = provider.Price{Monthly: 13.99, Hourly: 0.0224}
+	return &provider.Catalog{
+		Currency: "EUR",
+		Locations: []provider.Location{
+			{Name: "fsn1", City: "Falkenstein", Country: "DE"},
+			{Name: "nbg1", City: "Nuremberg", Country: "DE"},
+			{Name: "hel1", City: "Helsinki", Country: "FI"},
+			{Name: "ash", City: "Ashburn, VA", Country: "US"},
+		},
+		Types: []provider.ServerType{
+			{Name: "cx23", CPU: "shared", Arch: "x86", Cores: 2, MemoryGB: 4, DiskGB: 40, Available: []string{"nbg1", "hel1"}, Prices: eu(3.49, 0.0056)},
+			{Name: "cx43", CPU: "shared", Arch: "x86", Cores: 8, MemoryGB: 16, DiskGB: 160, Available: []string{"fsn1"}, Prices: eu(9.49, 0.0152)},
+			{Name: "cx33", CPU: "shared", Arch: "x86", Cores: 4, MemoryGB: 8, DiskGB: 80, Prices: eu(5.49, 0.0088)},
+			{Name: "cax11", CPU: "shared", Arch: "arm", Cores: 2, MemoryGB: 4, DiskGB: 40, Available: []string{"fsn1", "nbg1"}, Prices: eu(3.79, 0.0061)},
+			{Name: "ccx13", CPU: "dedicated", Arch: "x86", Cores: 2, MemoryGB: 8, DiskGB: 80, Available: []string{"fsn1", "nbg1", "hel1", "ash"}, Prices: ccx},
+			{Name: "cx22", CPU: "shared", Arch: "x86", Cores: 2, MemoryGB: 4, DiskGB: 40, Deprecated: true, Available: []string{"nbg1"}, Prices: eu(3.29, 0.0053)},
+		},
+		IPv4: map[string]provider.Price{"fsn1": {Monthly: 0.5, Hourly: 0.0008}, "nbg1": {Monthly: 0.5, Hourly: 0.0008}, "hel1": {Monthly: 0.5, Hourly: 0.0008}, "ash": {Monthly: 0.5, Hourly: 0.0008}},
+	}
 }
 
 // AddKey seeds a project key as if uploaded elsewhere (the console, another

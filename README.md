@@ -76,7 +76,13 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
 `devvm config edit|check|show|path` cover the rest (`agent = true` is set with
 `config edit`). No `config` command connects to a box. A Hetzner project is
 `[providers.hetzner]` plus `devvm providers token hetzner`; see
-[docs/proposals/providers.md](docs/proposals/providers.md).
+[docs/proposals/providers.md](docs/proposals/providers.md). `devvm providers
+types hetzner [--location LOC]` lists the server types on offer: CPU kind and
+architecture, cores, RAM, disk, price per month and per hour (VAT at your
+account's rate; a public IPv4 is billed on top, and the output says how
+much), and where each can be made right now, cheapest first. `--plain` gives
+`name cpu arch cores memory_gb disk_gb monthly hourly currency locations`,
+tab-separated, for scripts.
 
 ## Connecting
 
@@ -84,6 +90,11 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
   a server) and shape it from a template. Flags drive it non-interactively
   (`--template`, `--memory`, `--disk`, `--hook`, `--yes`); a terminal prompts
   (via [huh](https://github.com/charmbracelet/huh)) for whatever's unset.
+  For a server, the terminal offers the location, then the server types
+  available there with their specs and monthly price, from the provider's
+  live catalogue (text inputs if it can't be fetched). Without a terminal,
+  a type that doesn't exist or isn't available in the location is refused
+  before anything is created, naming the cheapest ones that are.
   `devvm setup NAME` re-runs the shaping. A failed clone does not stop it:
   setup tries every repo and exits 3 ("setup finished, but …"). An
   `owner/repo` is cloned with the guest's `gh`. With `share_auth =

@@ -33,7 +33,8 @@ import (
 // source missed, and never in providerCached mode: the daemon, __session,
 // completion, config rm), List in listProvider (the live round of a
 // one-shot `status` or a watcher's refresh), List in the token command's
-// validation (and the first-use prompt's), and the lifecycle verbs in
+// validation (and the first-use prompt's), the catalogue in `providers
+// types` and create (providers_catalog.go), and the lifecycle verbs in
 // providers_lifecycle.go: create's Get, key lookup or upload and Create,
 // delete's Delete, start/stop's Power. Nothing on the snapshot path dials:
 // a --watch snapshot reads the cache file and nothing else.
@@ -43,9 +44,11 @@ import (
 // one-shot `status` stays bounded by one deadline). create covers the POST
 // and waiting for the server to start, which Hetzner usually finishes in
 // well under a minute; action covers a delete or power action, waited to
-// completion. A var so tests run with short values.
-var providerTimes = struct{ get, create, action time.Duration }{
-	get: 15 * time.Second, create: 5 * time.Minute, action: 3 * time.Minute,
+// completion; catalog covers the catalogue's three GETs, kept short since
+// create waits on it and carries on without it. A var so tests run with
+// short values.
+var providerTimes = struct{ get, create, action, catalog time.Duration }{
+	get: 15 * time.Second, create: 5 * time.Minute, action: 3 * time.Minute, catalog: 10 * time.Second,
 }
 
 // providerTitle is a provider's name as its console calls it, for messages.

@@ -137,7 +137,8 @@ internal/session/   per-machine forward daemon (owns the exec) + client + transp
                     relays; bridge.go = URL classify/bind/deliver (browser bridge)
 internal/agentrpc/  yamux stream protocol (forward/event/time), shared host+guest
 internal/agentbin/  embedded guest agent binaries (go:embed) + on-demand install
-internal/provider/  cloud providers: Provider interface + hetzner/ (plain REST) + fake/
+internal/provider/  cloud providers: Provider interface (+ optional Cataloger: types, prices,
+                    availability) + hetzner/ (plain REST) + fake/
 internal/keys/      authorized_keys logic (was awk); pure/text host-side, unit-tested
 internal/bootstrap/ the guest steps of `setup`: EnsureUser, prereqs, the template's
                     hook, hardening + browser.go (agent + shim + /etc/profile.d/devvm.sh)
@@ -291,8 +292,14 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Providers** (`providers.md`, `cli/providers.go`): no entry; resolve asks each `[providers.*]` (one Get) only after entry+smol miss and with a token
   (`<State>/providers/NAME.token` via `providers token`; `HCLOUD_TOKEN` wins). `status` reads `cache/provider-NAME.list`, written only by the
   live round (one-shot `status`, `__refresh`); `--local` skips providers; daemon, `__session`, completion and `config rm` read the cache only (no API, no token). Lifecycle (`cli/providers_lifecycle.go`):
-  `create --backend hetzner` refuses everything before Create (name, collisions, key), labels the server `devvm=true` (its only label), then hands it to `shape` unchanged (never deletes it on failure);
+  `create --backend hetzner` refuses everything before Create (name, collisions, key, placement), labels the server `devvm=true` (its only label), then hands it to `shape` unchanged (never deletes it on failure);
   `delete`/`start`/`stop` act on the row resolve just fetched, merge the answer into the cache; `stop` warns it still bills. Labelled servers only: resolve's Get ignores an unlabelled server, and the cache keeps labelled rows; the live round's one List is unfiltered and counts the rest (`unlabelled=N` in the cache), so a one-shot human `status` ends with one line naming that count (a billing server that lost its label is still noticed). Adding the label by hand is the only promotion. `forgetHostState` drops the address pin too.
+  The **catalogue** (`cli/providers_catalog.go`, `provider.Cataloger`, an optional capability asserted on the client): server types (specs, gross
+  prices per location, availability from each type's `locations[].available`; Hetzner removed `/datacenters`), locations, and `/pricing`'s currency,
+  account VAT rate and IPv4 price. One live fetch per command (`providerTimes.catalog`), never cached. `providers types PROVIDER [--location LOC]
+  [--plain]` lists it (token via `providerClient`, no prompt; devvm.toml not read); `create` on a TTY picks location then type from it as selects,
+  and every create refuses, before the key upload and Create, a type it says is unknown or not available in the location (a deprecated type still
+  available passes). The catalogue never makes create fail: unfetchable means the text inputs (one stderr line, TTY only) and no check.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
   hub, hetzner}, state ∈ {running, stopped, starting, stopping, reachable,
@@ -313,6 +320,11 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   the first four tokens plus `(pending)`, so anything new goes after them), `devvm
   --version` (`devvm version vX.Y.Z`), and `update --check --plain`
   (`current\tlatest\ttrue|false`). Changing any of them means a Swift change.
+  `providers types --plain` is one too, for scripts (no Swift reader):
+  `name\tcpu\tarch\tcores\tmemory_gb\tdisk_gb\tmonthly\thourly\tcurrency\tlocations`
+  (cpu shared|dedicated, arch x86|arm, prices decimal with the account's VAT, the
+  `--location` price or else the lowest of the type's locations, locations
+  comma-separated or `-`), no header; new columns go at the end.
 - **Maintain devvm itself** (help group): `update` finds the latest tag via the
   `releases/latest` redirect (no API), verifies against SHA256SUMS, renames over
   the running binary, then re-execs the new one with hidden `--finish-from` to
@@ -387,7 +399,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   template > built-in (erroring on a required field with no default).
   Multi-op nouns are grouped: `ports {add,rm,list,up,down}`,
   `keys {add,rm,list}`, `config {path,show,edit,check,add,rm}` and
-  `providers token`. An unknown word under a noun is a one-line error naming
+  `providers {token,types}`. An unknown word under a noun is a one-line error naming
   its leaves, exit 1 (`guardNouns`; cobra itself checks only at the root),
   and a bare noun prints its help. NAME is always the **first positional of the leaf**
   (`devvm ports add NAME PORT`) so completion and "first arg = machine" hold

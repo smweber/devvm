@@ -15,7 +15,7 @@ func TestNounUnknownSubcommand(t *testing.T) {
 		"keys":      "add, list, rm",
 		"ports":     "add, rm, list, up, down",
 		"config":    "path, show, edit, check, add, rm",
-		"providers": "token",
+		"providers": "token, types",
 	} {
 		err := runTree(t, a, noun, "dedupe")
 		if err == nil || !strings.Contains(err.Error(), `unknown command "dedupe" for "devvm `+noun+`"`) ||

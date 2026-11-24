@@ -388,6 +388,61 @@ boundary and that `backend` values for providers are the provider name, so
   outage. The proposal recommends it in `create`'s first-run prompt text and
   in the docs; it does not enforce it.
 
+### 9. The catalogue: what a server can be (added 2026-11-24)
+
+Picking `server_type` and `location` used to mean reading Hetzner's website:
+which types exist, their specs and price, and where each is offered (not
+every type is sold everywhere, and types sell out). devvm now reads that
+from the API.
+
+- **Source.** Three read-only GETs: `/server_types` (paginated; specs,
+  gross and net prices per location, and availability per location in
+  `locations[].available`, with a per-location `deprecation` when a type is
+  phased out of it; a type-level `deprecation` object, which replaced the
+  old `deprecated` boolean, marks a deprecated type), `/locations`
+  (paginated; city, country), and `/pricing` (the currency, this account's
+  `vat_rate`, and the primary IPv4 price, which a server type's price does
+  not include). `/datacenters`, which once carried availability, answers
+  410 `deprecated_api_endpoint` since 2026-06-02. Gross prices are shown:
+  what this account is billed, its VAT included (the rate is said; the test
+  project's is 0%, so gross = net there).
+- **Shape.** An optional capability beside `Provider`, asserted on the
+  client: `Cataloger.Catalog(ctx) (*Catalog, error)`; hetzner and the fake
+  implement it. One live fetch per command under a 10s deadline; no cache
+  file (it changes as types sell out, and only a human asks).
+- **`devvm providers types PROVIDER [--location LOC] [--plain]`**: the
+  non-deprecated types, cheapest first (in LOC, or by the lowest price among
+  the type's locations, marked `*` when it varies), with CPU kind and
+  architecture, cores, RAM, disk, price per month and per hour, and where
+  each is available now (`-`: nowhere). Under the table: the VAT, hourly
+  billing up to the monthly price, and the IPv4 add-on. `--plain` is
+  `name cpu arch cores memory_gb disk_gb monthly hourly currency locations`,
+  tab-separated, no header. Needs the token (no first-use prompt: it is not a
+  lifecycle verb); does not read devvm.toml.
+- **`create --backend P` on a terminal** picks the location (city, number of
+  types, cheapest price there), then a type available there (specs and
+  monthly price, cheapest first), each seeded with the resolved value
+  (flag > template > `[providers.P]` > built-in) when it is offered; a flag
+  still skips its question, and image stays a text input. The token is
+  settled first (the first-use prompt moved before the placement).
+- **Refused before Create.** With or without a terminal, a type the
+  catalogue does not know, or that is not available in the location, is
+  refused before the key upload and Create, in one line naming the three
+  cheapest types available there and `devvm providers types P --location
+  LOC`. A deprecated type that is still available passes (the API may take
+  it). The image is not checked.
+- **Never a reason create fails.** If the catalogue cannot be fetched, a
+  terminal gets the old text inputs and one stderr line saying why; without
+  one it is silent; either way the check is skipped and the API decides.
+- **An arm type takes the same image name.** An image *name*
+  (`ubuntu-24.04`) exists once per architecture, and `POST /servers` with a
+  name picks the image matching the server type's architecture (Hetzner's
+  API changelog, 2023-04-12, "New API fields to support Arm64
+  architecture": only an image *ID* must match the type's architecture
+  itself). So devvm's `Create`, which sends the name, needs no lookup; the
+  `hcloud` CLI's client-side `GetForArchitecture` is for its own image
+  GETs. An image given as an ID is the user's to match.
+
 ## CLI surface after
 
 - **Lifecycle:** `create NAME --backend hetzner [--template T] [--server-type]
@@ -396,7 +451,8 @@ boundary and that `backend` values for providers are the provider name, so
 - **Everything else** unchanged.
 - **Config:** `[providers.hetzner]` by hand; `config check` and `config show`
   cover it.
-- **Providers:** `providers token hetzner [--clear]` (the only new leaf).
+- **Providers:** `providers token hetzner [--clear]`, and (§9)
+  `providers types hetzner [--location LOC] [--plain]`.
 
 A fresh cloud box is `create web --backend hetzner`, `attach web`, and later
 `delete web`.

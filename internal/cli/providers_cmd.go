@@ -18,20 +18,22 @@ import (
 	"github.com/smweber/devvm/internal/provider/hetzner"
 )
 
-// `devvm providers token NAME [--clear]` (providers.md §1 "The token"): the
-// one leaf of the providers noun, and what every no-token message names.
+// `devvm providers token NAME [--clear]` (providers.md §1 "The token"):
+// what every no-token message names. The noun's other leaf, `types`, is in
+// providers_catalog.go.
 // The token is per-host credential state, so it goes to
 // <State>/providers/NAME.token (0600 in a 0700 dir), never to devvm.toml.
 
 func (a *App) providersCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "providers",
-		Short: "Manage this host's cloud provider credentials (the API token)",
+		Short: "Cloud providers: this host's API token, and the server types on offer",
 		Long: "Provider servers (backend hetzner) are discovered from the provider's API with\n" +
 			"this host's token; [providers.NAME] in devvm.toml says where new ones go.\n" +
-			"The token never goes in devvm.toml: it is kept in the state dir, 0600.",
+			"The token never goes in devvm.toml: it is kept in the state dir, 0600.\n" +
+			"'types' lists what a server can be: specs, prices, and where each is available.",
 	}
-	c.AddCommand(a.providersTokenCmd())
+	c.AddCommand(a.providersTokenCmd(), a.providersTypesCmd())
 	return c
 }
 

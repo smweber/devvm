@@ -100,15 +100,16 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	if err := backend.ControlPathErr(a.Paths); err != nil {
 		return err
 	}
-	t, pl, err := a.gatherProviderSpec(&s, spec)
+	// The client first: the placement picker and check read its catalogue.
+	cl, err := a.lifecycleClient(pn)
+	if err != nil {
+		return err
+	}
+	t, pl, err := a.gatherProviderSpec(&s, spec, cl)
 	if err != nil {
 		return err
 	}
 	pubkey, err := providerKeyFile(pn, pl)
-	if err != nil {
-		return err
-	}
-	cl, err := a.lifecycleClient(pn)
 	if err != nil {
 		return err
 	}
@@ -255,9 +256,13 @@ func orDash(s string) string {
 // the template (flags folded in) as for smol, the placement as template >
 // [providers.NAME] > built-in (Template.Placement) under the --server-type,
 // --location and --image flags. On a terminal without --yes it prompts for
-// the placement a flag did not give, seeded with the resolved value, then
-// the hook and repos as smol's form does.
-func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (config.Template, config.Placement, error) {
+// the placement a flag did not give, seeded with the resolved value: from
+// cl's catalogue when it can be fetched (selects), else as text, with one
+// line saying why. Then the hook and repos as smol's form does. With a
+// catalogue, a placement it says the API would refuse is refused here,
+// before the key upload and Create; without one, the API decides. cl may
+// be nil (no catalogue).
+func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl provider.Provider) (config.Template, config.Placement, error) {
 	tty := openTTY()
 	if tty != nil {
 		defer tty.Close()
@@ -280,8 +285,28 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (confi
 		}
 		*f.dst = f.flag
 	}
+	var cat *provider.Catalog
+	catErr := fmt.Errorf("no client")
+	if cl != nil {
+		cat, catErr = fetchCatalog(s.Backend, cl)
+	}
 	if interactive {
-		if err := askPlacement(tty, s, &pl); err != nil {
+		switch {
+		case cat != nil:
+			err = askPlacementPicks(tty, s.Backend, s, &pl, cat)
+		default:
+			if s.ServerType == "" || s.Location == "" {
+				fmt.Fprintf(a.Stderr, "devvm: cannot offer %s's server types and locations to pick from (%v); type them instead\n",
+					providerTitle(s.Backend), catErr)
+			}
+			err = askPlacementText(tty, s, &pl)
+		}
+		if err != nil {
+			return config.Template{}, config.Placement{}, err
+		}
+	}
+	if cat != nil {
+		if err := checkPlacement(s.Backend, cat, pl); err != nil {
 			return config.Template{}, config.Placement{}, err
 		}
 	}
@@ -301,8 +326,10 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec) (confi
 	return out, pl, nil
 }
 
-// askPlacement prompts for the placement fields no flag set.
-func askPlacement(tty *os.File, s *createSpec, pl *config.Placement) error {
+// askPlacementText prompts, as text, for the placement fields no flag set:
+// the form when the catalogue cannot be fetched. A var so a test can
+// answer it.
+var askPlacementText = func(tty *os.File, s *createSpec, pl *config.Placement) error {
 	var fields []huh.Field
 	add := func(title, key, flag string, v *string) {
 		if flag != "" {
