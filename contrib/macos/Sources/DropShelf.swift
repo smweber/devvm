@@ -44,6 +44,7 @@ final class DropShelf: NSObject, NSWindowDelegate {
     private static let tileHeight: CGFloat = 52
     private static let gap: CGFloat = 8
     private static let pad: CGFloat = 10
+    private static let headerHeight: CGFloat = 15
 
     private let panel: NSPanel
     private let container = ShelfContentView(frame: .zero)
@@ -56,6 +57,13 @@ final class DropShelf: NSObject, NSWindowDelegate {
     /// The last snapshot, in the menu's section order.
     private var machines: [Machine] = []
     private var settleScheduled = false
+    /// The menu's sections, for the small headers between groups of tiles:
+    /// each machine's section title (kept for a tile that outlives its
+    /// machine), and whether the menu shows headers at all (a lone kind
+    /// has none). Labels are reused from one layout to the next.
+    private var sectionTitle: [String: String] = [:]
+    private var headed = false
+    private var headers: [NSTextField] = []
 
     override init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: DropShelf.width, height: 80),
@@ -127,7 +135,14 @@ final class DropShelf: NSObject, NSWindowDelegate {
     /// Follows a status snapshot: one tile per live machine (hub machines
     /// included: cp-in takes `HUB/NAME` like any name), in the menu's order.
     func update(_ machines: [Machine]) {
-        self.machines = machineSections(machines).flatMap { $0.members }
+        let sections = machineSections(machines)
+        self.machines = sections.flatMap { $0.members }
+        headed = sections.count > 1 || sections.first?.hubName != nil
+        var titles = sectionTitle.filter { tiles[$0.key] != nil }
+        for section in sections {
+            for m in section.members { titles[m.name] = section.title }
+        }
+        sectionTitle = titles
         reconcile()
     }
 
@@ -212,24 +227,54 @@ final class DropShelf: NSObject, NSWindowDelegate {
         })
     }
 
-    /// Stacks the tiles top-down and fits the panel to them, keeping its top
-    /// edge where it is (the shelf grows and shrinks downwards).
+    /// Stacks the tiles top-down under their sections' headers (the menu's:
+    /// Local, Remote, a provider's, each hub's) and fits the panel to them,
+    /// keeping its top edge where it is (the shelf grows and shrinks
+    /// downwards). Only ever called with the pointer elsewhere.
     private func layoutTiles() {
         let pad = DropShelf.pad, h = DropShelf.tileHeight, gap = DropShelf.gap, w = DropShelf.width
-        for (i, name) in order.enumerated() {
-            tiles[name]?.frame = NSRect(x: pad, y: pad + CGFloat(i) * (h + gap), width: w - 2 * pad, height: h)
+        var y = pad
+        var used = 0
+        var lastTitle: String?
+        for name in order {
+            guard let tile = tiles[name] else { continue }
+            let title = sectionTitle[name] ?? ""
+            if headed && title != lastTitle {
+                lastTitle = title
+                let label = header(used)
+                used += 1
+                label.stringValue = title
+                label.frame = NSRect(x: pad + 2, y: y, width: w - 2 * pad - 4, height: DropShelf.headerHeight)
+                y += DropShelf.headerHeight + 4
+            }
+            tile.frame = NSRect(x: pad, y: y, width: w - 2 * pad, height: h)
+            y += h + gap
         }
+        for label in headers[used...] { label.isHidden = true }
         emptyLabel.isHidden = !order.isEmpty
         emptyLabel.frame = NSRect(x: pad, y: pad + (h - 18) / 2, width: w - 2 * pad, height: 18)
 
-        let rows = CGFloat(max(order.count, 1))
-        let contentHeight = 2 * pad + rows * h + (rows - 1) * gap
+        let contentHeight = order.isEmpty ? 2 * pad + h : y - gap + pad
         let size = panel.frameRect(forContentRect: NSRect(x: 0, y: 0, width: w, height: contentHeight)).size
         let old = panel.frame
         if old.size != size {
             panel.setFrame(NSRect(x: old.minX, y: old.maxY - size.height, width: size.width, height: size.height),
                            display: true)
         }
+    }
+
+    /// The i-th header label, made on first use.
+    private func header(_ i: Int) -> NSTextField {
+        while headers.count <= i {
+            let label = NSTextField(labelWithString: "")
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            container.addSubview(label)
+            headers.append(label)
+        }
+        headers[i].isHidden = false
+        return headers[i]
     }
 
     private func placeTopRight() {

@@ -30,8 +30,8 @@ What it does:
   they reconnect), each forwarded port opened in the browser, Copy in…
   (file picker), Copy out…, and the inbox folder for drops (default `~`).
 - **Drop shelf**: *Show Drop Shelf* in the menu opens a small floating
-  panel with one tile per running machine (hub machines included), in the
-  menu's order. A tile is that machine's copy surface:
+  panel with one tile per running machine (hub machines included), under
+  the menu's section headers. A tile is that machine's copy surface:
   - **drop** files on it to copy them into the machine's inbox, which the
     tile names (`devvm cp-in -t <inbox> NAME -- files…`, `-r` added when a
     folder is among them). One drop is one invocation and one
