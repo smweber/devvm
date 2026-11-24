@@ -145,7 +145,7 @@ internal/hostbrowser/ open guest login URLs on the host (sanitized)
 internal/reach/     the reach cache (`cache/reach/NAME`) and its probe: a remote row's state
 contrib/fakesmol/   a fake `smolvm` (shell) for a hub with no KVM; live tests only
 contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop shelf,
-                    one tile per live machine = cp-in; menu + shelf fed by
+                    one tile per live machine: drop = cp-in, click = cp-out; menu + shelf fed by
                     `status --plain --watch`); built only by its build.sh
                     on macOS; release.yml attaches the zip + .sha256 sidecar
 .github/workflows/  ci.yml (Go on ubuntu + Go tests and the Swift build on macos, every

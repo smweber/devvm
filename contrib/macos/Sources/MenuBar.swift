@@ -13,6 +13,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private var machines: [Machine] = []
     private var portsByMachine: [String: [Forward]] = [:]
     private var submenus: [String: NSMenu] = [:]
+    /// The rows to retitle in place while the menu is open: machines by
+    /// name, and each hub's section header by the hub's name.
+    private var rowItems: [String: NSMenuItem] = [:]
+    private var hubHeaderItems: [String: NSMenuItem] = [:]
 
     /// AppKit tracks an open menu's item objects; tearing them down while the
     /// menu is displayed flickers, drops the highlight, and can crash. So a
@@ -25,16 +29,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
     private var shelfItem: NSMenuItem?
 
     private let refresh = SingleFlight()
+    private var lastRefresh = Date.distantPast
     private var portsLookups: [String: SingleFlight] = [:]
-    private var copyOutPanels: [String: CopyOutPanel] = [:]
+    private var copyOutPanels: [String: GuestPathPanel] = [:]
+    private var inboxPanels: [String: GuestPathPanel] = [:]
 
     private var cliVersion: String?
     private var updateAvailable: String? // latest tag when newer than the CLI
     private let defaults = UserDefaults.standard
 
     private enum Key {
-        /// The status item drop target's selection, before the shelf.
-        static let legacySelected = "selectedMachine"
         static let lastUpdateCheck = "lastUpdateCheck"
         static func inbox(_ name: String) -> String { "inbox." + name }
     }
@@ -49,15 +53,19 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
         statusItem.menu = menu
         menu.delegate = self
-        // Drops go to the shelf now; the status item takes none, so the old
-        // "selected drop target" has no meaning left.
-        defaults.removeObject(forKey: Key.legacySelected)
         shelf.inbox = { [weak self] name in self?.inbox(for: name) ?? "~" }
         shelf.onDrop = { [weak self] name, urls, done in
             self?.copyIn(urls: urls, into: name, completion: done)
         }
+        shelf.onClick = { [weak self] name in self?.showCopyOut(for: name) }
+        shelf.contextMenu = { [weak self] name in self?.tileMenu(for: name) }
+        // The shelf can sit open for days while the menu stays shut, so it
+        // asks for the refresh a menu open gives; at most one per half
+        // minute (each is a probe of every remote box and one provider call).
+        shelf.onAttention = { [weak self] in self?.refreshStatus(why: "drop shelf", atMostEvery: 30) }
         rebuildMenu()
         updateIcon()
+        if devvm.executable != nil && shelf.wasVisible { shelf.show() }
     }
 
     // MARK: Model
@@ -69,6 +77,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         portsByMachine = portsByMachine.filter { names.contains($0.key) }
         portsLookups = portsLookups.filter { names.contains($0.key) }
         copyOutPanels = copyOutPanels.filter { names.contains($0.key) }
+        inboxPanels = inboxPanels.filter { names.contains($0.key) }
         // The shelf's tiles follow the same snapshots as the menu.
         shelf.update(machines)
         updateIcon()
@@ -145,30 +154,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
         // The shelf's close button changes its state without telling us.
         shelfItem?.title = shelfToggleTitle
         guard devvm.executable != nil else { return }
-        // The watch stream only sees devvm-made changes; a VM stopped behind
-        // devvm's back shows up here, on demand. This one-shot also probes
-        // the remote boxes (providers.md §5) and leaves the result in the
-        // cache the watch child reads, so no `__refresh` is needed too.
-        Log.menu.notice("menu opened; refreshing status")
-        refresh.run(devvm, ["status", "--plain"], terminatePrevious: true) { [weak self] r in
-            guard let self = self, r.ok else { return }
-            let machines = parseStatusBlock(r.stdout)
-            Log.status.notice("menu-open refresh: \(StatusWatcher.summary(self.machines), privacy: .public)")
-            self.apply(machines)
-        }
+        refreshStatus(why: "menu opened")
         // Ports per live machine, for the "Open localhost:PORT" entries.
-        for m in machines where m.isLive && m.forwardCount > 0 {
-            let lookup = portsLookups[m.name] ?? SingleFlight()
-            portsLookups[m.name] = lookup
-            lookup.run(devvm, ["ports", "list", m.name]) { [weak self] r in
-                guard let self = self, r.ok else { return }
-                let forwards = parsePortsList(r.stdout)
-                let summary = forwards.map { "\($0.host)->\($0.guest)\($0.pending ? "(pending)" : "")" }.joined(separator: " ")
-                Log.status.notice("ports for \(m.name, privacy: .public): \(summary, privacy: .public)")
-                self.portsByMachine[m.name] = forwards
-                self.refillSubmenu(for: m.name)
-            }
-        }
+        for m in machines { lookupPorts(for: m) }
         devvm.version { [weak self] v in
             guard let self = self, let v = v else { return }
             if let old = self.cliVersion, old != v {
@@ -181,6 +169,39 @@ final class MenuBar: NSObject, NSMenuDelegate {
             self.rebuildMenu()
         }
         maybeCheckForUpdates()
+    }
+
+    /// One `status --plain`, applied when it answers. The watch stream only
+    /// sees devvm-made changes; a VM stopped behind devvm's back shows up
+    /// here, on demand (a menu open, the shelf being looked at), never on a
+    /// timer. The one-shot also probes the remote boxes and asks the
+    /// providers, and leaves the answers in the caches the watch child
+    /// reads. `atMostEvery` skips a refresh that follows another too soon.
+    private func refreshStatus(why: String, atMostEvery interval: TimeInterval = 0) {
+        guard devvm.executable != nil, Date().timeIntervalSince(lastRefresh) >= interval else { return }
+        lastRefresh = Date()
+        Log.status.notice("refreshing status (\(why, privacy: .public))")
+        refresh.run(devvm, ["status", "--plain"], terminatePrevious: true) { [weak self] r in
+            guard let self = self, r.ok else { return }
+            let machines = parseStatusBlock(r.stdout)
+            Log.status.notice("refresh (\(why, privacy: .public)): \(StatusWatcher.summary(machines), privacy: .public)")
+            self.apply(machines)
+        }
+    }
+
+    /// `ports list` for a live machine with forwards, into its submenu.
+    private func lookupPorts(for m: Machine) {
+        guard m.isLive && m.forwardCount > 0 else { return }
+        let lookup = portsLookups[m.name] ?? SingleFlight()
+        portsLookups[m.name] = lookup
+        lookup.run(devvm, ["ports", "list", m.name]) { [weak self] r in
+            guard let self = self, r.ok else { return }
+            let forwards = parsePortsList(r.stdout)
+            let summary = forwards.map { "\($0.host)->\($0.guest)\($0.pending ? "(pending)" : "")" }.joined(separator: " ")
+            Log.status.notice("ports for \(m.name, privacy: .public): \(summary, privacy: .public)")
+            self.portsByMachine[m.name] = forwards
+            self.refillSubmenu(for: m.name)
+        }
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -213,6 +234,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
         menu.removeAllItems()
         submenus = [:]
+        rowItems = [:]
+        hubHeaderItems = [:]
         shelfItem = nil
         guard devvm.executable != nil else {
             menu.addItem(item("devvm not found on PATH", nil))
@@ -236,91 +259,81 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(shelfToggle)
         menu.addItem(.separator())
 
-        if machines.isEmpty {
-            menu.addItem(item("No machines registered", nil))
+        let broken = machines.contains { $0.isBrokenConfig }
+        if broken {
+            menu.addItem(item("devvm.toml does not parse — open it…", #selector(openConfig)))
         }
-        // Local machines first, then one section per hub: a disabled header
-        // row for the hub itself (it is a host, not a machine: nothing to
-        // start, stop or drop on) and its machines indented under it.
-        let locals = machines.filter { !$0.isHub && $0.hub == nil }
-        for m in locals {
-            menu.addItem(machineRow(m))
+        // One section per kind on this host (Local, Remote, a provider's),
+        // then one per hub: the hub is a host, not a machine (nothing to
+        // start, stop or drop on), so it is the header its machines sit
+        // under. A lone kind needs no header.
+        let sections = machineSections(machines)
+        if sections.isEmpty && !broken {
+            menu.addItem(item("No machines", nil))
         }
-        for group in hubGroups() {
-            menu.addItem(.separator())
-            // representedObject names the hub so refreshRowsInPlace can
-            // retitle the header (reachable → unreachable) while the menu
-            // is open; no submenu is what tells it apart from a machine row.
-            let hubHeader = item(group.header?.hubHeaderTitle ?? "\(group.name) — hub", nil, group.header?.name)
-            menu.addItem(hubHeader)
-            for m in group.members {
-                let it = machineRow(m)
-                it.indentationLevel = 1
-                menu.addItem(it)
+        let headed = sections.count > 1 || sections.first?.hubName != nil
+        for section in sections {
+            if headed {
+                let header = NSMenuItem.sectionHeader(title: section.title)
+                if let hub = section.hubName { hubHeaderItems[hub] = header }
+                menu.addItem(header)
+            }
+            for m in section.members {
+                menu.addItem(machineRow(m))
+            }
+            if section.members.isEmpty {
+                menu.addItem(item("No machines", nil))
             }
         }
 
         menu.addItem(.separator())
-        menu.addItem(item("Check for updates…", #selector(checkForUpdates)))
+        // The app's own housekeeping, out of the way of the machines. An
+        // item with a submenu is enabled without an action.
+        let app = item("DevVM", nil)
+        let appMenu = NSMenu(title: "DevVM")
         let login = item("Launch at login", #selector(toggleLaunchAtLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
+        appMenu.addItem(login)
+        appMenu.addItem(item("Check for updates…", #selector(checkForUpdates)))
+        appMenu.addItem(.separator())
         // A nil action leaves the version line disabled (autoenablesItems).
-        menu.addItem(item(cliVersion.map { "devvm \($0) · app \(MenuBar.appVersion)" } ?? "app \(MenuBar.appVersion)", nil))
-        menu.addItem(.separator())
+        appMenu.addItem(item(cliVersion.map { "devvm \($0) · app \(MenuBar.appVersion)" } ?? "app \(MenuBar.appVersion)", nil))
+        app.submenu = appMenu
+        menu.addItem(app)
         menu.addItem(item("Quit", #selector(quit)))
     }
 
     /// One machine's row with its submenu. No action on the row itself:
     /// AppKit routes a click on an item with a submenu to opening it, never
-    /// to the action; "Open Drop Shelf" lives inside the submenu.
+    /// to the action.
     private func machineRow(_ m: Machine) -> NSMenuItem {
-        let it = item(m.rowTitle, nil, m.name)
+        let it = item(m.rowTitle, nil)
+        it.badge = m.rowDetail.map { NSMenuItemBadge(string: $0) }
         let sub = NSMenu(title: m.name)
         sub.delegate = self // so open/close of the submenu is tracked
         fillSubmenu(sub, for: m)
         submenus[m.name] = sub
+        rowItems[m.name] = it
         it.submenu = sub
         return it
-    }
-
-    /// The rows grouped by hub, in the order devvm listed the hubs: the
-    /// hub's own row (backend `hub`) as the header, its `HUB/NAME` rows as
-    /// members. A hub whose own row is missing (a broken hub conf) still
-    /// gets a section for the members that name it.
-    private func hubGroups() -> [(name: String, header: Machine?, members: [Machine])] {
-        var order: [String] = []
-        var headers: [String: Machine] = [:]
-        var members: [String: [Machine]] = [:]
-        for m in machines {
-            let key: String
-            if m.isHub { key = m.name } else if let h = m.hub { key = h } else { continue }
-            if members[key] == nil {
-                order.append(key)
-                members[key] = []
-            }
-            if m.isHub { headers[key] = m } else { members[key]!.append(m) }
-        }
-        return order.map { (name: $0, header: headers[$0], members: members[$0] ?? []) }
     }
 
     private var shelfToggleTitle: String {
         return shelf.isVisible ? "Hide Drop Shelf" : "Show Drop Shelf"
     }
 
-    /// The in-place half of a rebuild: titles of rows that already exist.
-    /// Rows for machines that appeared or vanished wait for the deferred
-    /// full rebuild.
+    /// The in-place half of a rebuild: titles and badges of rows that
+    /// already exist. Rows for machines that appeared or vanished wait for
+    /// the deferred full rebuild.
     private func refreshRowsInPlace() {
         shelfItem?.title = shelfToggleTitle
-        for it in menu.items {
-            guard let name = it.representedObject as? String,
-                  let m = machines.first(where: { $0.name == name }) else { continue }
-            if it.submenu == nil {
-                it.title = m.hubHeaderTitle // a hub's section header
-                continue
+        for m in machines {
+            if m.isHub {
+                hubHeaderItems[m.name]?.title = m.hubHeaderTitle
+            } else if let it = rowItems[m.name] {
+                it.title = m.rowTitle
+                it.badge = m.rowDetail.map { NSMenuItemBadge(string: $0) }
             }
-            it.title = m.rowTitle
         }
     }
 
@@ -335,28 +348,34 @@ final class MenuBar: NSObject, NSMenuDelegate {
         fillSubmenu(sub, for: m)
     }
 
+    /// A machine's actions: its submenu in the menu, and its tile's
+    /// right-click menu on the shelf. Start and Stop follow the state alone
+    /// (a remote box is never `running` or `stopped`; a provider's server
+    /// is). Everything else needs a live machine, hub machines included:
+    /// every devvm command takes `HUB/NAME` as a name, and its forwards are
+    /// this Mac's own.
     private func fillSubmenu(_ sub: NSMenu, for m: Machine) {
         sub.removeAllItems()
-        if m.isLive {
-            sub.addItem(item("Open Drop Shelf", #selector(openShelf(_:)), m.name))
-            sub.addItem(.separator())
-        }
         switch m.state {
-        case "running" where !m.isProvider:
+        case "running":
             sub.addItem(item("Stop", #selector(stopMachine(_:)), m.name))
-        case "stopped" where !m.isProvider:
+        case "stopped":
             sub.addItem(item("Start", #selector(startMachine(_:)), m.name))
         default:
             break
         }
-        // Hub machines too: `ports up/down/list h/web` run on this Mac and
-        // forward to its own localhost, like a local machine's (step 6), and
-        // copy in/out shell out to cp-in/cp-out by name, which take `h/web`
-        // since devvm's hub cp (step 4).
         if m.isLive {
-            if m.forwards != "-" {
-                sub.addItem(item("Ports up", #selector(portsUp(_:)), m.name))
+            // One ports item, the one that changes something: saved forwards
+            // that are down go up, ones that are up go down, and a daemon
+            // reconnecting can be nudged (`ports up` is its kick). Nothing
+            // for a machine with no saved forwards (`-`).
+            if m.isReconnecting {
+                sub.addItem(item("Reconnect now", #selector(portsUp(_:)), m.name))
                 sub.addItem(item("Ports down", #selector(portsDown(_:)), m.name))
+            } else if m.forwardsUp {
+                sub.addItem(item("Ports down", #selector(portsDown(_:)), m.name))
+            } else if m.forwards == "down" {
+                sub.addItem(item("Ports up", #selector(portsUp(_:)), m.name))
             }
             for f in portsByMachine[m.name] ?? [] {
                 let title = f.pending ? "localhost:\(f.host) → guest \(f.guest) (pending)"
@@ -364,20 +383,31 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 let it = item(title, f.pending ? nil : #selector(openPort(_:)), f.host)
                 sub.addItem(it)
             }
-            sub.addItem(.separator())
+            if !sub.items.isEmpty { sub.addItem(.separator()) }
             sub.addItem(item("Copy in…", #selector(copyInPanel(_:)), m.name))
             sub.addItem(item("Copy out…", #selector(copyOut(_:)), m.name))
-            sub.addItem(item("Set inbox folder… (\(inbox(for: m.name)))", #selector(setInbox(_:)), m.name))
+            sub.addItem(item("Inbox folder… (\(inbox(for: m.name)))", #selector(setInbox(_:)), m.name))
         }
         if sub.items.isEmpty {
             let note: String
             if m.isUnreachable {
-                note = "Unreachable: its hub did not answer"
+                note = m.hub == nil ? "Unreachable" : "Unreachable: its hub did not answer"
             } else {
                 note = "Nothing to do here"
             }
             sub.addItem(item(note, nil))
         }
+    }
+
+    /// The same actions for a tile on the shelf. Built on demand and not
+    /// tracked: it shows the ports last looked up, and asks again so the
+    /// next one is current.
+    private func tileMenu(for name: String) -> NSMenu? {
+        guard let m = machines.first(where: { $0.name == name }) else { return nil }
+        let menu = NSMenu(title: name)
+        fillSubmenu(menu, for: m)
+        lookupPorts(for: m)
+        return menu
     }
 
     // MARK: Actions
@@ -399,14 +429,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
     }
 
-    /// From a machine's submenu: open the shelf and point at its tile.
-    @objc private func openShelf(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
-        Log.menu.notice("Open Drop Shelf chosen for \(name, privacy: .public)")
-        shelf.show()
-        shelf.highlight(name)
-    }
-
     @objc private func startMachine(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         Log.menu.notice("Start chosen for \(name, privacy: .public)")
@@ -415,15 +437,22 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     @objc private func stopMachine(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        if let m = machines.first(where: { $0.name == name }), m.forwardsUp {
+        // Asked first only when stopping costs something that is not
+        // obvious: forwards in use, or a bill that carries on.
+        var notes: [String] = []
+        if let m = machines.first(where: { $0.name == name }) {
+            if m.forwardsUp { notes.append("\(m.forwardsWords). Stopping drops them.") }
+            if m.isProvider { notes.append("A stopped server is still billed; only deleting it ends that.") }
+        }
+        if !notes.isEmpty {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Stop \(name)?"
-            alert.informativeText = "\(m.forwardsWords). Stopping drops them."
+            alert.informativeText = notes.joined(separator: "\n\n")
             alert.addButton(withTitle: "Stop")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else {
-                Log.menu.notice("Stop of \(name, privacy: .public) cancelled at the forwards prompt")
+                Log.menu.notice("Stop of \(name, privacy: .public) cancelled at the prompt")
                 return
             }
         }
@@ -519,25 +548,30 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
     }
 
+    /// The inbox is a guest path like Copy out's, so it gets the same field
+    /// and Tab completion. Empty means the home directory.
     @objc private func setInbox(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Inbox folder on \(name)"
-        alert.informativeText = "Dropped files land here. A guest path, relative to the home directory unless absolute; created if missing."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = inbox(for: name)
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
-        let inbox = value.isEmpty ? "~" : value
+        Log.menu.notice("Inbox folder… chosen for \(name, privacy: .public)")
+        let panel = inboxPanels[name] ?? GuestPathPanel(devvm: devvm, machine: name, config: GuestPathPanel.Config(
+            title: "Inbox folder on \(name)",
+            label: "Folder for dropped files (relative to home; created if missing):",
+            placeholder: "~ (the home directory)",
+            button: "Save",
+            allowsEmpty: true)) { [weak self] _, path in
+            self?.saveInbox(path, for: name)
+        }
+        inboxPanels[name] = panel
+        let current = inbox(for: name)
+        panel.show(text: current == "~" ? "" : current)
+    }
+
+    private func saveInbox(_ path: String, for name: String) {
+        let inbox = path.isEmpty ? "~" : path
         Log.menu.notice("inbox for \(name, privacy: .public) set to \(inbox, privacy: .public)")
         defaults.set(inbox, forKey: Key.inbox(name))
-        rebuildMenu()
-        shelf.update(machines) // the tiles' tooltips name the inbox
+        refillSubmenu(for: name)
+        shelf.inboxChanged() // the tiles name the inbox
     }
 
     // MARK: Copy out
@@ -545,9 +579,38 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc private func copyOut(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         Log.menu.notice("Copy out… chosen for \(name, privacy: .public)")
-        let panel = copyOutPanels[name] ?? CopyOutPanel(devvm: devvm, machine: name)
+        showCopyOut(for: name)
+    }
+
+    /// From the menu, or a click on the machine's tile. One panel per
+    /// machine, kept while the machine is listed, so the last path is still
+    /// in the field next time.
+    private func showCopyOut(for name: String) {
+        let panel = copyOutPanels[name] ?? CopyOut.panel(devvm: devvm, machine: name)
         copyOutPanels[name] = panel
         panel.show()
+    }
+
+    // MARK: Config
+
+    /// devvm.toml did not parse: open it in the default text editor (`open
+    /// -t`: a .toml file often has no application of its own).
+    @objc private func openConfig() {
+        Log.menu.notice("open devvm.toml chosen")
+        devvm.run(["config", "path"]) { r in
+            let path = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard r.ok, !path.isEmpty else {
+                Notifications.shared.error("devvm config path failed", r.lastStderrLine)
+                return
+            }
+            let open = Process()
+            open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            open.arguments = ["-t", path]
+            do { try open.run() } catch {
+                Log.menu.error("open -t \(path, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Notifications.shared.error("Could not open devvm.toml", path)
+            }
+        }
     }
 
     // MARK: Updates

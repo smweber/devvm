@@ -5,53 +5,75 @@ A macOS menu bar companion for `devvm`. It is a thin shell: every action is a
 --watch`, so it shows what the CLI would and nothing else. It never opens a
 terminal; `attach` and `shell` stay in your own terminal.
 
+Needs macOS 14 or later.
+
 What it does:
 
+- **Machine list**, live, in sections: *Local* (smol VMs), *Remote* (your
+  `[machines.*]` boxes), one per provider (*Hetzner*), then one per hub. A
+  row is a glyph and the name (● running or reachable, ○ stopped, ◌
+  anything unsettled), with a badge only when there is something to say:
+  `stopped`, `unreachable`, `not checked`, `reconnecting`, `2 ports`. The
+  app keeps one `status --plain --watch` child and redraws when devvm
+  reports a change. No polling. Opening the menu also runs a one-off
+  `status --plain`, which is how a VM stopped behind devvm's back gets
+  noticed. A devvm.toml that does not parse is one row that opens the file.
+- **Hubs**: machines on another host running devvm (`HUB/NAME` in the
+  CLI) are listed under a header for the hub itself. When a hub does not
+  answer, its header says so and its machines show as *unreachable* (the
+  last listing devvm saw) until it is back; nothing on them can be chosen
+  meanwhile. Every action on them is the same `devvm` call with the full
+  `HUB/NAME`.
+- **Per machine**: Start or Stop (a provider's server too; stopping one
+  first says it is still billed), one ports item (*Ports up* when the saved
+  forwards are down, *Ports down* when they are up, *Reconnect now* while
+  they reconnect), each forwarded port opened in the browser, Copy in…
+  (file picker), Copy out…, and the inbox folder for drops (default `~`).
 - **Drop shelf**: *Show Drop Shelf* in the menu opens a small floating
-  panel with one tile per running machine (hub machines included); drop
-  files on a tile to copy them into that machine's inbox
-  (`devvm cp-in -t <inbox> NAME -- files…`, `-r` added when a folder is
-  among them). One drop is one invocation and one notification; the tile
-  shows a spinner while it copies, then ✓ or ✗ for a few seconds. If a file
-  already exists the notification offers **Replace** (re-runs with `-f`).
+  panel with one tile per running machine (hub machines included), in the
+  menu's order. A tile is that machine's copy surface:
+  - **drop** files on it to copy them into the machine's inbox, which the
+    tile names (`devvm cp-in -t <inbox> NAME -- files…`, `-r` added when a
+    folder is among them). One drop is one invocation and one
+    notification; the tile shows a spinner while it copies, then ✓ or ✗
+    for a few seconds. If a file already exists the notification offers
+    **Replace** (re-runs with `-f`);
+  - **click** it for Copy out…;
+  - **right-click** it for the machine's menu (the same items as its
+    submenu in the menu bar).
+
   The shelf floats above other windows on every Space (and beside
   full-screen apps) without taking focus from the app you drag out of, can
-  be dragged anywhere, remembers its position across launches, and stays
-  open until you close it or choose *Hide Drop Shelf*. It opens only from
-  the menu: nothing watches your drags. A machine's own submenu has *Open
-  Drop Shelf*, which also flashes that machine's tile. (The status item
-  itself is not a drop target: dragging to the menu bar sets off Mission
-  Control.)
-- **Machine list** with state and forwards, live: the app keeps one
-  `status --plain --watch` child and redraws when devvm reports a change.
-  No polling. Opening the menu also runs a one-off `status --plain`, which
-  is how a VM stopped behind devvm's back gets noticed.
-- **Hubs**: machines on another host running devvm (`HUB/NAME` in the
-  CLI) are listed in a section per hub, under a header row for the hub
-  itself. When a hub does not answer its machines show as *unreachable*
-  (the last listing devvm saw) until it is back; nothing on them can be
-  chosen meanwhile. Every action on them is the same `devvm` call with the
-  full `HUB/NAME`.
+  be dragged anywhere (by a tile too), remembers its position and whether
+  it was open across launches, and stays open until you close it or choose
+  *Hide Drop Shelf*. It opens only from the menu: nothing watches your
+  drags. Tiles never move while the pointer is over the shelf: a machine
+  that went away meanwhile keeps its tile, dimmed and refusing drops,
+  until the pointer leaves, so a drop cannot land on a neighbour that slid
+  into place. Pointing at the shelf (or showing it) also refreshes the
+  listing, at most every 30 seconds, as opening the menu does. (The status
+  item itself is not a drop target: dragging to the menu bar sets off
+  Mission Control.)
 - **Icon**: a filled box when any machine is running; a badge dot when any
   machine's forwards are reconnecting (laptop just woke, host unreachable);
   an outline when nothing is running.
-- **Per machine**: Start / Stop, Ports up / Ports down, open each forwarded
-  port in the browser, Copy in… (file picker), Copy out…, and the inbox
-  folder for drops (default `~`).
-- **Copy out…**: a guest path field with shell-style Tab completion backed
-  by `devvm __complete`. Tab completes a unique match (a directory keeps its
-  `/`), otherwise extends to the matches' common prefix; with nothing left
-  to extend, repeated Tabs cycle through the matches (Shift-Tab backwards),
-  listed under the field as `n of m`. Typing ends the cycle. While cycling,
-  Tab moves to the next candidate; to descend into a directory, type a
-  character (zsh menu-complete behaviour). Confirming the path hides the
-  field and opens a save panel (a file) or folder picker (a path ending in
-  `/`) in front; cancelling that brings the path field back to fix the
-  path, and closing the path window ends it.
-- **Updates**: *Check for updates…* runs `devvm update --check`; updating
-  runs `devvm update` and relaunches the app. When the app's version and
-  the CLI's differ, a *Reinstall menu bar app* item runs `devvm menubar`.
-- **Launch at login** via the system login-items API.
+- **Copy out…** and **Inbox folder…**: a guest path field with shell-style
+  Tab completion backed by `devvm __complete`. Tab completes a unique match
+  (a directory keeps its `/`), otherwise extends to the matches' common
+  prefix; with nothing left to extend, repeated Tabs cycle through the
+  matches (Shift-Tab backwards), listed under the field as `n of m`. Typing
+  ends the cycle. While cycling, Tab moves to the next candidate; to
+  descend into a directory, type a character (zsh menu-complete behaviour).
+  For Copy out, confirming the path hides the field and opens a save panel
+  (a file) or folder picker (a path ending in `/`) in front; cancelling
+  that brings the path field back to fix the path, and closing the path
+  window ends it. The field keeps the last path while the app runs.
+- **Updates** and **Launch at login** live under *DevVM* at the foot of the
+  menu. *Check for updates…* runs `devvm update --check`; updating runs
+  `devvm update` and relaunches the app. When a newer release exists, or
+  the app's version and the CLI's differ, an item for it (*Update devvm
+  to…*, *Reinstall menu bar app*, which runs `devvm menubar`) appears at
+  the top of the menu.
 
 ## Build
 
@@ -113,8 +135,8 @@ xattr -d com.apple.quarantine ~/Applications/DevVM.app
 
 ## Launch at login
 
-Tick *Launch at login* in the menu. It uses `SMAppService`, which works with
-ad-hoc signed apps on macOS 13+; if it reports an error, add
+Tick *DevVM › Launch at login* in the menu. It uses `SMAppService`, which works with
+ad-hoc signed apps; if it reports an error, add
 `~/Applications/DevVM.app` under System Settings › General › Login Items
 instead.
 

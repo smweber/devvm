@@ -10,26 +10,23 @@ import Foundation
 /// (its last listing, so the machines stay visible). The forwards column of
 /// a hub machine is this Mac's own.
 ///
-/// The fifth column says who owns the machine: managed | shadowed | -
-/// (entries in devvm.toml, which devvm never shapes: remote boxes and hubs;
-/// and a hub machine whose hub sent no fifth column). It is optional: a CLI
-/// from before it emits four fields. The app does not read it (nor keep
-/// it): devvm lists no machine it did not create (no `unmanaged` row since
-/// simplify.md step 15).
-///
-/// A sixth column (`verified=<unix>:<how>` for a remote box, else `-` or
-/// `verified=-`) says when a remote box's state was last established; it
-/// is not read here yet.
+/// Columns past the fourth are not read: the fifth (managed | shadowed | -)
+/// says who owns the machine, the sixth (`verified=<unix>:<how>`) when a
+/// remote box's state was last established.
 struct Machine {
     let name: String
-    let backend: String
+    let backend: String  // smol | remote | hub | hetzner
     let state: String    // running | stopped | starting | stopping | reachable | unreachable | broken conf | ?
     let forwards: String // up:N | reconnecting:N | down | -
 
-    /// A cloud provider's server (backend `hetzner`), discovered from its
-    /// API. The app offers no start/stop/delete for one: those are the
-    /// CLI's (`devvm start`/`stop`/`delete`).
-    var isProvider: Bool { backend == "hetzner" }
+    /// A cloud provider's server (today `hetzner`), discovered from its API:
+    /// any backend that is not one of devvm's own three. Stopping one does
+    /// not stop its bill, which the Stop prompt says.
+    var isProvider: Bool { backend != "smol" && backend != "remote" && backend != "hub" }
+
+    /// The one row a devvm.toml that does not parse is listed as
+    /// (`-\t-\tbroken conf`): not a machine at all.
+    var isBrokenConfig: Bool { name == "-" && state == "broken conf" }
 
     /// A hub's own row: a host machines live on, not a machine. Never a
     /// drop target, never started or stopped. The backend alone does not
@@ -50,19 +47,14 @@ struct Machine {
     }
     var isUnreachable: Bool { state == "unreachable" }
 
-    /// Running smol VMs and remote hosts that answered their last probe
-    /// (`reachable`: a live ssh master, a TCP connect, or a command that just
-    /// got through). A remote box at `?` was never probed or cannot be (an
-    /// alias behind ProxyJump), so it stays selectable as it was before
-    /// devvm probed anything. "Remote" is any backend reached over ssh: not
-    /// `smol` and not `hub` (a `HUB/NAME` row its hub did not list carries
-    /// backend `hub` and state `?`, and is not live); that covers `remote`
-    /// and the provider backends; `unreachable` is the one remote state
-    /// that is not. A hub itself is neither: nothing is copied to or started on it.
-    /// Every action — start, stop, ports, copy in/out, the drop target —
-    /// takes a hub machine by name (`h/web` is a machine name to every devvm
-    /// command; its forwards are this Mac's own since devvm's hub forwards),
-    /// so it is gated on isLive, copies, ports and the shelf included.
+    /// Running VMs and servers, and remote hosts that answered their last
+    /// probe (`reachable`: a live ssh master, a TCP connect, or a command
+    /// that just got through). A remote box at `?` was never probed or
+    /// cannot be (an alias behind ProxyJump), so it stays usable. A
+    /// `HUB/NAME` row its hub did not list carries backend `hub` and state
+    /// `?`, and is not live; neither is a hub itself (nothing is copied to
+    /// or started on it). Ports, copies and the shelf are gated on this;
+    /// every one of them takes a hub machine by its full name.
     var isLive: Bool {
         !isHub && (state == "running" || state == "reachable" || (state == "?" && backend != "smol" && backend != "hub"))
     }
@@ -75,8 +67,8 @@ struct Machine {
 
     var stateWords: String {
         switch state {
-        case "running", "stopped", "reachable", "unreachable", "starting", "stopping": return state
-        case "broken conf": return "broken conf"
+        case "running", "stopped", "reachable", "unreachable", "starting", "stopping", "broken conf": return state
+        case "?": return "not checked"
         default: return "unknown"
         }
     }
@@ -92,7 +84,7 @@ struct Machine {
 
     /// A glyph for the menu row. Filled = live, hollow = off, dotted = unknown
     /// (which `unreachable` is: the hub did not say). A remote box at `?` is
-    /// selectable (isLive) but unverified, so it is dotted, not filled.
+    /// usable (isLive) but unverified, so it is dotted, not filled.
     var glyph: String {
         if state == "?" || state == "starting" || state == "stopping" { return "◌" } // a provider server between power states
         if isLive { return "●" }
@@ -100,12 +92,79 @@ struct Machine {
         return "◌"
     }
 
-    /// The menu row title; also used to refresh rows in place while the menu
-    /// is open.
-    var rowTitle: String { "\(glyph) \(label) — \(stateWords), \(forwardsWords)" }
+    /// The menu row: the glyph and the name. The glyph already says running
+    /// or reachable, so the row's badge (rowDetail) carries only what is
+    /// worth a second look.
+    var rowTitle: String { "\(glyph) \(label)" }
 
-    /// The section header for a hub: its name and whether it answered.
-    var hubHeaderTitle: String { "\(name) — hub, \(stateWords)" }
+    /// The row's badge, or nil for a live machine with nothing to say:
+    /// forwards in trouble first, then a state that is not simply "up",
+    /// then the count of forwards that are.
+    var rowDetail: String? {
+        if isReconnecting { return "reconnecting" }
+        if state != "running" && state != "reachable" { return stateWords }
+        if forwardsUp { return forwardCount == 1 ? "1 port" : "\(forwardCount) ports" }
+        return nil
+    }
+
+    /// The section header for a hub: its name, and that it did not answer.
+    var hubHeaderTitle: String { isUnreachable ? "\(name) (hub) — unreachable" : "\(name) (hub)" }
+}
+
+/// One section of the menu: the machines of one kind on this host (Local,
+/// Remote, one per provider), or one hub's.
+struct MachineSection {
+    let title: String
+    /// The hub's own row for a hub's section; nil for a kind's, and for a
+    /// hub whose own row is missing (a broken hub entry) but whose machines
+    /// name it.
+    let hub: Machine?
+    /// The hub's name for a hub's section, with or without its own row.
+    let hubName: String?
+    let members: [Machine]
+}
+
+/// The rows by section, in the menu's order: Local (smol), Remote, then one
+/// section per provider backend in the order devvm listed them, then one per
+/// hub likewise. Sections with nothing in them are left out (a hub's stays:
+/// its header says whether it answered). The broken-config row is in none.
+/// The shelf lists its tiles in this order too.
+func machineSections(_ machines: [Machine]) -> [MachineSection] {
+    var local: [Machine] = [], remote: [Machine] = []
+    var providerOrder: [String] = [], providers: [String: [Machine]] = [:]
+    var hubOrder: [String] = [], hubRows: [String: Machine] = [:], hubMembers: [String: [Machine]] = [:]
+    for m in machines where !m.isBrokenConfig {
+        if m.isHub || m.hub != nil {
+            let key = m.hub ?? m.name
+            if hubMembers[key] == nil {
+                hubOrder.append(key)
+                hubMembers[key] = []
+            }
+            if m.isHub { hubRows[key] = m } else { hubMembers[key]!.append(m) }
+        } else if m.backend == "smol" {
+            local.append(m)
+        } else if m.backend == "remote" {
+            remote.append(m)
+        } else {
+            if providers[m.backend] == nil {
+                providerOrder.append(m.backend)
+                providers[m.backend] = []
+            }
+            providers[m.backend]!.append(m)
+        }
+    }
+    var out: [MachineSection] = []
+    if !local.isEmpty { out.append(MachineSection(title: "Local", hub: nil, hubName: nil, members: local)) }
+    if !remote.isEmpty { out.append(MachineSection(title: "Remote", hub: nil, hubName: nil, members: remote)) }
+    for b in providerOrder {
+        out.append(MachineSection(title: b.prefix(1).uppercased() + String(b.dropFirst()), hub: nil, hubName: nil,
+                                  members: providers[b] ?? []))
+    }
+    for h in hubOrder {
+        out.append(MachineSection(title: hubRows[h]?.hubHeaderTitle ?? "\(h) (hub)", hub: hubRows[h], hubName: h,
+                                  members: hubMembers[h] ?? []))
+    }
+    return out
 }
 
 /// Parses one blank-line-separated block of tab-separated rows.
@@ -114,8 +173,7 @@ func parseStatusBlock(_ text: String) -> [Machine] {
     for line in text.split(separator: "\n") {
         let f = line.split(separator: "\t", omittingEmptySubsequences: false).map { String($0) }
         guard f.count >= 3, !f[0].isEmpty else { continue }
-        // Columns past the fourth (managed, verified) are not read: any
-        // number of them parses.
+        // Columns past the fourth are not read: any number of them parses.
         out.append(Machine(name: f[0], backend: f[1], state: f[2], forwards: f.count > 3 ? f[3] : "-"))
     }
     return out
@@ -231,14 +289,14 @@ final class StatusWatcher {
         // An empty registry is a lone blank line, never followed by a second.
         if buffer == Data("\n".utf8) {
             buffer = Data()
-            Log.status.notice("snapshot: no machines registered")
+            Log.status.notice("snapshot: no machines")
             onSnapshot?([])
         }
     }
 
     /// One line per snapshot: `personal=running/up:2 work=stopped/-`.
     static func summary(_ machines: [Machine]) -> String {
-        if machines.isEmpty { return "no machines registered" }
+        if machines.isEmpty { return "no machines" }
         return "\(machines.count) machine(s): " + machines.map { "\($0.name)=\($0.state)/\($0.forwards)" }.joined(separator: " ")
     }
 

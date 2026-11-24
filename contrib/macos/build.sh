@@ -40,7 +40,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist/slices
 slices=()
 for arch in $arches; do
   echo "compiling ($arch, version $version)…"
-  swiftc -O -target "$arch-apple-macos13.0" -sdk "$sdk" \
+  swiftc -O -target "$arch-apple-macos14.0" -sdk "$sdk" \
     -framework AppKit -framework UserNotifications -framework ServiceManagement \
     -o "dist/slices/DevVM-$arch" \
     Sources/*.swift

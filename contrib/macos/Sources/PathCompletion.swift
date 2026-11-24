@@ -48,7 +48,7 @@ struct PathCompletion {
     }
 }
 
-/// Shell-style Tab completion as pure value logic; CopyOutPanel owns the
+/// Shell-style Tab completion as pure value logic; GuestPathPanel owns the
 /// AppKit side (the field, the lookups, the hint label).
 ///
 /// One Tab, given the candidates for the current text:
@@ -70,7 +70,7 @@ struct PathCompletion {
 /// directory shown by a cycle is not: Tab there moves on to the next
 /// candidate, or "srv/" after "src/" could never be reached. Such a
 /// directory is *accepted* instead, which ends the cycle with the text
-/// unchanged, as zsh does (CopyOutPanel):
+/// unchanged, as zsh does (GuestPathPanel):
 /// - typing "/" after a directory a completion just wrote (cycled or
 ///   unique) accepts it, the doubled "/" is dropped, and the panel Tabs at
 ///   once, so "/" means "go in": the listing appears as for a Tab;

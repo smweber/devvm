@@ -223,10 +223,11 @@ In this order, on the laptop and on every hub:
 `devvm menubar` installs the DevVM menu bar app into `~/Applications` at your
 CLI's version and opens it (run it again any time to open it). The app is a
 thin shell over the CLI: a floating drop shelf (opened from the menu) has a
-tile per running machine and runs `cp-in` for files dropped on one, the menu
-lists machines and their forwards (fed by
+tile per running machine (drop files on one to `cp-in`, click it to copy
+out), the menu lists machines by kind with their forwards (fed by
 `status --plain --watch`), and each machine offers start/stop, ports up/down,
-its forwarded ports, and copy in/out. It never spawns a terminal. The zip
+its forwarded ports, and copy in/out. It needs macOS 14 and never spawns a
+terminal. The zip
 comes from the same release as the binaries, verified against its `.sha256`
 sidecar; downloads made by devvm carry no quarantine flag, so the ad-hoc
 signed app opens without Gatekeeper prompts. Sources and a local build script

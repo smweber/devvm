@@ -1,19 +1,33 @@
 import AppKit
 
-/// "Copy out from NAME": a guest path field with shell-style Tab completion,
-/// then a save panel (file) or folder picker (directory). Completion
-/// candidates come from the CLI's own completion command, so the field
-/// suggests exactly what the shell would; the Tab logic itself lives in
-/// TabCompleter (PathCompletion.swift).
+/// A guest path field with shell-style Tab completion, for a path on one
+/// machine: what to copy out (CopyOut, below) and where drops land (the
+/// inbox). What a confirmed path means is the caller's `onSubmit`.
+/// Completion candidates come from the CLI's own completion command, so the
+/// field suggests exactly what the shell would; the Tab logic itself lives
+/// in TabCompleter (PathCompletion.swift).
 ///
 /// Candidates show in a one-line label under the field rather than AppKit's
 /// completion popup: the popup completes a "partial word" it splits on `/`,
 /// `.` and `-`, takes over the arrow and Tab keys while it is up, and has no
 /// notion of a common prefix or of cycling, which is what made Tab feel
 /// finicky. A label never takes focus, so Tab stays in the field.
-final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
+final class GuestPathPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
+    struct Config {
+        let title: String
+        let label: String
+        let placeholder: String
+        let button: String
+        /// Whether an empty field can be confirmed (the inbox: empty is home).
+        let allowsEmpty: Bool
+    }
+
+    let machine: String
     private let devvm: Devvm
-    private let machine: String
+    private let config: Config
+    /// A confirmed path, trimmed. The panel is already hidden; `reopen()`
+    /// brings it back with the text intact.
+    private let onSubmit: (GuestPathPanel, String) -> Void
     private let panel: NSPanel
     private let field = NSTextField(frame: .zero)
     private let hint = NSTextField(labelWithString: "")
@@ -45,14 +59,16 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         #selector(NSResponder.moveToEndOfDocument(_:)),
     ]
 
-    init(devvm: Devvm, machine: String) {
+    init(devvm: Devvm, machine: String, config: Config, onSubmit: @escaping (GuestPathPanel, String) -> Void) {
         self.devvm = devvm
         self.machine = machine
+        self.config = config
+        self.onSubmit = onSubmit
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 118),
                         styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
         super.init()
 
-        panel.title = "Copy out from \(machine)"
+        panel.title = config.title
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false // typing must reach the field
@@ -61,10 +77,10 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         panel.delegate = self
 
         let content = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
-        let label = NSTextField(labelWithString: "Guest path (relative to home unless absolute; Tab completes):")
+        let label = NSTextField(labelWithString: config.label)
         label.frame = NSRect(x: 16, y: 84, width: 408, height: 18)
         field.frame = NSRect(x: 16, y: 56, width: 408, height: 24)
-        field.placeholderString = "src/project/notes.txt or dir/"
+        field.placeholderString = config.placeholder
         field.delegate = self
         hint.frame = NSRect(x: 16, y: 36, width: 408, height: 16)
         hint.font = .systemFont(ofSize: 11)
@@ -76,7 +92,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         cancel.bezelStyle = .rounded
         cancel.keyEquivalent = "\u{1b}"
         cancel.frame = NSRect(x: 254, y: 6, width: 80, height: 28)
-        let copy = NSButton(title: "Copy…", target: self, action: #selector(copyTapped))
+        let copy = NSButton(title: config.button, target: self, action: #selector(submitTapped))
         copy.bezelStyle = .rounded
         copy.keyEquivalent = "\r"
         copy.frame = NSRect(x: 340, y: 6, width: 84, height: 28)
@@ -88,15 +104,22 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         panel.center()
     }
 
-    func show() {
-        Log.menu.notice("copy out panel opened for \(self.machine, privacy: .public)")
+    /// Opens the panel, or brings it forward. `text` replaces what the field
+    /// holds; without it the field keeps its last text.
+    func show(text: String? = nil) {
+        Log.menu.notice("path panel \"\(self.config.title, privacy: .public)\" opened")
+        if let text = text, !panel.isVisible {
+            field.stringValue = text
+            completer = TabCompleter()
+            completedDir = nil
+        }
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(field)
     }
 
     @objc private func cancel() {
-        Log.menu.notice("copy out panel for \(self.machine, privacy: .public) cancelled")
+        Log.menu.notice("path panel \"\(self.config.title, privacy: .public)\" cancelled")
         panel.orderOut(nil)
         stopCompletion()
     }
@@ -201,7 +224,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
                 }
                 return
             }
-            let (found, directive) = CopyOutPanel.parseCompletions(r.stdout)
+            let (found, directive) = GuestPathPanel.parseCompletions(r.stdout)
             Log.menu.debug("completion for \"\(text, privacy: .public)\": \(found.count, privacy: .public) candidate(s), directive \(directive, privacy: .public)")
             let answer = PathCompletion(query: text, candidates: found)
             // The user typed on while it ran: still usable when the new text
@@ -246,7 +269,7 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         // (where the cycle put it), accepts it: the text stays, the cycle
         // ends, so the next Tab enters a directory instead of moving on.
         // The caret movement itself still happens.
-        if CopyOutPanel.acceptSelectors.contains(commandSelector),
+        if GuestPathPanel.acceptSelectors.contains(commandSelector),
            let shown = completer.shown, shown == field.stringValue,
            textView.selectedRange().location == (shown as NSString).length {
             completer.edited()
@@ -316,17 +339,43 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         editor.scrollRangeToVisible(end)
     }
 
-    // MARK: Copy
+    // MARK: Submit
 
-    @objc private func copyTapped() {
+    @objc private func submitTapped() {
         let path = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !path.isEmpty else { return }
-        // Hide the path window before the save panel opens: it floats, so
-        // a panel presented while it is up opens behind it. Cancelling the
-        // save panel brings it back with the path intact, to be fixed; only
-        // a copy (or closing the path window) ends the flow.
+        guard !path.isEmpty || config.allowsEmpty else { return }
+        // Hide the path window before the caller opens anything: it floats,
+        // so a panel presented while it is up opens behind it.
         panel.orderOut(nil)
         stopCompletion()
+        onSubmit(self, path)
+    }
+
+    /// Back to the path window, text intact (a cancelled save panel).
+    func reopen() {
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(field)
+    }
+}
+
+/// "Copy out from NAME": the path panel, then a save panel (a file) or a
+/// folder picker (a path ending in "/"). Cancelling that brings the path
+/// back to be fixed; only a copy (or closing the path window) ends the flow.
+enum CopyOut {
+    static func panel(devvm: Devvm, machine: String) -> GuestPathPanel {
+        let config = GuestPathPanel.Config(
+            title: "Copy out from \(machine)",
+            label: "Guest path (relative to home unless absolute; Tab completes):",
+            placeholder: "src/project/notes.txt or dir/",
+            button: "Copy…",
+            allowsEmpty: false)
+        return GuestPathPanel(devvm: devvm, machine: machine, config: config) { panel, path in
+            chooseDestination(devvm: devvm, machine: machine, path: path, panel: panel)
+        }
+    }
+
+    private static func chooseDestination(devvm: Devvm, machine: String, path: String, panel: GuestPathPanel) {
         // An accessory app is not frontmost by itself; without this the
         // save panel can open behind the app the user was just in.
         NSApp.activate(ignoringOtherApps: true)
@@ -342,10 +391,10 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
             open.allowsMultipleSelection = false
             guard open.runModal() == .OK, let dir = open.url else {
                 Log.menu.notice("copy out of \(path, privacy: .public): folder picker cancelled; back to the path")
-                reopen()
+                panel.reopen()
                 return
             }
-            run(["cp-out", "-r", "-t", dir.path, machine, "--", path], what: path)
+            run(devvm, ["cp-out", "-r", "-t", dir.path, machine, "--", path], machine: machine, what: path)
         } else {
             let save = NSSavePanel()
             save.title = "Save \(machine):\(path) as…"
@@ -353,32 +402,25 @@ final class CopyOutPanel: NSObject, NSTextFieldDelegate, NSWindowDelegate {
             save.canCreateDirectories = true
             guard save.runModal() == .OK, let url = save.url else {
                 Log.menu.notice("copy out of \(path, privacy: .public): save panel cancelled; back to the path")
-                reopen()
+                panel.reopen()
                 return
             }
             // The save panel already confirmed any overwrite, so -f is right here.
-            run(["cp-out", "-f", machine, "--", path, url.path], what: path)
+            run(devvm, ["cp-out", "-f", machine, "--", path, url.path], machine: machine, what: path)
         }
     }
 
-    /// Back to the path window after a cancelled save panel, text intact.
-    private func reopen() {
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(field)
-    }
-
-    private func run(_ args: [String], what: String) {
-        Log.menu.notice("copy out \(self.machine, privacy: .public):\(what, privacy: .public)")
-        devvm.run(args) { [machine = self.machine] r in
+    private static func run(_ devvm: Devvm, _ args: [String], machine: String, what: String) {
+        Log.menu.notice("copy out \(machine, privacy: .public):\(what, privacy: .public)")
+        devvm.run(args) { r in
             if r.ok {
-                Log.menu.notice("copy out of \(what, privacy: .public) from \(self.machine, privacy: .public) succeeded")
+                Log.menu.notice("copy out of \(what, privacy: .public) from \(machine, privacy: .public) succeeded")
                 Notifications.shared.info("Copied \(what)", "from \(machine)")
             } else if r.isOverwriteRefusal {
                 Log.menu.notice("copy out of \(what, privacy: .public) refused: would overwrite locally")
                 Notifications.shared.conflict("Already exists locally", r.lastStderrLine, retryWith: args)
             } else {
-                Log.menu.error("copy out of \(what, privacy: .public) from \(self.machine, privacy: .public) failed: \(r.lastStderrLine, privacy: .public)")
+                Log.menu.error("copy out of \(what, privacy: .public) from \(machine, privacy: .public) failed: \(r.lastStderrLine, privacy: .public)")
                 Notifications.shared.error("Copy from \(machine) failed", r.lastStderrLine)
             }
         }
