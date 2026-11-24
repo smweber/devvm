@@ -555,11 +555,13 @@ final class MenuBar: NSObject, NSMenuDelegate {
         Log.menu.notice("Inbox folder… chosen for \(name, privacy: .public)")
         let panel = inboxPanels[name] ?? GuestPathPanel(devvm: devvm, machine: name, config: GuestPathPanel.Config(
             title: "Inbox folder on \(name)",
-            label: "Folder for dropped files (relative to home; created if missing):",
+            label: "Folder for dropped files (created if missing):",
             placeholder: "~ (the home directory)",
             button: "Save",
-            allowsEmpty: true)) { [weak self] _, path in
-            self?.saveInbox(path, for: name)
+            allowsEmpty: true,
+            foldersOnly: true,
+            multiple: false)) { [weak self] _, paths in
+            self?.saveInbox(paths.first ?? "", for: name)
         }
         inboxPanels[name] = panel
         let current = inbox(for: name)

@@ -57,17 +57,25 @@ What it does:
 - **Icon**: a filled box when any machine is running; a badge dot when any
   machine's forwards are reconnecting (laptop just woke, host unreachable);
   an outline when nothing is running.
-- **Copy out…** and **Inbox folder…**: a guest path field with shell-style
-  Tab completion backed by `devvm __complete`. Tab completes a unique match
-  (a directory keeps its `/`), otherwise extends to the matches' common
-  prefix; with nothing left to extend, repeated Tabs cycle through the
-  matches (Shift-Tab backwards), listed under the field as `n of m`. Typing
-  ends the cycle. While cycling, Tab moves to the next candidate; to
-  descend into a directory, type a character (zsh menu-complete behaviour).
-  For Copy out, confirming the path hides the field and opens a save panel
-  (a file) or folder picker (a path ending in `/`) in front; cancelling
-  that brings the path field back to fix the path, and closing the path
-  window ends it. The field keeps the last path while the app runs.
+- **Copy out…** and **Inbox folder…**: a small browser for the machine's
+  files, a guest path field with the list of what it matches underneath.
+  Both are fed by `devvm __complete` (one call per folder), so the list
+  shows exactly what Tab completes:
+  - **typing** narrows the list; dotfiles appear once you type a `.`;
+  - **Tab** completes a unique match (a directory keeps its `/`), otherwise
+    extends to the matches' common prefix; with nothing left to extend,
+    repeated Tabs (or ↓/↑, Shift-Tab backwards) walk the list. To go into
+    the folder shown, type `/`;
+  - **click** a row to put it in the field; **double-click** a folder to
+    go in, or a file to copy it; *Up* goes to the folder above;
+  - in Copy out, **Cmd- or Shift-click** selects several rows to copy
+    together, and rows can be **dragged out** to the Finder or another
+    app (the copy runs when you drop).
+
+  For Copy out, confirming hides the browser and opens a save panel (one
+  file) or a folder picker (a folder, a path ending in `/`, or several
+  items) in front; cancelling that brings the browser back, and closing
+  its window ends it. The inbox's browser lists folders only.
 - **Updates** and **Launch at login** live under *DevVM* at the foot of the
   menu. *Check for updates…* runs `devvm update --check`; updating runs
   `devvm update` and relaunches the app. When a newer release exists, or

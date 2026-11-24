@@ -49,7 +49,10 @@ struct PathCompletion {
 }
 
 /// Shell-style Tab completion as pure value logic; GuestPathPanel owns the
-/// AppKit side (the field, the lookups, the hint label).
+/// AppKit side (the field, the lookups, the list of candidates). The list
+/// is the same data seen another way: it shows the candidates a Tab would
+/// work on, its highlighted row is the cycle's current one, and a click on
+/// a row is a jump of the cycle (`select`).
 ///
 /// One Tab, given the candidates for the current text:
 /// - none: nothing happens (the panel beeps);
@@ -150,6 +153,14 @@ struct TabCompleter {
         return .cycled(cycle[cycleIndex], cycleIndex, cycle)
     }
 
+    /// Jumps a cycle straight to one of `candidates` (a click on its row in
+    /// the list): the same state as Tabbing to it.
+    mutating func select(_ index: Int, in candidates: [String]) {
+        guard index >= 0, index < candidates.count else { return }
+        cycle = candidates
+        cycleIndex = index
+    }
+
     private mutating func step(backwards: Bool) {
         let n = cycle.count
         cycleIndex = (cycleIndex + (backwards ? n - 1 : 1)) % n
@@ -167,18 +178,32 @@ struct TabCompleter {
         return String(p) + (isDir ? "/" : "")
     }
 
-    /// One line for the hint label under the field: "3 matches: a  b  c",
-    /// or while cycling "2 of 5: a  [b]  c  d  e", starting just before the
-    /// current one so it stays visible when the line is truncated.
-    static func summary(_ candidates: [String], current: Int?) -> String {
-        let names = candidates.map { TabCompleter.leafName($0) }
-        guard let cur = current, cur >= 0, cur < names.count else {
-            return "\(names.count) matches: " + names.joined(separator: "  ")
-        }
-        let start = max(0, cur - 2)
-        let shown = names[start...].enumerated().map { pair -> String in
-            pair.offset + start == cur ? "[\(pair.element)]" : pair.element
-        }
-        return "\(cur + 1) of \(names.count): " + (start > 0 ? "…  " : "") + shown.joined(separator: "  ")
+    /// The directory a candidate sits in, as a path ending in "/" (or ""
+    /// for the home directory): "src/app/" and "src/notes.txt" are both in
+    /// "src/".
+    static func directory(ofCandidate path: String) -> String {
+        var p = Substring(path)
+        if p.hasSuffix("/") { p = p.dropLast() }
+        guard let slash = p.lastIndex(of: "/") else { return "" }
+        return String(p[...slash])
+    }
+
+    /// The directory typed text is in: everything up to its last "/".
+    static func directory(ofText text: String) -> String {
+        guard let slash = text.lastIndex(of: "/") else { return "" }
+        return String(text[...slash])
+    }
+
+    /// The directory above `dir` (a path ending in "/", or "" for home), or
+    /// nil at the root. Home's parent is "../", which the guest resolves
+    /// from the home directory like any relative path.
+    static func parent(of dir: String) -> String? {
+        if dir == "/" { return nil }
+        if dir.isEmpty { return "../" }
+        if dir == "~/" { return "~/../" }
+        if dir.hasSuffix("../") { return dir + "../" }
+        let trimmed = dir.dropLast()
+        guard let slash = trimmed.lastIndex(of: "/") else { return "" }
+        return String(trimmed[...slash])
     }
 }
