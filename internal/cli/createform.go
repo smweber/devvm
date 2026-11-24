@@ -226,8 +226,10 @@ func askHook(tty *os.File, t *config.Template) error {
 	return nil
 }
 
-// form runs one huh group over the controlling terminal.
-func form(tty *os.File, fields ...huh.Field) error {
+// form runs one huh group over the controlling terminal. A var so a test
+// that reaches a form past its own stubs can fail it at once: over a plain
+// file huh errors on Linux but blocks for good on macOS (kqueue).
+var form = func(tty *os.File, fields ...huh.Field) error {
 	return huh.NewForm(huh.NewGroup(fields...)).WithInput(tty).WithOutput(tty).Run()
 }
 

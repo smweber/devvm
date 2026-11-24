@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"github.com/charmbracelet/huh"
 	"os"
 	"regexp"
 	"slices"
@@ -342,6 +343,9 @@ func TestProviderCreatePickerOrFallback(t *testing.T) {
 	t.Cleanup(func() { openTTY, askPlacementPicks, askPlacementText = oldTTY, oldPicks, oldText })
 	openTTY = func() *os.File { f, _ := os.Open(tty.Name()); return f }
 	stop := errors.New("form answered")
+	oldForm := form
+	t.Cleanup(func() { form = oldForm })
+	form = func(*os.File, ...huh.Field) error { return errors.New("huh: no form in a test") }
 	var picked, typed int
 	var pickTo config.Placement
 	var pickTried bool
@@ -791,6 +795,9 @@ func TestPickerConfirmNoWarning(t *testing.T) {
 	t.Cleanup(func() { openTTY = oldTTY })
 	openTTY = func() *os.File { f, _ := os.Open(tty.Name()); return f }
 	sc := &pickerScript{t: t, selects: []string{"fsn1", "cx23"}, confirms: []bool{true}}
+	oldForm := form
+	t.Cleanup(func() { form = oldForm })
+	form = func(*os.File, ...huh.Field) error { return errors.New("huh: no form in a test") }
 	sc.install(t)
 	var w bytes.Buffer
 	a.Stderr = &w
