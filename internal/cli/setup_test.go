@@ -72,7 +72,11 @@ harden = true
 	if got.Memory != 8192 || !got.Harden || got.Hook != "cmd:/default" || !slices.Equal(got.Repos, []string{"o/default"}) {
 		t.Errorf("web = %+v", got)
 	}
-	if got, err := a.resolveTemplate("default", tmplFlags{}); err != nil || got.Hook != "cmd:/default" || got.Name != "default" {
+	// Own is web's own table alone (what setup's warning reads), never default's.
+	if got.Own.Memory == nil || *got.Own.Memory != 8192 || got.Own.Repos != nil || got.Own.Hook != nil {
+		t.Errorf("web's own = %+v", got.Own)
+	}
+	if got, err := a.resolveTemplate("default", tmplFlags{}); err != nil || got.Hook != "cmd:/default" || got.Name != "default" || got.Own != (config.TemplateSpec{}) {
 		t.Errorf("--template default = %+v, %v", got, err)
 	}
 	// Flags beat everything; harden has no flag, so the template's stays.
@@ -89,7 +93,7 @@ harden = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Memory != 0 || !got.Harden || got.HardenSet || len(got.Repos) != 0 || got.Hook != "cmd:/x" {
+	if got.Memory != 0 || !got.Harden || got.Own != (config.TemplateSpec{}) || len(got.Repos) != 0 || got.Hook != "cmd:/x" {
 		t.Errorf("inline = %+v", got)
 	}
 	// Bad values are refused before anything runs.
@@ -160,34 +164,69 @@ func inOrder(t *testing.T, hay string, needles ...string) {
 	}
 }
 
-// harden is on by default, which a smol VM ignores: only a template that
-// says so is named on the warning line, never the built-in. harden = false
-// is no mistake either.
-func TestWarnIgnoredHardenOnlyWhenSet(t *testing.T) {
+// setup names a field that does not apply to the box only when the chosen
+// named template's own table sets it: [templates.default] is shared by
+// every kind of box, the built-ins (harden on) are no mistake, and harden
+// = false / fail2ban = false are none either.
+func TestWarnIgnoredOwnTableOnly(t *testing.T) {
 	a := newTestApp(t)
 	var w bytes.Buffer
 	a.Stderr = &w
 	smol := &config.Machine{Name: "web", Backend: config.BackendSmol}
-	for _, tc := range []struct{ toml, want string }{
-		{"", ""},
-		{"[templates.default]\nharden = false\n", ""},
-		{"[templates.default]\nharden = true\n", "ignoring harden (not applicable to a smol VM)"},
+	pm := config.NewProviderMachine("box", config.BackendHetzner, config.ProviderServer{Address: "1.2.3.4"})
+	const shared = `[templates.default]
+memory = 4096
+disk = 20
+authorized_keys_github = ["me"]
+harden = true
+fail2ban = true
+server_type = "cx43"
+`
+	for _, tc := range []struct {
+		name, toml, tmpl string
+		m                *config.Machine
+		want             string
+	}{
+		{"built-ins, smol", "", "", smol, ""},
+		{"built-ins, provider", "", "", pm, ""},
+		{"default shared, smol", shared, "", smol, ""},
+		{"default shared, provider", shared, "", pm, ""},
+		{"--template default, smol", shared, "default", smol, ""},
+		{"named inherits only, smol", shared + "[templates.big]\nhook = \"none\"\n", "big", smol, ""},
+		{"named inherits only, provider", shared + "[templates.big]\nhook = \"none\"\n", "big", pm, ""},
+		{"named off, smol", "[templates.big]\nharden = false\nfail2ban = false\nauthorized_keys = []\n", "big", smol, ""},
+		{"named sets, smol", shared + "[templates.big]\nauthorized_keys = [\"k.pub\"]\nharden = true\nfail2ban = true\nmemory = 2048\n", "big", smol,
+			"devvm: template big: ignoring keys, harden, fail2ban (not applicable to a smol VM)\n"},
+		{"named sets, provider", shared + "[templates.big]\ndisk = 80\nfail2ban = true\n", "big", pm,
+			"devvm: template big: ignoring disk (not applicable to a Hetzner server)\n"},
 	} {
 		writeDevvmTOML(t, a, tc.toml)
-		tm, err := a.resolveTemplate("", tmplFlags{})
+		tm, err := a.resolveTemplate(tc.tmpl, tmplFlags{})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", tc.name, err)
 		}
 		w.Reset()
-		a.warnIgnored(smol, tm)
-		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
-			t.Errorf("%q: warning = %q, want %q", tc.toml, got, tc.want)
+		a.warnIgnored(tc.m, tm)
+		if got := w.String(); got != tc.want {
+			t.Errorf("%s: warning = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+	// A flag is no table: an inline template (a hub's, from the laptop)
+	// names nothing, whatever this host's file holds under its name.
+	writeDevvmTOML(t, a, "[templates.big]\nharden = true\n")
+	tm, err := a.resolveTemplate("big", tmplFlags{Inline: true, Memory: 2048})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Reset()
+	a.warnIgnored(smol, tm)
+	if got := w.String(); got != "" {
+		t.Errorf("inline: warning = %q, want none", got)
 	}
 }
 
 // setup on a managed smol VM: the fixed order, re-run without asking;
-// keys and hardening are ignored with one warning line.
+// keys and hardening are skipped, and default's carry no warning.
 func TestSetupSmolOrder(t *testing.T) {
 	a := newTestApp(t)
 	log := fakeManagedSmol(t, a, "web")
@@ -197,6 +236,7 @@ func TestSetupSmolOrder(t *testing.T) {
 hook = "cmd:/opt/hook.sh"
 repos = ["o/r"]
 harden = true
+fail2ban = true
 authorized_keys_github = ["x"]
 `)
 	if err := config.SavePorts(a.Paths, "web", []string{"4000"}); err != nil {
@@ -216,8 +256,10 @@ authorized_keys_github = ["x"]
 	if strings.Contains(string(data), "ufw") || strings.Contains(string(data), "authorized_keys.devvm") {
 		t.Errorf("smol setup hardened or wrote keys:\n%s", data)
 	}
-	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring keys, harden") {
-		t.Errorf("no ignore warning: %q", w)
+	// default is shared by every kind of box: what it carries for a
+	// provider server is no mistake here (TestWarnIgnoredOwnTableOnly).
+	if w := a.Stderr.(*bytes.Buffer).String(); strings.Contains(w, "ignoring") {
+		t.Errorf("default's keys/harden/fail2ban warned on smol: %q", w)
 	}
 	// setup never touches this host's saved forwards.
 	if got, _ := config.LoadPorts(a.Paths, "web"); !slices.Equal(got, []string{"4000"}) {
@@ -332,8 +374,8 @@ fail2ban = true
 			t.Errorf("remote setup mentions %q", bad)
 		}
 	}
-	if w := a.Stderr.(*bytes.Buffer).String(); !strings.Contains(w, "ignoring memory (not applicable to a Hetzner server)") {
-		t.Errorf("warning = %q", w)
+	if w := a.Stderr.(*bytes.Buffer).String(); strings.Contains(w, "ignoring") {
+		t.Errorf("default's memory warned on a provider server: %q", w)
 	}
 	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "devvm: 'cloud' is set up\n") {
 		t.Errorf("no completion line: %q", out)

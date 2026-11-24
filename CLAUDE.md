@@ -617,7 +617,10 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   warning to an explicit `harden`; `fail2ban` is off), `server_type`/`location`/
   `image`/`ipv4` (create-time, provider). No `user` (always `dev`) and no
   `ports` (`ports add`): both are load errors. Fields that don't apply are
-  ignored with one warning line. Unset fields fall back to
+  ignored; setup names them in one warning line only when the chosen named
+  template's own table sets them (`Template.Own`): `[templates.default]` is
+  shared by every kind of box, so it never warns, nor does a built-in or an
+  inline template. Unset fields fall back to
   `[templates.default]`, **one level**. Precedence for create/setup: flag >
   `--template T` > `[templates.default]` > built-in. `config show` prints each
   template resolved, annotated with where each value came from. Nothing records which template made a box: `setup

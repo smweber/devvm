@@ -138,6 +138,9 @@ func (a *App) resolveTemplate(name string, f tmplFlags) (config.Template, error)
 		chain = chain.Under(named)
 	}
 	t := chain.Under(def).Resolve(label)
+	if name != "" {
+		t.Own = named
+	}
 	return t, validateTemplate(t)
 }
 
@@ -369,38 +372,40 @@ func waitRunning(m *config.Machine, b backend.Backend) error {
 
 // warnIgnored names, in one line, the template fields that do not apply to
 // this box: sizes are create-time and smol-only; keys and hardening are for
-// boxes reached over ssh.
+// boxes reached over ssh; placement is a provider's. A field is named only
+// when the chosen named template's own table sets it (t.Own): a shared
+// [templates.default] carries values for every kind of box, so neither it
+// nor a built-in (harden is on by default) is a mistake on every setup, and
+// an inline template (a hub's, from the laptop) carries no table at all.
+// The flags need no check: --memory/--disk are refused on a provider
+// create, and keys, harden and fail2ban have none.
 func (a *App) warnIgnored(m *config.Machine, t config.Template) {
+	own := t.Own
+	set := func(p *int) bool { return p != nil && *p != 0 }
+	on := func(p *bool) bool { return p != nil && *p }
 	var ignored []string
 	if m.IsRemote() {
-		if t.Memory != 0 {
+		if set(own.Memory) {
 			ignored = append(ignored, "memory")
 		}
-		if t.Disk != 0 {
+		if set(own.Disk) {
 			ignored = append(ignored, "disk")
 		}
 	} else {
-		if len(t.AuthorizedKeysGithub) > 0 || len(t.AuthorizedKeys) > 0 {
+		if (own.AuthorizedKeysGithub != nil && len(*own.AuthorizedKeysGithub) > 0) ||
+			(own.AuthorizedKeys != nil && len(*own.AuthorizedKeys) > 0) {
 			ignored = append(ignored, "keys")
 		}
-		// harden is on by default (config.DefaultHarden), so only a
-		// template that says `harden = true` is named: the built-in is no
-		// mistake on every smol setup.
-		if t.Harden && t.HardenSet {
+		// harden = false and fail2ban = false are no mistake on a smol VM.
+		if on(own.Harden) {
 			ignored = append(ignored, "harden")
 		}
-		if t.Fail2ban {
+		if on(own.Fail2ban) {
 			ignored = append(ignored, "fail2ban")
 		}
 	}
-	if !m.IsProvider() && t.Name != config.DefaultTemplate {
-		// Placement is create-time and a provider's; nothing else has one.
-		// Named only when the chosen template's own table sets it: one a
-		// shared [templates.default] carries for provider boxes is not a
-		// mistake on every smol or remote setup.
-		if named, _, err := config.TemplateLayers(a.Paths, t.Name); err == nil {
-			ignored = append(ignored, named.ProviderFields()...)
-		}
+	if !m.IsProvider() {
+		ignored = append(ignored, own.ProviderFields()...)
 	}
 	if len(ignored) > 0 {
 		kind := "a smol VM"

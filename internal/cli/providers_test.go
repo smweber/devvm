@@ -531,28 +531,34 @@ func TestConfigCheckProviders(t *testing.T) {
 }
 
 // memory/disk are ignored on a provider box, placement on anything else,
-// on setup's one warning line.
+// on setup's one warning line: only what the chosen template's own table
+// sets (TestWarnIgnoredOwnTableOnly has the rest of the rule).
 func TestWarnIgnoredProviderFields(t *testing.T) {
 	a := newTestApp(t)
 	var w bytes.Buffer
 	a.Stderr = &w
+	writeDevvmTOML(t, a, "[templates.default]\nlocation = \"fsn1\"\nmemory = 4096\n\n[templates.big]\nserver_type = \"cx43\"\nipv4 = false\nmemory = 8192\n")
 	pm := config.NewProviderMachine("box", config.BackendHetzner, config.ProviderServer{Address: "1.2.3.4"})
-	a.warnIgnored(pm, config.Template{Name: "big", Memory: 8192, ServerType: "cx43"})
-	if got := w.String(); !strings.Contains(got, "ignoring memory (not applicable to a Hetzner server)") {
-		t.Errorf("provider: %q", got)
-	}
-	// On a smol VM: placement the chosen template sets is named, what it
-	// only inherits from default is not.
-	writeDevvmTOML(t, a, "[templates.default]\nlocation = \"fsn1\"\n\n[templates.big]\nserver_type = \"cx43\"\nipv4 = false\n")
-	v := false
-	for _, tc := range []struct{ tmpl, want string }{
-		{"big", "ignoring server_type, ipv4 (not applicable to a smol VM)"},
-		{config.DefaultTemplate, ""},
+	smol := &config.Machine{Name: "r", Backend: config.BackendSmol}
+	for _, tc := range []struct {
+		m          *config.Machine
+		tmpl, want string
+	}{
+		{pm, "big", "devvm: template big: ignoring memory (not applicable to a Hetzner server)\n"},
+		{pm, config.DefaultTemplate, ""},
+		// On a smol VM: placement the chosen template sets is named, what
+		// it only inherits from default is not.
+		{smol, "big", "devvm: template big: ignoring server_type, ipv4 (not applicable to a smol VM)\n"},
+		{smol, config.DefaultTemplate, ""},
 	} {
+		tm, err := a.resolveTemplate(tc.tmpl, tmplFlags{})
+		if err != nil {
+			t.Fatal(err)
+		}
 		w.Reset()
-		a.warnIgnored(&config.Machine{Name: "r", Backend: config.BackendSmol}, config.Template{Name: tc.tmpl, ServerType: "cx43", Location: "fsn1", IPv4: &v})
-		if got := w.String(); (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
-			t.Errorf("smol, %s: %q", tc.tmpl, got)
+		a.warnIgnored(tc.m, tm)
+		if got := w.String(); got != tc.want {
+			t.Errorf("%s, %s: %q, want %q", tc.m.Name, tc.tmpl, got, tc.want)
 		}
 	}
 }

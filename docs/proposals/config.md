@@ -377,8 +377,11 @@ first.
 
 **Later (2026-11).** `harden`'s built-in is on: a provider server is
 hardened unless its template says `harden = false` (`fail2ban` stays off).
-smol ignores it, and setup names harden as ignored only when a template
-sets it.
+smol ignores it. setup names a field as not applicable to the box (keys,
+harden, fail2ban on smol; memory/disk on a provider server; placement off
+one) only when the chosen named template's own table sets it: never for
+`[templates.default]`, which is shared by every kind of box, nor for a
+built-in or an inline (hub) template.
 
 ### 4. Config editing is its own noun
 

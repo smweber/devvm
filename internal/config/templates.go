@@ -70,10 +70,8 @@ type Template struct {
 	AuthorizedKeysGithub []string
 	AuthorizedKeys       []string
 	// Harden is on unless a layer says `harden = false`: a provider server
-	// is public from its first boot. HardenSet says a layer set it at all,
-	// so a smol setup warns about an explicit harden, never the built-in.
+	// is public from its first boot.
 	Harden    bool
-	HardenSet bool
 	Fail2ban  bool
 	ShareAuth []string
 	// The provider fields as the template layers set them, "" (nil) when
@@ -83,6 +81,12 @@ type Template struct {
 	Location   string
 	Image      string
 	IPv4       *bool
+	// Own is the chosen named template's own table, as written: zero for
+	// default (no --template), an inline template and the built-ins. setup
+	// names a field as not applicable to the box only when Own sets it:
+	// [templates.default] is one table shared by every kind of box, so what
+	// it carries for the other kind is no mistake.
+	Own TemplateSpec
 }
 
 // Under returns s with every unset field taken from lower: s wins. Chained
@@ -153,7 +157,7 @@ func (s TemplateSpec) Resolve(name string) Template {
 	t.AuthorizedKeysGithub = deref(s.AuthorizedKeysGithub)
 	t.AuthorizedKeys = deref(s.AuthorizedKeys)
 	if s.Harden != nil {
-		t.Harden, t.HardenSet = *s.Harden, true
+		t.Harden = *s.Harden
 	}
 	if s.Fail2ban != nil {
 		t.Fail2ban = *s.Fail2ban
