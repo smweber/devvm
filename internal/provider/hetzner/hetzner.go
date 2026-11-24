@@ -93,6 +93,10 @@ func (e *APIError) Is(target error) bool {
 		return e.Code == "uniqueness_error" || e.Status == http.StatusConflict
 	case provider.ErrNotFound:
 		return e.Code == "not_found" || e.Status == http.StatusNotFound
+	case provider.ErrUnavailable:
+		// resource_unavailable (412, "not available for order") and
+		// placement_error (422): the answers to a type sold out where asked.
+		return e.Code == "resource_unavailable" || e.Code == "placement_error"
 	}
 	return false
 }

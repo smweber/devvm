@@ -97,6 +97,9 @@ var (
 	ErrConflict = errors.New("already exists")
 	// ErrNotFound: the server or key id doesn't exist.
 	ErrNotFound = errors.New("not found")
+	// ErrUnavailable: Create was refused because what it asked for cannot
+	// be had there now (a server type sold out in the location).
+	ErrUnavailable = errors.New("unavailable")
 )
 
 // The label devvm sets at create, its managed marker: LabelManaged=

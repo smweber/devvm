@@ -52,11 +52,34 @@ type ServerType struct {
 	MemoryGB   float64
 	DiskGB     int
 	Deprecated bool
-	// Available is where a server of this type can be created now, in the
-	// provider's location order. A type sold out or phased out somewhere is
-	// not available there, though it may still be priced there.
+	// Available is where a server of this type can be created now, and
+	// SoldOut where it is offered but cannot be created now (it may come
+	// back within the hour, or not), both in the provider's location order.
+	// A location in neither does not offer the type (never did, or phased
+	// it out), though it may still be priced there.
 	Available []string
+	SoldOut   []string
 	Prices    map[string]Price // by location
+}
+
+// Status is a type's standing in one location.
+type Status int
+
+const (
+	NotOffered Status = iota
+	SoldOut
+	Available
+)
+
+// StatusIn is the type's standing in loc.
+func (t ServerType) StatusIn(loc string) Status {
+	switch {
+	case slices.Contains(t.Available, loc):
+		return Available
+	case slices.Contains(t.SoldOut, loc):
+		return SoldOut
+	}
+	return NotOffered
 }
 
 // Price is one resource's cost in one location, VAT as Catalog.VATRate.
@@ -87,11 +110,11 @@ func (c *Catalog) Type(name string) (ServerType, bool) {
 }
 
 // AvailableIn reports whether a server of this type can be created in loc.
-func (t ServerType) AvailableIn(loc string) bool { return slices.Contains(t.Available, loc) }
+func (t ServerType) AvailableIn(loc string) bool { return t.StatusIn(loc) == Available }
 
 // PriceIn is the type's price in loc, or, for loc "", the lowest among the
-// locations it is available in (any priced one when it is available
-// nowhere): the "from" price a listing without a location shows.
+// locations it is available in (else among those it is sold out in, else
+// any priced one): the price a type is sorted by across locations.
 func (t ServerType) PriceIn(loc string) (Price, bool) {
 	if loc != "" {
 		p, ok := t.Prices[loc]
@@ -108,6 +131,9 @@ func (t ServerType) PriceIn(loc string) (Price, bool) {
 	}
 	pick(t.Available)
 	if !found {
+		pick(t.SoldOut)
+	}
+	if !found {
 		locs := make([]string, 0, len(t.Prices))
 		for l := range t.Prices {
 			locs = append(locs, l)
@@ -118,40 +144,37 @@ func (t ServerType) PriceIn(loc string) (Price, bool) {
 	return best, found
 }
 
-// PriceVaries reports whether the type costs differently across the
-// locations it is available in, so a "from" price needs saying.
-func (t ServerType) PriceVaries() bool {
-	first, seen := 0.0, false
-	for _, l := range t.Available {
-		p, ok := t.Prices[l]
-		if !ok {
-			continue
-		}
-		if seen && p.Monthly != first {
-			return true
-		}
-		first, seen = p.Monthly, true
-	}
-	return false
-}
-
-// Offered is what a listing or a picker shows: the types not deprecated,
-// cheapest first (by the price in loc, or the "from" price for loc ""),
-// then fewer cores, less memory, by name. With loc, only the types
-// available there; without, every one, available or not, so a type sold
-// out everywhere is still seen with no locations.
+// Offered is what a listing or a picker shows: the types not deprecated
+// that are offered in loc (anywhere, for loc ""), available or sold out.
+// The available ones come first (in loc; anywhere, for ""), each group
+// cheapest first by PriceIn(loc), then fewer cores, less memory, by name:
+// what can be had now leads, and a sold-out type is still seen.
 func (c *Catalog) Offered(loc string) []ServerType {
 	var out []ServerType
 	for _, t := range c.Types {
-		if t.Deprecated || (loc != "" && !t.AvailableIn(loc)) {
+		if t.Deprecated {
+			continue
+		}
+		if (loc != "" && t.StatusIn(loc) == NotOffered) || (loc == "" && len(t.Available)+len(t.SoldOut) == 0) {
 			continue
 		}
 		out = append(out, t)
+	}
+	avail := func(t ServerType) bool {
+		if loc == "" {
+			return len(t.Available) > 0
+		}
+		return t.AvailableIn(loc)
 	}
 	slices.SortStableFunc(out, func(a, b ServerType) int {
 		pa, _ := a.PriceIn(loc)
 		pb, _ := b.PriceIn(loc)
 		switch {
+		case avail(a) != avail(b):
+			if avail(a) {
+				return -1
+			}
+			return 1
 		case pa.Monthly != pb.Monthly:
 			return cmpFloat(pa.Monthly, pb.Monthly)
 		case a.Cores != b.Cores:
@@ -164,18 +187,23 @@ func (c *Catalog) Offered(loc string) []ServerType {
 	return out
 }
 
-// OfferedLocations is the locations where at least one offered type is
-// available, in the provider's order; with typeName, only those where that
-// type is available (deprecated or not: it was asked for by name).
-func (c *Catalog) OfferedLocations(typeName string) []Location {
+// AvailableTypes is Offered(loc) less the sold-out ones: what a server can
+// be made as in loc now, cheapest first.
+func (c *Catalog) AvailableTypes(loc string) []ServerType {
+	var out []ServerType
+	for _, t := range c.Offered(loc) {
+		if t.AvailableIn(loc) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// OfferingLocations is the locations that offer at least one listed type,
+// available or sold out: the columns of a listing across locations.
+func (c *Catalog) OfferingLocations() []Location {
 	var out []Location
 	for _, l := range c.Locations {
-		if typeName != "" {
-			if t, ok := c.Type(typeName); ok && t.AvailableIn(l.Name) {
-				out = append(out, l)
-			}
-			continue
-		}
 		if len(c.Offered(l.Name)) > 0 {
 			out = append(out, l)
 		}

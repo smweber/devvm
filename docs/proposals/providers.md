@@ -410,27 +410,86 @@ from the API.
   client: `Cataloger.Catalog(ctx) (*Catalog, error)`; hetzner and the fake
   implement it. One live fetch per command under a 10s deadline; no cache
   file (it changes as types sell out, and only a human asks).
+- **Three states per location** (added the same day, after cx23 went from
+  available in nbg1 to sold out everywhere within the hour). The API's
+  reference for a type's `locations[]`: a type is supported only in the
+  locations listed, temporarily unavailable where `available` is false,
+  and permanently unavailable where `deprecation.unavailable_after` has
+  passed. devvm maps that to **available** (listed, `available` true),
+  **sold out** right now (listed, `available` false, not phased out) and
+  **not offered** (unlisted, or phased out; a phased-out location may still
+  carry a price). Hetzner calls `available` an indicator, not a promise: it
+  lags both ways. So the listings mark sold out clearly, and create treats
+  it as a warning, never a refusal. It is also plainly wrong at times: on
+  2026-11-24 the listing had cx23 sold out in nbg1, a create there
+  succeeded, and the flag still said sold out afterwards. That finding
+  stays here and in the code; the output keeps "sold out" short (the grid's
+  legend says `maybe sold out`).
 - **`devvm providers types PROVIDER [--location LOC] [--plain]`**: the
-  non-deprecated types, cheapest first (in LOC, or by the lowest price among
-  the type's locations, marked `*` when it varies), with CPU kind and
-  architecture, cores, RAM, disk, price per month and per hour, and where
-  each is available now (`-`: nowhere). Under the table: the VAT, hourly
-  billing up to the monthly price, and the IPv4 add-on. `--plain` is
-  `name cpu arch cores memory_gb disk_gb monthly hourly currency locations`,
-  tab-separated, no header. Needs the token (no first-use prompt: it is not a
-  lifecycle verb); does not read devvm.toml.
-- **`create --backend P` on a terminal** picks the location (city, number of
-  types, cheapest price there), then a type available there (specs and
-  monthly price, cheapest first), each seeded with the resolved value
-  (flag > template > `[providers.P]` > built-in) when it is offered; a flag
-  still skips its question, and image stays a text input. The token is
-  settled first (the first-use prompt moved before the placement).
-- **Refused before Create.** With or without a terminal, a type the
-  catalogue does not know, or that is not available in the location, is
-  refused before the key upload and Create, in one line naming the three
-  cheapest types available there and `devvm providers types P --location
-  LOC`. A deprecated type that is still available passes (the API may take
-  it). The image is not checked.
+  non-deprecated types offered somewhere. Without `--location`, one table:
+  CPU kind and architecture, cores, RAM, disk, then a column per location
+  with the monthly price there, `5.49` available, `(5.49)` sold out there
+  right now, `-` not offered there; types available somewhere first,
+  cheapest available price first, then those sold out everywhere, cheapest
+  first. On a terminal with `NO_COLOR` unset the header, the title and the
+  type names are bold, a row's cheapest available price green, and
+  sold-out cells, `-`, rows sold out everywhere and the notes faint; the
+  parentheses and `-` carry the meaning, so a pipe (no escape codes) loses
+  nothing. Prices right-align on their digits. `--location LOC` lists the
+  types offered in LOC, available ones first, with price per month and per
+  hour, a STATUS (`available`, green; `sold out`, the row faint) and the
+  locations where each is available now (a sold-out row's alternatives).
+  Under either table, a few short lines broken by hand, none wider than
+  the table (no terminal-width detection): under the grid the legend
+  (`EUR/month. (price) = maybe sold out, - = not offered.`) and the
+  `--location` pointer for hourly prices; under both the VAT, hourly
+  billing up to the monthly price, that a stopped server still bills, and
+  the IPv4 add-on's monthly price. The `--location` table has no note on
+  sold out: its STATUS says it. `--plain` is one line per type and location offering it, `name
+  cpu arch cores memory_gb disk_gb location status monthly hourly currency`,
+  status `available` or `soldout`, a not-offered location no line,
+  tab-separated, no header. Needs the token (no first-use prompt: it is not
+  a lifecycle verb); does not read devvm.toml.
+- **`create --backend P` on a terminal** prints the same table (to the
+  terminal the prompts use), then picks the location (city, number of
+  types available there, cheapest price; a location with nothing available
+  is listed as such), then a type offered there: the available ones first,
+  cheapest first, then the sold-out ones, labelled `sold out (available:
+  nbg1, hel1)` or `sold out`, and, when the location was picked, a last
+  option `← another location` that returns to the location select (so a
+  location with nothing available is no dead end; it is never the seed
+  and never a placement). With `--location` by flag and no type, the grid
+  is still printed above the type select: that location's `--location`
+  table would match the select more closely, but its AVAILABLE IN column
+  makes it wider (105 columns with six locations, against the grid's 100),
+  so it wraps where the grid fits. The type labels are compact (`cx23
+  shared x86  2 cores  4 GB  40 GB  5.49  sold out (available: fsn1,
+  hel1)`, the units in the select's title) and at most 94 columns, a long
+  `available:` list cut to `+N`: a label that wraps breaks huh's select
+  (the cursor line goes missing), as a live test at 100 columns showed.
+  Each select is
+  seeded with the resolved value (flag > template > `[providers.P]` >
+  built-in) when it is available there, else the cheapest available.
+  Choosing a sold-out type (or, with the type by flag, a location where it
+  is sold out) asks one confirm, default No, "TYPE is sold out in LOC. Try
+  anyway?"; No returns to that select, and a Yes is not warned of again.
+  A flag still skips its question, and image stays a text input. The token is settled
+  first (the first-use prompt moved before the placement).
+- **Refused before Create.** With or without a terminal, a location or a
+  type the catalogue does not know, or a type not offered in the location,
+  is refused before the key upload and Create, in one line naming where the
+  type is available, the three cheapest types available in the location,
+  and `devvm providers types P --location LOC`. A type listed as sold out
+  there goes on to Create; without a picker confirm (`--yes`, no terminal,
+  or both by flag) it first gets one stderr line ("devvm: cx23 is listed as
+  sold out in fsn1; trying anyway"). A deprecated type still
+  offered passes (the API may take it). The image is not checked.
+- **A refused Create says where to go.** If Create is refused with the
+  API's answer for a type it cannot place (`412 resource_unavailable` or
+  `422 placement_error`, `provider.ErrUnavailable`), or the catalogue said
+  sold out and the refusal is not about the name or key, the error gets
+  where the type is available now and the cheapest available in the
+  location appended, with the `--location` listing to look at.
 - **Never a reason create fails.** If the catalogue cannot be fetched, a
   terminal gets the old text inputs and one stderr line saying why; without
   one it is silent; either way the check is skipped and the API decides.

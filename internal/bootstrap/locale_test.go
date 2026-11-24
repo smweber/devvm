@@ -46,3 +46,22 @@ func TestPrereqLocalesBeforeInstall(t *testing.T) {
 		}
 	}
 }
+
+// Every locale-gen run is under LC_ALL=C: the session's LC_ALL names the
+// locale being made, and locale-gen would warn that it cannot set it. By
+// env, so this bash never sets LC_ALL itself (restoring a prefix
+// assignment warns the same way).
+func TestLocaleGenUnderC(t *testing.T) {
+	runs := 0
+	for _, l := range strings.Split(genLocales, "\n") {
+		if i := strings.Index(l, "locale-gen"); i >= 0 && !strings.Contains(l, "command -v locale-gen") {
+			runs++
+			if !strings.HasSuffix(l[:i], "env LC_ALL=C ") {
+				t.Errorf("locale-gen without env LC_ALL=C: %q", strings.TrimSpace(l))
+			}
+		}
+	}
+	if runs != 2 {
+		t.Errorf("%d locale-gen runs, want 2", runs)
+	}
+}

@@ -77,12 +77,18 @@ H[:P] [--user U]` and `devvm config rm NAME` (both touch only that table);
 `config edit`). No `config` command connects to a box. A Hetzner project is
 `[providers.hetzner]` plus `devvm providers token hetzner`; see
 [docs/proposals/providers.md](docs/proposals/providers.md). `devvm providers
-types hetzner [--location LOC]` lists the server types on offer: CPU kind and
-architecture, cores, RAM, disk, price per month and per hour (VAT at your
-account's rate; a public IPv4 is billed on top, and the output says how
-much), and where each can be made right now, cheapest first. `--plain` gives
-`name cpu arch cores memory_gb disk_gb monthly hourly currency locations`,
-tab-separated, for scripts.
+types hetzner` lists the server types on offer as one table: CPU kind and
+architecture, cores, RAM, disk, then a column per location with the monthly
+price there: `5.49` available, `(5.49)` sold out there right now (dimmed on a
+terminal), `-` not offered there. Types you can have somewhere come first,
+cheapest first. Availability moves within the hour, so it is fetched live
+every time. Prices include VAT at your account's rate; a public IPv4 is
+billed on top, and the output says how much. `--location LOC` lists the
+types offered there with monthly and hourly prices, a STATUS (`available` or
+`sold out`) and where each is available instead. `--plain` gives one line
+per type and location, `name cpu arch cores memory_gb disk_gb location status
+monthly hourly currency`, tab-separated, status `available` or `soldout`
+(a location that doesn't offer the type has no line), for scripts.
 
 ## Connecting
 
@@ -90,11 +96,17 @@ tab-separated, for scripts.
   a server) and shape it from a template. Flags drive it non-interactively
   (`--template`, `--memory`, `--disk`, `--hook`, `--yes`); a terminal prompts
   (via [huh](https://github.com/charmbracelet/huh)) for whatever's unset.
-  For a server, the terminal offers the location, then the server types
-  available there with their specs and monthly price, from the provider's
-  live catalogue (text inputs if it can't be fetched). Without a terminal,
-  a type that doesn't exist or isn't available in the location is refused
-  before anything is created, naming the cheapest ones that are.
+  For a server, the terminal shows the `providers types` table, then offers
+  the location, then the server types there with their specs and monthly
+  price, available ones first and the sold-out ones after them, labelled
+  with where they are available, and last `← another location` to go back
+  (text inputs if the catalogue can't be fetched). With `--location` given,
+  it still shows the table, then only the type select. A sold-out choice
+  asks before trying. A type that doesn't
+  exist or isn't offered in the location is refused before anything is
+  created, naming the cheapest ones available there; one listed as sold out
+  is only warned about (the listing lags), and if Hetzner then refuses it,
+  the error says where it is available now.
   `devvm setup NAME` re-runs the shaping. A failed clone does not stop it:
   setup tries every repo and exits 3 ("setup finished, but …"). An
   `owner/repo` is cloned with the guest's `gh`. With `share_auth =

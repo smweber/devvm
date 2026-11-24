@@ -73,6 +73,11 @@ fi
 // failure here is one warning, never a failed setup. Both prereq scripts run
 // it right after apt_update (it may install locales) and before the package
 // install, so the apt and perl calls after it do not warn on a first setup.
+// locale-gen itself runs under LC_ALL=C: the session's LC_ALL names the
+// locale it is about to make, and it would warn about that once. Through
+// env, not a bash prefix assignment: bash restores a prefixed LC_ALL in
+// this shell after the command and warns then ("environment: line N"),
+// since glibc does not re-read the archive locale-gen just rewrote.
 const genLocales = `
 gen_locales() {
     gen=
@@ -82,7 +87,7 @@ gen_locales() {
             DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y locales || return 1
         grep -qx "$loc UTF-8" /usr/share/i18n/SUPPORTED || { echo "devvm: this image has no locale $loc; skipping it" >&2; continue; }
         if [ ! -e /etc/locale.gen ]; then
-            locale-gen "$loc" || return 1
+            env LC_ALL=C locale-gen "$loc" || return 1
             continue
         fi
         if grep -q "^# *$loc UTF-8" /etc/locale.gen; then
@@ -92,7 +97,7 @@ gen_locales() {
         fi
         gen=1
     done
-    [ -z "$gen" ] || locale-gen
+    [ -z "$gen" ] || env LC_ALL=C locale-gen
 }
 gen_locales "${@:2}" || echo "devvm: could not generate this host's locale(s): ${*:2}" >&2
 `

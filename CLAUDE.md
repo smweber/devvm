@@ -292,14 +292,26 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
 - **Providers** (`providers.md`, `cli/providers.go`): no entry; resolve asks each `[providers.*]` (one Get) only after entry+smol miss and with a token
   (`<State>/providers/NAME.token` via `providers token`; `HCLOUD_TOKEN` wins). `status` reads `cache/provider-NAME.list`, written only by the
   live round (one-shot `status`, `__refresh`); `--local` skips providers; daemon, `__session`, completion and `config rm` read the cache only (no API, no token). Lifecycle (`cli/providers_lifecycle.go`):
-  `create --backend hetzner` refuses everything before Create (name, collisions, key, placement), labels the server `devvm=true` (its only label), then hands it to `shape` unchanged (never deletes it on failure);
+  `create --backend hetzner` refuses everything before Create (name, collisions, key, a placement not offered), labels the server `devvm=true` (its only label), then hands it to `shape` unchanged (never deletes it on failure);
   `delete`/`start`/`stop` act on the row resolve just fetched, merge the answer into the cache; `stop` warns it still bills. Labelled servers only: resolve's Get ignores an unlabelled server, and the cache keeps labelled rows; the live round's one List is unfiltered and counts the rest (`unlabelled=N` in the cache), so a one-shot human `status` ends with one line naming that count (a billing server that lost its label is still noticed). Adding the label by hand is the only promotion. `forgetHostState` drops the address pin too.
   The **catalogue** (`cli/providers_catalog.go`, `provider.Cataloger`, an optional capability asserted on the client): server types (specs, gross
-  prices per location, availability from each type's `locations[].available`; Hetzner removed `/datacenters`), locations, and `/pricing`'s currency,
-  account VAT rate and IPv4 price. One live fetch per command (`providerTimes.catalog`), never cached. `providers types PROVIDER [--location LOC]
-  [--plain]` lists it (token via `providerClient`, no prompt; devvm.toml not read); `create` on a TTY picks location then type from it as selects,
-  and every create refuses, before the key upload and Create, a type it says is unknown or not available in the location (a deprecated type still
-  available passes). The catalogue never makes create fail: unfetchable means the text inputs (one stderr line, TTY only) and no check.
+  prices per location), locations, and `/pricing`'s currency, account VAT rate and IPv4 price. Each type is in one of **three states** per location,
+  from its `locations[]` (Hetzner removed `/datacenters`): listed with `available` true = **available**; listed with `available` false = **sold
+  out** (right now: it moves within the hour); unlisted, or its `deprecation.unavailable_after` passed = **not offered** (`ServerType.Available`,
+  `SoldOut`, `StatusIn`). One live fetch per command (`providerTimes.catalog`), never cached. `providers types PROVIDER` is one grid, a column per
+  location: `5.49` available, `(5.49)` sold out (also faint on a TTY), `-` not offered, available-somewhere types first; `--location LOC` lists the
+  types offered there with a STATUS and where each is available; `--plain` below (token via `providerClient`, no prompt; devvm.toml not read).
+  Styling is `cli/style.go` (`styler`: bold, faint, one green accent; only on a TTY with `NO_COLOR` unset and `TERM` not dumb; widths from the
+  uncoloured text, padding outside the codes; colour never the only signal; the notes under a table are short hand-broken lines no wider than
+  it, pinned by a test). `create` on a TTY prints the grid (`--location` by flag too), then picks location then type as
+  selects (sold-out types after the available ones, labelled; choosing one asks a default-No confirm, after which create prints no warning; a
+  picked location's type select ends in `← another location`, back to the location select, never a placement: `pickBack`; the prompts are
+  `pickSelect`/`pickConfirm` vars, so the loop is tested without huh). Every create refuses, before the key upload
+  and Create, an unknown type or location and a type **not offered** in the location; **sold out is only a warning** (one stderr line, then
+  Create: Hetzner calls `available` an indicator, and it lags; providers.md §9). A Create the API then refuses as unavailable (`resource_unavailable`,
+  `placement_error` → `provider.ErrUnavailable`), or any refusal of a type the catalogue said was sold out (not a name/key one), gets where it is
+  available and the cheapest in the location appended (`unavailableHint`). The catalogue never makes create fail: unfetchable means the text
+  inputs (one stderr line, TTY only) and no check.
 - **`--plain` is a compatibility surface** parsed by the Swift app:
   `name\tbackend\tstate\tforwards\tmanaged` with backend ∈ {smol, remote,
   hub, hetzner}, state ∈ {running, stopped, starting, stopping, reachable,
@@ -320,11 +332,12 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   the first four tokens plus `(pending)`, so anything new goes after them), `devvm
   --version` (`devvm version vX.Y.Z`), and `update --check --plain`
   (`current\tlatest\ttrue|false`). Changing any of them means a Swift change.
-  `providers types --plain` is one too, for scripts (no Swift reader):
-  `name\tcpu\tarch\tcores\tmemory_gb\tdisk_gb\tmonthly\thourly\tcurrency\tlocations`
-  (cpu shared|dedicated, arch x86|arm, prices decimal with the account's VAT, the
-  `--location` price or else the lowest of the type's locations, locations
-  comma-separated or `-`), no header; new columns go at the end.
+  `providers types --plain` is one too, for scripts (no Swift reader): one line
+  per type and location offering it (not offered: no line; `--location`: that
+  location's lines only),
+  `name\tcpu\tarch\tcores\tmemory_gb\tdisk_gb\tlocation\tstatus\tmonthly\thourly\tcurrency`
+  (cpu shared|dedicated, arch x86|arm, status available|soldout, prices decimal
+  with the account's VAT or `-` when unpriced), no header; new columns go at the end.
 - **Maintain devvm itself** (help group): `update` finds the latest tag via the
   `releases/latest` redirect (no API), verifies against SHA256SUMS, renames over
   the running binary, then re-execs the new one with hidden `--finish-from` to

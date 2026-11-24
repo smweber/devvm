@@ -105,7 +105,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	if err != nil {
 		return err
 	}
-	t, pl, err := a.gatherProviderSpec(&s, spec, cl)
+	t, pl, cat, err := a.gatherProviderSpec(&s, spec, cl)
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	next := fmt.Sprintf("run: devvm setup %s or devvm delete %s", s.Name, s.Name)
 	if err != nil {
 		if srv == nil {
-			return createNoServerErr(pn, s.Name, err)
+			return createNoServerErr(pn, s.Name, err, unavailableHint(pn, cat, pl, err))
 		}
 		return fmt.Errorf("%s server '%s' was created (server %d, %s) and bills, but %v; %s",
 			providerTitle(pn), srv.Name, srv.ID, orDash(srv.Address), err, next)
@@ -231,11 +231,15 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 // API-level refusal (an HTTP error answer: a conflict, a bad type, a
 // missing key) means nothing was made; a transport error, a timeout or a
 // cancelled context may have come after the POST was accepted, so the
-// server may exist and bill, and the user is told how to find out.
-func createNoServerErr(pn, name string, err error) error {
+// server may exist and bill, and the user is told how to find out. A
+// refusal gets hint (unavailableHint) appended when there is one.
+func createNoServerErr(pn, name string, err error, hint string) error {
 	var apiErr *hetzner.APIError
-	if errors.As(err, &apiErr) || errors.Is(err, provider.ErrConflict) || errors.Is(err, provider.ErrNotFound) {
-		return fmt.Errorf("%s: creating '%s': %w (the API refused it; no server was created)", pn, name, err)
+	if errors.As(err, &apiErr) || errors.Is(err, provider.ErrConflict) || errors.Is(err, provider.ErrNotFound) || errors.Is(err, provider.ErrUnavailable) {
+		if hint != "" {
+			hint = "; " + hint
+		}
+		return fmt.Errorf("%s: creating '%s': %w (the API refused it; no server was created)%s", pn, name, err, hint)
 	}
 	return fmt.Errorf("%s: creating '%s': %w; '%s' may have been created and would bill: run 'devvm status' to list the project, then 'devvm delete %s' if it exists",
 		pn, name, err, name, name)
@@ -259,10 +263,14 @@ func orDash(s string) string {
 // the placement a flag did not give, seeded with the resolved value: from
 // cl's catalogue when it can be fetched (selects), else as text, with one
 // line saying why. Then the hook and repos as smol's form does. With a
-// catalogue, a placement it says the API would refuse is refused here,
-// before the key upload and Create; without one, the API decides. cl may
+// catalogue, a placement it says the API would refuse for good (no such
+// type or location, a type not offered there) is refused here, before the
+// key upload and Create, and one it lists as sold out goes on, with one
+// stderr line unless the picker's confirm already asked about it; without
+// one, the API decides. The catalogue is returned
+// (nil when it could not be fetched) for a refused Create's hint. cl may
 // be nil (no catalogue).
-func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl provider.Provider) (config.Template, config.Placement, error) {
+func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl provider.Provider) (config.Template, config.Placement, *provider.Catalog, error) {
 	tty := openTTY()
 	if tty != nil {
 		defer tty.Close()
@@ -270,7 +278,7 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl pro
 	interactive := tty != nil && !s.Yes
 	var err error
 	if s.tmpl, err = a.resolveTemplate(s.Template, s.tmplFlags); err != nil {
-		return config.Template{}, config.Placement{}, err
+		return config.Template{}, config.Placement{}, nil, err
 	}
 	pl := s.tmpl.Placement(spec)
 	for _, f := range []struct {
@@ -281,11 +289,12 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl pro
 			continue
 		}
 		if err := config.ValidPlacement(f.key, f.flag); err != nil {
-			return config.Template{}, config.Placement{}, err
+			return config.Template{}, config.Placement{}, nil, err
 		}
 		*f.dst = f.flag
 	}
 	var cat *provider.Catalog
+	tried := false // the picker's confirm already said "sold out"
 	catErr := fmt.Errorf("no client")
 	if cl != nil {
 		cat, catErr = fetchCatalog(s.Backend, cl)
@@ -293,7 +302,7 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl pro
 	if interactive {
 		switch {
 		case cat != nil:
-			err = askPlacementPicks(tty, s.Backend, s, &pl, cat)
+			tried, err = askPlacementPicks(tty, s.Backend, s, &pl, cat)
 		default:
 			if s.ServerType == "" || s.Location == "" {
 				fmt.Fprintf(a.Stderr, "devvm: cannot offer %s's server types and locations to pick from (%v); type them instead\n",
@@ -302,20 +311,23 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl pro
 			err = askPlacementText(tty, s, &pl)
 		}
 		if err != nil {
-			return config.Template{}, config.Placement{}, err
+			return config.Template{}, config.Placement{}, nil, err
 		}
 	}
 	if cat != nil {
 		if err := checkPlacement(s.Backend, cat, pl); err != nil {
-			return config.Template{}, config.Placement{}, err
+			return config.Template{}, config.Placement{}, nil, err
+		}
+		if l := soldOutLine(cat, pl); l != "" && !tried {
+			fmt.Fprintln(a.Stderr, l)
 		}
 	}
 	if err := resolveHook(tty, interactive, s); err != nil {
-		return config.Template{}, config.Placement{}, err
+		return config.Template{}, config.Placement{}, nil, err
 	}
 	if interactive {
 		if err := askExtras(tty, &s.tmpl); err != nil {
-			return config.Template{}, config.Placement{}, err
+			return config.Template{}, config.Placement{}, nil, err
 		}
 	}
 	out := s.tmpl
@@ -323,7 +335,7 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl pro
 	out.ServerType, out.Location, out.Image = pl.ServerType, pl.Location, pl.Image
 	ipv4 := pl.IPv4
 	out.IPv4 = &ipv4
-	return out, pl, nil
+	return out, pl, cat, nil
 }
 
 // askPlacementText prompts, as text, for the placement fields no flag set:

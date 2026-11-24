@@ -7,13 +7,20 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/smweber/devvm/internal/provider"
 )
 
 // The catalogue: three read-only GETs. Availability lives on each server
 // type (locations[].available); the /datacenters endpoint that once carried
-// it was removed (410 deprecated_api_endpoint, 2026-06-02). /pricing is the
+// it was removed (410 deprecated_api_endpoint, 2026-06-02). The API's three
+// states, as its reference puts them: a type is supported only in the
+// locations listed, permanently unavailable in one whose
+// deprecation.unavailable_after has passed, and temporarily unavailable
+// where available is false: offered, sold out, and (unlisted or phased
+// out) not offered. available is an indicator, not a promise: it lags, so
+// create only warns on sold out, and the API decides. /pricing is the
 // only place that says the currency, this account's VAT rate and what a
 // primary IPv4 costs, which the server type's own price leaves out.
 
@@ -43,10 +50,24 @@ type apiServerType struct {
 	Deprecation  *struct{}  `json:"deprecation"`
 	Prices       []apiPrice `json:"prices"`
 	Locations    []struct {
-		Name        string    `json:"name"`
-		Available   *bool     `json:"available"`
-		Deprecation *struct{} `json:"deprecation"`
+		Name        string          `json:"name"`
+		Available   *bool           `json:"available"`
+		Deprecation *apiDeprecation `json:"deprecation"`
 	} `json:"locations"`
+}
+
+type apiDeprecation struct {
+	UnavailableAfter string `json:"unavailable_after"`
+}
+
+// gone reports whether the deprecation has taken effect at now; a date
+// that does not parse counts as passed, as the field's absence once did.
+func (d *apiDeprecation) gone(now time.Time) bool {
+	if d == nil {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, d.UnavailableAfter)
+	return err != nil || !now.Before(t)
 }
 
 type apiLocation struct {
@@ -82,12 +103,12 @@ func (c *Client) Catalog(ctx context.Context) (*provider.Catalog, error) {
 	if err := c.do(ctx, http.MethodGet, "/pricing", nil, &pr); err != nil {
 		return nil, err
 	}
-	return buildCatalog(types, locs, pr)
+	return buildCatalog(types, locs, pr, time.Now())
 }
 
 // buildCatalog maps the wire shapes; split from Catalog so the recorded
-// fixtures are parsed without a server.
-func buildCatalog(types []apiServerType, locs []apiLocation, pr apiPricing) (*provider.Catalog, error) {
+// fixtures are parsed without a server, at a fixed now.
+func buildCatalog(types []apiServerType, locs []apiLocation, pr apiPricing, now time.Time) (*provider.Catalog, error) {
 	cat := &provider.Catalog{Currency: pr.Pricing.Currency}
 	if pr.Pricing.VATRate != "" {
 		v, err := strconv.ParseFloat(pr.Pricing.VATRate, 64)
@@ -118,8 +139,11 @@ func buildCatalog(types []apiServerType, locs []apiLocation, pr apiPricing) (*pr
 		for _, l := range t.Locations {
 			// An answer without the flag (an older shape) counts a listed,
 			// not phased-out location as available; the API decides at Create.
-			if (l.Available != nil && *l.Available) || (l.Available == nil && l.Deprecation == nil) {
+			switch gone := l.Deprecation.gone(now); {
+			case l.Available != nil && *l.Available, l.Available == nil && !gone:
 				st.Available = append(st.Available, l.Name)
+			case !gone:
+				st.SoldOut = append(st.SoldOut, l.Name)
 			}
 		}
 		var err error

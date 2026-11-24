@@ -165,6 +165,13 @@ func (p *Provider) Create(ctx context.Context, spec provider.Spec) (*provider.Se
 			return nil, fmt.Errorf("fake: ssh key %q: %w", spec.SSHKey, provider.ErrNotFound)
 		}
 	}
+	// A seeded catalogue is the API's truth here: a type it lists as not
+	// available in the location is refused, as Hetzner's 412 is.
+	if p.Cat != nil {
+		if t, ok := p.Cat.Type(spec.Type); ok && !t.AvailableIn(spec.Location) {
+			return nil, fmt.Errorf("fake: server type %s in %s: %w", spec.Type, spec.Location, provider.ErrUnavailable)
+		}
+	}
 	p.nextID++
 	s := provider.Server{
 		ID:       p.nextID,
@@ -282,10 +289,12 @@ func (p *Provider) Catalog(ctx context.Context) (*provider.Catalog, error) {
 }
 
 // SampleCatalog is a small catalogue shaped like Hetzner's (2026-11): cx23
-// sold out in fsn1, cx43 there only, an arm type, a dedicated one
-// everywhere, a deprecated one, a type sold out everywhere, and IPv4
-// priced apart. The values the cli tests' templates use (cx23, cx43, fsn1,
-// nbg1) are placements it accepts where the test means them to be.
+// sold out in fsn1 and not offered in ash, cx43 available in fsn1 only
+// (sold out in nbg1, priced but not offered in hel1), an arm type, a
+// dedicated one everywhere, a deprecated one, cx33 sold out everywhere,
+// and IPv4 priced apart. The values the cli tests' templates use (cx23,
+// cx43, fsn1, nbg1) are placements it accepts where the test means them
+// to be.
 func SampleCatalog() *provider.Catalog {
 	eu := func(m, h float64) map[string]provider.Price {
 		return map[string]provider.Price{"fsn1": {Monthly: m, Hourly: h}, "nbg1": {Monthly: m, Hourly: h}, "hel1": {Monthly: m, Hourly: h}}
@@ -301,9 +310,9 @@ func SampleCatalog() *provider.Catalog {
 			{Name: "ash", City: "Ashburn, VA", Country: "US"},
 		},
 		Types: []provider.ServerType{
-			{Name: "cx23", CPU: "shared", Arch: "x86", Cores: 2, MemoryGB: 4, DiskGB: 40, Available: []string{"nbg1", "hel1"}, Prices: eu(3.49, 0.0056)},
-			{Name: "cx43", CPU: "shared", Arch: "x86", Cores: 8, MemoryGB: 16, DiskGB: 160, Available: []string{"fsn1"}, Prices: eu(9.49, 0.0152)},
-			{Name: "cx33", CPU: "shared", Arch: "x86", Cores: 4, MemoryGB: 8, DiskGB: 80, Prices: eu(5.49, 0.0088)},
+			{Name: "cx23", CPU: "shared", Arch: "x86", Cores: 2, MemoryGB: 4, DiskGB: 40, Available: []string{"nbg1", "hel1"}, SoldOut: []string{"fsn1"}, Prices: eu(3.49, 0.0056)},
+			{Name: "cx43", CPU: "shared", Arch: "x86", Cores: 8, MemoryGB: 16, DiskGB: 160, Available: []string{"fsn1"}, SoldOut: []string{"nbg1"}, Prices: eu(9.49, 0.0152)},
+			{Name: "cx33", CPU: "shared", Arch: "x86", Cores: 4, MemoryGB: 8, DiskGB: 80, SoldOut: []string{"fsn1", "nbg1", "hel1"}, Prices: eu(5.49, 0.0088)},
 			{Name: "cax11", CPU: "shared", Arch: "arm", Cores: 2, MemoryGB: 4, DiskGB: 40, Available: []string{"fsn1", "nbg1"}, Prices: eu(3.79, 0.0061)},
 			{Name: "ccx13", CPU: "dedicated", Arch: "x86", Cores: 2, MemoryGB: 8, DiskGB: 80, Available: []string{"fsn1", "nbg1", "hel1", "ash"}, Prices: ccx},
 			{Name: "cx22", CPU: "shared", Arch: "x86", Cores: 2, MemoryGB: 4, DiskGB: 40, Deprecated: true, Available: []string{"nbg1"}, Prices: eu(3.29, 0.0053)},
