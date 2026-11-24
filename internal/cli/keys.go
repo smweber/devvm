@@ -283,7 +283,12 @@ func githubKeys(user string) ([]string, error) {
 		if _, ok := keys.Parse(l); !ok {
 			return nil, fmt.Errorf("unexpected non-key line from github.com/%s.keys: %q", user, l)
 		}
-		out = append(out, l)
+		// The endpoint drops each key's title, and the API gives titles
+		// only to a token with admin:public_key, so the comment says
+		// where the key came from; `keys list` prints the fingerprint
+		// GitHub's settings page shows beside each title. A copy already
+		// in authorized_keys keeps its own comment (keys.Dedup).
+		out = append(out, l+" "+user+"@github")
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no public keys for GitHub user %q", user)
@@ -308,9 +313,10 @@ var bareEmailRe = regexp.MustCompile(`^[^\s@]+@[^\s@]+$`)
 
 // labelKeys ensures every key carries a comment: already-commented keys pass
 // through verbatim (options and all), and uncommented ones prompt (defaulting
-// to the local hostname), rejecting a bare email, since GitHub's .keys endpoint
-// drops titles. The TTY is only opened if a prompt is actually needed, so a
-// commented key works non-interactively.
+// to the local hostname), rejecting a bare email. GitHub's keys arrive
+// commented (githubKeys), so only a bare inline key or file line prompts.
+// The TTY is only opened if a prompt is actually needed, so a commented key
+// works non-interactively.
 func labelKeys(lines []string) ([]string, error) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {

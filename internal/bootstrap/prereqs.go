@@ -9,6 +9,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/smweber/devvm/internal/backend"
@@ -60,6 +63,64 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 `
 
+// genLocales generates the locales named after the script's first argument
+// ("${@:2}": the host's own, HostLocales). ssh sends LANG and LC_* to the
+// box (SendEnv in the stock ssh_config, AcceptEnv in Ubuntu's sshd), and a
+// cloud image has only C.UTF-8 and en_US.UTF-8, so a host in en_CA.UTF-8 got
+// "setlocale: LC_ALL: cannot change locale" from every bash and perl there.
+// /etc/locale.gen is edited where it exists (Debian, Ubuntu 22.04+: a bare
+// locale-gen reads it), else the name goes to locale-gen (older Ubuntu). A
+// failure here is one warning, never a failed setup.
+const genLocales = `
+gen_locales() {
+    gen=
+    for loc in "$@"; do
+        locale -a 2>/dev/null | grep -qix "${loc%UTF-8}utf8" && continue
+        command -v locale-gen >/dev/null 2>&1 || \
+            DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y locales || return 1
+        grep -qx "$loc UTF-8" /usr/share/i18n/SUPPORTED || { echo "devvm: this image has no locale $loc; skipping it" >&2; continue; }
+        if [ ! -e /etc/locale.gen ]; then
+            locale-gen "$loc" || return 1
+            continue
+        fi
+        if grep -q "^# *$loc UTF-8" /etc/locale.gen; then
+            sed -i "s/^# *\($loc UTF-8\)/\1/" /etc/locale.gen
+        elif ! grep -qx "$loc UTF-8" /etc/locale.gen; then
+            printf '%s UTF-8\n' "$loc" >>/etc/locale.gen
+        fi
+        gen=1
+    done
+    [ -z "$gen" ] || locale-gen
+}
+gen_locales "${@:2}" || echo "devvm: could not generate this host's locale(s): ${*:2}" >&2
+`
+
+// localeRe is a locale name HostLocales passes on: language_TERRITORY in
+// UTF-8, nothing else (C, POSIX and C.UTF-8 need no generating, and the
+// name lands in a sed and grep pattern in the guest).
+var localeRe = regexp.MustCompile(`^([a-z]{2,3}_[A-Z]{2})\.(?i:utf-?8)$`)
+
+// HostLocales is every locale this host's environment names (LANG, LC_ALL,
+// LC_*), as xx_YY.UTF-8, sorted: what ssh will send to the box.
+func HostLocales(environ []string) []string {
+	seen := map[string]bool{}
+	for _, kv := range environ {
+		k, v, _ := strings.Cut(kv, "=")
+		if k != "LANG" && !strings.HasPrefix(k, "LC_") {
+			continue
+		}
+		if m := localeRe.FindStringSubmatch(v); m != nil {
+			seen[m[1]+".UTF-8"] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for l := range seen {
+		out = append(out, l)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // smolPrereqs installs devvm's packages, writes hostname/hosts, and the
 // gai.conf IPv4-precedence fix. Runs as root in the guest ($1 is the
 // machine name), after EnsureUser. Ports smol_prepare_guest.
@@ -78,7 +139,7 @@ grep -qE "[[:space:]]$1([[:space:]]|\$)" /etc/hosts || printf '127.0.1.1 %s\n' "
 # so getaddrinfo prefers IPv4.
 grep -qs '^precedence ::ffff:0:0/96  100' /etc/gai.conf || \
     printf 'precedence ::ffff:0:0/96  100\n' >>/etc/gai.conf
-`
+` + genLocales
 
 // ensureUserScript creates the unprivileged user ($1, always dev) devvm works as, with
 // NOPASSWD sudo, and copies root's authorized_keys over so the client key
@@ -149,7 +210,7 @@ set -e
 ` + aptUpdateFn + `
 apt_update
 DEBIAN_FRONTEND=noninteractive ` + aptGet + ` install -y ` + devvmPackages + `
-` + installGH
+` + installGH + genLocales
 
 // Prereqs installs the minimal packages as root, on a box devvm made (a smol
 // VM, a provider server): setup's one caller has refused anything else.
@@ -158,6 +219,6 @@ func Prereqs(ctx context.Context, b backend.Backend, m *config.Machine) error {
 	if !m.IsRemote() {
 		script = smolPrereqs
 	}
-	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true},
-		"bash", "-c", script, "_", m.Name)
+	argv := append([]string{"bash", "-c", script, "_", m.Name}, HostLocales(os.Environ())...)
+	return b.Run(ctx, backend.ExecOpts{User: "root", Stream: true}, argv...)
 }

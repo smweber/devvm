@@ -137,6 +137,20 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 	fmt.Fprintf(a.Stdout, "Creating %s server '%s': %s in %s, image %s, %s, ssh key %s.\n",
 		providerTitle(pn), s.Name, pl.ServerType, pl.Location, pl.Image, nets, key)
 	fmt.Fprintf(a.Stdout, "It bills from now until 'devvm delete %s' (a stopped server still bills).\n", s.Name)
+	// The default template hardens nothing and adds no keys unless it says
+	// so, and a server that came up open with one key was a surprise:
+	// say it before the server exists.
+	if !t.Harden || len(t.AuthorizedKeysGithub)+len(t.AuthorizedKeys) == 0 {
+		var miss []string
+		if !t.Harden {
+			miss = append(miss, "does not harden it")
+		}
+		if len(t.AuthorizedKeysGithub)+len(t.AuthorizedKeys) == 0 {
+			miss = append(miss, "adds no keys beyond "+key)
+		}
+		fmt.Fprintf(a.Stdout, "Template '%s' %s (harden, authorized_keys_github; 'devvm setup %s --template T' applies another template later).\n",
+			t.Name, strings.Join(miss, " and "), s.Name)
+	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), providerTimes.create)
 	srv, err := cl.Create(ctx, provider.Spec{
