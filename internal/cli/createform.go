@@ -201,42 +201,54 @@ var starterHook []byte
 // file: spec that names it there.
 const starterHookName = "hook.sh"
 
-// askHook asks for the hook. starter reports that the starter was chosen:
-// t then carries its script, and the caller writes the files
-// (writeStarterHook) once create is past its refusals.
-func (a *App) askHook(tty *os.File, t *config.Template) (starter bool, err error) {
-	const (
-		optDefault = "default"
-		optStarter = "starter"
-		optNone    = "none"
-		optCustom  = "custom"
-	)
-	choice := optNone
-	var opts []huh.Option[string]
-	switch {
-	// Offer the template's hook (pre-selected) only when it's something
-	// other than "none" — otherwise it's identical to the plain "none" option.
-	case t.Hook != "" && t.Hook != bootstrap.KindNone:
+// The Hook select's choices.
+const (
+	optDefault = "default"
+	optStarter = "starter"
+	optNone    = "none"
+	optCustom  = "custom"
+)
+
+// hookChoices is the Hook select: the template's hook when it has one,
+// the starter, none, custom, and which is pre-selected. The template's
+// hook wins the pre-selection; with no hook set by any layer it is the
+// starter, so a first box is not bare; a written "none" is an answer and
+// stays pre-selected. The starter is always there to try (it is the
+// hook.sh beside devvm.toml once there is one), except when it is the
+// template's hook already, and on a hub running a laptop's create over
+// -t: the files would land on the hub, reported as if they were here.
+func (a *App) hookChoices(t *config.Template) (opts []huh.Option[string], choice string) {
+	choice = optNone
+	starterSpec := bootstrap.KindFile + ":" + starterHookName
+	// The template's hook only when it's something other than "none" —
+	// otherwise it's identical to the plain "none" option.
+	if t.Hook != "" && t.Hook != bootstrap.KindNone {
 		opts = append(opts, huh.NewOption("template "+t.Name+": "+t.Hook, optDefault))
 		choice = optDefault
-	// No layer set a hook (a written "none" is an answer, and stays
-	// pre-selected): the starter, or the hook.sh an earlier create wrote,
-	// first and pre-selected, so a first box is not bare. Not on a hub
-	// running a laptop's create over -t: the files would land on the hub,
-	// reported as if they were here.
-	case !t.HookSet && !noSubscribe():
+	}
+	if t.Hook != starterSpec && !noSubscribe() {
 		path := hookFilePath(a.Paths, starterHookName)
 		label := "starter — an editor, search tools, a friendlier tmux (writes " + path + " for you to edit)"
 		if _, err := os.Stat(path); err == nil {
 			label = "your " + path
 		}
 		opts = append(opts, huh.NewOption(label, optStarter))
-		choice = optStarter
+		if !t.HookSet {
+			choice = optStarter
+		}
 	}
 	opts = append(opts,
 		huh.NewOption("none — plain Ubuntu with git, tmux and gh", optNone),
 		huh.NewOption("custom — enter a file:/url:/cmd: spec", optCustom),
 	)
+	return opts, choice
+}
+
+// askHook asks for the hook. starter reports that the starter was chosen:
+// t then carries its script, and the caller writes the files
+// (writeStarterHook) once create is past its refusals.
+func (a *App) askHook(tty *os.File, t *config.Template) (starter bool, err error) {
+	opts, choice := a.hookChoices(t)
 	if err := form(tty, huh.NewSelect[string]().Title("Hook (a script that sets the box up your way)").Options(opts...).Value(&choice)); err != nil {
 		return false, err
 	}
@@ -308,7 +320,7 @@ func (a *App) writeStarterHook() {
 	case err == nil:
 		fmt.Fprintf(a.Stderr, "devvm: wrote %s: every create and setup uses the hook now ('devvm config edit')\n", toml)
 	case errors.Is(err, os.ErrExist):
-		fmt.Fprintf(a.Stderr, "devvm: the hook is for this box only; to keep it, put %s under [templates.default] ('devvm config edit')\n", line)
+		fmt.Fprintf(a.Stderr, "devvm: that hook is for this box only; to use it again, name it in a template: %s ('devvm config edit')\n", line)
 	default:
 		fail(err)
 	}

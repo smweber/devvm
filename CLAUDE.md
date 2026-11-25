@@ -660,10 +660,13 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   without the flag gets one line naming `devvm update` (it came after the
   v0.2.0 floor). "Beside devvm.toml" is beside the **real** file: a linked
   devvm.toml's neighbours are in the link's target directory. The
-  **starter** (`cli/starter_hook.sh`, embedded): when no layer sets a hook
-  (`Template.HookSet`; a written `none` is an answer), create's Hook select
-  offers it first, pre-selected; never on a hub running a laptop's create
-  (`noSubscribe`: the files would land on the hub). Choosing it
+  **starter** (`cli/starter_hook.sh`, embedded): create's Hook select
+  (`hookChoices`) always offers it, beside the template's hook, none and
+  custom, so it can be tried next to a hook of one's own; not when it is
+  the template's hook already, and never on a hub running a laptop's
+  create (`noSubscribe`: the files would land on the hub). The template's
+  hook is pre-selected; with no hook set by any layer (`Template.HookSet`)
+  the starter is; a written `none` is an answer and stays pre-selected. Choosing it
   (`useStarterHook`) uses `file:hook.sh` for this create, with the hook.sh
   already there or the embedded script, and writes nothing; the files are
   written by `writeStarterHook` just before the box is allocated, past

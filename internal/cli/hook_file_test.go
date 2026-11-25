@@ -215,10 +215,40 @@ func TestUseStarterHook(t *testing.T) {
 	}
 }
 
-// A hook some layer set, "none" included, is an answer (HookSet): the form
-// offers its starter only when none did.
-func TestHookSet(t *testing.T) {
+// The Hook select: the starter is always offered beside the template's
+// hook, none and custom (not when it is the template's hook, nor on a hub
+// running a laptop's create). The template's hook is pre-selected; with
+// no hook set by any layer the starter is; a written "none" stays none.
+func TestHookChoices(t *testing.T) {
 	a := newTestApp(t)
+	keys := func(tm config.Template) (string, string) {
+		opts, choice := a.hookChoices(&tm)
+		var ks []string
+		for _, o := range opts {
+			ks = append(ks, o.Value)
+		}
+		return strings.Join(ks, " "), choice
+	}
+	for _, tt := range []struct {
+		name         string
+		tm           config.Template
+		opts, choice string
+	}{
+		{"no hook anywhere", config.Template{Hook: "none"}, "starter none custom", optStarter},
+		{"a written none", config.Template{Hook: "none", HookSet: true}, "starter none custom", optNone},
+		{"the template's own", config.Template{Hook: "url:https://x/b.sh", HookSet: true}, "default starter none custom", optDefault},
+		{"the starter is the template's", config.Template{Hook: "file:hook.sh", HookSet: true}, "default none custom", optDefault},
+	} {
+		if opts, choice := keys(tt.tm); opts != tt.opts || choice != tt.choice {
+			t.Errorf("%s: %q pre-selecting %q, want %q pre-selecting %q", tt.name, opts, choice, tt.opts, tt.choice)
+		}
+	}
+	t.Setenv("DEVVM_NO_SUBSCRIBE", "1")
+	if opts, choice := keys(config.Template{Hook: "none"}); opts != "none custom" || choice != optNone {
+		t.Errorf("on a hub: %q pre-selecting %q", opts, choice)
+	}
+
+	// A resolved template says whether a layer set the hook.
 	if tm, err := a.resolveTemplate("", tmplFlags{}); err != nil || tm.HookSet || tm.Hook != "none" {
 		t.Errorf("no file: %+v, %v", tm, err)
 	}
