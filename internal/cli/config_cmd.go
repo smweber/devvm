@@ -247,7 +247,7 @@ func (a *App) runConfigCheck() error {
 	if err != nil {
 		return err
 	}
-	if err := checkTemplates(f); err != nil {
+	if err := a.checkTemplates(f); err != nil {
 		return err
 	}
 	// One local smol listing for every collision check below.
@@ -274,12 +274,14 @@ func (a *App) runConfigCheck() error {
 }
 
 // checkTemplates resolves every template over default and checks it as
-// create/setup would (validateTemplate).
-func checkTemplates(f *config.File) error {
+// create/setup would (loadHookScript: the hook spec, and a file: hook's
+// script, which must be readable here).
+func (a *App) checkTemplates(f *config.File) error {
 	var errs []error
 	def := f.Templates[config.DefaultTemplate]
 	for _, name := range sortedNames(f.Templates) {
-		if err := validateTemplate(f.Templates[name].Under(def).Resolve(name)); err != nil {
+		t := f.Templates[name].Under(def).Resolve(name)
+		if err := a.loadHookScript(&t, ""); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", f.Path, err))
 		}
 	}

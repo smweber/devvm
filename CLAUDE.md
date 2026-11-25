@@ -11,7 +11,7 @@ and discovered by their `devvm=true` label, never configured; boxes reached
 over ssh (`remote`, a `[machines.*]` entry devvm only connects to); and
 `hub`: another host running devvm, whose smol VMs this one reaches as
 `HUB/NAME` (see Hubs below). `remote`, `hub` and `hetzner` share one ssh
-transport (`ssh.go`). Everything the user writes is one file,
+transport (`ssh.go`). Everything the user configures is one file,
 `$XDG_CONFIG_HOME/devvm/devvm.toml` (`[templates.*]` + `[machines.*]` +
 `[providers.*]`, see Config below). The rule that settles most questions
 (simplify.md): **devvm shapes what it creates and only connects to
@@ -50,7 +50,10 @@ go build ./...
 go test ./...     # everything is VM-independent — no smolvm or ssh host needed
 gofmt -l .
 ./build.sh        # rebuild + re-embed the guest agents (see below)
-./install.sh      # build for this host and install to ~/.local/bin (or $1)
+./install-dev.sh  # build for this host and install to ~/.local/bin (or $1)
+./install.sh      # NOT a build: the users' `curl | sh` installer (latest release,
+                  # SHA256SUMS-checked, ~/.local/bin); README's quick start names
+                  # its raw URL on master, so it must keep working from there
 ./release.sh      # cross-compile host release binaries into dist/
 ```
 
@@ -203,7 +206,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   the exec (a hub VM's is the hub daemon's; a bare `exec` with no daemon
   gets no sync).
 - **Config vs state** (`config.Paths{Config, State}`): the config dir
-  (`$XDG_CONFIG_HOME/devvm`) holds only the user's file, `devvm.toml` (safe
+  (`$XDG_CONFIG_HOME/devvm`) holds only the user's files, `devvm.toml` and any `file:` hook script it
+  names, such as `hook.sh` (safe
   to symlink into dotfiles); this host's own state lives in `$XDG_STATE_HOME/devvm`
   (`~/.local/state/devvm`): `run/` (daemon sockets, logs, locks, `changed`),
   `cache/` (hub listings, provider listings, `reach/`), `ports/` (saved
@@ -348,7 +352,7 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   menubar`, so the app shows it instead of relaunching the old bundle). `menubar` installs/opens the
   app at this build's version (`.sha256` sidecar, `ditto` so the ad-hoc
   signature survives). Both need a real version: `-X cli.Version` is stamped by
-  install.sh/release.sh from `git describe`; a plain `go build` (or a tagless
+  install-dev.sh/release.sh from `git describe`; a plain `go build` (or a tagless
   clone) is `dev` and they refuse without `--force`/`--version`. `install()`
   quits the app with SIGTERM (SIGKILL if it lingers; never an Apple event,
   which needs TCC consent and can hang), waits until it has exited, and only
@@ -377,7 +381,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `connect_timeout`. Retired keys are load errors naming the fix, never
   silently ignored: an entry's `managed` (delete it; `agent = true` for the
   bridge), a template's `user` and `ports` (`ports add`). **VM commands
-  never write the file; only `config add`/`config rm` do**, and only
+  never edit the file; only `config add`/`config rm` do** (create's starter
+  hook may create a missing one: Hooks, below), and only
   structurally: `add` appends one whole table at EOF (always writing
   `backend`), `rm` cuts one table's line range (its keys, glued
   trailing comments, the blank gap; a comment block above the next header
@@ -607,8 +612,9 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   running or stopped, a remote box is reachable. Rebuilding is `delete` then
   `create`.
 - **Templates** (`internal/config/templates.go`, config.md §3): `[templates.*]`
-  in devvm.toml, beside `[machines.*]`. Fields: `hook` (`url:`/`cmd:`/`none`,
-  built-in **`none`**: nothing personal baked into the binary),
+  in devvm.toml, beside `[machines.*]`. Fields: `hook` (`file:`/`url:`/`cmd:`/`none`,
+  built-in **`none`**: nothing personal baked into the binary; see **Hooks**
+  below),
   `memory`/`disk` (create-time, smol), `repos`, `share_auth` (tools whose
   host login setup copies in: `"github"` only, any other a load error;
   `[]` in a named template turns default's off), `authorized_keys[_github]`
@@ -625,8 +631,8 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   `--template T` > `[templates.default]` > built-in. `config show` prints each
   template resolved, annotated with where each value came from. Nothing records which template made a box: `setup
   NAME` re-runs whatever `default` says now. The template flags are
-  `--hook`/`--memory`/`--disk` (visible on create) and a hidden `--repo`
-  and `--share-auth`; keys, harden and fail2ban have no flag. A proxied
+  `--hook`/`--memory`/`--disk` (visible on create) and a hidden `--repo`,
+  `--share-auth` and `--hook-script` (Hooks, below); keys, harden and fail2ban have no flag. A proxied
   `create`/`setup HUB/NAME --template T` resolves T on the laptop and
   sends what a hub's smol VM takes, hook, memory, disk, repos and
   share_auth, as those flags plus a hidden `--inline-template`
@@ -636,6 +642,39 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   create, above). A hub with no `setup`, `--inline-template` or
   `--share-auth` maps to one line naming `devvm update`
   (`runProxiedShaping`; `--share-auth` ships in the v0.2.0 floor itself).
+- **Hooks** (`bootstrap.ParseSpec`/`RunHook`, `cli.loadHookScript`):
+  `url:` is `curl | bash` in the box, `cmd:` a guest path, and **`file:`** a
+  script on the host that runs setup, beside devvm.toml unless absolute or
+  `~/` (`hookFilePath`), so the two travel in dotfiles together. It is read
+  into `Template.HookScript` when the template is resolved (so a missing or
+  empty script fails before create allocates anything; `config check` reads
+  it too) and runs as `bash -s -- ARGS` with the script on the exec's
+  **stdin**: the hook has no terminal input, and a command inside it that
+  reads stdin eats the rest of the script (the starter's apt calls read
+  `/dev/null`). Like a keys spec it is resolved on the host it was typed
+  on: a proxied `create`/`setup` with `--template T` or a typed `--hook
+  file:…` sends the content as the hidden `--hook-script` (base64, one
+  argument inside the ssh line since a `-t` run has no free stdin; capped at
+  `hubHookScriptMax`, 48 KiB, and visible in the hub's process list); with
+  neither the hub resolves its own default, a `file:` there included. A hub
+  without the flag gets one line naming `devvm update` (it came after the
+  v0.2.0 floor). "Beside devvm.toml" is beside the **real** file: a linked
+  devvm.toml's neighbours are in the link's target directory. The
+  **starter** (`cli/starter_hook.sh`, embedded): when no layer sets a hook
+  (`Template.HookSet`; a written `none` is an answer), create's Hook select
+  offers it first, pre-selected; never on a hub running a laptop's create
+  (`noSubscribe`: the files would land on the hub). Choosing it
+  (`useStarterHook`) uses `file:hook.sh` for this create, with the hook.sh
+  already there or the embedded script, and writes nothing; the files are
+  written by `writeStarterHook` just before the box is allocated, past
+  every prompt and refusal: `hook.sh` unless one is there, and with **no
+  devvm.toml at all** a new one (`[templates.default]` naming the hook), the
+  one place a VM command writes that path (`writeNew`: temp + link, never
+  over a file). A devvm.toml that exists is never edited, and one line says
+  what to add; a failed write is a warning. It is never a default: nothing
+  runs it unless the user picks it. The starter
+  writes `~/.tmux.conf` (mouse, a status line with the box's name, user and
+  a detach hint) and `~/.bash_devvm` only while they carry its mark line.
 - **No global defaults file**: `config.toml` and the `defaults` noun are gone;
   their values are `[templates.default]`, edited with `config edit`.
 

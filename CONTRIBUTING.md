@@ -14,14 +14,17 @@ for coding agents.
 go build ./...            # everything
 go test ./...             # unit tests; no smolvm or ssh host needed
 gofmt -l .
-./install.sh              # install the host CLI to ~/.local/bin, version-stamped
+./install-dev.sh              # install the host CLI to ~/.local/bin, version-stamped
 ```
 
 The build toolchain is the exact Go version in `.go-version` (read by `mise`
 and by CI, so the committed guest agents are byte-reproducible); `go.mod`'s
 `go` line is only the minimum the module compiles with.
 
-`install.sh` stamps the version from `git describe`; a bare `go build` yields
+`install.sh` is the other thing: the installer users pipe from curl, which
+downloads the latest release.
+
+`install-dev.sh` stamps the version from `git describe`; a bare `go build` yields
 a `dev` build that `devvm update` and `devvm menubar` refuse (they can't tell
 what release it is). After the first install, `devvm update` keeps a release
 binary current.

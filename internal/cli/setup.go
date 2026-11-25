@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +46,9 @@ type tmplFlags struct {
 	// ShareAuth is share_auth's tools (share-auth.md §1), a hidden flag
 	// only: it is how a laptop-resolved template carries the list to a hub.
 	ShareAuth []string
+	// HookScript is a file: hook's script, base64: hidden, and only how a
+	// laptop sends the script it read to a hub (the path is the laptop's).
+	HookScript string
 	// Inline: these flags are the whole template. The hub's own
 	// [templates.*] are not consulted; unset fields take the built-ins.
 	Inline bool
@@ -51,22 +57,24 @@ type tmplFlags struct {
 // Template flag names, defined once: addTemplateFlags registers them and
 // the proxy strips them before sending its own.
 const (
-	flagHook      = "hook"
-	flagMemory    = "memory"
-	flagDisk      = "disk"
-	flagRepo      = "repo"
-	flagShareAuth = "share-auth"
-	flagInline    = "inline-template"
-	flagTemplate  = "template"
+	flagHook       = "hook"
+	flagHookScript = "hook-script"
+	flagMemory     = "memory"
+	flagDisk       = "disk"
+	flagRepo       = "repo"
+	flagShareAuth  = "share-auth"
+	flagInline     = "inline-template"
+	flagTemplate   = "template"
 )
 
-var templateFlagNames = []string{flagHook, flagMemory, flagDisk, flagRepo, flagShareAuth, flagInline}
+var templateFlagNames = []string{flagHook, flagHookScript, flagMemory, flagDisk, flagRepo, flagShareAuth, flagInline}
 
 // addTemplateFlags registers the template flags on fs, hidden except the
 // names in visible (create shows --memory/--disk/--hook). memory and disk
 // keep create's -m/-d shorthands.
 func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
-	fs.StringVar(&v.Hook, flagHook, "", "hook: url:<URL> [args] | cmd:<path> [args] | none (template hook)")
+	fs.StringVar(&v.Hook, flagHook, "", "hook: file:<host script> [args] | url:<URL> [args] | cmd:<guest path> [args] | none (template hook)")
+	fs.StringVar(&v.HookScript, flagHookScript, "", "a file: hook's script, base64 (sent by a laptop to its hub)")
 	fs.IntVarP(&v.Memory, flagMemory, "m", 0, "smol: VM memory in MiB (template memory)")
 	fs.IntVarP(&v.Disk, flagDisk, "d", 0, "smol: VM disk in GiB (template disk; default 50)")
 	fs.StringArrayVar(&v.Repos, flagRepo, nil, "repo to clone into ~/src (repeatable; template repos)")
@@ -127,7 +135,7 @@ func (a *App) resolveTemplate(name string, f tmplFlags) (config.Template, error)
 	}
 	if f.Inline {
 		t := flags.Resolve(label)
-		return t, validateTemplate(t)
+		return t, a.loadHookScript(&t, f.HookScript)
 	}
 	named, def, err := config.TemplateLayers(a.Paths, name)
 	if err != nil {
@@ -141,14 +149,55 @@ func (a *App) resolveTemplate(name string, f tmplFlags) (config.Template, error)
 	if name != "" {
 		t.Own = named
 	}
-	return t, validateTemplate(t)
+	return t, a.loadHookScript(&t, f.HookScript)
 }
 
-// validateTemplate checks what config cannot: the hook spec, whose parser
-// lives in bootstrap.
-func validateTemplate(t config.Template) error {
-	if _, err := bootstrap.ParseSpec(t.Hook); err != nil {
+// hookFilePath is where a file: hook's script is on this host: absolute or
+// ~/ as written, anything else beside devvm.toml, so the two travel
+// together in a dotfiles repo. Beside the real file: a devvm.toml linked
+// into the config dir (stow, a hand-made link) has its neighbours in the
+// link's target directory, where a starter hook.sh is written too.
+func hookFilePath(p config.Paths, target string) string {
+	target = config.ExpandHome(target)
+	if filepath.IsAbs(target) {
+		return target
+	}
+	dir := p.Config
+	if real, err := filepath.EvalSymlinks(p.FilePath()); err == nil {
+		dir = filepath.Dir(real)
+	}
+	return filepath.Join(dir, target)
+}
+
+// loadHookScript checks t's hook spec and, for a file: hook, reads the
+// script into t.HookScript: here, before create allocates anything, so a
+// missing file never leaves a half-shaped box. sent is --hook-script (a
+// laptop read the file already; this host's path means nothing).
+func (a *App) loadHookScript(t *config.Template, sent string) error {
+	t.HookScript = nil
+	spec, err := bootstrap.ParseSpec(t.Hook)
+	if err != nil {
 		return fmt.Errorf("template %s: %w", t.Name, err)
+	}
+	if spec.Kind != bootstrap.KindFile {
+		return nil
+	}
+	if sent != "" {
+		b, err := base64.StdEncoding.DecodeString(sent)
+		if err != nil {
+			return fmt.Errorf("--%s: %w", flagHookScript, err)
+		}
+		t.HookScript = b
+	} else {
+		path := hookFilePath(a.Paths, spec.Target)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("template %s: hook %q: %w", t.Name, t.Hook, err)
+		}
+		t.HookScript = b
+	}
+	if len(bytes.TrimSpace(t.HookScript)) == 0 {
+		return fmt.Errorf("template %s: hook %q: the script is empty", t.Name, t.Hook)
 	}
 	return nil
 }
@@ -286,7 +335,7 @@ func (a *App) shape(ctx context.Context, m *config.Machine, b backend.Backend, t
 	// worst, never a failed setup.
 	a.shareAuth(ctx, m, b, t.ShareAuth)
 	// 7. The user's hook.
-	if err := bootstrap.RunHook(ctx, b, t.Hook); err != nil {
+	if err := bootstrap.RunHook(ctx, b, t.Hook, t.HookScript); err != nil {
 		return err
 	}
 	// 8. Repos: cloneRepos skips a checkout that exists, so a re-run is
@@ -633,6 +682,9 @@ func templateArgv(t config.Template) []string {
 	}
 	for _, s := range t.ShareAuth {
 		out = append(out, "--"+flagShareAuth+"="+s)
+	}
+	if len(t.HookScript) > 0 {
+		out = append(out, "--"+flagHookScript+"="+base64.StdEncoding.EncodeToString(t.HookScript))
 	}
 	return out
 }

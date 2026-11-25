@@ -130,6 +130,9 @@ func (a *App) runCreateProvider(s createSpec, f *config.File) error {
 		return fmt.Errorf("a %s server named '%s' already exists (server %d, %s, %s): %s",
 			providerTitle(pn), s.Name, existing.ID, existing.State, orDash(existing.Address), next)
 	}
+	if s.starter {
+		a.writeStarterHook()
+	}
 	key, err := a.ensureProviderKey(cl, pn, pl, pubkey)
 	if err != nil {
 		return err
@@ -322,7 +325,7 @@ func (a *App) gatherProviderSpec(s *createSpec, spec config.ProviderSpec, cl pro
 			fmt.Fprintln(a.Stderr, l)
 		}
 	}
-	if err := resolveHook(tty, interactive, s); err != nil {
+	if err := a.resolveHook(tty, interactive, s); err != nil {
 		return config.Template{}, config.Placement{}, nil, err
 	}
 	if interactive {

@@ -62,8 +62,14 @@ type TemplateSpec struct {
 // filled. Memory and Disk stay 0 when no layer set them (create then
 // prompts, errors, or uses the backend's default disk).
 type Template struct {
-	Name                 string
-	Hook                 string
+	Name string
+	Hook string
+	// HookSet: some layer set hook, "none" included. create's form offers
+	// its starter hook only when none did (a chosen "none" is an answer).
+	HookSet bool
+	// HookScript is a file: hook's content, read on the host by the cli
+	// before anything is created (never from devvm.toml).
+	HookScript           []byte
 	Memory               int
 	Disk                 int
 	Repos                []string
@@ -146,6 +152,7 @@ func (s TemplateSpec) Resolve(name string) Template {
 	t := Template{Name: name, Hook: DefaultBootstrapHook, Harden: DefaultHarden}
 	if s.Hook != nil && strings.TrimSpace(*s.Hook) != "" {
 		t.Hook = strings.TrimSpace(*s.Hook)
+		t.HookSet = true
 	}
 	if s.Memory != nil {
 		t.Memory = *s.Memory

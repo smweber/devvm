@@ -78,8 +78,8 @@ func (a *App) updateCmd() *cobra.Command {
 			"SHA256SUMS comes from the same release as the binary, so it catches a\n" +
 			"corrupt or partial download, not a compromised release.\n\n" +
 			"Release builds and `go install …@vX.Y.Z` builds know their version. A 'dev'\n" +
-			"build (go build / install.sh) cannot be compared and refuses without --force.\n" +
-			"First-time installs still go through install.sh.",
+			"build (go build / install-dev.sh) cannot be compared and refuses without --force.\n" +
+			"First-time installs go through install.sh (README).",
 		Example: "  devvm update\n  devvm update --check\n  devvm update --check --plain   # current<TAB>latest<TAB>true|false\n  devvm update --version v0.1.10",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -132,7 +132,7 @@ func newUpdater(stderr io.Writer) *updater {
 // currentVersion is the running build's version: the release stamp, else the
 // module version Go embeds for `go install …@vX.Y.Z` builds, else "dev".
 func currentVersion() string {
-	// install.sh/release.sh stamp `git describe --tags --always --dirty`, so
+	// install-dev.sh/release.sh stamp `git describe --tags --always --dirty`, so
 	// a clone with no reachable tag yields a bare hash: not a version, and
 	// it would parse as one ("83f409a" > "v0.1.11"). Every real tag starts
 	// with v, which is the reliable discriminator.

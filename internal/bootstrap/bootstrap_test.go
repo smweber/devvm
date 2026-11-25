@@ -150,3 +150,22 @@ func TestHardenFirewallAndAptLock(t *testing.T) {
 		}
 	}
 }
+
+// A file: hook is bash reading the script from the exec's stdin, its args
+// after `--`; with no script read it never runs.
+func TestRunHookFile(t *testing.T) {
+	ctx := context.Background()
+	if s, err := ParseSpec("file:hook.sh --fast"); err != nil || s.Kind != KindFile || s.Target != "hook.sh" || len(s.Args) != 1 {
+		t.Fatalf("ParseSpec = %+v, %v", s, err)
+	}
+	fb := &fakeBackend{}
+	if err := RunHook(ctx, fb, "file:hook.sh --fast", []byte("echo hi\n")); err != nil {
+		t.Fatal(err)
+	}
+	if len(fb.runs) != 1 || strings.Join(fb.runs[0], " ") != "bash -s -- --fast" {
+		t.Errorf("runs = %q", fb.runs)
+	}
+	if err := RunHook(ctx, fb, "file:hook.sh", nil); err == nil || len(fb.runs) != 1 {
+		t.Errorf("a file: hook with no script ran: %v, %q", err, fb.runs)
+	}
+}

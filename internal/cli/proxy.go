@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -202,7 +203,9 @@ func (a *App) proxy(cmd *cobra.Command, args []string) error {
 // (templateArgv), so the hub's own file never matters. HUB/NAME is only
 // ever a hub's smol VM: a template's keys, harden and fail2ban are a
 // provider server's and never cross. Without a template the leaf goes
-// across as typed and the hub resolves its own default.
+// across as typed and the hub resolves its own default; a typed --hook
+// file:… alone still names a script on this host, so its content goes
+// along (--hook-script).
 func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine, create bool) ([]string, error) {
 	fs := cmd.Flags()
 	name, _ := fs.GetString(flagTemplate)
@@ -227,7 +230,26 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		// Everything the user typed except the template flags, which go
 		// across resolved instead.
 		skip = append([]string{flagTemplate}, templateFlagNames...)
+		if err := hubHookScriptFits(t); err != nil {
+			return nil, err
+		}
 		extra = templateArgv(t)
+	} else if hook, _ := fs.GetString(flagHook); hook != "" {
+		// A typed --hook file:… names a script on this host, like a keys
+		// spec: read here, and its content goes with the flag. (With no
+		// --hook and no template the hub resolves its own default, a
+		// file: hook there included.)
+		t := config.Template{Name: "--" + flagHook, Hook: hook}
+		if err := a.loadHookScript(&t, ""); err != nil {
+			return nil, err
+		}
+		if len(t.HookScript) > 0 {
+			if err := hubHookScriptFits(t); err != nil {
+				return nil, err
+			}
+			skip = []string{flagHookScript}
+			extra = []string{"--" + flagHookScript + "=" + base64.StdEncoding.EncodeToString(t.HookScript)}
+		}
 	}
 	// A create with no --backend says smol explicitly: the hub's own
 	// devvm.toml may configure a provider, and its create would then ask
@@ -244,6 +266,21 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 	// where cobra parses them like any other flag.
 	head := len(strings.Fields(cmd.CommandPath())) // leaf path + machine
 	return append(append(slices.Clone(argv[:head]), extra...), argv[head:]...), nil
+}
+
+// hubHookScriptMax caps a file: hook sent to a hub. It crosses as one
+// base64 argument inside the ssh command line (a -t run has no free stdin),
+// and Linux refuses a single argument over 128 KiB: 48 KiB of script is
+// 64 KiB of base64, with room for the rest of the line. It is visible in
+// the hub's process list while create/setup runs, so it is no place for a
+// secret (nor is a hook).
+const hubHookScriptMax = 48 << 10
+
+func hubHookScriptFits(t config.Template) error {
+	if len(t.HookScript) > hubHookScriptMax {
+		return fmt.Errorf("hook %q is %d bytes: a file: hook sent to a hub is capped at %d (host it and use url:, or run it on the hub)", t.Hook, len(t.HookScript), hubHookScriptMax)
+	}
+	return nil
 }
 
 // runProxiedShaping is runProxied for create/setup, mapping a hub that has
@@ -265,6 +302,10 @@ func (a *App) runProxiedShaping(m *config.Machine, p backend.Proxier, argv []str
 			strings.Contains(out, "unknown flag: --"+flagInline) ||
 			strings.Contains(out, "unknown flag: --"+flagShareAuth) {
 			return out, fmt.Errorf("hub %s runs devvm older than %s; run 'devvm update' there", m.Hub.Name, hubMinVersion)
+		}
+		// file: hooks came after the floor: a hub at it can lack them.
+		if strings.Contains(out, "unknown flag: --"+flagHookScript) {
+			return out, fmt.Errorf("hub %s runs a devvm without file: hooks; run 'devvm update' there", m.Hub.Name)
 		}
 	}
 	return out, a.exitStatus(m, err)

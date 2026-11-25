@@ -33,6 +33,10 @@ type createSpec struct {
 	// built-in), patched by the prompts: what setup shapes with.
 	tmpl config.Template
 
+	// starter: the form's starter hook was chosen; its files are written
+	// just before the box is allocated (writeStarterHook).
+	starter bool
+
 	Yes bool // skip prompts; resolve every unset field from flag > template > built-in
 }
 
@@ -103,6 +107,9 @@ func (a *App) runCreate(s createSpec) error {
 
 	// Allocate the VM, labelled as devvm's; setup then shapes it (a
 	// mid-flight failure is resumable with `devvm setup`).
+	if s.starter {
+		a.writeStarterHook()
+	}
 	if err := a.provisionResource(s.Name, s.tmpl.Memory, s.tmpl.Disk); err != nil {
 		return err
 	}
