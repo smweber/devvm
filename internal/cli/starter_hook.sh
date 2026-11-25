@@ -72,16 +72,21 @@ bind c new-window -c "#{pane_current_path}"
 # Ctrl-b r reloads this file.
 bind r source-file ~/.tmux.conf \; display-message "tmux.conf reloaded"
 
-# The status line says where you are: the box's name, the user, your
-# windows, and how to leave. It uses your terminal's own colours and no
-# special font. Change "blue" below to recolour all of it.
+# The status line says where you are, each part with its label:
+#
+#    vm mybox | user dev | windows  1 bash  2 vim        Ctrl-b d to detach
+#
+# The window you are in is the highlighted one. It uses your terminal's own
+# colours and no special font. Change "blue" below to recolour all of it.
 set -g status-interval 15
 set -g status-style "bg=default,fg=default"
-set -g status-left "#[bg=blue,fg=black,bold] #h #[bg=default,fg=blue,nobold] #{user} #[fg=default]| "
-set -g status-left-length 40
+set -g status-left " #[dim]vm#[default] #[fg=blue,bold]#h#[default] #[dim]| user#[default] #[bold]#{user}#[default] #[dim]| windows#[default] "
+set -g status-left-length 60
 setw -g window-status-format " #I #W "
-setw -g window-status-current-format "#[fg=blue,bold,underscore] #I #W "
+setw -g window-status-current-format "#[bg=blue,fg=black,bold] #I #W #[default]"
 setw -g window-status-separator ""
+# Newer tmux underlines the current window by default; the block is enough.
+setw -g window-status-current-style "default"
 # The hint on the right; delete this line once you know it.
 set -g status-right "#[dim]Ctrl-b d to detach "
 set -g status-right-length 30
