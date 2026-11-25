@@ -9,9 +9,10 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
-// styler is the few ANSI attributes a human table uses: bold, faint and
-// one accent (basic green), SGR codes every terminal theme maps to
-// something legible on light and dark alike. It is on only for a terminal
+// styler is the few ANSI attributes a human table uses: bold, faint, an
+// accent (basic green) and a few more of the eight basic colours (red,
+// yellow, cyan), SGR codes every terminal theme maps to something legible
+// on light and dark alike. It is on only for a terminal
 // with NO_COLOR unset (no-color.org) and TERM not dumb, so a pipe or a
 // file never sees an escape code, and nothing it marks is told by its
 // colour alone: the text says it too.
@@ -24,9 +25,13 @@ const (
 	bold
 	faint
 	accent
+	red
+	yellow
+	cyan
+	heading // a section title: bold cyan
 )
 
-var sgr = map[attr]string{bold: "1", faint: "2", accent: "32"}
+var sgr = map[attr]string{bold: "1", faint: "2", accent: "32", red: "31", yellow: "33", cyan: "36", heading: "1;36"}
 
 // styleFor is w's styler: on for a terminal, per the rule above.
 func styleFor(w io.Writer) styler {
@@ -43,11 +48,18 @@ func (s styler) paint(a attr, text string) string {
 
 // cell is one table cell: its text, its attribute, and for a right-aligned
 // column the spaces after it that line it up with its neighbours (a price
-// beside a "(price)"), kept outside the escape codes.
+// beside a "(price)"), kept outside the escape codes. lead is text painted
+// faint before it, inside the same cell (a tree glyph, a hub prefix).
 type cell struct {
 	text  string
 	a     attr
 	trail int
+	lead  string
+}
+
+// width is the cell's uncoloured width.
+func (c cell) width() int {
+	return utf8.RuneCountInString(c.lead) + utf8.RuneCountInString(c.text) + c.trail
 }
 
 // renderTable lays rows out in columns two spaces apart, right-aligned
@@ -61,7 +73,7 @@ func renderTable(st styler, right []bool, rows [][]cell) []string {
 			if i == len(widths) {
 				widths = append(widths, 0)
 			}
-			widths[i] = max(widths[i], utf8.RuneCountInString(c.text)+c.trail)
+			widths[i] = max(widths[i], c.width())
 		}
 	}
 	out := make([]string, len(rows))
@@ -71,12 +83,14 @@ func renderTable(st styler, right []bool, rows [][]cell) []string {
 			if i > 0 {
 				b.WriteString("  ")
 			}
-			pad := widths[i] - utf8.RuneCountInString(c.text) - c.trail
+			pad := widths[i] - c.width()
 			if i < len(right) && right[i] {
 				b.WriteString(strings.Repeat(" ", pad))
+				b.WriteString(st.paint(faint, c.lead))
 				b.WriteString(st.paint(c.a, c.text))
 				b.WriteString(strings.Repeat(" ", c.trail))
 			} else {
+				b.WriteString(st.paint(faint, c.lead))
 				b.WriteString(st.paint(c.a, c.text))
 				b.WriteString(strings.Repeat(" ", pad+c.trail))
 			}

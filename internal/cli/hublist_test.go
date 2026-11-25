@@ -248,7 +248,7 @@ func TestStatusMergesHubRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	human := out.String()
-	for _, want := range []string{"hub\n", "  h  ", "reachable", "  h/web", "running", "  h/api", "stopped", "backend: smol (as reported by hub h)"} {
+	for _, want := range []string{"hubs\n", "  h  ", "● reachable", "└ h/web", "● running", "├ h/api", "○ stopped", " vm ", "├ h/db   ? unknown    not listed by hub  1 saved"} {
 		if !strings.Contains(human, want) {
 			t.Errorf("human listing lacks %q:\n%s", want, human)
 		}

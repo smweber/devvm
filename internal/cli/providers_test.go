@@ -377,7 +377,7 @@ func TestProviderStatusRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = a.Stdout.(*bytes.Buffer).String()
-	for _, want := range []string{"hetzner: listing failed, cached ", "ago (hetzner: GET /servers: 503", "server: cx23 in nbg1, 3.3.3.3", "stopped (billing)", "contact: none recorded yet", "(shadows a hetzner server of the same name)"} {
+	for _, want := range []string{"hetzner  listing failed, cached ", "ago (hetzner: GET /servers: 503", "server: cx23 in nbg1, 3.3.3.3", "stopped (billing)", "contact: none recorded yet", "(shadows a hetzner server of the same name)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("-v lacks %q:\n%s", want, out)
 		}
@@ -404,7 +404,7 @@ func TestProviderStatusRows(t *testing.T) {
 	if err := runTree(t, a, "status", "-v"); err != nil {
 		t.Fatal(err)
 	}
-	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "hetzner: no token (devvm providers token hetzner), cached") {
+	if out := a.Stdout.(*bytes.Buffer).String(); !strings.Contains(out, "hetzner  no token (devvm providers token hetzner), cached") {
 		t.Errorf("-v no-token line missing:\n%s", out)
 	}
 

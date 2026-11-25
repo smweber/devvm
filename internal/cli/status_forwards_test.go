@@ -40,16 +40,66 @@ func TestPlainForwards(t *testing.T) {
 	}
 }
 
-func TestFwdsCount(t *testing.T) {
-	if got := fwdsCount(fwdSummary{}); got != "—" {
-		t.Errorf("no forwards = %q", got)
+// The FORWARDS cell lists guest ports, a bumped host port after an arrow,
+// at most four; ↻ while reconnecting; a count of saved ones with no daemon.
+func TestForwardsCell(t *testing.T) {
+	a := newTestApp(t)
+	fw := func(g, h int) session.Forward { return session.Forward{Guest: g, Host: h} }
+	for _, tc := range []struct {
+		name string
+		f    fwdSummary
+		want string
+	}{
+		{"none", fwdSummary{}, ""},
+		{"sorted, bumped", fwdSummary{daemon: true, state: session.StateUp, list: []session.Forward{fw(5173, 5173), fw(3000, 3001)}}, "3000→3001 5173"},
+		{"capped", fwdSummary{daemon: true, state: session.StateUp, list: []session.Forward{fw(1, 1), fw(2, 2), fw(3, 3), fw(4, 4), fw(5, 5), fw(6, 6)}}, "1 2 3 4 +2"},
+		{"reconnecting", fwdSummary{daemon: true, state: session.StateReconnecting, list: []session.Forward{fw(8080, 8080)}}, "↻ 8080"},
+	} {
+		if got := a.forwardsCell(statusRow{name: "m", fwds: tc.f}).text; got != tc.want {
+			t.Errorf("%s: forwardsCell = %q, want %q", tc.name, got, tc.want)
+		}
 	}
-	if got := fwdsCount(fwdSummary{daemon: true, state: session.StateUp, n: 3}); got != "3" {
-		t.Errorf("up = %q", got)
+	if err := config.SavePorts(a.Paths, "m", []string{"3000", "8080"}); err != nil {
+		t.Fatal(err)
 	}
-	got := fwdsCount(fwdSummary{daemon: true, state: session.StateReconnecting, n: 3, since: time.Now().Add(-3 * time.Minute)})
-	if !strings.HasPrefix(got, "3 (reconnecting 3m") {
-		t.Errorf("reconnecting = %q", got)
+	if got := a.forwardsCell(statusRow{name: "m"}).text; got != "2 saved" {
+		t.Errorf("saved = %q", got)
+	}
+}
+
+// Every section shares one set of column widths, so a long name or host in
+// one section lines its columns up with every other's.
+func TestStatusTableAligned(t *testing.T) {
+	a := newTestApp(t)
+	var out strings.Builder
+	a.Stdout = &out
+	hub := &config.Machine{Name: "tp", Backend: config.BackendHub}
+	a.renderStatusTable([]statusSection{
+		{title: "local (smolvm)", rows: []statusRow{{name: "dev", backend: config.BackendSmol, state: "running", cpus: 4, mem: 8192, disk: 40}}},
+		{title: "remote (ssh)", rows: []statusRow{{name: "a-rather-long-name", backend: config.BackendRemote, state: "?", host: "2.29.47.196"}}},
+		{title: "hubs", rows: []statusRow{
+			{name: "tp", backend: config.BackendHub, hub: "tp", state: "reachable", host: "devvmtest@192.168.1.196", m: hub},
+			{name: "tp/raw", backend: config.BackendSmol, hub: "tp", state: "stopped", host: "devvmtest@192.168.1.196"},
+			{name: "tp/web", backend: config.BackendSmol, hub: "tp", state: "unreachable", stale: true},
+		}},
+	}, false)
+	lines := strings.Split(out.String(), "\n")
+	want := []string{
+		"local (smolvm)",
+		"  NAME                STATE        DETAIL                     FORWARDS  ADDRESS",
+		"  dev                 ● running    4 cpu · 8G ram · 40G disk",
+		"",
+		"remote (ssh)",
+		"  a-rather-long-name  ? unknown                                         2.29.47.196",
+		"",
+		"hubs",
+		"  tp                  ● reachable  2 machines                           devvmtest@192.168.1.196",
+		"  ├ tp/raw            ○ stopped    vm",
+		"  └ tp/web            · unknown    vm",
+		"",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("table =\n%s\nwant\n%s", out.String(), strings.Join(want, "\n"))
 	}
 }
 

@@ -18,17 +18,17 @@ import (
 )
 
 // statusGroups is the display order for `status`: one section per backend.
+// The titles are the human words (the backend tokens stay --plain's).
 var statusGroups = []struct{ backend, title string }{
-	{config.BackendSmol, "smol"},
-	{config.BackendRemote, "remote"},
+	{config.BackendSmol, "local (smolvm)"},
+	{config.BackendRemote, "remote (ssh)"},
 	{config.BackendHetzner, "hetzner"}, // provider servers: their own section, from the provider's cached listing
-	{config.BackendHub, "hub"},         // every hub's own row followed by its machines, whatever backend the hub reports for them
+	{config.BackendHub, "hubs"},        // every hub's own row followed by its machines, whatever backend the hub reports for them
 }
 
-// smolLifecycle is the state track shown in the verbose view; the live state
-// is highlighted. A smol VM either exists or it doesn't (no dormant state,
-// config.md §2); a remote box's state is its reach (a line of its own under
-// the row), so it gets no track.
+// smolLifecycle is the state track the single-machine drill-in shows; the
+// live state is highlighted. A smol VM either exists or it doesn't (no
+// dormant state, config.md §2).
 var smolLifecycle = []string{"running", "stopped"}
 
 // The --plain fifth column (config.md §7): who owns the machine.
@@ -55,21 +55,24 @@ type statusRow struct {
 	reach       *reach.Entry // a remote box's cached reach (--plain's sixth column); nil for every other row
 	hubVerified string       // a hub machine's sixth column as its hub sent it (`verified=…`); "" when it sent none
 	shadows     []string     // what this row hides, for the human note ("a local smol VM", "a hetzner server")
+	stale       bool         // a hub machine whose hub did not answer: --plain says unreachable, the human table unknown
 	m           *config.Machine
 }
 
 // fwdSummary is what status knows about a machine's forward daemon.
 type fwdSummary struct {
-	daemon bool      // a daemon answered
-	state  string    // session.StateUp | session.StateReconnecting
-	n      int       // forwards it owns (live or pending), any owner
-	conf   int       // of those, the ones a conf owner holds: --plain's N
-	since  time.Time // when state began
+	daemon bool              // a daemon answered
+	state  string            // session.StateUp | session.StateReconnecting
+	n      int               // forwards it owns (live or pending), any owner
+	conf   int               // of those, the ones a conf owner holds: --plain's N
+	since  time.Time         // when state began
+	list   []session.Forward // the daemon's forwards (any owner): the human FORWARDS column and -v
 }
 
 // runStatusAll lists every machine (registry ∪ live smol ∪ the hubs'
-// listings), grouped by backend. verbose adds a lifecycle track, live smol
-// resource sizes, and per-machine forward detail. local stops at this host.
+// listings), grouped by backend, as one table (renderStatusTable). verbose
+// adds the provider record, the full reach and per-machine forward detail
+// under each row. local stops at this host.
 func (a *App) runStatusAll(verbose, local bool) error {
 	rows, err := a.gatherRows(statusScope{local: local, probe: !local})
 	if bc, ok := asBrokenConf(err); ok {
@@ -108,37 +111,32 @@ func (a *App) runStatusAll(verbose, local bool) error {
 		return nil
 	}
 
-	first := true
+	var sections []statusSection
 	for _, g := range statusGroups {
-		var group []statusRow
+		sec := statusSection{title: g.title}
 		for _, r := range rows {
 			if groupOf(r) == g.backend {
-				group = append(group, r)
+				sec.rows = append(sec.rows, r)
 			}
 		}
 		src, isProvider := sources[g.backend]
-		if len(group) == 0 && !(verbose && isProvider) {
+		if len(sec.rows) == 0 && !(verbose && isProvider) {
 			continue
 		}
-		if !first {
-			fmt.Fprintln(a.Stdout)
-		}
-		first = false
-		fmt.Fprintln(a.Stdout, g.title)
-		if verbose && isProvider {
+		if isProvider {
 			// The listing's age and health, once per section: the rows
-			// are its, however old (providers.md §5).
-			fmt.Fprintf(a.Stdout, "  %s\n", src)
+			// are its, however old (providers.md §5). Without -v only
+			// when something is wrong with it.
+			src = strings.TrimPrefix(src, g.backend+": ")
+			sec.problem = !strings.HasPrefix(src, "listed ")
+			// No token is already noteNoToken's line on stderr.
+			if verbose || (sec.problem && readProviderCache(a.Paths, g.backend).err != providerErrNoToken) {
+				sec.remark = src
+			}
 		}
-		if len(group) == 0 {
-			continue
-		}
-		if g.backend == config.BackendSmol {
-			a.renderSmolGroup(group, verbose)
-		} else {
-			a.renderRemoteGroup(group, verbose)
-		}
+		sections = append(sections, sec)
 	}
+	a.renderStatusTable(sections, verbose)
 	if len(unlabelled) > 0 {
 		fmt.Fprintln(a.Stdout)
 		for _, l := range unlabelled {
@@ -318,106 +316,287 @@ func plainForwards(r statusRow) string {
 	}
 }
 
-func (a *App) renderSmolGroup(rows []statusRow, verbose bool) {
-	fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s\n", "NAME", "STATE", "MEM", "DISK", "FWDS")
-	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "  %-16s %-12s %-8s %-8s %s%s\n",
-			r.name, r.state, memHuman(r.mem), diskHuman(r.disk), fwdsCount(r.fwds), rowNote(r))
-		if verbose {
-			a.renderVerboseDetail(r)
+// statusSection is one backend's part of the human listing: its title, a
+// remark beside it (a provider listing's age or failure), and its rows.
+type statusSection struct {
+	title   string
+	remark  string
+	problem bool // the remark is a failure, not an age
+	rows    []statusRow
+}
+
+// renderStatusTable prints every section as one table: the widths come
+// from every row at once, so the columns line up across sections whatever
+// the names, hosts or states. The column header sits under the first
+// title; -v detail lines go under their row, outside the table.
+func (a *App) renderStatusTable(sections []statusSection, verbose bool) {
+	st := styleFor(a.Stdout)
+	now := time.Now()
+	table := [][]cell{{{text: "NAME", a: faint}, {text: "STATE", a: faint}, {text: "DETAIL", a: faint}, {text: "FORWARDS", a: faint}, {text: "ADDRESS", a: faint}}}
+	for _, sec := range sections {
+		for i, r := range sec.rows {
+			table = append(table, []cell{
+				nameCell(sec.rows, i),
+				stateCell(r, verbose),
+				detailCell(sec.rows, i, now),
+				a.forwardsCell(r),
+				{text: r.addressText(), a: faint},
+				noteCell(r),
+			})
+		}
+	}
+	lines := renderTable(st, nil, table)
+	header, lines := lines[0], lines[1:]
+	for si, sec := range sections {
+		if si > 0 {
+			fmt.Fprintln(a.Stdout)
+		}
+		title := st.paint(heading, sec.title)
+		if sec.remark != "" {
+			ra := faint
+			if sec.problem {
+				ra = yellow
+			}
+			title += "  " + st.paint(ra, sec.remark)
+		}
+		fmt.Fprintln(a.Stdout, title)
+		if si == 0 {
+			fmt.Fprintln(a.Stdout, "  "+header)
+		}
+		for _, r := range sec.rows {
+			fmt.Fprintln(a.Stdout, "  "+lines[0])
+			lines = lines[1:]
+			if verbose {
+				for _, l := range a.verboseDetail(r) {
+					fmt.Fprintln(a.Stdout, "    "+st.paint(faint, l))
+				}
+			}
 		}
 	}
 }
 
-func (a *App) renderRemoteGroup(rows []statusRow, verbose bool) {
-	// HOST is sized to the widest value so a long user@address does not push
-	// FWDS out of line.
-	hostW := 22
-	for _, r := range rows {
-		if len(r.host) > hostW {
-			hostW = len(r.host)
-		}
+// nameCell is a row's name, bold; a hub machine's is drawn as a branch of
+// its hub's row, the glyph and the hub prefix faint (HUB/NAME stays whole,
+// since that is what a command takes).
+func nameCell(rows []statusRow, i int) cell {
+	r := rows[i]
+	if r.hub == "" || r.name == r.hub {
+		return cell{text: r.name, a: bold}
 	}
-	// providers.md §3: with -v a stopped server's state reads
-	// "stopped (billing)", since it still bills (never in --plain).
-	state := func(r statusRow) string {
+	glyph := "└ "
+	if i+1 < len(rows) && rows[i+1].hub == r.hub && rows[i+1].name != r.hub {
+		glyph = "├ "
+	}
+	hub, name, _ := strings.Cut(r.name, "/")
+	return cell{lead: glyph + hub + "/", text: name, a: bold}
+}
+
+// stateCell is the STATE column: a glyph and the state, in a colour that
+// says the same (green up, faint stopped, yellow in between or unknown,
+// red unreachable), so it reads with colour off too.
+func stateCell(r statusRow, verbose bool) cell {
+	if r.stale {
+		return cell{text: "· unknown", a: faint}
+	}
+	switch r.state {
+	case "running", "reachable":
+		return cell{text: "● " + r.state, a: accent}
+	case "stopped":
+		// providers.md §3: with -v a stopped server reads "stopped
+		// (billing)", since it still bills (never in --plain).
 		if verbose && r.m != nil && r.m.IsProvider() && r.state == provider.StateStopped {
-			return r.state + " (billing)"
+			return cell{text: "○ stopped (billing)", a: yellow}
 		}
-		return r.state
+		return cell{text: "○ stopped", a: faint}
+	case "starting", "stopping":
+		return cell{text: "◐ " + r.state, a: yellow}
+	case "unreachable":
+		return cell{text: "✗ unreachable", a: red}
+	case "?", "":
+		return cell{text: "? unknown", a: yellow}
 	}
-	stateW := 12
-	for _, r := range rows {
-		stateW = max(stateW, len(state(r)))
-	}
-	fmt.Fprintf(a.Stdout, "  %-16s %-*s %-*s %s\n", "NAME", stateW, "STATE", hostW, "HOST", "FWDS")
-	for _, r := range rows {
-		fmt.Fprintf(a.Stdout, "  %-16s %-*s %-*s %s%s\n", r.name, stateW, state(r), hostW, r.host, fwdsCount(r.fwds), rowNote(r))
-		if verbose {
-			a.renderVerboseDetail(r)
-		}
-	}
+	return cell{text: "? " + r.state, a: yellow}
 }
 
-// rowNote is the human table's trailing remark: an entry shadowing a VM,
-// the hub entry naming this host.
-func rowNote(r statusRow) string {
+// detailCell is the DETAIL column, whatever says most about the row's
+// kind of machine: a local VM's resources, a server's type and location,
+// a remote box's last contact, a hub's machine count, a hub machine's
+// backend as its hub reported it.
+func detailCell(rows []statusRow, i int, now time.Time) cell {
+	r := rows[i]
+	switch {
+	case r.hub != "" && r.name == r.hub:
+		n := 0
+		for _, o := range rows {
+			if o.hub == r.hub && o.name != r.hub {
+				n++
+			}
+		}
+		text := fmt.Sprintf("%d machines", n)
+		if n == 1 {
+			text = "1 machine"
+		}
+		if r.state == "unreachable" {
+			// Its rows are from the last listing and this host's own ports
+			// and sockets (hubRows): say so here, not on a line of its own
+			// that would split the tree.
+			return cell{text: "no answer", a: faint}
+		}
+		if n == 0 {
+			return cell{}
+		}
+		return cell{text: text, a: faint}
+	case r.hub != "" && r.stale && r.backend == config.BackendHub:
+		return cell{} // only this host names it, and the hub did not answer to say whether it does
+	case r.hub != "":
+		return cell{text: hubKind(r.backend), a: faint}
+	case r.backend == config.BackendSmol:
+		return cell{text: smolSize(r)}
+	case r.m != nil && r.m.IsProvider():
+		var parts []string
+		for _, p := range []string{r.m.Server.Type, r.m.Server.Location} {
+			if p != "" {
+				parts = append(parts, p)
+			}
+		}
+		return cell{text: strings.Join(parts, " · ")}
+	case r.reach != nil:
+		return cell{text: r.reach.Brief(now), a: faint}
+	}
+	return cell{}
+}
+
+// hubKind is a hub machine's backend as the table says it.
+func hubKind(backend string) string {
+	switch backend {
+	case config.BackendSmol:
+		return "vm"
+	case config.BackendHub:
+		return "not listed by hub" // only this host's forwards name it
+	}
+	return backend
+}
+
+// smolSize is a local VM's resources, smolvm's own record: "4 cpu · 8G ram
+// · 40G disk", any part it does not report left out.
+func smolSize(r statusRow) string {
+	var parts []string
+	if r.cpus > 0 {
+		parts = append(parts, fmt.Sprintf("%d cpu", r.cpus))
+	}
+	if r.mem > 0 {
+		if r.mem%1024 == 0 {
+			parts = append(parts, fmt.Sprintf("%dG ram", r.mem/1024))
+		} else {
+			parts = append(parts, fmt.Sprintf("%dM ram", r.mem))
+		}
+	}
+	if r.disk > 0 {
+		parts = append(parts, fmt.Sprintf("%dG disk", r.disk))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// forwardsCell is the FORWARDS column: the guest ports the daemon holds
+// (cyan), marked ↻ in yellow while it reconnects; with no daemon, how many
+// this host has saved (faint: `ports up` or an attach raises them).
+func (a *App) forwardsCell(r statusRow) cell {
+	if len(r.fwds.list) > 0 {
+		ports := forwardPorts(r.fwds.list)
+		if r.fwds.state == session.StateReconnecting {
+			return cell{text: "↻ " + ports, a: yellow}
+		}
+		return cell{text: ports, a: cyan}
+	}
+	if saved, _ := a.savedPorts(r.name); len(saved) > 0 {
+		return cell{text: fmt.Sprintf("%d saved", len(saved)), a: faint}
+	}
+	return cell{}
+}
+
+// forwardPorts lists forwards by guest port, "3000" when the host port is
+// the same and "3000→3001" when it was bumped, at most four then "+N".
+func forwardPorts(fs []session.Forward) string {
+	fs = slices.Clone(fs)
+	sort.Slice(fs, func(i, j int) bool {
+		if fs[i].Guest != fs[j].Guest {
+			return fs[i].Guest < fs[j].Guest
+		}
+		return fs[i].Host < fs[j].Host
+	})
+	const most = 4
+	var parts []string
+	for i, f := range fs {
+		if i == most {
+			parts = append(parts, fmt.Sprintf("+%d", len(fs)-most))
+			break
+		}
+		p := strconv.Itoa(f.Guest)
+		if f.Host != f.Guest {
+			p += "→" + strconv.Itoa(f.Host)
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, " ")
+}
+
+// addressText is the ADDRESS column: how a box is reached over ssh; a hub
+// machine leaves it to its hub's row, a local VM has none.
+func (r statusRow) addressText() string {
+	if r.hub != "" && r.name != r.hub {
+		return ""
+	}
+	if r.host == "-" {
+		return ""
+	}
+	return r.host
+}
+
+// noteCell is the human table's trailing remark: an entry shadowing a VM
+// (yellow: something is hidden), the hub entry naming this host.
+func noteCell(r statusRow) cell {
 	switch {
 	case r.note != "":
-		return "  (" + r.note + ")"
+		return cell{text: "(" + r.note + ")", a: faint}
 	case r.managed == ownShadowed:
 		what := strings.Join(r.shadows, " and ")
 		if what == "" {
 			what = "a local smol VM"
 		}
-		return "  (shadows " + what + " of the same name)"
+		return cell{text: "(shadows " + what + " of the same name)", a: yellow}
 	}
-	return ""
+	return cell{}
 }
 
-// renderVerboseDetail prints the lifecycle track and sizes (local smol) and
-// each live forward under a machine's row.
-func (a *App) renderVerboseDetail(r statusRow) {
+// verboseDetail is what -v prints under a machine's row: a server's
+// provider record, a remote box's full reach, and each live forward. The row's own cells already carry a VM's sizes
+// and a hub machine's backend.
+func (a *App) verboseDetail(r statusRow) []string {
+	var out []string
 	if r.m != nil && r.m.IsProvider() {
 		s := r.m.Server
-		fmt.Fprintf(a.Stdout, "    server: %s in %s, %s (id %d, %s status %s)\n",
-			dash(s.Type), dash(s.Location), dash(s.Address), s.ID, r.backend, dash(s.Status))
+		out = append(out, fmt.Sprintf("server: %s in %s, %s (id %d, %s status %s)",
+			dash(s.Type), dash(s.Location), dash(s.Address), s.ID, r.backend, dash(s.Status)))
 		if r.reach != nil {
 			// Not probed: the state is the API's; this is the last time a
 			// command (attach, shell, exec, setup) got through.
-			fmt.Fprintf(a.Stdout, "    contact: %s\n", providerContact(*r.reach))
+			out = append(out, "contact: "+providerContact(*r.reach))
 		}
 	} else if r.reach != nil {
-		fmt.Fprintf(a.Stdout, "    reach: %s\n", r.reach.Describe(time.Now()))
+		out = append(out, "reach: "+r.reach.Describe(time.Now()))
 	}
-	if r.backend == config.BackendSmol && r.hub == "" {
-		fmt.Fprintf(a.Stdout, "    lifecycle: %s\n", lifecycleTrack(smolLifecycle, r.state))
-		if r.cpus > 0 {
-			fmt.Fprintf(a.Stdout, "    resources: %d CPUs\n", r.cpus)
-		}
-	}
-	if r.hub != "" && r.name != r.hub {
-		// The HOST column carries the hub; the backend the hub reported for
-		// the machine has nowhere else to show in the human table. A row the
-		// hub did not name (this host's saved forwards or daemon only) has none.
-		if r.backend == config.BackendHub {
-			fmt.Fprintf(a.Stdout, "    backend: unknown (hub %s does not list it)\n", r.hub)
+	f := r.fwds
+	if len(f.list) > 0 {
+		if f.state == session.StateReconnecting {
+			out = append(out, fmt.Sprintf("forwards: reconnecting (since %s)", sinceHuman(f.since)))
 		} else {
-			fmt.Fprintf(a.Stdout, "    backend: %s (as reported by hub %s)\n", r.backend, r.hub)
+			out = append(out, "forwards:")
+		}
+		for _, fw := range f.list {
+			out = append(out, fmt.Sprintf("  localhost:%d -> %s:%d%s", fw.Host, r.name, fw.Guest, forwardSuffix(fw)))
 		}
 	}
-	if cl, err := session.Existing(a.Paths, r.name); err == nil {
-		if st, err := cl.Status(); err == nil && len(st.Forwards) > 0 {
-			if st.Reconnecting() {
-				fmt.Fprintf(a.Stdout, "    forwards: reconnecting (since %s)\n", sinceHuman(st.Since))
-			} else {
-				fmt.Fprintln(a.Stdout, "    forwards:")
-			}
-			for _, f := range st.Forwards {
-				fmt.Fprintf(a.Stdout, "      localhost:%d -> %s:%d%s\n", f.Host, r.name, f.Guest, forwardSuffix(f))
-			}
-		}
-	}
+	return out
 }
 
 // statusScope says how far a listing reaches. local stops at this host: no
@@ -569,10 +748,8 @@ func dash(s string) string {
 }
 
 // hubRows renders one hub: its own row, then a row per machine on it. In
-// the human table every row of the hub shows the hub's ssh host in HOST and
-// no backend column (the section is the hub's, whatever backend the hub
-// reports for a machine); `-v` prints the reported backend under the row.
-// The
+// the human table the hub's row carries its ssh host and each machine's
+// DETAIL the backend the hub reported for it (renderStatusTable). The
 // machine set is the union of what the hub listed (fresh, or cached when it
 // did not answer) and what this host knows on its own — saved forwards
 // (ports/HUB@NAME), a live run/HUB@NAME.sock — so a laptop-side forward for a machine
@@ -638,7 +815,7 @@ func (a *App) hubRows(hub *config.Machine, l hubListing, local map[string]config
 			r.backend, r.state = config.BackendHub, "?"
 		}
 		if !l.fresh {
-			r.state = "unreachable"
+			r.state, r.stale = "unreachable", true
 		}
 		r.fwds = a.forwardSummary(display)
 		rows = append(rows, r)
@@ -729,7 +906,7 @@ func (a *App) forwardSummary(name string) fwdSummary {
 	if err != nil {
 		return fwdSummary{}
 	}
-	return fwdSummary{daemon: true, state: st.State, n: len(st.Forwards), conf: st.ConfCount(), since: st.Since}
+	return fwdSummary{daemon: true, state: st.State, n: len(st.Forwards), conf: st.ConfCount(), since: st.Since, list: st.Forwards}
 }
 
 // runStatus is the single-machine drill-in: always detailed (state, lifecycle,
@@ -828,19 +1005,6 @@ func diskHuman(giB int) string {
 		return "—"
 	}
 	return fmt.Sprintf("%d GiB", giB)
-}
-
-// fwdsCount renders a forward count, or "—" when none are up.
-// fwdsCount is the FWDS column: a count, flagged while the daemon is between
-// transports so a stuck reconnect reads differently from healthy forwards.
-func fwdsCount(f fwdSummary) string {
-	if f.n == 0 {
-		return "—"
-	}
-	if f.state == session.StateReconnecting {
-		return fmt.Sprintf("%d (reconnecting %s)", f.n, sinceHuman(f.since))
-	}
-	return strconv.Itoa(f.n)
 }
 
 // providerContact is a provider box's last-contact text: the reach cache's

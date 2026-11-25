@@ -217,6 +217,32 @@ func (e Entry) Describe(now time.Time) string {
 	}
 }
 
+// Brief is Describe cut to a table cell, the state itself left out (the
+// row has its own column for it): "seen 12s ago", "since 14:02", "connect
+// timed out", "not probed" (why is Describe's: a reason can be a whole
+// ssh error, too wide for a column).
+func (e Entry) Brief(now time.Time) string {
+	switch {
+	case e.State == Reachable && !e.Verified.IsZero():
+		return "seen " + ago(now.Sub(e.Verified)) + " ago"
+	case e.State == Reachable:
+		return ""
+	case e.State == Unreachable:
+		since := e.Since
+		if since.IsZero() {
+			since = e.Verified
+		}
+		if since.IsZero() {
+			return "" // a hand-edited file: Describe has the reason
+		}
+		return "since " + clock(since, now)
+	case e.How == HowProbe && e.Reason != "":
+		return e.Reason
+	default:
+		return "not probed"
+	}
+}
+
 // ago is a coarse age: 12s, 4m, 3h, 2d.
 func ago(d time.Duration) string {
 	d = max(d, 0).Round(time.Second)
