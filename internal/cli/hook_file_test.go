@@ -300,3 +300,33 @@ func TestStarterHookScript(t *testing.T) {
 		t.Error("no tmux config in the starter")
 	}
 }
+
+// hook = "starter" runs the script this devvm embeds, with nothing on
+// disk; a hub runs its own copy, so nothing is sent for it.
+func TestStarterHookKind(t *testing.T) {
+	a := newTestApp(t)
+	writeDevvmTOML(t, a, "[templates.minimal]\nhook = \"starter\"\n")
+	tm, err := a.resolveTemplate("minimal", tmplFlags{})
+	if err != nil || !bytes.Equal(tm.HookScript, starterHook) {
+		t.Fatalf("script is %d bytes, %v", len(tm.HookScript), err)
+	}
+	if err := runTree(t, a, "config", "check"); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if argv := templateArgv(tm); !slices.Contains(argv, "--hook=starter") ||
+		slices.ContainsFunc(argv, func(s string) bool { return strings.HasPrefix(s, "--hook-script") }) {
+		t.Errorf("hub argv = %q", argv)
+	}
+	log := fakeManagedSmol(t, a, "web")
+	stubBrowser(t, log)
+	if err := runTree(t, a, "setup", "web", "-t", "minimal"); err != nil {
+		t.Fatalf("setup: %v\n%s", err, a.Stderr)
+	}
+	if data, _ := os.ReadFile(log); !strings.Contains(string(data), "machine exec -i --stream") || !strings.Contains(string(data), "bash -s --") {
+		t.Errorf("no stdin hook exec in:\n%s", data)
+	}
+	// The form does not offer the starter beside itself.
+	if opts, _ := a.hookChoices(&tm); len(opts) != 3 {
+		t.Errorf("%d choices, want template, none, custom", len(opts))
+	}
+}

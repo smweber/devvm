@@ -73,7 +73,7 @@ var templateFlagNames = []string{flagHook, flagHookScript, flagMemory, flagDisk,
 // names in visible (create shows --memory/--disk/--hook). memory and disk
 // keep create's -m/-d shorthands.
 func addTemplateFlags(fs *pflag.FlagSet, v *tmplFlags, visible ...string) {
-	fs.StringVar(&v.Hook, flagHook, "", "hook: file:<host script> [args] | url:<URL> [args] | cmd:<guest path> [args] | none (template hook)")
+	fs.StringVar(&v.Hook, flagHook, "", "hook: file:<host script> [args] | url:<URL> [args] | cmd:<guest path> [args] | starter | none (template hook)")
 	fs.StringVar(&v.HookScript, flagHookScript, "", "a file: hook's script, base64 (sent by a laptop to its hub)")
 	fs.IntVarP(&v.Memory, flagMemory, "m", 0, "smol: VM memory in MiB (template memory)")
 	fs.IntVarP(&v.Disk, flagDisk, "d", 0, "smol: VM disk in GiB (template disk; default 50)")
@@ -179,6 +179,11 @@ func (a *App) loadHookScript(t *config.Template, sent string) error {
 	if err != nil {
 		return fmt.Errorf("template %s: %w", t.Name, err)
 	}
+	if spec.Kind == bootstrap.KindStarter {
+		// This devvm's own copy, a hub's included: nothing is sent for it.
+		t.HookScript = starterHook
+		return nil
+	}
 	if spec.Kind != bootstrap.KindFile {
 		return nil
 	}
@@ -200,6 +205,13 @@ func (a *App) loadHookScript(t *config.Template, sent string) error {
 		return fmt.Errorf("template %s: hook %q: the script is empty", t.Name, t.Hook)
 	}
 	return nil
+}
+
+// hookIsFile reports a file: hook, whose script is this host's and goes
+// with it to a hub; a starter hook's is whatever the hub's devvm embeds.
+func hookIsFile(t config.Template) bool {
+	spec, err := bootstrap.ParseSpec(t.Hook)
+	return err == nil && spec.Kind == bootstrap.KindFile
 }
 
 // setupOpts is `setup`'s input.
@@ -683,7 +695,7 @@ func templateArgv(t config.Template) []string {
 	for _, s := range t.ShareAuth {
 		out = append(out, "--"+flagShareAuth+"="+s)
 	}
-	if len(t.HookScript) > 0 {
+	if hookIsFile(t) {
 		out = append(out, "--"+flagHookScript+"="+base64.StdEncoding.EncodeToString(t.HookScript))
 	}
 	return out

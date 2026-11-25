@@ -62,8 +62,9 @@ share_auth = ["github"]          # copy this machine's gh login in
   `devvm.toml` (so both travel in your dotfiles). Picking the starter in
   `create` writes `~/.config/devvm/hook.sh` for you: packages, a tmux
   config, a few shell lines. It is yours to edit, and `devvm setup NAME`
-  runs it again. A hook can also be fetched (`url:URL [args]`) or already
-  in the box (`cmd:PATH [args]`).
+  runs it again. A hook can also be fetched (`url:URL [args]`), already in
+  the box (`cmd:PATH [args]`), or `"starter"`: devvm's built-in starter as
+  it ships, with no file to keep.
 - **`share_auth = ["github"]`** copies the token from `gh auth token` into
   the box, so `owner/repo` clones work unattended. It carries your login's
   full scopes; leave it out to log in inside the box instead.

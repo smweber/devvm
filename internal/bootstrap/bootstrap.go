@@ -19,6 +19,10 @@ const (
 	// over the exec's stdin: the one hook that needs no hosting and nothing
 	// in the box first. The cli reads it (it knows the config dir).
 	KindFile = "file"
+	// KindStarter is devvm's own starter script, the one embedded in the
+	// cli that runs setup: a file: hook with nothing on disk. Opt-in like
+	// any hook (the built-in is none).
+	KindStarter = "starter"
 )
 
 // Spec is a parsed hook value: a kind plus a target and args.
@@ -34,6 +38,7 @@ type Spec struct {
 //	cmd:<path> [args...]  run a guest command
 //	file:<path> [args...] run a script from the host (beside devvm.toml
 //	                      unless absolute or ~/), sent over stdin
+//	starter               run devvm's starter script (the cli's embedded copy)
 //	none                  skip the hook
 //
 // An empty spec means the built-in default, none.
@@ -42,12 +47,12 @@ func ParseSpec(s string) (Spec, error) {
 	if s == "" {
 		s = config.DefaultBootstrapHook
 	}
-	if s == KindNone {
-		return Spec{Kind: KindNone}, nil
+	if s == KindNone || s == KindStarter {
+		return Spec{Kind: s}, nil
 	}
 	kind, rest, ok := strings.Cut(s, ":")
 	if !ok {
-		return Spec{}, fmt.Errorf("invalid hook spec %q (want url:/cmd:/file:/none)", s)
+		return Spec{}, fmt.Errorf("invalid hook spec %q (want url:/cmd:/file:/starter/none)", s)
 	}
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {
@@ -85,7 +90,7 @@ func RunHook(ctx context.Context, b backend.Backend, hook string, script []byte)
 	case KindCmd:
 		argv := append([]string{spec.Target}, spec.Args...)
 		return b.Run(ctx, opts, argv...)
-	case KindFile:
+	case KindFile, KindStarter:
 		if len(script) == 0 {
 			return fmt.Errorf("hook %q: no script was read", hook)
 		}

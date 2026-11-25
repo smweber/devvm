@@ -675,7 +675,11 @@ contrib/macos/      Swift menu bar app: a thin shell over the CLI (floating drop
   one place a VM command writes that path (`writeNew`: temp + link, never
   over a file). A devvm.toml that exists is never edited, and one line says
   what to add; a failed write is a warning. It is never a default: nothing
-  runs it unless the user picks it. The starter
+  runs it unless the user picks it. **`hook = "starter"`** names the
+  embedded script itself, with no file: it runs the copy in the devvm that
+  runs setup (a hub's own for `HUB/NAME`: only the word crosses), so it
+  tracks the installed version; the form's choice stays the editable
+  `hook.sh`. The starter
   writes `~/.tmux.conf` (mouse, a status line with the box's name, user and
   a detach hint) and `~/.bash_devvm` only while they carry its mark line.
 - **No global defaults file**: `config.toml` and the `defaults` noun are gone;

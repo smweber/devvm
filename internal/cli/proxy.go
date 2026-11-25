@@ -243,7 +243,7 @@ func (a *App) proxyShaping(cmd *cobra.Command, args []string, m *config.Machine,
 		if err := a.loadHookScript(&t, ""); err != nil {
 			return nil, err
 		}
-		if len(t.HookScript) > 0 {
+		if hookIsFile(t) {
 			if err := hubHookScriptFits(t); err != nil {
 				return nil, err
 			}

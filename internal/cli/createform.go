@@ -226,7 +226,7 @@ func (a *App) hookChoices(t *config.Template) (opts []huh.Option[string], choice
 		opts = append(opts, huh.NewOption("template "+t.Name+": "+t.Hook, optDefault))
 		choice = optDefault
 	}
-	if t.Hook != starterSpec && !noSubscribe() {
+	if t.Hook != starterSpec && t.Hook != bootstrap.KindStarter && !noSubscribe() {
 		path := hookFilePath(a.Paths, starterHookName)
 		label := "starter — an editor, search tools, a friendlier tmux (writes " + path + " for you to edit)"
 		if _, err := os.Stat(path); err == nil {
